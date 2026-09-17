@@ -26,6 +26,7 @@ import {
   sessionFindingTool,
 } from "./session-finding-tool.ts";
 import {
+  productKnowledgeLine,
   QUERY_KNOWLEDGE_TOOL,
   resolveKnowledgeQuery,
   resolveKnowledgeWrite,
@@ -121,7 +122,13 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
   });
   // 产品知识的目录(issue #362):定位一句、术语名、生效决策标题。Reviewer 的每批提示
   // 渲染的是同一份,两条链路因此说的是同一套名字。
-  const contents = knowledgeContentsLines(productKnowledgeContents(request.productKnowledge));
+  //
+  // 产品梳理是例外(issue #365):它改写的正是这些条目,而一条定义成不成立要读正文才判得出。
+  // 那个用途整份带着此刻的条目,别的用途照旧只带目录、要哪条花一次 `query_knowledge`。
+  const survey = request.purpose === "product-survey";
+  const contents = survey
+    ? request.productKnowledge.map(productKnowledgeLine)
+    : knowledgeContentsLines(productKnowledgeContents(request.productKnowledge));
   const sections = [
     "You are a senior engineer in a continuing conversation with one person about one product. The conversation spans many turns: answer what is asked, say what you are unsure about, and ask when the answer changes what you would do.",
     `The product: ${request.productName}.`,
@@ -155,7 +162,9 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     "This product and its repositories have written down two layers of knowledge, and no entry is written out here.",
     "",
-    "Product knowledge is this product's glossary, the section on how its repositories work together, and its decision records. Its table of contents:",
+    survey
+      ? "Product knowledge is this product's glossary, the section on how its repositories work together, and its decision records. Every entry in force is written out here, because this session revises them:"
+      : "Product knowledge is this product's glossary, the section on how its repositories work together, and its decision records. Its table of contents:",
     "",
     // 目录只有名字(issue #362):正文按名字走 `query_knowledge` 取整条,一个只动后端的
     // 任务不必为整份术语表付 token。
@@ -176,7 +185,7 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     `The product's knowledge is written through tools, not files: ${WRITE_KNOWLEDGE_TOOL} writes or rewrites one entry and ${WITHDRAW_KNOWLEDGE_TOOL} takes one back. An entry is in force the moment it is written, so write one only from what the person confirmed or from code you read yourself.`,
   ];
-  const purpose = purposeSystemPrompt(request.purpose, request.productKnowledge);
+  const purpose = purposeSystemPrompt(request.purpose);
   if (purpose !== undefined) sections.push("", purpose);
   return sections.join("\n");
 }
@@ -296,11 +305,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
 
   // 这个用途的产出工具(issue #337)。清单与定义取同一份:工具名在 `tools` 里没有那一行,
   // Pi 就不把它交给模型,两处各写一遍迟早对不上。
-  const outputTools = sessionOutputTools(request.purpose, {
-    repos,
-    knowledge: request.productKnowledge,
-    send,
-  });
+  const outputTools = sessionOutputTools(request.purpose, { repos, send });
   // 喂回去的那一段已经在记录表里,镜像的起点因此是它的长度——从 0 起会把整段历史再落一遍。
   // 置在建会话之前:建会话本身会追加「这次用哪个模型、哪个思考档位」两条,它们要镜像出去。
   mirrored = request.entries?.length ?? 0;

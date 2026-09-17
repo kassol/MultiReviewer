@@ -55,7 +55,6 @@ import {
   AGENT_SESSION_OUTPUT_CUSTOM_TYPE,
   SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
-  type ProductSurveyProposals,
   type SessionCommand,
   type SessionKnowledgeEntries,
   type SessionKnowledgeQuery,
@@ -276,8 +275,9 @@ export function agentSessionRepos(
   try {
     const product = store.getProduct(session.productId);
     if (product === undefined) return [];
-    // 产品梳理读产品的全部仓库(issue #345):它的创建者是系统,没有仓库分配可言,而梳理
-    // 的正是仓库之间的事——少一个仓库这一轮就看不全。
+    // 产品梳理读产品的全部仓库(CONTEXT.md 产品梳理):梳理的正是这个产品整体是什么、它的
+    // 仓库之间怎么协作,少一个仓库这一场就看不全。开这一场要的是产品里的一个仓库分配,不是
+    // 每一个仓库的分配(`server.ts` 的那道门禁)。
     if (session.purpose === "product-survey") return product.repos;
     const user = store.listPanelUsers().find((row) => row.username === session.createdBy);
     if (user === undefined) return [];
@@ -345,64 +345,35 @@ function activeProductKnowledge(dbPath: string, productId: number): SessionProdu
 }
 
 /**
- * 这个产品此刻有没有在跑的产品梳理(issue #345)。「在跑」是进程内的事实(`agentSessionStatus`),
- * 与别处同律;重梳据它回绝第二次请求,两轮梳理不该同时提同一批提案。
+ * 这个产品此刻有没有一场没谈完的产品梳理(CONTEXT.md 产品梳理,issue #365)。
+ *
+ * 判据是库里那一格完成时刻,不是「在跑」:访谈里 agent 抛出一轮题就转空闲等人答,按在跑判
+ * 会让人在等答题的间隙又开起第二场,两场问的是同一批问题、写的是同一批条目。
  */
-export function productSurveyRunning(dbPath: string, productId: number): boolean {
+export function productSurveyIncomplete(dbPath: string, productId: number): boolean {
   const store = openStore(dbPath);
   try {
     return store
       .listAgentSessions(productId, null)
-      .some(
-        (session) =>
-          session.purpose === "product-survey" && agentSessionStatus(session.id) === "running",
-      );
+      .some((session) => session.purpose === "product-survey" && session.completedAt === null);
   } finally {
     store.close();
   }
 }
 
 /**
- * 收下产品梳理交的那一批(CONTEXT.md 产品梳理,issue #345、#360):每一句新陈述落成一条
- * **仓库关系**,退役那几条按 id 撤回。写下即生效,没有提案队列(ADR 0035)——梳理交上来的
- * 就是它读代码读出来的仓库之间的事,人在产品页上读得到、在会话里改得动。
+ * 记下这一场产品梳理谈完了(CONTEXT.md 产品梳理,issue #365)。
  *
- * 形状与打回在子进程那一侧判完,这里只落库。认不出的退役目标在这里丢掉:那一批是几分钟前
- * 判的,产品这会儿可能已经变了样。
+ * 访谈的产出一路经 `write_knowledge` 落好了,这一步只动会话上那一格完成时刻:同一个产品的
+ * 下一场梳理因此开得起来,而这一场照旧读得到、创建者照旧续得了。
  */
-export function recordProductSurveyProposals(
+export function completeProductSurvey(
   deps: AgentSessionRecordDeps,
   session: AgentSessionRecord,
-  proposals: ProductSurveyProposals,
 ): void {
   const store = openStore(deps.dbPath);
   try {
-    const product = store.getProduct(session.productId);
-    if (product === undefined) return;
-    const at = new Date(deps.now()).toISOString();
-    for (const one of proposals.statements) {
-      store.writeProductKnowledge({
-        productId: session.productId,
-        kind: "relationship",
-        name: "",
-        body: one.statement,
-        topic: null,
-        avoided: [],
-        options: null,
-        consequences: null,
-        annotations: [],
-        at,
-        sessionId: session.id,
-      });
-    }
-    for (const one of proposals.retirements) {
-      store.withdrawProductKnowledge(session.productId, one.id);
-    }
-  } catch (error) {
-    console.error(
-      `[agent-session] 会话 ${session.id} 的产品梳理产出落库失败:`,
-      error instanceof Error ? error.message : String(error),
-    );
+    store.completeAgentSession(session.id, new Date(deps.now()).toISOString());
   } finally {
     store.close();
   }
@@ -1123,7 +1094,7 @@ function configuredDefaultBranch(dbPath: string, repoId: number): string | null 
  *
  * 停在哪个 commit 由会话自己记的那一份说(issue #352):建会话时人按仓库选过基点,那一份
  * 就是这里检出的目标,空闲回收后重备因此停在同一个 commit 上,面板头部显示的与 agent 读的
- * 是同一份。会话上没记过的仓库(系统开的梳理、这一票之前建的会话)读生效的默认分支最新
+ * 是同一份。会话上没记过的仓库(这一票之前建的会话)读生效的默认分支最新
  * (issue #350),读完一并记下来(issue #351):人与 agent 因此指得出读的是哪一份代码。
  */
 async function prepareSessionRoot(
@@ -1258,8 +1229,8 @@ async function boot(
       case "output":
         recordAgentSessionOutput(deps, session.id, message.output);
         return;
-      case "survey":
-        recordProductSurveyProposals(deps, session, message.proposals);
+      case "survey-complete":
+        completeProductSurvey(deps, session);
         return;
       case "queue":
         if (message.seq < entry.queueSeq) {

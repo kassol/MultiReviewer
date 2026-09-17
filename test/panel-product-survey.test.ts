@@ -1,19 +1,14 @@
 /**
- * 重梳与产品梳理会话的那一段面板接口(CONTEXT.md 产品梳理,issue #345)。
+ * 开产品梳理与梳理会话的那一段面板接口(CONTEXT.md 产品梳理,issue #365)。
  *
  * 缝照旧:面板 API 走真实 HTTP,产品与会话行落临时 SQLite。压的是票里不需要真子进程的那几条
- * 验收:仓库不足两个的回绝、门禁两档、系统开的会话谁都读得到、发消息对谁都回绝、停止与删除
- * 只有系统管理员做得了(issue #346)、建会话端点不收这个用途。真跑起来那一路(种子消息、
- * 提示里的生效条目、产出工具的打回与合法交出、梳理在跑时的第二次重梳)在
- * `agent-session-subprocess.test.ts`。
+ * 验收:开梳理的三种回绝(仓库不足两个、没有权限格、对这个产品一个仓库都没分配)、同一个
+ * 产品已有一场没谈完时的回绝与谈完之后的放行、创建者记的是点下「梳理」的那个人、归入与移出
+ * 仓库一场会话也不开、非创建者发消息回 403。真跑起来那一路(种子消息、提示里的全量知识与
+ * 纪律段、子代理派单、提问轮次、从答案写知识、完成标记)在 `agent-session-subprocess.test.ts`。
  *
- * 仓库集变了自己开梳理(issue #347)压在同一道缝上:归入第二个仓库开、归入第一个不开、只改
- * 职责那一次不开、移出与下线按剩下的仓库数开、梳理在跑时两边都不再开。产品知识不再跟着仓库
- * 退役(issue #360):条目说的是这个产品是什么,不按仓库集合成立。
- *
- * 重梳按仓库选基点(issue #353)也在这一道缝上:带基点的那一次梳理会话记下选定的 sha 与分支、
- * 工作树停在它上面,外仓库与解析不出的 sha 一场梳理也不开;系统自己开的那一场照旧读生效默认
- * 分支的最新提交。
+ * 按仓库选基点(issue #353)也在这一道缝上:带基点的那一场记下选定的 sha 与分支、工作树停在
+ * 它上面,外仓库与解析不出的 sha 一场梳理也不开。
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -25,6 +20,7 @@ import { openStore, type AgentSessionRecord } from "../src/review/store.ts";
 import { disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
+  PANEL_ADMIN_USERNAME,
   scopedUser,
   seedRepo,
   startReadyPanelHarness,
@@ -37,12 +33,7 @@ const ALPHA = 101;
 
 type Product = { id: number; name: string; repos: { repoId: number }[] };
 
-/**
- * 建一个产品,按 `repoIds` 归入仓库。`ALPHA` 只落注册表,不建 hook。
- *
- * 归入第二个仓库会自己开一场梳理(issue #347):压人按下重梳的那几例先把它收干净,免得它们
- * 看到的第一条会话是系统自己开的那一场。
- */
+/** 建一个产品,按 `repoIds` 归入仓库。`ALPHA` 只落注册表,不建 hook。 */
 async function product(h: PanelHarness, repoIds: readonly number[]): Promise<Product> {
   seedRepo(h, ALPHA, "acme", "alpha");
   const created = await h.api("POST", "/products", { name: "报销系统" });
@@ -51,21 +42,7 @@ async function product(h: PanelHarness, repoIds: readonly number[]): Promise<Pro
   for (const repoId of repoIds) {
     assert.equal((await h.api("PUT", `/products/${row.id}/repos/${repoId}`)).status, 204);
   }
-  await clearSessions(h, row.id);
   return row;
-}
-
-/** 把这个产品下的会话连子进程一起收掉。 */
-async function clearSessions(h: PanelHarness, productId: number): Promise<void> {
-  await disposeAgentSessions();
-  const store = openStore(h.db.path);
-  try {
-    for (const session of store.listAgentSessions(productId, null)) {
-      store.deleteAgentSession(session.id);
-    }
-  } finally {
-    store.close();
-  }
 }
 
 function survey(h: PanelHarness, productId: number, cookie?: string): Promise<Response> {
@@ -77,16 +54,30 @@ function survey(h: PanelHarness, productId: number, cookie?: string): Promise<Re
       });
 }
 
-/** 直接落一行产品梳理会话。系统开的那一行不经接口建,这里只要它在库里。 */
-function seedSurveySession(h: PanelHarness, productId: number): AgentSessionRecord {
+/** 直接落一行产品梳理会话,创建者是给的那个人。不经接口建:这几例只要它在库里。 */
+function seedSurveySession(
+  h: PanelHarness,
+  productId: number,
+  createdBy: string,
+): AgentSessionRecord {
   const store = openStore(h.db.path);
   try {
     return store.createAgentSession({
       productId,
-      createdBy: "system",
+      createdBy,
       purpose: "product-survey",
       createdAt: AT,
     });
+  } finally {
+    store.close();
+  }
+}
+
+/** 把这一场梳理记成谈完了,与完成工具落的是同一格。 */
+function completeSession(h: PanelHarness, sessionId: number): void {
+  const store = openStore(h.db.path);
+  try {
+    store.completeAgentSession(sessionId, AT);
   } finally {
     store.close();
   }
@@ -106,7 +97,7 @@ async function sessionsOf(
     .sessions;
 }
 
-test("仓库不足两个的产品重梳不了:回一句中文,一个会话也没建起来", async () => {
+test("仓库不足两个的产品梳理不了:回一句中文,一个会话也没建起来", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const one = await product(h, [GITEA_REPO.id]);
 
@@ -118,7 +109,7 @@ test("仓库不足两个的产品重梳不了:回一句中文,一个会话也没
   assert.deepEqual(await sessionsOf(h, one.id, h.cookie), []);
 });
 
-test("重梳开一个系统开的产品梳理会话;它还在跑时第二次重梳被回绝", async () => {
+test("开梳理:创建者是点下它的那个人;那一场没谈完时第二次被回绝,谈完之后放行", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);
   try {
@@ -127,27 +118,37 @@ test("重梳开一个系统开的产品梳理会话;它还在跑时第二次重�
     assert.equal(opened.status, 201, text);
     const { session } = JSON.parse(text) as { session: AgentSessionRecord };
     assert.equal(session.purpose, "product-survey");
-    // 创建者是系统:这个会话不属于点下重梳的那个人(CONTEXT.md 产品梳理)。
-    assert.equal(session.createdBy, "system");
+    // 创建者是人:访谈的另一头是一个具体的人,只有他答得了题(CONTEXT.md 产品梳理)。
+    assert.equal(session.createdBy, PANEL_ADMIN_USERNAME);
+    assert.equal(session.completedAt, null);
     assert.deepEqual(
       (await sessionsOf(h, two.id, h.cookie)).map((row) => [row.id, row.purpose, row.createdBy]),
-      [[session.id, "product-survey", "system"]],
+      [[session.id, "product-survey", PANEL_ADMIN_USERNAME]],
     );
 
-    // 还在跑:第二次重梳回一句中文,不再开第二个会话。
+    // 还没谈完:第二次回一句中文,不再开第二场。判据是那一格完成时刻,不是「在跑」——
+    // 抛出一轮题的梳理正空闲着等人答,它照样挡住下一场。
     const again = await survey(h, two.id);
     assert.equal(again.status, 409);
     assert.deepEqual(await again.json(), {
-      error: "这个产品的产品梳理还在跑,等它交完再重梳",
+      error: "这个产品还有一场没谈完的产品梳理,先把它谈完",
     });
     assert.equal((await sessionsOf(h, two.id, h.cookie)).length, 1);
+
+    // 谈完之后再开一场:新会话,上一场留着可读可续。
+    completeSession(h, session.id);
+    const next = await survey(h, two.id);
+    const nextText = await next.text();
+    assert.equal(next.status, 201, nextText);
+    const second = (JSON.parse(nextText) as { session: AgentSessionRecord }).session;
+    assert.notEqual(second.id, session.id);
+    assert.equal((await sessionsOf(h, two.id, h.cookie)).length, 2);
   } finally {
-    // 登记表是进程内的一张表,下一个用例会拿同一个会话 id 播种一条。
     await disposeAgentSessions();
   }
 });
 
-test("重梳要 knowledge:write 加这个产品里的一个仓库分配", async () => {
+test("开梳理要 knowledge:write 加这个产品里的一个仓库分配", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);
 
@@ -163,82 +164,67 @@ test("重梳要 knowledge:write 加这个产品里的一个仓库分配", async 
   const hidden = await survey(h, two.id, outsider);
   assert.equal(hidden.status, 404);
   assert.deepEqual(await hidden.json(), { error: "没有这个产品" });
+
+  // 两档回绝之后一场梳理也没开。
+  assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
 });
 
-test("系统开的产品梳理会话:产品可见者都读得到,发消息与别的动作一律回绝", async () => {
+test("梳理会话:产品可见者都读得到,只有创建者发得了消息", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);
-  const session = seedSurveySession(h, two.id);
-  assert.equal(session.createdBy, "system");
-  assert.equal(session.purpose, "product-survey");
+  const owner = await scopedUser(h, "owner", PASSWORD, AT, [ALPHA], ["agent:chat"]);
+  const session = seedSurveySession(h, two.id, "owner");
 
-  // 看得到产品、自己一个会话都没建的人:这一条在他的会话列表里,也读得开。
+  // 看得到产品、不是创建者的人:这一条在他的会话列表里,也读得开。
   const member = await scopedUser(h, "member", PASSWORD, AT, [ALPHA], ["agent:chat"]);
-  assert.deepEqual(await sessionsOf(h, two.id, member), [
-    { ...session, purpose: "product-survey", createdBy: "system" },
-  ]);
+  assert.deepEqual(
+    (await sessionsOf(h, two.id, member)).map((row) => [row.id, row.createdBy]),
+    [[session.id, "owner"]],
+  );
   const read = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}`, {
     headers: { cookie: member },
   });
   assert.equal(read.status, 200);
 
-  // 发消息、停止与删除对普通人都回同一句:创建者是系统,回「只有创建者能做」会让人去找
-  // 那个不存在的人。
-  const refusal = { error: "产品梳理会话由系统开,谁都续不了它" };
-  const sent = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}/messages`, {
-    method: "POST",
-    headers: { cookie: member, "content-type": "application/json" },
-    body: JSON.stringify({ clientMessageId: "c1", text: "再读一遍" }),
+  // 发消息只有创建者做得了:别人读得到这一场,答不了它的题。
+  const message = JSON.stringify({ clientMessageId: "c1", text: "第一题选 A" });
+  const post = (cookie: string): Promise<Response> =>
+    fetch(`${h.serverUrl}/api/agent-sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: message,
+    });
+  const refused = await post(member);
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: "只有会话的创建者能做" });
+
+  // 系统管理员读得到,同样发不了:与别的用途同律。
+  const admin = await h.api("POST", `/agent-sessions/${session.id}/messages`, {
+    clientMessageId: "c2",
+    text: "第一题选 A",
   });
-  assert.equal(sent.status, 409);
-  assert.deepEqual(await sent.json(), refusal);
-  const stopped = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}/stop`, {
-    method: "POST",
-    headers: { cookie: member },
-  });
-  assert.equal(stopped.status, 409);
-  assert.deepEqual(await stopped.json(), refusal);
-  const deleted = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}`, {
-    method: "DELETE",
-    headers: { cookie: member },
-  });
-  assert.equal(deleted.status, 409);
-  assert.deepEqual(await deleted.json(), refusal);
+  assert.equal(admin.status, 403);
+  assert.deepEqual(await admin.json(), { error: "只有会话的创建者能做" });
+
+  // 创建者发得出去:这一条起得了子进程,读完就把它连同工作树收掉。
+  try {
+    const sent = await post(owner);
+    assert.equal(sent.status, 202, await sent.text());
+  } finally {
+    await disposeAgentSessions();
+  }
 
   // 一个仓库都没分到的人看不到这个产品,也就问不到它的会话。
   const stranger = seedRepo(h, 404, "acme", "delta");
-  const outsider = await scopedUser(h, "outsider", PASSWORD, AT, [stranger], ["agent:chat"]);
+  const nobody = await scopedUser(h, "nobody", PASSWORD, AT, [stranger], ["agent:chat"]);
   const hidden = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}`, {
-    headers: { cookie: outsider },
+    headers: { cookie: nobody },
   });
   assert.equal(hidden.status, 404);
   assert.deepEqual(await hidden.json(), { error: "没有这个 Agent 会话" });
 });
 
-test("产品梳理会话:系统管理员停得了、删得了它,发消息仍回绝", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const two = await product(h, [GITEA_REPO.id, ALPHA]);
-  const session = seedSurveySession(h, two.id);
-
-  // 发消息仍是那一句:系统开的会话谁都续不了它,系统管理员也不例外。
-  const sent = await h.api("POST", `/agent-sessions/${session.id}/messages`, {
-    clientMessageId: "c1",
-    text: "再读一遍",
-  });
-  assert.equal(sent.status, 409);
-  assert.deepEqual(await sent.json(), { error: "产品梳理会话由系统开,谁都续不了它" });
-
-  // 停止是空操作(这一行没有在跑的子进程),回 200 而不是 409:动作本身做得了。
-  const stopped = await h.api("POST", `/agent-sessions/${session.id}/stop`);
-  assert.equal(stopped.status, 200);
-  assert.deepEqual(await stopped.json(), { stopped: false, queue: [] });
-
-  // 删得掉:交完提案的梳理会话要有人收得掉,否则它永远留在列表里。
-  assert.equal((await h.api("DELETE", `/agent-sessions/${session.id}`)).status, 204);
-  assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
-});
-
-test("建会话端点不收产品梳理:那个用途只有系统开得了", async () => {
+test("建会话端点不收产品梳理:那一种从产品页上的「梳理」开", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);
   const member = await scopedUser(h, "member", PASSWORD, AT, [ALPHA], ["agent:chat"]);
@@ -255,32 +241,27 @@ test("建会话端点不收产品梳理:那个用途只有系统开得了", asyn
   assert.deepEqual(await sessionsOf(h, two.id, member), []);
 });
 
-test("归入第二个仓库自己开一场梳理:归入第一个不开,只改职责的那一次也不开", async () => {
+test("归入、移出与下线仓库都不开梳理:那一场由人在产品页上开", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
+  const beta = seedRepo(h, 202, "acme", "beta");
   seedRepo(h, ALPHA, "acme", "alpha");
   const created = await h.api("POST", "/products", { name: "报销系统" });
   assert.equal(created.status, 201);
   const { product: row } = (await created.json()) as { product: Product };
-  try {
-    // 第一个仓库:产品知识说的是仓库之间的事,一个仓库之间没有事。
-    assert.equal((await h.api("PUT", `/products/${row.id}/repos/${GITEA_REPO.id}`)).status, 204);
-    assert.deepEqual(await sessionsOf(h, row.id, h.cookie), []);
 
-    // 第二个仓库:归入的回应一格没变,梳理由系统自己开。
-    assert.equal((await h.api("PUT", `/products/${row.id}/repos/${ALPHA}`)).status, 204);
-    assert.deepEqual(
-      (await sessionsOf(h, row.id, h.cookie)).map((one) => [one.purpose, one.createdBy]),
-      [["product-survey", "system"]],
-    );
-
-    // 已经归入的仓库再 PUT 一次只是改职责:仓库集没变,不再开一场。
-    await clearSessions(h, row.id);
-    const role = await h.api("PUT", `/products/${row.id}/repos/${ALPHA}`, { role: "网关" });
-    assert.equal(role.status, 204);
-    assert.deepEqual(await sessionsOf(h, row.id, h.cookie), []);
-  } finally {
-    await disposeAgentSessions();
+  // 归入三个仓库:仓库集一路在变,一场会话也没开。
+  for (const repoId of [GITEA_REPO.id, ALPHA, beta]) {
+    assert.equal((await h.api("PUT", `/products/${row.id}/repos/${repoId}`)).status, 204);
   }
+  assert.deepEqual(await sessionsOf(h, row.id, h.cookie), []);
+
+  // 移出一个:回应一格没变,仍然没有会话。
+  assert.equal((await h.api("DELETE", `/products/${row.id}/repos/${beta}`)).status, 204);
+  assert.deepEqual(await sessionsOf(h, row.id, h.cookie), []);
+
+  // 下线一个:与移出同律。
+  assert.equal((await h.api("DELETE", `/repos/${GITEA_REPO.id}`)).status, 204);
+  assert.deepEqual(await sessionsOf(h, row.id, h.cookie), []);
 });
 
 /**
@@ -332,74 +313,16 @@ async function baselinesOf(
   ).session.baselines;
 }
 
-test("系统开的梳理:工作树停在生效默认分支的 head 上,会话记下它开在哪个 commit", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  seedRepo(h, ALPHA, "acme", "alpha");
-  const created = await h.api("POST", "/products", { name: "报销系统" });
-  assert.equal(created.status, 201);
-  const { product: row } = (await created.json()) as { product: Product };
-  try {
-    // 第一个仓库不开梳理;趁这时把它的默认分支设成 `feature`(夹具的 Gitea 默认是 `main`,
-    // 指向 `baseSha`,`feature` 指向 `headSha`)。
-    assert.equal((await h.api("PUT", `/products/${row.id}/repos/${GITEA_REPO.id}`)).status, 204);
-    const saved = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
-      reviewers: null,
-      auxiliaryModel: null,
-      minReportSeverity: null,
-      defaultBranch: "feature",
-      expectedVersion: 0,
-    });
-    assert.equal(saved.status, 200, await saved.text());
-
-    // 第二个仓库归入即由系统开一场梳理:设过默认分支的那个仓库读设置的那条分支的 head,
-    // 没设过的那个照旧跟随 Gitea 的默认分支。
-    assert.equal((await h.api("PUT", `/products/${row.id}/repos/${ALPHA}`)).status, 204);
-    assert.deepEqual(
-      await sessionWorktreeHeads(h, [{ owner: "acme", repo: "alpha" }, GITEA_REPO]),
-      [h.repo.baseSha, h.repo.headSha],
-    );
-
-    // 系统开的这一场同样把「开在哪条分支的哪个 commit」记在会话上(issue #351):人读梳理
-    // 会话时要能判断提案是按哪份代码提的。
-    const [survey] = await sessionsOf(h, row.id, h.cookie);
-    assert.deepEqual(await baselinesOf(h, survey!.id), [
-      { owner: "acme", repo: "alpha", sha: h.repo.baseSha, branch: "main", kind: "branch" },
-      { owner: "acme", repo: "widgets", sha: h.repo.headSha, branch: "feature", kind: "branch" },
-    ]);
-  } finally {
-    await disposeAgentSessions();
-  }
-});
-
 /**
- * 按仓库选基点那两例要的产品:两个仓库直接落库归入,不经归属端点。归入第二个仓库会由系统先开
- * 一场梳理(issue #347),它备出来的工作树与随后人按下重梳那一场的混在同一份
- * `git worktree list` 里,读不出这一场停在哪个 commit。
- */
-async function productWithoutSurvey(h: PanelHarness, repoIds: readonly number[]): Promise<Product> {
-  seedRepo(h, ALPHA, "acme", "alpha");
-  const created = await h.api("POST", "/products", { name: "报销系统" });
-  assert.equal(created.status, 201);
-  const { product: row } = (await created.json()) as { product: Product };
-  const store = openStore(h.db.path);
-  try {
-    for (const repoId of repoIds) store.attachProductRepo(row.id, repoId, AT);
-  } finally {
-    store.close();
-  }
-  return row;
-}
-
-/**
- * 重梳按仓库选基点(issue #353)。人在弹窗里按仓库选过的那几行进请求体,校验与建会话同一份
+ * 开梳理按仓库选基点(issue #353)。人在弹窗里按仓库选过的那几行进请求体,校验与建会话同一份
  * (`resolveSessionBaselines`),仓库范围是产品的全部仓库——梳理读的正是这一份。
  *
  * 夹具那个仓库的 Gitea 默认分支是 `main`(指向 `baseSha`),`feature` 指向 `headSha`;
  * `acme/alpha` 没设过默认分支,因此跟随 `main`。
  */
-test("重梳带按仓库基点:梳理会话记下选定的 sha 与分支,工作树停在它上面", async () => {
+test("开梳理带按仓库基点:会话记下选定的 sha 与分支,工作树停在它上面", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const two = await productWithoutSurvey(h, [GITEA_REPO.id, ALPHA]);
+  const two = await product(h, [GITEA_REPO.id, ALPHA]);
   try {
     const opened = await h.api("POST", `/products/${two.id}/survey`, {
       baselines: [{ ...GITEA_REPO, sha: h.repo.headSha, branch: "v1.0", kind: "tag" }],
@@ -424,9 +347,9 @@ test("重梳带按仓库基点:梳理会话记下选定的 sha 与分支,工作�
   }
 });
 
-test("重梳选基点:外仓库、解析不出的 sha 与形状不对都回绝,一场梳理也没开", async () => {
+test("开梳理选基点:外仓库、解析不出的 sha 与形状不对都回绝,一场梳理也没开", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const two = await productWithoutSurvey(h, [GITEA_REPO.id, ALPHA]);
+  const two = await product(h, [GITEA_REPO.id, ALPHA]);
   // 注册了但没归进这个产品的仓库:它的 commit 不该被这一场梳理读到。
   seedRepo(h, 303, "acme", "gamma");
 
@@ -452,76 +375,4 @@ test("重梳选基点:外仓库、解析不出的 sha 与形状不对都回绝,�
 
   // 回绝那几次一场梳理也没开:人看到的是「没梳起来 + 哪个仓库」,不是一个读错代码的会话。
   assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
-});
-
-test("移出仓库:剩下两个仓库时自己开一场梳理", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const beta = seedRepo(h, 202, "acme", "beta");
-  const three = await product(h, [GITEA_REPO.id, ALPHA, beta]);
-  try {
-    const detached = await h.api("DELETE", `/products/${three.id}/repos/${GITEA_REPO.id}`);
-    assert.equal(detached.status, 204);
-    // 剩下两个仓库:它们之间的关系还要梳理一遍。
-    assert.deepEqual(
-      (await sessionsOf(h, three.id, h.cookie)).map((one) => [one.purpose, one.createdBy]),
-      [["product-survey", "system"]],
-    );
-  } finally {
-    await disposeAgentSessions();
-  }
-});
-
-test("仓库下线:与移出同律,剩下两个仓库时开一场梳理", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const beta = seedRepo(h, 202, "acme", "beta");
-  const three = await product(h, [GITEA_REPO.id, ALPHA, beta]);
-  try {
-    // 下线走注册表那个端点,回应一格没变。
-    assert.equal((await h.api("DELETE", `/repos/${GITEA_REPO.id}`)).status, 204);
-    assert.deepEqual(
-      (await sessionsOf(h, three.id, h.cookie)).map((one) => [one.purpose, one.createdBy]),
-      [["product-survey", "system"]],
-    );
-  } finally {
-    await disposeAgentSessions();
-  }
-});
-
-test("移出之后只剩一个仓库:梳理不开", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const two = await product(h, [GITEA_REPO.id, ALPHA]);
-  try {
-    assert.equal((await h.api("DELETE", `/products/${two.id}/repos/${ALPHA}`)).status, 204);
-    assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
-  } finally {
-    await disposeAgentSessions();
-  }
-});
-
-test("梳理还在跑时,归入与移出都不再开第二场", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const beta = seedRepo(h, 202, "acme", "beta");
-  const two = await product(h, [GITEA_REPO.id, ALPHA]);
-  try {
-    const opened = await survey(h, two.id);
-    assert.equal(opened.status, 201, await opened.text());
-    const only = (await sessionsOf(h, two.id, h.cookie)).map((one) => one.id);
-    assert.equal(only.length, 1);
-
-    // 归入第三个仓库:仓库集变了,但第二场梳理会与在跑的那一场提出同一批提案。
-    assert.equal((await h.api("PUT", `/products/${two.id}/repos/${beta}`)).status, 204);
-    assert.deepEqual(
-      (await sessionsOf(h, two.id, h.cookie)).map((one) => one.id),
-      only,
-    );
-
-    // 移出同一个仓库:回应照旧,梳理仍然只有那一场。
-    assert.equal((await h.api("DELETE", `/products/${two.id}/repos/${beta}`)).status, 204);
-    assert.deepEqual(
-      (await sessionsOf(h, two.id, h.cookie)).map((one) => one.id),
-      only,
-    );
-  } finally {
-    await disposeAgentSessions();
-  }
 });

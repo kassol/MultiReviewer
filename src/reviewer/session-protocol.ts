@@ -144,18 +144,6 @@ export type SessionOutput = {
   payload: unknown;
 };
 
-/**
- * 产品梳理交上来的一批(CONTEXT.md 产品梳理,issue #345、#360)。与会话产出分成两档:产出是
- * 人要读的一份文档,这一批是要落进产品知识的仓库关系条目,写下即生效。
- *
- * 形状与校验都在子进程那一侧判完(`session-output-tools.ts`):陈述的仓库集合是
- * `<owner>/<repo>`,退役指向的是提示里列过的那条生效条目的 id。
- */
-export type ProductSurveyProposals = {
-  statements: readonly { statement: string; repos: readonly string[] }[];
-  retirements: readonly { id: number; reason: string }[];
-};
-
 /** 一次 tracker 读写指向的是一条 spec 还是一张票(CONTEXT.md 产品 tracker,issue #361)。 */
 export type TrackerTarget = { kind: "spec" | "ticket"; id: number };
 
@@ -280,10 +268,10 @@ export type SessionWorkerMessage =
    */
   | { kind: "output"; output: SessionOutput }
   /**
-   * 产品梳理经它的产出工具交的那一批(issue #345)。与产出回传同形:子进程只把校验过的
-   * 那一批交上来,落产品知识表在主进程。
+   * 产品梳理谈完了(CONTEXT.md 产品梳理,issue #365)。访谈的产出是一路写下的产品知识条目,
+   * 这一条只说「问不出新东西了」:主进程据它记下完成时刻,同一个产品的下一场梳理因此开得起来。
    */
-  | { kind: "survey"; proposals: ProductSurveyProposals }
+  | { kind: "survey-complete" }
   /**
    * Pi 的队列现状(`queue_update`,issue #334)。主进程的排队镜像按它对齐:投递与清空都由
    * Pi 在回合边界做,哪几条还没投出去只有它说得准。

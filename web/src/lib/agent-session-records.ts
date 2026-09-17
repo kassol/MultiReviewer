@@ -195,6 +195,9 @@ export function describeTool(name: string, args: unknown): ToolStep {
         label: "提问",
         target: Array.isArray(a.questions) ? `${a.questions.length} 题` : "",
       };
+    case "complete_survey":
+      // 产品梳理宣告共识那一下(issue #365)。产出是一路写下的条目,这一行只说这一场谈完了。
+      return { kind: "submit", label: "记下谈完了", target: "" };
     default:
       if (name.startsWith("submit_")) return { kind: "submit", label: "提交产出", target: "" };
       return { kind: "other", label: name, target: toolSummary(args) };

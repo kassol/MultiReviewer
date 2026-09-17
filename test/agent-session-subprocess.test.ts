@@ -33,6 +33,7 @@ import {
   AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
   SYSTEM_MESSAGE_ENTRY,
 } from "../src/reviewer/session-protocol.ts";
+import { COMPLETE_SURVEY_TOOL } from "../src/reviewer/session-output-tools.ts";
 import { ASK_QUESTION_ROUND_TOOL } from "../src/reviewer/session-question-tool.ts";
 import {
   agentSessionContextGap,
@@ -901,91 +902,188 @@ function seedKnowledge(
   }
 }
 
-test("产品梳理:提示列出已写下的仓库关系、单仓库陈述被打回,合法交出写成仓库关系", async () => {
-  const turns: StubTurn[] = [
-    {
-      // 一条只说到一个仓库的陈述:那属于那个仓库的知识集,不属于这一层。
-      toolCall: {
-        name: "submit_product_survey",
-        args: {
-          statements: [{ statement: "acme/widgets 的订单接口走 OpenAPI", repos: [REPO] }],
-          retirements: [],
-        },
-      },
-      usage: { input: 10, output: 2 },
+/**
+ * 产品梳理的整条访谈(CONTEXT.md 产品梳理,issue #365):派子代理出候选 → 抛一轮题 → 人答
+ * → 把答案写成条目 → 宣告共识调完成工具。钉的是桩测不到的那几件——提示带的是**整份**产品
+ * 知识(不是三行目录)、带着 skill 替代说明那一段、种子消息真的进了第一次模型请求、这四样
+ * 动作各自落成会话记录,以及完成那一格落在会话上。
+ *
+ * 子代理那一趟走真实的 pi-subagents(先例:同文件「会话里派一个子代理」),因此脚本里夹着
+ * 子会话自己那两轮。
+ */
+const SURVEY_TURNS: StubTurn[] = [
+  {
+    text: "先派个子代理读一遍",
+    toolCall: {
+      name: "subagent",
+      args: { agent: "explore", task: "acme/widgets 里「订单」这个词指的是什么" },
     },
-    {
-      toolCall: {
-        name: "submit_product_survey",
-        args: {
-          statements: [
-            {
-              statement: "  acme/alpha 的网关把 acme/widgets 的错误码原样透出  ",
-              repos: [REPO, "acme/alpha", ""],
-            },
-          ],
-          retirements: [{ id: 1, reason: "网关改成直连,这一句不再成立" }],
-        },
-      },
-      usage: { input: 20, output: 4 },
+    usage: { input: 40, output: 10 },
+  },
+  // 子会话:读一个文件,回一句结论。
+  {
+    text: "读目标文件",
+    toolCall: {
+      name: "read",
+      args: { path: `${GITEA_REPO.owner}/${GITEA_REPO.repo}/src/answer.ts` },
     },
-    { text: "写下了一条仓库关系,撤回了一条", usage: { input: 8, output: 2 } },
-  ];
-  const { h, productId, requests, close } = await startSessionHarness(turns, {
+    usage: { input: 12, output: 4 },
+  },
+  { text: "answer.ts:1 写着 export const answer = 1;", usage: { input: 18, output: 8 } },
+  // 拿着候选抛第一轮题,回合就地收尾等人答。
+  {
+    text: "候选出来了,先问你一轮",
+    toolCall: {
+      name: ASK_QUESTION_ROUND_TOOL,
+      args: {
+        questions: [
+          {
+            title: "订单指的是哪一层",
+            body: "代码里 order 同时指请求体与聚合根,读不出哪个是这个产品说的那个",
+            options: [
+              { text: "下单后的那张单据", recommended: true },
+              { text: "购物车里的一次结算请求", recommended: false },
+            ],
+            multiple: false,
+          },
+        ],
+      },
+    },
+    usage: { input: 90, output: 18 },
+  },
+  // 答案回来:当场写成一条术语条目。
+  {
+    toolCall: {
+      name: "write_knowledge",
+      args: {
+        kind: "term",
+        name: "订单",
+        body: "人下单之后生成的那张单据,从待审批走到已结清",
+        topic: "报销",
+        avoided: ["单子"],
+      },
+    },
+    usage: { input: 30, output: 8 },
+  },
+  // frontier 空了:宣告共识并调完成工具。
+  {
+    text: "问不出新的了",
+    toolCall: { name: COMPLETE_SURVEY_TOOL, args: {} },
+    usage: { input: 20, output: 6 },
+  },
+  { text: "这个产品现在写下了「订单」这一条", usage: { input: 10, output: 4 } },
+];
+
+/** 面板把那一轮的答案合成的那条用户消息。 */
+const SURVEY_ANSWER = ["提问轮次的回答:", "", "1. 订单指的是哪一层", "- 下单后的那张单据"].join(
+  "\n",
+);
+
+test("产品梳理:提示带整份产品知识与替代说明,子代理、一轮题、写下的条目与完成标记都落库", async () => {
+  const { h, productId, requests, close } = await startSessionHarness(SURVEY_TURNS, {
     extraRepo: SURVEY_REPO,
   });
   try {
-    // 先落一条仓库关系:提示要带着它的 id 列出来,退役也指着它。
+    // 先落一条仓库关系与一条术语:梳理的提示带的是整条正文,不是目录里的一个名字。
     assert.equal(
       seedKnowledge(h.db.path, productId, { kind: "relationship", body: ACTIVE_STATEMENT }),
       1,
+    );
+    assert.equal(
+      seedKnowledge(h.db.path, productId, {
+        kind: "term",
+        name: "结算",
+        body: "把一张已审批的单据划给财务付款的那一步",
+      }),
+      2,
     );
 
     const opened = await h.api("POST", `/products/${productId}/survey`);
     const openedText = await opened.text();
     assert.equal(opened.status, 201, openedText);
-    const { session } = JSON.parse(openedText) as { session: { id: number } };
-
+    const { session } = JSON.parse(openedText) as { session: { id: number; createdBy: string } };
+    await roundsAtLeast(h, h.cookie, session.id, 1);
     await idle(h, h.cookie, session.id);
 
-    // 系统提示:产品梳理那一段带着已写下的仓库关系与它的 id;工具面只有这个用途的产出工具。
     const system = requests[0]!.messages.filter((message) => message.role === "system");
     assert.equal(system.length, 1);
-    assert.match(system[0]!.content, /^## This session: surveying this product$/m);
-    assert.match(system[0]!.content, new RegExp(`^- \\[1\\] ${ACTIVE_STATEMENT}$`, "m"));
+    assert.match(system[0]!.content, /^## This session: interviewing the person about this product$/m);
+    // 整份产品知识,不是三行目录:那一条仓库关系带着它的 id 与正文出现在提示里。
+    assert.match(
+      system[0]!.content,
+      new RegExp(`^- \\[1\\] repository relationship: ${ACTIVE_STATEMENT}$`, "m"),
+    );
+    assert.match(
+      system[0]!.content,
+      /^- \[2\] glossary term 结算: 把一张已审批的单据划给财务付款的那一步$/m,
+    );
+    // 目录那一行只给别的用途:这个用途看得到自己可能改写的每一条正文。
+    assert.doesNotMatch(system[0]!.content, /^- Glossary terms:/m);
+    // skill 替代说明那一段(issue #364)同在。
+    assert.match(system[0]!.content, /^## The skills in this session$/m);
+    // 这个用途的工具面:完成工具在,需求拆分那件不在。
     assert.ok(
-      requests[0]!.tools.includes("submit_product_survey"),
-      `工具面里没有产出工具:${requests[0]!.tools.join(",")}`,
+      requests[0]!.tools.includes(COMPLETE_SURVEY_TOOL),
+      `工具面里没有完成工具:${requests[0]!.tools.join(",")}`,
     );
     assert.ok(!requests[0]!.tools.includes("submit_requirement_breakdown"));
-    // 提问轮次与用途无关(issue #359):这个用途的工具面里也有它。
-    assert.ok(
-      requests[0]!.tools.includes(ASK_QUESTION_ROUND_TOOL),
-      `工具面里没有提问轮次:${requests[0]!.tools.join(",")}`,
+    // 种子消息:开场投的那一条在第一次请求的用户消息里,它要的是先派子代理再抛第一轮题。
+    const seed = requests[0]!.messages.find(
+      (message) => message.role === "user" && message.content.includes("Survey this product with me"),
     );
-    // 种子消息:系统投的那一条在第一次请求的用户消息里。
-    assert.ok(
-      requests[0]!.messages.some(
-        (message) =>
-          message.role === "user" && message.content.includes("Survey this product and hand"),
-      ),
-      "种子消息没进模型请求",
+    assert.ok(seed, "种子消息没进模型请求");
+    assert.match(seed.content, /send subagents into the repositories/);
+
+    // 子代理那一趟落成一条记录,提问轮次落成另一种条目。
+    const drafted = await records(h, h.cookie, session.id);
+    const dispatched = drafted.filter(
+      (one) => (one.entry as { customType?: string }).customType === "multireviewer-session-subagent",
+    );
+    assert.equal(dispatched.length, 1, "子代理派单没落成条目");
+    const { runs } = (dispatched[0]!.entry as unknown as { data: { runs: SubagentRunRecord[] } })
+      .data;
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0]!.status, "done");
+
+    // 一轮题抛出去就收尾:这一刻还没写下新条目。
+    assert.equal(
+      (await productKnowledge(h, productId)).map((row) => row.kind).join(","),
+      "term,relationship",
     );
 
-    // 第一次交的那一版被打回:理由在工具结果里,一条都没落。
-    const rows = await records(h, h.cookie, session.id);
-    const results = rows
-      .filter((row) => row.entry.message?.role === "toolResult")
-      .map((row) => JSON.stringify(row.entry));
-    assert.equal(results.length, 2);
-    assert.match(results[0]!, /names fewer than two repositories of this product/);
-    assert.match(results[1]!, /recorded/);
+    // 人答完这一轮:答案当场写成一条术语条目,接着 agent 宣告共识。
+    assert.equal(
+      (
+        await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}/messages`, {
+          method: "POST",
+          headers: { cookie: h.cookie, "content-type": "application/json" },
+          body: JSON.stringify({ clientMessageId: "c2", text: SURVEY_ANSWER }),
+        })
+      ).status,
+      202,
+    );
+    await idle(h, h.cookie, session.id);
 
-    // 第二次交的那一版:新陈述归一化后写成一条仓库关系(写下即生效),退役那一条撤走。
     assert.deepEqual(
-      (await productKnowledge(h, productId)).map((row) => [row.kind, row.body]),
-      [["relationship", "acme/alpha 的网关把 acme/widgets 的错误码原样透出"]],
+      (await productKnowledge(h, productId)).map((row) => [row.kind, row.name, row.topic]),
+      [
+        ["term", "结算", null],
+        ["term", "订单", "报销"],
+        ["relationship", "", null],
+      ],
     );
+
+    // 完成标记落在会话上:同一个产品的下一场因此开得起来。
+    const read = await h.api("GET", `/agent-sessions/${session.id}`);
+    assert.equal(read.status, 200);
+    const completedAt = (
+      (await read.json()) as { session: { completedAt: string | null } }
+    ).session.completedAt;
+    assert.notEqual(completedAt, null);
+
+    // 谈完的会话照旧续得了:创建者再发一条,接口收下它。
+    const again = await h.api("POST", `/products/${productId}/survey`);
+    assert.equal(again.status, 201, await again.text());
   } finally {
     await disposeAgentSessions();
     await close();

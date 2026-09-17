@@ -164,8 +164,13 @@ export function resolveKnowledgeWrite(requestId: string, result: KnowledgeWriteR
   settle?.(result);
 }
 
-/** 一条产品知识交给模型看的样子:id 在最前(改写与撤回要抄它),之后按种类各自成行。 */
-function productLine(entry: SessionProductKnowledge): string {
+/**
+ * 一条产品知识交给模型看的样子:id 在最前(改写与撤回要抄它),之后按种类各自成行。
+ *
+ * 查询结果与产品梳理的系统提示渲染的是同一份(`session-worker.ts`,issue #365):那个用途
+ * 整份带着此刻的条目,两处分叉会让它对着两种样子的同一条目自相矛盾。
+ */
+export function productKnowledgeLine(entry: SessionProductKnowledge): string {
   const at = `- [${entry.id}]`;
   if (entry.kind === "relationship") return `${at} repository relationship: ${oneLine(entry.body)}`;
   if (entry.kind === "term") {
@@ -205,7 +210,7 @@ export function renderKnowledge(
     sections.push(
       `${countOf(entries.product.length, "product knowledge entry", "product knowledge entries")} of this product.`,
       "",
-      ...entries.product.map(productLine),
+      ...entries.product.map(productKnowledgeLine),
     );
   }
   // 问了名字却一条都没对上:说出是哪几个,模型据它回去对目录,而不是换个措辞再问一遍。
@@ -430,7 +435,7 @@ export function sessionKnowledgeWriteTools(options: {
         return toolText(result.failure ?? "could not write it down");
       }
       return toolText(
-        `written as entry ${result.entry.id}; it is in force now:\n${productLine(result.entry)}`,
+        `written as entry ${result.entry.id}; it is in force now:\n${productKnowledgeLine(result.entry)}`,
       );
     },
   }) as unknown as ToolDefinition<never, never>;

@@ -142,11 +142,11 @@ export function ProductsPage({
   });
 
   /**
-   * 重梳(CONTEXT.md 产品梳理,issue #345):开一个产品梳理会话。它由系统建,因此不跳进去
-   * ——人要看的是它随后写下的那几条,会话在左栏列着,想看过程再点进去。
+   * 梳理(CONTEXT.md 产品梳理,issue #365):开一场产品梳理会话,并跳进去——这一场是一次
+   * 访谈,agent 读完仓库就会抛第一轮题给开它的人,留在产品页上没人答它。
    *
-   * `baselines` 是人在重梳弹窗里动过的那几行(issue #353);一行都没动就不带它,与这一票
-   * 之前直接按下重梳一字不差。
+   * `baselines` 是人在梳理弹窗里动过的那几行(issue #353);一行都没动就不带它,每个仓库
+   * 读生效默认分支此刻的最新提交。
    */
   const survey = useMutation({
     mutationFn: (input: { product: Product; baselines: SessionBaseline[] }) =>
@@ -157,9 +157,12 @@ export function ProductsPage({
       ),
     onSuccess: async ({ session }) => {
       setDialog(null);
-      setFeedback({ text: "已开一个产品梳理会话,它写下的条目会出现在这里。", error: false });
       await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
       void refreshKnowledge();
+      void navigate({
+        to: "/products/$productId/sessions/$sessionId",
+        params: { productId: String(session.productId), sessionId: String(session.id) },
+      });
     },
     // 回绝那一句在页顶的 Callout 里,弹窗开着就挡住它:先关弹窗再报(issue #353 的选错 sha
     // 是这一条唯一能触发的新回绝)。
@@ -365,9 +368,9 @@ export function ProductsPage({
 }
 
 /**
- * 重梳弹窗(CONTEXT.md 产品梳理,issue #353)。一个仓库一行的基点行组与建会话弹窗共用一份,
- * 预选每个仓库生效默认分支此刻的最新提交:一行都不动就按确认,与这一票之前直接按下重梳一字
- * 不差;要梳发布线或某条特性分支时只改那几行。
+ * 梳理弹窗(CONTEXT.md 产品梳理,issue #353)。一个仓库一行的基点行组与建会话弹窗共用一份,
+ * 预选每个仓库生效默认分支此刻的最新提交:一行都不动就按确认;要谈发布线或某条特性分支时
+ * 只改那几行。
  *
  * 列的是产品的全部仓库——梳理读的正是这一份。
  */
@@ -407,10 +410,10 @@ function SurveyDialog({
         <form onSubmit={submit} className="flex flex-col gap-4" aria-busy={busy}>
           <div>
             <Dialog.Title size="4" mb="2">
-              重梳
+              梳理
             </Dialog.Title>
             <Dialog.Description size="2" color="gray">
-              让 agent 读一遍 {productName} 的全部仓库,把它们之间的关系写下来。
+              让 agent 读一遍 {productName} 的全部仓库,再按轮问你,把谈定的写进产品知识。
             </Dialog.Description>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -434,7 +437,7 @@ function SurveyDialog({
               </Button>
             </Dialog.Close>
             <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={busy}>
-              {busy ? "重梳中…" : "重梳"}
+              {busy ? "开场中…" : "开始梳理"}
             </Button>
           </Flex>
         </form>
@@ -515,10 +518,10 @@ function SectionHeading({ id, title, count }: { id: string; title: string; count
 
 /**
  * 产品页右栏的产品知识区(CONTEXT.md 产品知识,issue #360)。三段:按主题分组的术语表、仓库
- * 关系段、带状态的产品决策列表,每条展开看出处附注。加标题旁的「重梳」。
+ * 关系段、带状态的产品决策列表,每条展开看出处附注。加标题旁的「梳理」。
  *
  * 这一页只读:条目由会话在人的回答下写下即生效,人不手写、不确认也不驳回(ADR 0035)。
- * `knowledge:write` 因此只决定看不看得到「重梳」。
+ * `knowledge:write` 因此只决定看不看得到「梳理」。
  */
 function KnowledgeSection({
   product,
@@ -549,7 +552,7 @@ function KnowledgeSection({
       disabled={busy || product.repos.length < 2}
       onClick={onSurvey}
     >
-      重梳
+      梳理
     </Button>
   );
 
@@ -576,7 +579,7 @@ function KnowledgeSection({
               content={
                 product.repos.length < 2
                   ? "产品梳理要这个产品至少有两个仓库"
-                  : "开一个产品梳理会话,让 agent 读一遍全部仓库再写下来"
+                  : "开一场产品梳理:agent 读一遍全部仓库,再按轮问你"
               }
             >
               {/* disabled 按钮不冒泡指针事件,套一层 span 让提示仍能弹出。 */}
@@ -592,7 +595,7 @@ function KnowledgeSection({
         ) : knowledge.length === 0 ? (
           <Text as="p" size="2" color="gray">
             {canWrite && product.repos.length >= 2
-              ? "还没有产品知识。点「重梳」让 agent 读一遍仓库,或在一个 Agent 会话里跟它聊出来。"
+              ? "还没有产品知识。点「梳理」跟 agent 谈一遍,或在一个 Agent 会话里聊出来。"
               : "还没有产品知识。"}
           </Text>
         ) : (

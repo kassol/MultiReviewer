@@ -1,8 +1,9 @@
 /**
  * Agent 会话的产出工具(issue #337)。
  *
- * 底座这一侧只有一条机制:**用途 → 产出工具定义列表**(`sessionOutputTools`)。这一版只有
- * 需求拆分一个用途、一件工具,所以它只是一处按用途分发;写代码类用途接入时在那里多一档。
+ * 底座这一侧只有一条机制:**用途 → 产出工具定义列表**(`sessionOutputTools`)。需求拆分交
+ * 一份拆分条目,产品梳理交的只有「谈完了」这一格(issue #365),所以它只是一处按用途分发;
+ * 写代码类用途接入时在那里多一档。
  *
  * 工具的做法与 Reviewer 的 `report_finding` 逐条对齐(`worker.ts`):枚举与格式要求写在字段
  * 自己的 `description` 里、形状宽松、服务端归一化(trim、去空项),打回走**正常返回**一句
@@ -12,18 +13,9 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { AGENT_STATEMENT_LIMIT } from "./rule-agent.ts";
-
-import type {
-  ProductSurveyProposals,
-  SessionProductKnowledge,
-  SessionWorkerMessage,
-} from "./session-protocol.ts";
+import type { SessionWorkerMessage } from "./session-protocol.ts";
 
 export const SUBMIT_REQUIREMENT_BREAKDOWN_TOOL = "submit_requirement_breakdown";
-
-/** 产品梳理的产出工具(CONTEXT.md 产品梳理,issue #345)。 */
-export const SUBMIT_PRODUCT_SURVEY_TOOL = "submit_product_survey";
 
 /** 一条拆分条目(CONTEXT.md 拆分条目)。不带工作量估算。 */
 export type RequirementBreakdownItem = {
@@ -171,117 +163,38 @@ function submitRequirementBreakdownTool(options: {
   }) as unknown as ToolDefinition<never, never>;
 }
 
-const surveySchema = Type.Object({
-  statements: Type.Array(
-    Type.Object({
-      statement: Type.String({
-        description:
-          "One relationship, cross-cutting convention or routing fact, written in Chinese as one sentence of about 100 characters, concrete enough to check against the code",
-      }),
-      repos: Type.Array(Type.String(), {
-        description:
-          "The repositories this statement speaks about, each exactly as <owner>/<repo>, copied from the list of this product's repositories. At least two: a fact about one repository alone belongs to that repository's own knowledge set.",
-      }),
-    }),
-    {
-      description:
-        "The new product knowledge you found. Empty array when you found nothing that is not already listed in your prompt.",
-    },
-  ),
-  retirements: Type.Array(
-    Type.Object({
-      id: Type.Integer({
-        description:
-          "The id in brackets of the product knowledge entry that no longer holds, copied from the list in your prompt",
-      }),
-      reason: Type.String({
-        description: "Why it no longer holds, written in Chinese: what you read instead",
-      }),
-    }),
-    {
-      description:
-        "The entries that no longer hold. Empty array when every entry in your prompt still holds.",
-    },
-  ),
-});
-
-/** 服务端归一化:陈述与理由 trim,仓库集合去空项。与需求拆分那一份同一做法。 */
-export function normalizeProductSurvey(raw: ProductSurveyProposals): ProductSurveyProposals {
-  return {
-    statements: raw.statements.map((one) => ({
-      statement: one.statement.trim(),
-      repos: cleanList(one.repos),
-    })),
-    retirements: raw.retirements.map((one) => ({ id: one.id, reason: one.reason.trim() })),
-  };
-}
-
 /**
- * 这一批提案要不要打回,要就回一句理由(spec #342 的 US 19、US 20)。
+ * 产品梳理的完成工具(CONTEXT.md 产品梳理,issue #365)。
  *
- * 与需求拆分那一处同律:只回第一处,一次说一件事。`repos` 是这个产品的仓库清单,
- * `knowledge` 是提示里列过的产品知识——退役只能指向其中的一条仓库关系。
+ * 访谈这一版没有「交卷」:每一个答案当场经 `write_knowledge` 落成条目,写下即生效。剩下要
+ * 表达的只有一件事——**问不出新东西了**。收尾句判定不了这件事(一段话既可能是宣告共识,
+ * 也可能是这一轮的小结),因此给它一件工具:调到即记下完成时刻,同一个产品的下一场梳理
+ * 才开得起来。
+ *
+ * 没有参数、不打回:这一格是布尔的,判什么都没有意义。会话本身照旧读得到、续得了。
  */
-export function productSurveyRejection(
-  proposals: ProductSurveyProposals,
-  repos: readonly string[],
-  knowledge: readonly SessionProductKnowledge[],
-): string | undefined {
-  for (const [index, one] of proposals.statements.entries()) {
-    const at = `statement ${index + 1}`;
-    if (one.statement === "") return `${at} is empty; write the statement itself, in Chinese`;
-    // 与知识条目的陈述同一个数(`AGENT_STATEMENT_LIMIT`):落下来就是一条仓库关系,
-    // 一句说得完的事不该写成一段。
-    if (one.statement.length > AGENT_STATEMENT_LIMIT) {
-      return `${at} is ${one.statement.length} characters; a statement is at most ${AGENT_STATEMENT_LIMIT} characters — tighten it to one sentence`;
-    }
-    const outside = one.repos.find((repo) => !repos.includes(repo));
-    if (outside !== undefined) {
-      return `${at} names ${outside}, which is not a repository of this product; name only: ${repos.join(", ")}`;
-    }
-    if (new Set(one.repos).size < 2) {
-      return `${at} names fewer than two repositories of this product; a product knowledge statement speaks about at least two of: ${repos.join(", ")}. A fact about one repository alone belongs to that repository's own knowledge set, not here.`;
-    }
-  }
-  // 退役只指得动已经写下的仓库关系:梳理交的那一句就是一条仓库关系(issue #360)。
-  const active = knowledge.filter((entry) => entry.kind === "relationship").map((entry) => entry.id);
-  for (const [index, one] of proposals.retirements.entries()) {
-    const at = `retirement ${index + 1}`;
-    if (!active.includes(one.id)) {
-      return active.length === 0
-        ? `${at} retires entry ${one.id}, but this product has no product knowledge in force; retire nothing`
-        : `${at} retires entry ${one.id}, which is not one of the entries in force; retire one of: ${active.join(", ")}`;
-    }
-    if (one.reason === "") return `${at} has no reason; say what you read instead, in Chinese`;
-  }
-  return undefined;
-}
+export const COMPLETE_SURVEY_TOOL = "complete_survey";
 
-/**
- * 产品梳理的产出工具。一次调用交全:新陈述与退役各一批(spec #342 的 US 19);新陈述落成
- * 仓库关系条目,写下即生效(issue #360)。
- * `repos` 是这个产品的仓库清单(产品梳理的会话根就是产品的全部仓库),`knowledge` 是此刻
- * 生效的那些条目。
- */
-function submitProductSurveyTool(options: {
-  repos: readonly string[];
-  knowledge: readonly SessionProductKnowledge[];
+function completeSurveyTool(options: {
   send: (message: SessionWorkerMessage) => void;
 }): ToolDefinition<never, never> {
   return defineTool({
-    name: SUBMIT_PRODUCT_SURVEY_TOOL,
-    label: "Submit Product Survey",
+    name: COMPLETE_SURVEY_TOOL,
+    label: "Complete Survey",
     description:
-      "Hand in the whole survey in one call: every new product knowledge statement with the repositories it speaks about, and every entry that no longer holds. Each new statement speaks about at least two repositories of this product. Call it once per survey — statements written in prose are not handed in.",
-    parameters: surveySchema,
-    execute: async (_id, params) => {
-      const proposals = normalizeProductSurvey(params as ProductSurveyProposals);
-      const rejection = productSurveyRejection(proposals, options.repos, options.knowledge);
-      if (rejection !== undefined) {
-        return { content: [{ type: "text", text: rejection }], details: {} };
-      }
-      options.send({ kind: "survey", proposals });
-      return { content: [{ type: "text", text: "recorded" }], details: {} };
+      "Mark this survey complete. Call it when the frontier is empty: everything you and the person settled is already written into product knowledge, and there is no question left whose answer would change an entry. Until you call it, this product cannot start another survey. The session stays readable and the person can keep talking to you after it.",
+    parameters: Type.Object({}),
+    execute: async () => {
+      options.send({ kind: "survey-complete" });
+      return {
+        content: [
+          {
+            type: "text",
+            text: "recorded. Say in one or two sentences what this product now has written down, and stop there.",
+          },
+        ],
+        details: {},
+      };
     },
   }) as unknown as ToolDefinition<never, never>;
 }
@@ -294,11 +207,9 @@ export function sessionOutputTools(
   purpose: string,
   options: {
     repos: readonly string[];
-    /** 此刻的产品知识(issue #345)。产品梳理的退役目标按其中的仓库关系判,别的用途用不上。 */
-    knowledge: readonly SessionProductKnowledge[];
     send: (message: SessionWorkerMessage) => void;
   },
 ): ToolDefinition<never, never>[] {
   if (purpose === "requirement-breakdown") return [submitRequirementBreakdownTool(options)];
-  return purpose === "product-survey" ? [submitProductSurveyTool(options)] : [];
+  return purpose === "product-survey" ? [completeSurveyTool(options)] : [];
 }

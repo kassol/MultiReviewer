@@ -649,17 +649,16 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
   // 同事连这个会话在不在都问不到;系统管理员看得到但不是创建者。
   await refused(await updateBaseline(h, other, sessionId), 404, "没有这个 Agent 会话");
   await refused(await updateBaseline(h, h.cookie, sessionId), 403, "只有会话的创建者能做");
-  // 系统开的产品梳理谁都续不了(issue #345),更新基点与发消息同一判:没有下一条消息触发重建,
-  // 更新了也没人读。
+  // 产品梳理与别的用途同律(issue #365):只有开这一场的那个人动得了它的基点。
   const store0 = openStore(h.db.path);
   const survey = store0.createAgentSession({
     productId,
-    createdBy: "system",
+    createdBy: "owner",
     purpose: "product-survey",
     createdAt: AT,
   }).id;
   store0.close();
-  await refused(await updateBaseline(h, h.cookie, survey), 409, "产品梳理会话由系统开,谁都续不了它");
+  await refused(await updateBaseline(h, h.cookie, survey), 403, "只有会话的创建者能做");
   // 会话里没有这个仓库的会话基点(创建者没有 alpha 的仓库分配)。
   await refused(
     await updateBaseline(h, owner, sessionId, { owner: "acme", repo: "alpha" }),

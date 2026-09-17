@@ -105,7 +105,7 @@ test("read 够得着铺进 agentDir 的 skill 正文,搜与列目录仍只认会
 
 test("铺了 skill 的三个用途都带替代说明,写文件与 gh 被指回工具", () => {
   for (const purpose of ["product-survey", "requirement-breakdown", "open-conversation"]) {
-    const prompt = purposeSystemPrompt(purpose, [])!;
+    const prompt = purposeSystemPrompt(purpose)!;
     assert.match(prompt, /^## The skills in this session$/m, purpose);
     // 三样替代物各说一次:产品知识、产品 tracker、固定的五个标签。
     assert.match(prompt, /write_knowledge/, purpose);
@@ -121,5 +121,5 @@ test("铺了 skill 的三个用途都带替代说明,写文件与 gh 被指回�
     }
   }
   // 认不出的用途既没有自己那一段,也没有替代说明。
-  assert.equal(purposeSystemPrompt("code-writing", []), undefined);
+  assert.equal(purposeSystemPrompt("code-writing"), undefined);
 });

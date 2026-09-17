@@ -11,8 +11,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { repoPrefixedGitArgs, sessionGitTool } from "../src/reviewer/git-tool.ts";
-import { AGENT_STATEMENT_LIMIT } from "../src/reviewer/rule-agent.ts";
-import { productSurveyRejection } from "../src/reviewer/session-output-tools.ts";
 import { outsideSessionRoot, sessionReadOnlyTools } from "../src/reviewer/worker-tools.ts";
 import { makeRepo, testCleanups } from "./support/git-fixture.ts";
 
@@ -161,21 +159,4 @@ test("受控 git 在选中的那棵工作树上执行,白名单那几道闸一�
     args: ["diff", "--output=/tmp/x", "--", "acme/widgets/src/answer.ts"],
   });
   assert.match(output.content[0]!.text!, /not in the allowed set/);
-});
-
-test("产品梳理产出工具打回超过上限的陈述:与手写那一道同一个数", () => {
-  const repos = ["acme/api", "acme/web"];
-  const long = "长".repeat(AGENT_STATEMENT_LIMIT + 1);
-  assert.match(
-    productSurveyRejection({ statements: [{ statement: long, repos }], retirements: [] }, repos, []) ?? "",
-    /statement 1 is 101 characters; a statement is at most 100 characters/,
-  );
-  assert.equal(
-    productSurveyRejection(
-      { statements: [{ statement: "长".repeat(AGENT_STATEMENT_LIMIT), repos }], retirements: [] },
-      repos,
-      [],
-    ),
-    undefined,
-  );
 });

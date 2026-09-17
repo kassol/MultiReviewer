@@ -189,7 +189,7 @@ import {
   agentSessionStatus,
   clearAgentSessionQueue,
   deliverAgentSessionMessage,
-  productSurveyRunning,
+  productSurveyIncomplete,
   queueAgentSessionMessage,
   reclaimAgentSession,
   recordAgentSessionBaselineUpdate,
@@ -225,7 +225,6 @@ import {
 } from "../reviewer/model-runtime.ts";
 import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
-import { SUBMIT_PRODUCT_SURVEY_TOOL } from "../reviewer/session-output-tools.ts";
 import type { AgentSessionMessageMode } from "../reviewer/session-protocol.ts";
 import {
   agentSessionImageMimeType,
@@ -2361,11 +2360,10 @@ async function handleAttachProductRepo(
     store.attachProductRepo(productId, repoId, at, role === "" ? null : role),
   );
   switch (result) {
+    // 归入与改职责回同一句:仓库集变动不再开梳理(CONTEXT.md 产品梳理,issue #365)——梳理
+    // 是一场访谈,开一场就等着一个人来答题,而归入一个仓库的那个人未必是要谈这件事的人。
     case "attached":
-      await surveyRepoSetChange(deps, productId);
-      return send(res, 204);
     case "role-updated":
-      // 仓库集没变,只改了职责:没有新的仓库间关系要梳理(issue #347)。
       return send(res, 204);
     case "missing-product":
       return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
@@ -2377,73 +2375,73 @@ async function handleAttachProductRepo(
 }
 
 /**
- * 移出仓库。仓库集还够两个就自己开一场梳理,它可以把剩下的关系重新写一遍(issue #347)。
+ * 移出仓库。
  *
- * 产品知识不再跟着仓库退役(issue #360):条目说的是这个产品是什么、它的仓库之间怎么协作,
- * 不再按仓库集合成立,少一个仓库并不让某一条当场不成立。说的正是那个仓库的那几条由下一场
- * 梳理改写或撤回。
+ * 产品知识不跟着仓库退役(issue #360):条目说的是这个产品是什么、它的仓库之间怎么协作,
+ * 不按仓库集合成立,少一个仓库并不让某一条当场不成立。说的正是那个仓库的那几条由下一场
+ * 梳理改写或撤回,而那一场由人开(issue #365)。
  */
-async function handleDetachProductRepo(
+function handleDetachProductRepo(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
   repoId: number,
-): Promise<void> {
+): void {
   const detached = withStore(deps.dbPath, (store) => store.detachProductRepo(productId, repoId));
   if (!detached) return sendJson(res, 404, { error: "这个产品下没有这个仓库" });
-  await surveyRepoSetChange(deps, productId);
   return send(res, 204);
 }
 
 /**
- * 重梳的两句回绝(CONTEXT.md 产品梳理,issue #345)。仓库不足两个时梳理无从谈起——产品知识
- * 说的是仓库之间的事;同一个产品的第二轮梳理要等第一轮交完,两轮同时跑会写下同一批条目。
+ * 开梳理的两句回绝(CONTEXT.md 产品梳理,issue #365)。仓库不足两个时梳理无从谈起——产品
+ * 知识说的是这个产品整体是什么、它的仓库之间怎么协作;同一个产品的下一场要等上一场谈完,
+ * 两场并行只会把同一批问题问两遍、把同一批条目写两遍。
  */
 const PRODUCT_SURVEY_TOO_FEW_REPOS = "产品梳理要这个产品有两个以上仓库,先把第二个仓库归入它";
-const PRODUCT_SURVEY_RUNNING = "这个产品的产品梳理还在跑,等它交完再重梳";
+const PRODUCT_SURVEY_INCOMPLETE = "这个产品还有一场没谈完的产品梳理,先把它谈完";
 
 /**
- * 产品梳理会话的创建者(CONTEXT.md 产品梳理)。会话由系统开,不属于点下重梳的那个人:看得到
- * 产品的人都读得到它,谁都续不了它。
- */
-const SYSTEM_SESSION_CREATOR = "system";
-
-/**
- * 产品梳理会话收到的那一条种子消息(issue #345)。人不与它对话,这一句就是全部的任务交代;
- * 英文写,与系统提示同一风格。
+ * 产品梳理会话收到的那一条种子消息(CONTEXT.md 产品梳理,issue #365)。开场的任务交代,人
+ * 接着在同一个会话里答题;英文写,与系统提示同一风格。
+ *
+ * 两句话两件事:先派子代理读出候选,再抛第一轮题。拆几趟、每趟读哪几个仓库由 agent 自己定
+ * ——它看得到仓库清单与职责,这里替它拆只会拆错。
  */
 const PRODUCT_SURVEY_SEED = [
-  "Survey this product and hand the survey in.",
+  "Survey this product with me.",
   "",
-  "Read every repository under the session root and work out what holds between them: which repository calls which and over what contract, which conventions hold across all of them, and which kind of change in one repository drags the others along. Start from each repository's role, then read the entry points, clients, configuration, schemas and build files that cross a repository boundary.",
+  "Draft first: send subagents into the repositories under the session root and have them bring back candidates — the words this code already uses, how the repositories ask things of each other, the decisions somebody clearly made, and every place where what this product has written down no longer matches the code. Split the work across them as you see fit.",
   "",
-  `Call ${SUBMIT_PRODUCT_SURVEY_TOOL} once, with every new statement and every entry that no longer holds.`,
+  "Then put your first round of questions to me.",
 ].join("\n");
 
 /**
- * 开一场产品梳理(CONTEXT.md 产品梳理):建会话、凑开跑要的那几样、投一条种子消息。人按下
- * 重梳(issue #345)与产品的仓库集变了(issue #347)走的是同一条路,开不开的判据因此只有
- * 这一份:仓库够两个、这个产品的梳理没在跑。
+ * 开一场产品梳理(CONTEXT.md 产品梳理,issue #365):建会话、凑开跑要的那几样、投一条种子
+ * 消息。开不开的判据两条:仓库够两个、这个产品没有一场没谈完的梳理。门禁(`knowledge:write`
+ * 加这个产品里的一个仓库分配)在路由上。
+ *
+ * 创建者是点下「梳理」的那个人(issue #365):看得到这个产品的人都读得到这一场,只有他发得
+ * 了消息——访谈的另一头是一个具体的人,不是「谁路过谁答」。
  *
  * 会话先落行再凑开跑要的那几样:凑不齐就把这一行收掉——一个永远不会开跑的会话留在列表里
- * 只会让人等它。
+ * 只会让人等它,而它那一格未完成还会挡住下一场。
  *
- * `chosen` 是人在重梳弹窗里按仓库选过的那几行(issue #353),仓库范围是产品的全部仓库——梳理
- * 读的正是这一份。给了就整份定下来记到会话上,没给(系统在仓库集变动后自己开的那一场)一行
- * 也不记,备树时照旧读生效的默认分支最新。
+ * `chosen` 是人在弹窗里按仓库选过的那几行(issue #353),仓库范围是产品的全部仓库——梳理
+ * 读的正是这一份。没动过的行备树时读生效默认分支的最新提交。
  */
 async function openProductSurvey(
   deps: WebhookServerDeps,
   productId: number,
-  chosen?: readonly SessionBaselineInput[],
+  createdBy: string,
+  chosen: readonly SessionBaselineInput[] | undefined,
 ): Promise<{ opened: AgentSessionRecord } | { refusal: { status: number; error: string } }> {
   const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
   if (product === undefined) return { refusal: { status: 404, error: NO_SUCH_PRODUCT } };
   if (product.repos.length < 2) {
     return { refusal: { status: 409, error: PRODUCT_SURVEY_TOO_FEW_REPOS } };
   }
-  if (productSurveyRunning(deps.dbPath, productId)) {
-    return { refusal: { status: 409, error: PRODUCT_SURVEY_RUNNING } };
+  if (productSurveyIncomplete(deps.dbPath, productId)) {
+    return { refusal: { status: 409, error: PRODUCT_SURVEY_INCOMPLETE } };
   }
   // 定基点在落行之前:选错了一条会话也不该落下,面板上人看到的就是「没梳起来 + 哪个仓库」。
   let baselines: AgentSessionBaseline[] | undefined;
@@ -2455,7 +2453,7 @@ async function openProductSurvey(
   const session = withStore(deps.dbPath, (store) =>
     store.createAgentSession({
       productId,
-      createdBy: SYSTEM_SESSION_CREATOR,
+      createdBy,
       purpose: "product-survey",
       createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
       ...(baselines === undefined ? {} : { baselines }),
@@ -2478,43 +2476,24 @@ async function openProductSurvey(
 }
 
 /**
- * 产品的仓库集变了就自己开一场梳理(CONTEXT.md 产品梳理,issue #347 的 US 3 / US 4)。
- *
- * 开不起来只记一句:归入与移出的回应不因此改形——人要的是那一下归入成了,而梳理是系统替他
- * 想起来的那一件事,名额满或没配 Forge 时它等下一次仓库集变动或人按下重梳。
- */
-async function surveyRepoSetChange(deps: WebhookServerDeps, productId: number): Promise<void> {
-  const opening = await openProductSurvey(deps, productId);
-  if (!("refusal" in opening)) return;
-  // 仓库不足两个与这个产品的梳理还在跑,是这条路设计上的两道闸,不是失败,不记。名额满、
-  // 没配 Forge、正在排空才是该开而开不起来:那一句是排查「怎么没梳理」的唯一线索。
-  const byDesign =
-    opening.refusal.error === PRODUCT_SURVEY_TOO_FEW_REPOS ||
-    opening.refusal.error === PRODUCT_SURVEY_RUNNING;
-  if (byDesign) return;
-  console.log(
-    `[product-survey] 产品 ${productId} 的仓库集变了,梳理没开:${opening.refusal.error}`,
-  );
-}
-
-/**
- * 重梳(CONTEXT.md 产品梳理,spec #342 的 US 5)。门禁在路由上(`knowledge:write` 加这个
- * 产品里的一个仓库分配),与手写产品知识同一道;开不起来的那几句回绝原样回给人。
+ * 开梳理(CONTEXT.md 产品梳理)。门禁在路由上(`knowledge:write` 加这个产品里的一个仓库
+ * 分配),与写产品知识同一道;开不起来的那几句回绝原样回给人。
  *
  * 请求体里那一份按仓库基点与建会话同形、同校验(issue #353):人在弹窗里动过的行才进来,
- * 一行都没动(或整个体都不带)即与这一票之前按下重梳一字不差。
+ * 一行都没动(或整个体都不带)即每个仓库都读生效默认分支此刻的最新提交。
  */
 async function handleProductSurvey(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
+  caller: PanelCaller,
 ): Promise<void> {
   const payload = await readJson<{ baselines?: unknown } | null>(req, res);
   if (payload === undefined) return;
   const chosen = agentSessionBaselineInput(payload?.baselines);
   if (chosen === null) return sendJson(res, 400, { error: AGENT_SESSION_BASELINE_SHAPE });
-  const opening = await openProductSurvey(deps, productId, chosen);
+  const opening = await openProductSurvey(deps, productId, caller.username, chosen);
   if ("refusal" in opening) {
     return sendJson(res, opening.refusal.status, { error: opening.refusal.error });
   }
@@ -2526,12 +2505,6 @@ const NO_SUCH_AGENT_SESSION = "没有这个 Agent 会话";
 
 /** 只有创建者续得了、删得了自己的会话。系统管理员读得到它,动不了它(spec #329)。 */
 const NOT_AGENT_SESSION_CREATOR = "只有会话的创建者能做";
-
-/**
- * 产品梳理会话由系统开、交完就完(CONTEXT.md 产品梳理,issue #345):谁都续不了它。
- * 停止与删除不在这一句里(issue #346)——它们由系统管理员做得了。
- */
-const AGENT_SESSION_SURVEY_IS_SYSTEM = "产品梳理会话由系统开,谁都续不了它";
 
 /** 会话用途必填且只认这两个值,说哪两个值比说「形状不对」有用。 */
 const AGENT_SESSION_PURPOSE_SHAPE = "会话用途必填,只能是需求拆分或开放对话";
@@ -2604,7 +2577,8 @@ function withRuntimeStatus(session: AgentSessionRecord): AgentSessionRecord {
 /**
  * 请求体里的会话用途。认不出即 undefined;建时必填、之后不变,因此只有这一处收它。
  *
- * 产品梳理不在这一份里(issue #345):那个用途只有系统开得了,人点的是产品页上的「重梳」。
+ * 产品梳理不在这一份里(issue #365):那一种从产品页上的「梳理」开,它要先判仓库数与有没有
+ * 一场没谈完的。
  */
 function agentSessionPurpose(value: unknown): AgentSessionPurpose | undefined {
   return AGENT_SESSION_PURPOSES.filter((purpose) => purpose !== "product-survey").find(
@@ -2624,7 +2598,7 @@ function visibleAgentSession(
   const session = withStore(deps.dbPath, (store) => store.getAgentSession(sessionId));
   if (session === undefined) return undefined;
   if (caller.isSystemAdmin || session.createdBy === caller.username) return session;
-  // 产品梳理会话由系统开(issue #345):看得到这个产品的人都读得到它的过程与用量。
+  // 产品梳理看得到产品的人都读得到(CONTEXT.md 产品梳理):这一场谈的是整个产品是什么。
   return session.purpose === "product-survey" && seesProduct(deps, session.productId, caller)
     ? session
     : undefined;
@@ -2657,18 +2631,14 @@ function seesProduct(
  * 这一条在,再回 404 只会让人以为动作做成了。调用方拿到 undefined 直接 return。
  *
  * `options.refuse` 让上传图片那一条路换一种回法:一张图有几 MB,回绝之后要把剩下的请求体
- * 排掉,不然这一句话可能随连接一起被丢掉。`options.systemAdminMayActOnSurvey` 是停止与删除
- * 那两个动作的例外,见下。
+ * 排掉,不然这一句话可能随连接一起被丢掉。
  */
 function agentSessionForCreator(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-  options: {
-    refuse?: (status: number, error: string) => void;
-    systemAdminMayActOnSurvey?: boolean;
-  } = {},
+  options: { refuse?: (status: number, error: string) => void } = {},
 ): AgentSessionRecord | undefined {
   const refuse =
     options.refuse ?? ((status: number, error: string) => sendJson(res, status, { error }));
@@ -2677,16 +2647,8 @@ function agentSessionForCreator(
     refuse(404, NO_SUCH_AGENT_SESSION);
     return undefined;
   }
-  // 产品梳理会话的创建者是系统(issue #345):看得到产品的人都读得到它,续谈那几个动作
-  // 一律回这一句——回「只有创建者能做」会让人去找那个不存在的人。
-  //
-  // 停止与删除是例外(issue #346):系统开的会话也要有人收得掉,全档都回 409 的话一个跑飞
-  // 的梳理谁都停不下来、一条交完的梳理谁都删不掉。这两件事给系统管理员。
-  if (session.purpose === "product-survey") {
-    if (options.systemAdminMayActOnSurvey === true && caller.isSystemAdmin) return session;
-    refuse(409, AGENT_SESSION_SURVEY_IS_SYSTEM);
-    return undefined;
-  }
+  // 产品梳理也在这一道里(issue #365):看得到产品的人都读得到它,只有开这一场的那个人
+  // 答得了题、续得了谈——访谈的另一头是一个具体的人。
   if (session.createdBy !== caller.username) {
     refuse(403, NOT_AGENT_SESSION_CREATOR);
     return undefined;
@@ -2710,7 +2672,7 @@ function handleListAgentSessions(
       ? undefined
       : store
           .listAgentSessions(productId, null)
-          // 产品梳理会话谁都看得到(issue #345):它是系统开的,不属于某一个人。
+          // 产品梳理看得到产品的人都看得到(CONTEXT.md 产品梳理):谈的是整个产品是什么。
           .filter(
             (session) =>
               caller.isSystemAdmin ||
@@ -2988,10 +2950,8 @@ function handleAgentSessionStream(
 
 /**
  * 删会话。只有创建者删得了:系统管理员读得到别人的会话,删它会回 403 而不是 404——他已经
- * 知道这一条在,再回 404 只会让人以为删成功了。
- *
- * 产品梳理会话没有创建者可言,删它那一档给系统管理员(issue #346):系统开的会话也要有人
- * 收得掉,否则一条交完提案的梳理会永远留在列表里。
+ * 知道这一条在,再回 404 只会让人以为删成功了。产品梳理与别的用途同律(issue #365):它
+ * 也有一个具体的创建者。
  */
 function handleDeleteAgentSession(
   res: ServerResponse,
@@ -2999,9 +2959,7 @@ function handleDeleteAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
-    systemAdminMayActOnSurvey: true,
-  });
+  const allowed = agentSessionForCreator(res, deps, sessionId, caller);
   if (allowed === undefined) return;
   // 常驻子进程先收掉(评审复核):只删库里的行会留下一个挂着工作树、还在计时的子进程。
   reclaimAgentSession(sessionId);
@@ -3199,9 +3157,9 @@ async function handleAgentSessionMessage(
 }
 
 /**
- * 开跑一个会话之前要凑齐的那几样(issue #333;重梳在 issue #345 复用它):服务没在排空、
- * Forge 配着、会话根里有仓库、辅助模型跑得起来、常驻名额腾得出来。凑不齐即回一句回绝,
- * 发消息与重梳因此说同一句话。
+ * 开跑一个会话之前要凑齐的那几样(issue #333;开梳理复用它):服务没在排空、Forge 配着、
+ * 会话根里有仓库、辅助模型跑得起来、常驻名额腾得出来。凑不齐即回一句回绝,发消息与开梳理
+ * 因此说同一句话。
  *
  * 名额判在受理之前(issue #335):这一条没被投递,人过几分钟重发的该是同一条消息。
  */
@@ -3267,8 +3225,6 @@ function handleClearAgentSessionQueue(
 /**
  * 停止(issue #334):中止当前这一步,排队消息保留。**空闲时是空操作**,回 200 带
  * `stopped: false` 而不是报错——人看到的「在跑」可能已经跑完了,为这一拍回个错误只是噪音。
- *
- * 产品梳理会话那一档与删它同律(issue #346):没有创建者可言,停它给系统管理员。
  */
 function handleStopAgentSession(
   res: ServerResponse,
@@ -3276,9 +3232,7 @@ function handleStopAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): void {
-  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
-    systemAdminMayActOnSurvey: true,
-  });
+  const allowed = agentSessionForCreator(res, deps, sessionId, caller);
   if (allowed === undefined) return;
   const stopped = stopAgentSession(sessionId);
   return sendJson(res, 200, { stopped, queue: visibleQueue(deps, sessionId) });
@@ -3598,9 +3552,9 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "PUT", pattern: /^\/products\/(\d+)\/specs\/(\d+)$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleSetProductSpecState(req, res, deps, Number(match![1]), Number(match![2])) },
   { method: "PUT", pattern: /^\/products\/(\d+)\/tickets\/(\d+)$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleUpdateProductTicket(req, res, deps, Number(match![1]), Number(match![2]), caller!.username) },
   { method: "POST", pattern: /^\/products\/(\d+)\/tickets\/(\d+)\/comments$/, access: "agent:chat", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleCommentProductTicket(req, res, deps, Number(match![1]), Number(match![2]), caller!.username) },
-  // 重梳(CONTEXT.md 产品梳理,issue #345)。门禁是 `knowledge:write` 加这个产品里的一个仓库
-  // 分配——后半句正是 `product` 这个目标本身。会话本身由系统建,创建者不是点下它的那个人。
-  { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps }, match) => handleProductSurvey(req, res, deps, Number(match![1])) },
+  // 开梳理(CONTEXT.md 产品梳理,issue #365)。门禁是 `knowledge:write` 加这个产品里的一个仓库
+  // 分配——后半句正是 `product` 这个目标本身。创建者就是点下它的那个人:访谈的另一头是他。
+  { method: "POST", pattern: /^\/products\/(\d+)\/survey$/, access: "knowledge:write", assignment: { by: "product", group: 1 }, handler: ({ req, res, deps, caller }, match) => handleProductSurvey(req, res, deps, Number(match![1]), caller!) },
   // Agent 会话(CONTEXT.md Agent 会话,issue #332)。建与发消息按 `agent:chat`,列表与
   // 读登录即可:一个会话只有创建者与系统管理员读得到,这一判按创建者在 handler 里做,
   // 不是仓库分配能表达的事。产品下的两个端点仍声明 `product` 目标,看不到产品的人连
@@ -10411,19 +10365,8 @@ async function handleRemove(
     });
   }
 
-  // 下线的仓库归在哪个产品下:摘表那一笔连产品归属一起删,之后就问不出来了。
-  const productId = withStore(
-    deps.dbPath,
-    (store) =>
-      store.listProducts().find((one) => one.repos.some((row) => row.repoId === repoId))?.id,
-  );
-
   // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
   withStore(deps.dbPath, (store) => store.removeRepo(repoId));
-
-  // 下线与移出对产品是同一件事:产品的仓库集少了一个(issue #347)。仓库集还够两个就自己开
-  // 一场梳理,把剩下的关系重新写一遍。下线的回应一格不变。
-  if (productId !== undefined) await surveyRepoSetChange(deps, productId);
 
   // 工作副本随注册一起走(issue #184)。仓库改过名时两个名字下各可能有一份,现名与
   // 注册时的名字各删一次;已经不在的那一份删起来是空操作。目录上还有准备在跑时

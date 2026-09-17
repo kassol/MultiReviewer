@@ -49,8 +49,8 @@ import { cn } from "@/lib/utils";
 import { fetchJson, send } from "./api.ts";
 
 /**
- * 建会话弹窗提供的用途(issue #345)。产品梳理不在这一份里:那一种只有系统开得了,人点的是
- * 产品页产品知识区里的「重梳」。
+ * 建会话弹窗提供的用途(issue #365)。产品梳理不在这一份里:那一种从产品页产品知识区里的
+ * 「梳理」开,它还要判仓库数与有没有一场没谈完的。
  */
 const CREATABLE_PURPOSES = AGENT_SESSION_PURPOSES.filter(
   (purpose) => purpose !== "product-survey",
@@ -80,10 +80,10 @@ export function useProductDetail(productId: number | undefined) {
 /**
  * 移出确认框的说明。产品知识不跟着仓库退役(issue #360):条目说的是这个产品是什么、它的
  * 仓库之间怎么协作,少一个仓库并不让某一条当场不成立,说的正是那个仓库的那几条由下一场梳理
- * 改写或撤回。
+ * 改写或撤回,而那一场由人在产品页上开(issue #365)。
  */
 const DETACH_CONSEQUENCE =
-  "仓库集变了,系统可能自动开一场产品梳理。说到它的产品知识由那一场改写。仓库本身留在注册表里。";
+  "说到这个仓库的产品知识留着,由下一场产品梳理改写。仓库本身留在注册表里。";
 
 /**
  * 产品页与会话页共用的左栏(spec #349 的收口):产品列表、当前产品的仓库、会话。两页
