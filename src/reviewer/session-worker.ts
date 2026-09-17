@@ -10,10 +10,13 @@
  *
  * 工具面全部圈在会话根上:只读四件套是 `worker-tools.ts` 的 `sessionReadOnlyTools`(与另
  * 三个 worker 同一份,issue #328),受控 git 按路径前缀选工作树。不注册 bash / edit / write。
+ * 会话子代理(`session-subagent.ts`,issue #358)也在这一面上:铺装与取证共用一套,子会话
+ * 的工具面同样是圈在会话根上的那四件,一次派单跑完当场落成一条会话记录。
  */
 import { type AgentSession, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { MODEL_API_KEY_ENV, redactModelCredential } from "./env.ts";
+import { subagentContractExtension, vendoredSubagentsPath } from "./evidence.ts";
 import { GIT_TOOL, sessionGitTool } from "./git-tool.ts";
 import {
   QUERY_FINDINGS_TOOL,
@@ -33,7 +36,15 @@ import {
 import { sessionOutputTools } from "./session-output-tools.ts";
 import { purposeSystemPrompt } from "./session-purposes.ts";
 import {
+  installSessionSubagentKit,
+  SESSION_SUBAGENT_AGENT,
+  sessionSubagentRuns,
+  subagentTasks,
+  SUBAGENT_TOOL,
+} from "./session-subagent.ts";
+import {
   AGENT_SESSION_NOTE_CUSTOM_TYPE,
+  AGENT_SESSION_SUBAGENT_ENTRY,
   SYSTEM_MESSAGE_ENTRY,
   type AgentSessionMessageMode,
   type OpenSessionRequest,
@@ -54,11 +65,11 @@ function send(message: SessionWorkerMessage): void {
 }
 
 /**
- * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)与知识
- * 查询(issue #344)。写工具与 bash 一个都不在。
+ * 这次会话注册的工具清单:只读四件套、受控 git,加历史 Finding 查询(issue #338)、知识
+ * 查询(issue #344)与会话子代理(issue #358)。写工具与 bash 一个都不在。
  */
 export function sessionTools(): string[] {
-  return [...READ_ONLY_TOOLS, GIT_TOOL, QUERY_FINDINGS_TOOL, QUERY_KNOWLEDGE_TOOL];
+  return [...READ_ONLY_TOOLS, GIT_TOOL, QUERY_FINDINGS_TOOL, QUERY_KNOWLEDGE_TOOL, SUBAGENT_TOOL];
 }
 
 /**
@@ -98,6 +109,10 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "Your tools are read-only. You cannot edit files, write files or run shell commands. Read the code before you claim anything about it: the repositories above are the evidence.",
     "",
     `The ${QUERY_FINDINGS_TOOL} tool reads what earlier review rounds reported on one of these repositories: ask it about the part of the code you are about to speak of, and you see what has already gone wrong there.`,
+    "",
+    // 会话子代理(issue #358):深读一段代码不必占着对话。派单参数由工具边界钉死,这里只说
+    // 它是什么、什么时候派,不教它写参数——写错的那几项会被改回来。
+    `The ${SUBAGENT_TOOL} tool sends a read-only investigator into these repositories. Call it with agent set to "${SESSION_SUBAGENT_AGENT}" — that is the only agent available — and one question per task; the call waits and returns the investigator's report. Send one when the answer needs a deep read the conversation should not wait through, and send several in one call when the questions are independent. The investigator reads and reports; it decides nothing, and what it brings back is yours to judge.`,
     "",
     "## What this product has written down",
     "",
@@ -168,16 +183,58 @@ function mirrorEntries(): void {
   mirrored = entries.length;
 }
 
+/**
+ * 每次派单派出去的那几句任务,按 `toolCallId` 记着(issue #358)。只有 `tool_execution_start`
+ * 带调用参数,而 pi-subagents 在返回里把任务原文抹掉了——落条目时人话只能从这里取。
+ */
+const subagentTasksByCall = new Map<string, string[]>();
+
+/**
+ * 把一次会话子代理派单落成条目(issue #358)。
+ *
+ * 子会话的过程只有它那一侧的 transcript 文件记着,而那个文件随子进程的临时目录消失:跑完
+ * 当场读成 `SessionSubagentRun` 落进会话记录,重建时面板从这一条重画卡片。派单被工具边界
+ * 打回那一次没有子任务,不落条目——那次调用本身已经作一条失败的工具行留在记录里。
+ *
+ * 排到下一个 tick 再落:`tool_execution_end` 之后 Pi 才把那条 toolResult 写进记录表,当场
+ * 落会让这一条插到它前面。`appendCustomEntry` 不进模型上下文,过程模型自己刚经历过。
+ */
+function recordSubagentRuns(toolCallId: string, result: unknown): void {
+  const tasks = subagentTasksByCall.get(toolCallId) ?? [];
+  subagentTasksByCall.delete(toolCallId);
+  const runs = sessionSubagentRuns(result, { running: false, tasks });
+  if (runs.length === 0) return;
+  setImmediate(() => {
+    session?.sessionManager.appendCustomEntry(AGENT_SESSION_SUBAGENT_ENTRY, { runs });
+    mirrorEntries();
+  });
+}
+
 async function open(request: OpenSessionRequest): Promise<void> {
   const thinkingLevel = sessionThinkingLevel(
     request.runtimeModel.reasoning,
     request.thinkingLevel,
   );
+  const repos = request.repos.map((repo) => `${repo.owner}/${repo.repo}`);
   const prepared = await prepareAgentRuntime({
     agentDirPrefix: "multireviewer-agent-session-",
     worktreePath: request.sessionRoot,
     runtimeModel: request.runtimeModel,
     systemPrompt: sessionSystemPrompt(request),
+    // 会话子代理(issue #358):执行体与铺装时机与取证那条链路逐字相同,圈定的根是整个
+    // 会话根——一个问题常常横跨这个产品的几个仓库。
+    extensionPaths: [vendoredSubagentsPath()],
+    extensionFactories: [
+      subagentContractExtension(request.sessionRoot, SESSION_SUBAGENT_AGENT),
+    ],
+    installKit: (agentDir) =>
+      installSessionSubagentKit({
+        agentDir,
+        sessionRoot: request.sessionRoot,
+        runtimeModel: request.runtimeModel,
+        thinkingLevel,
+        repos,
+      }),
     // 常驻会话开自动 compaction(spec #329):它按天续谈,不压就会撞上上下文上限。
     compaction: true,
   });
@@ -187,7 +244,6 @@ async function open(request: OpenSessionRequest): Promise<void> {
   }
   apiKey = prepared.apiKey;
 
-  const repos = request.repos.map((repo) => `${repo.owner}/${repo.repo}`);
   // 这个用途的产出工具(issue #337)。清单与定义取同一份:工具名在 `tools` 里没有那一行,
   // Pi 就不把它交给模型,两处各写一遍迟早对不上。
   const outputTools = sessionOutputTools(request.purpose, {
@@ -225,6 +281,23 @@ async function open(request: OpenSessionRequest): Promise<void> {
       }
       if (event.type === "tool_execution_start") {
         send({ kind: "tool", tool: event.toolName });
+        // 会话子代理(issue #358):任务原文只有这一档带着,记下来给条目与瞬时帧用。
+        if (event.toolName === SUBAGENT_TOOL) {
+          subagentTasksByCall.set(event.toolCallId, subagentTasks(event.args));
+        }
+      }
+      // 在跑的那几趟只走瞬时帧,跑完那一版落成条目。
+      if (event.type === "tool_execution_update" && event.toolName === SUBAGENT_TOOL) {
+        send({
+          kind: "subagent",
+          runs: sessionSubagentRuns(event.partialResult, {
+            running: true,
+            tasks: subagentTasksByCall.get(event.toolCallId) ?? [],
+          }),
+        });
+      }
+      if (event.type === "tool_execution_end" && event.toolName === SUBAGENT_TOOL) {
+        recordSubagentRuns(event.toolCallId, event.result);
       }
       // 停止时清队列那一次不回传:那几条由主进程留存,下次开跑时投递。
       if (event.type === "queue_update" && !stopping) {

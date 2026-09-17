@@ -157,6 +157,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-17: **Agent 会话能派只读子代理**(CONTEXT.md 会话子代理,issue #358,父 spec #357)。任何用途的会话里,agent 都能把一个问题交给一个只读子代理去深读:执行体与铺装与 Reviewer 的取证子代理是同一套 vendor 的 pi-subagents,工具面仍是只读四件套、圈在整个会话根上(一个问题常常横跨这个产品的几个仓库),子代理不再派子代理。一次派单的任务、状态、步数、工具调用与结论当场落成一条会话记录——pi-subagents 写的 transcript 随子进程的临时目录消失,不当场读就重建不回来;面板据它在对话流里画嵌套卡片,跑完收成结论一句,并行派出的几趟并排。细节见 src/AGENTS.md 与 web/AGENTS.md。
 - 2026-09-16: **产品页与会话页克制一轮**(纯前端,见 `web/AGENTS.md` 同日条目)。发布 00-test 并截图验收。
 - 2026-09-16: **会话页的 agent 回复改成卡片,长回复可展开或进阅读视图**(纯前端,见 `web/AGENTS.md` 同日条目)。发布 00-test 并截图验收。
 - 2026-09-16: **产品页与会话页 UI 收拾**(参照 Craft Agents,见 `web/AGENTS.md` 同日条目)。服务端配套两格读时派生字段:`GET /products/:id/sessions` 与 `GET /agent-sessions/:id` 的会话多带 `title`(首条用户消息,折空白截 80 字,没有即 null,产品梳理一律 null)与 `lastActiveAt`(记录表 `MAX(at)`,没有记录落建会话时刻),`store.ts` 的 `AGENT_SESSION_QUERY` 一条查询带出,不迁移;`test/panel-agent-sessions.test.ts` 加一例(带图消息文字块在图片块后面也取得到)。发布 00-test 并截图验收。

@@ -17,15 +17,15 @@ import {
   EVIDENCE_AGENT,
   EVIDENCE_FANOUT_BUDGET,
   EVIDENCE_SESSION_BUDGET,
-  EVIDENCE_TOOL,
+  SUBAGENT_TOOL,
   evidenceAgentDefinition,
-  evidenceCeiling,
-  evidenceContractExtension,
-  evidenceToolsExtension,
+  subagentCeiling,
+  subagentContractExtension,
+  subagentToolsExtension,
   evidenceTranscriptEvents,
   installEvidenceKit,
-  pinEvidenceCall,
-  registerEvidenceCeiling,
+  pinSubagentCall,
+  registerSubagentCeiling,
   vendoredSubagentsPath,
 } from "../src/reviewer/evidence.ts";
 import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
@@ -136,14 +136,14 @@ test("取证 agent 与 Reviewer 同模型同凭据同思考档位", () => {
 
 test("能力天花板写死在代码里,不从会话工具面透传", () => {
   // 白名单是常量:Reviewer 那一面多一个工具,子代理的工具面不该跟着长。
-  assert.deepEqual(evidenceCeiling(), {
+  assert.deepEqual(subagentCeiling(EVIDENCE_AGENT), {
     allowedTools: ["find", "grep", "ls", "read"],
     allowedAgents: [EVIDENCE_AGENT],
     denyExtensions: false,
   });
   // 工作副本是半可信输入:被审仓库自带的 agent 定义即使被读到,也不在放行名单里。
-  assert.ok(!evidenceCeiling().allowedTools.includes("subagent"));
-  assert.ok(!evidenceCeiling().allowedTools.includes("report_finding"));
+  assert.ok(!subagentCeiling(EVIDENCE_AGENT).allowedTools.includes("subagent"));
+  assert.ok(!subagentCeiling(EVIDENCE_AGENT).allowedTools.includes("report_finding"));
 });
 
 /** pi-subagents 派出前查的那张表(`capability-ceiling.ts` 的 `registry()`),按会话 id 取。 */
@@ -156,8 +156,8 @@ function ceilingRegistrations(sessionId: string): { source: string; ceiling: unk
 }
 
 test("天花板登记到父会话名下,形状与 pi-subagents 自己写下的同形,重复登记只留一条(issue #262)", () => {
-  registerEvidenceCeiling("session-262");
-  registerEvidenceCeiling("session-262");
+  registerSubagentCeiling("session-262", EVIDENCE_AGENT);
+  registerSubagentCeiling("session-262", EVIDENCE_AGENT);
   assert.deepEqual(ceilingRegistrations("session-262"), [
     {
       source: "multireviewer",
@@ -181,7 +181,7 @@ function toolCallHook(): (event: { toolName: string; input: Record<string, unkno
       if (name === "tool_call") handler = fn;
     },
   };
-  const extension = evidenceContractExtension(WORKTREE);
+  const extension = subagentContractExtension(WORKTREE, EVIDENCE_AGENT);
   assert.ok(typeof extension === "object" && "factory" in extension, "契约扩展要带名字");
   extension.factory(pi as never);
   assert.ok(handler, "契约扩展没有挂 tool_call 钩子");
@@ -194,7 +194,7 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
 
   // 模型显式要求开桥、走后台:两项都被改回契约值,任务本身原样保留。
   const evidence = {
-    toolName: EVIDENCE_TOOL,
+    toolName: SUBAGENT_TOOL,
     input: { agent: EVIDENCE_AGENT, task: "查调用方", intercomBridge: { mode: "always" }, async: true },
   };
   assert.equal(hook(evidence, ctx), undefined, "不拒调用,只改参数");
@@ -209,7 +209,7 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
   assert.equal(ceilingRegistrations("session-hook").length, 1);
 
   // 没写这两项的调用同样钉上:省参调用的默认也不留给 pi-subagents 的 config 去猜。
-  const plain = { toolName: EVIDENCE_TOOL, input: { agent: EVIDENCE_AGENT, task: "查调用方" } };
+  const plain = { toolName: SUBAGENT_TOOL, input: { agent: EVIDENCE_AGENT, task: "查调用方" } };
   hook(plain, ctx);
   assert.deepEqual(plain.input, {
     agent: EVIDENCE_AGENT,
@@ -230,9 +230,9 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
   assert.deepEqual(read.input, { path: "a.ts", async: true });
 
   // 放行清单外的参数整次打回,参数与登记表都不动(issue #328)。
-  const management = { toolName: EVIDENCE_TOOL, input: { action: "create", config: { name: EVIDENCE_AGENT } } };
+  const management = { toolName: SUBAGENT_TOOL, input: { action: "create", config: { name: EVIDENCE_AGENT } } };
   const blocked = hook(management, { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-blocked" } });
-  assert.deepEqual(blocked, { block: true, reason: "evidence calls do not accept action, config; use agent and task (or tasks / chain) only" });
+  assert.deepEqual(blocked, { block: true, reason: "subagent calls do not accept action, config; use agent and task (or tasks / chain) only" });
   assert.deepEqual(management.input, { action: "create", config: { name: EVIDENCE_AGENT } });
   assert.deepEqual(ceilingRegistrations("session-blocked"), []);
 });
@@ -242,13 +242,13 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
 
   // 单任务:模型要 project 范围、换目录,一律改回。
   assert.deepEqual(
-    pinEvidenceCall({ agent: EVIDENCE_AGENT, task: "查", agentScope: "project", cwd: "/etc" }, WORKTREE),
+    pinSubagentCall({ agent: EVIDENCE_AGENT, task: "查", agentScope: "project", cwd: "/etc" }, WORKTREE),
     { params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop } },
   );
 
   // tasks[]:每一项的 cwd 都钉,没写的也补上。
   assert.deepEqual(
-    pinEvidenceCall(
+    pinSubagentCall(
       { tasks: [{ agent: EVIDENCE_AGENT, task: "a", cwd: "../" }, { agent: EVIDENCE_AGENT, task: "b" }], agentScope: "both" },
       WORKTREE,
     ),
@@ -265,7 +265,7 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
 
   // chain[]:每一步与它的 parallel(任务数组或单个模板)都钉。
   assert.deepEqual(
-    pinEvidenceCall(
+    pinSubagentCall(
       {
         chain: [
           { agent: EVIDENCE_AGENT, task: "a", cwd: "/" },
@@ -290,7 +290,7 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
   // 管理动作与 workflow 脚本钉不住发现范围,整次打回;入参不被改写。
   for (const key of ["action", "workflow", "workflowScript", "workflowScriptPath", "config"]) {
     const params = { agent: EVIDENCE_AGENT, task: "查", [key]: "x" };
-    const result = pinEvidenceCall(params, WORKTREE);
+    const result = pinSubagentCall(params, WORKTREE);
     assert.ok("rejected" in result, `${key} 被放行`);
     assert.match(result.rejected, new RegExp(`accept ${key};`));
     assert.deepEqual(params, { agent: EVIDENCE_AGENT, task: "查", [key]: "x" });
@@ -307,13 +307,13 @@ test("取证任务项里的 output / reads / model 一类键整次打回:项也�
       { chain: [{ parallel: [item] }] },
       { chain: [{ parallel: item }] },
     ]) {
-      const result = pinEvidenceCall(params, WORKTREE);
+      const result = pinSubagentCall(params, WORKTREE);
       assert.ok("rejected" in result, `${key} 在 ${JSON.stringify(params)} 里被放行`);
       assert.match(result.rejected, new RegExp(`tasks do not accept ${key};`));
     }
   }
   // 标签类与 chain 自己的三项照常放行。
-  const ok = pinEvidenceCall(
+  const ok = pinSubagentCall(
     {
       tasks: [{ agent: EVIDENCE_AGENT, task: "a", label: "一", phase: "p", as: "one", count: 2 }],
       chain: [{ agent: EVIDENCE_AGENT, expand: { from: { output: "one", path: "/items" } }, collect: { as: "all" } }],
@@ -329,7 +329,7 @@ test("取证 agent 经扩展装上 Reviewer 那一份四件套,工作副本根�
   // 相对 agent 文件解析,指向 agentDir 根上那一份;不在 extensions/ 下,Reviewer 会话不加载它。
   assert.match(definition, /^extensions: \.\.\/evidence-tools\.ts$/m);
   const source = read(agentDir, "evidence-tools.ts");
-  assert.equal(source, evidenceToolsExtension(WORKTREE));
+  assert.equal(source, subagentToolsExtension(WORKTREE));
   assert.match(source, /import \{ sessionReadOnlyTools \} from ".*\/src\/reviewer\/worker-tools\.ts";/);
   assert.ok(source.includes(`sessionReadOnlyTools(${JSON.stringify(WORKTREE)})`));
 });
