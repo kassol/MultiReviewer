@@ -495,30 +495,37 @@ export function AccessControlPage() {
                         ...PERMISSION_INFO.filter((permission) => permission.resource === resource).map((permission) => {
                           const impliedBy = permissionImpliedBy(permission.id);
                           const implied = impliedBy !== undefined && selectedRole.permissions.includes(impliedBy);
+                          const locked = updateRole.isPending || implied;
                           return (
-                            <li key={permission.id} className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                  <span className="text-sm font-medium">{permission.action}</span>
-                                  {implied ? (
-                                    <Badge color="gray" variant="soft" size="1">随「管理」生效</Badge>
-                                  ) : null}
-                                  {/* 跨角色的盲区提示只在真盲的那一行亮:除系统管理员外,
-                                      这项能力当前无人可用。 */}
-                                  {unclaimed.has(permission.id) ? (
-                                    <Badge color="amber" variant="soft" size="1">未授予任何角色</Badge>
-                                  ) : null}
+                            <li key={permission.id} className="border-t border-line">
+                              {/* 整行是一层 <label>:35px 的拨杆在手机上太窄,权限名和说明本来就是
+                                  这个开关的标签,点它们跟着切换。浏览器把 label 的点击转投给它标注的
+                                  控件(Switch 渲染成 <button>,属于可标注元素),开关自身的键盘与焦点
+                                  行为不变。 */}
+                              <label className={`flex items-center justify-between gap-3 px-4 py-2.5 ${locked ? "" : "cursor-pointer"}`}>
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                                    <span className="text-sm font-medium">{permission.action}</span>
+                                    {implied ? (
+                                      <Badge color="gray" variant="soft" size="1">随「管理」生效</Badge>
+                                    ) : null}
+                                    {/* 跨角色的盲区提示只在真盲的那一行亮:除系统管理员外,
+                                        这项能力当前无人可用。 */}
+                                    {unclaimed.has(permission.id) ? (
+                                      <Badge color="amber" variant="soft" size="1">未授予任何角色</Badge>
+                                    ) : null}
+                                  </div>
+                                  <p className="text-xs text-text-muted">{permission.hint}</p>
                                 </div>
-                                <p className="text-xs text-text-muted">{permission.hint}</p>
-                              </div>
-                              <Switch
-                                size="2"
-                                className="shrink-0"
-                                aria-label={`${selectedRole.name}的${permission.resource}${permission.action}权限${implied ? "，已随管理权限授予" : ""}`}
-                                checked={roleHasPermission(selectedRole.permissions, permission.id)}
-                                disabled={updateRole.isPending || implied}
-                                onCheckedChange={() => updateRole.mutate({ role: selectedRole, permission: permission.id })}
-                              />
+                                <Switch
+                                  size="2"
+                                  className="shrink-0"
+                                  aria-label={`${selectedRole.name}的${permission.resource}${permission.action}权限${implied ? "，已随管理权限授予" : ""}`}
+                                  checked={roleHasPermission(selectedRole.permissions, permission.id)}
+                                  disabled={locked}
+                                  onCheckedChange={() => updateRole.mutate({ role: selectedRole, permission: permission.id })}
+                                />
+                              </label>
                             </li>
                           );
                         }),

@@ -64,6 +64,21 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
     assert.match(javascript, /产品决策/);
     // 默认分支(issue #350):仓库配置弹窗里那个下拉的首项。
     assert.match(javascript, /跟随 Gitea 默认/);
+    // 触控命中区(issue #370):44px 地板只写在设计系统层这一处,页面不再各补各的。
+    // 这里断言的是产物,不是源码——规则要真的落进未分层的那段 CSS 才盖得过 Radix。
+    const coarse = stylesheet.slice(stylesheet.indexOf("@media(pointer:coarse){.radix-themes"));
+    assert.ok(coarse.length > 0, "未分层的粗指针规则块");
+    for (const covered of [".rt-BaseMenuItem", ".rt-SelectItem", ".rt-BaseTabListTrigger"]) {
+      assert.match(coarse, new RegExp(`${covered.replace(".", "\\.")},?[^{]*\\{min-height:44px\\}`), covered);
+    }
+    assert.match(coarse, /\.rt-Button,\.rt-IconButton\)\{min-width:44px\}/);
+    assert.match(coarse, /\[data-slot=command-input\]\)\{height:44px\}/);
+    // Checkbox 与 Switch 只长命中区不长视觉:补的是伪元素,不是控件自己的尺寸。
+    assert.match(coarse, /:where\(\.rt-BaseCheckboxRoot,\.rt-SwitchRoot\):after\{content:""/);
+    assert.doesNotMatch(coarse, /:where\(\.rt-BaseCheckboxRoot,\.rt-SwitchRoot\)\{/);
+    assert.match(coarse, /:where\(\.rt-CheckboxGroupItem,\.rt-RadioGroupItem\)\{[^}]*min-height:44px/);
+    // 「我的」菜单贴着 Tab 栏开,末项的命中区要离 Tab 栏 8px。
+    assert.match(javascript, /sideOffset:8/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }
