@@ -23,12 +23,16 @@ function Command({
 function CommandInput({
   className,
   "aria-label": ariaLabel = "搜索选项",
+  trailing,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+  /** 搜索行右端的附加控件(命令面板的关闭键)。行高因此改成下限,附件比 36px 高时行跟着长。 */
+  trailing?: React.ReactNode
+}) {
   return (
     <div
       data-slot="command-input-wrapper"
-      className="flex h-9 items-center gap-2 border-b border-[var(--gray-6)] px-3 transition-colors focus-within:border-primary"
+      className="flex min-h-9 items-center gap-2 border-b border-[var(--gray-6)] px-3 transition-colors focus-within:border-primary"
     >
       <MagnifyingGlassIcon className="size-4 shrink-0 text-[var(--gray-10)]" aria-hidden />
       <CommandPrimitive.Input
@@ -43,6 +47,7 @@ function CommandInput({
         )}
         {...props}
       />
+      {trailing}
     </div>
   )
 }
