@@ -31,7 +31,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `pnpm start` — 起 webhook 服务,环境变量见「部署」
 - `pnpm --filter @multireviewer/web dev` — 面板前端本地联调:与 `pnpm start` 双进程,Vite proxy 把 `/api` 转本机后端(端口读同一份 `.env` 的 `MULTIREVIEWER_PORT`)
 - `pnpm --filter @multireviewer/web build` — 前端构建(镜像里自动做,本地跑服务要面板时手动跑一次)
-- `pnpm check` — 类型检查加全部测试(含前端纯函数单测 `pnpm --filter @multireviewer/web test`),提交前跑它(不含前端类型检查,改 `web/` 后另跑 `pnpm --filter @multireviewer/web typecheck`)
+- `pnpm check` — 类型检查加全部测试(含前端纯函数单测 `pnpm --filter @multireviewer/web test`),提交前跑它(并行 worktree 批次里的实现子代理除外,见「并行 worktree 批次」)(不含前端类型检查,改 `web/` 后另跑 `pnpm --filter @multireviewer/web typecheck`)
 - `pnpm typecheck` — 仅类型检查
 - `pnpm test` — 仅测试
 - `MULTIREVIEWER_LIVE_PR=owner/repo#123 GITHUB_TOKEN=$(gh auth token) pnpm test` — 追加运行对真实 GitHub pull request 的验证,它会真实发布评论并改动 resolve 状态
@@ -158,7 +158,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ### 并行 worktree 批次
 
-一批票分给多个子代理、各自在独立 worktree 里落地时,检查按下面的分工跑。派发子代理时把本节贴进每个子代理的 prompt,见 `docs/agents/parallel-batches.md`。
+一批票分给多个子代理、各自在独立 worktree 里落地时,检查按下面的分工跑。本节的「子代理」「主会话」指开发工具(Claude Code / Codex)派出的实现与评审代理和派它们的那个会话,与 CONTEXT.md 里产品内的取证子代理、会话子代理无关。派发子代理时把本节贴进每个子代理的 prompt,见 `docs/agents/parallel-batches.md`。
 
 测得的账:整套测试单跑 6.6 分钟(1161 个后端用例,壁钟由最慢的那个文件决定),6 到 10 路并发时同一套要跑 23 到 30 分钟;2026-09-18 的 #387–#392 批次累计跑了 29 次全量,539 分钟机器时间。全量测试并发跑不动,是这套分工的由来。
 
