@@ -249,7 +249,7 @@
 
 ## 依赖关系
 
-`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 与 `MergeAgent` 两个接口,两者都定在 `review/` 里。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview`、模型服务 Store、`forge/` 的接口类型与 `gitea-hooks.ts`、`panel/` 的认证构件、`config.ts` 的 ReviewerSpec 校验,以及 `reviewer/` 的显式发现与固定运行计划构件;Agent 会话的运行时(`webhook/agent-session.ts`)另依赖 `git/` 的工作树准备与 `reviewer/` 的会话子进程入口与 IPC 形状(issue #333)。反向一律不依赖。`panel/` 不依赖其他目录。`drain.ts` 自身不依赖任何模块,被 `review/run.ts` 与 `webhook/server.ts` 依赖(两处只 import 它的类型,实例经注入拿到)。`main.ts` 依赖以上全部,只有它读环境变量。
+`review/` 依赖 `forge/` 与 `git/` 的类型与函数。`reviewer/` 依赖 `review/` 的领域类型,反向不依赖——`runReview` 只认 `Reviewer` 与 `MergeAgent` 两个接口,两者都定在 `review/` 里。`forge/` 与 `git/` 互不依赖。`webhook/` 依赖 `review/` 的 `runReview`、模型服务 Store、`forge/` 的接口类型与 `gitea-hooks.ts`、`panel/` 的认证构件、`config.ts` 的 ReviewerSpec 校验,以及 `reviewer/` 的显式发现与固定运行计划构件;Agent 会话的运行时(`webhook/agent-session.ts`)另依赖 `git/` 的工作树准备与 `reviewer/` 的会话子进程入口与 IPC 形状(issue #333),静默闸的时钟形状 `SilenceTimer` 也从 `reviewer/subprocess.ts` 取(issue #399,`webhook/server.ts` 同)。反向一律不依赖。`panel/` 不依赖其他目录。`drain.ts` 自身不依赖任何模块,被 `review/run.ts` 与 `webhook/server.ts` 依赖(两处只 import 它的类型,实例经注入拿到)。`main.ts` 依赖以上全部,只有它读环境变量。
 
 第三方依赖只有 Pi(`@earendil-works/pi-coding-agent`)、它的 `typebox` 与取证子代理的执行体 `pi-subagents`,且只在 `reviewer/` 内使用。`pi-subagents` 更不进 import:`evidence.ts` 只解析出它的包目录交给资源加载器,并按它读的那几个文件、环境变量与全局登记表铺装——它随包发布的是未编译的 `.ts`,Node 的原生类型剥离不处理 `node_modules` 下的文件,直接 import(含 `pi-subagents/capability-ceiling` 这类子路径)会当场抛 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`;Pi 用 jiti 加载扩展,那条路径不受影响。
 
