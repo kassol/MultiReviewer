@@ -62,6 +62,7 @@ import {
   type TrackerRequest,
 } from "../reviewer/session-protocol.ts";
 import type { SessionSubagentRun } from "../reviewer/session-subagent.ts";
+import type { SilenceTimer } from "../reviewer/subprocess.ts";
 import { runTrackerRequest } from "./product-tracker.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("../reviewer/session-worker.ts", import.meta.url));
@@ -74,8 +75,12 @@ export type AgentSessionRuntimeDeps = {
   now: () => number;
   /** 空闲回收的门槛(毫秒),默认 `IDLE_RECLAIM_MS`。只该测试注入。 */
   idleReclaimMs?: number;
-  /** 执行中静默判死的门槛(毫秒),默认 `SILENCE_TIMEOUT_MS`。只该测试注入。 */
-  silenceTimeoutMs?: number;
+  /**
+   * 静默闸的时钟(issue #399),默认真实的 `setTimeout`。只该测试注入:判死按真实时间验
+   * 就得等满一个明显宽于子进程准备时间的门槛(这一段里子进程一条 IPC 都不发),而判据
+   * 本来只是「闸响了会怎样」。与 Reviewer 那套子进程的 `silenceTimer` 同一档(issue #397)。
+   */
+  silenceTimer?: SilenceTimer;
 };
 
 /**
@@ -165,7 +170,7 @@ type RuntimeEntry = {
    * 执行中是静默闸、空闲是回收闸,两档共用这一格:同一时刻只有一种在计时,而「换档」正是
    * 状态变化那一刻要做的事(`rearm`)。
    */
-  timer: NodeJS.Timeout | undefined;
+  timer: (() => void) | undefined;
   child: ChildProcess | undefined;
   /**
    * 正在跑的那一次 `boot`(评审复核)。收拢与 `letGo` 先等它落定:备工作树那段里删会话根,
@@ -549,9 +554,15 @@ export function agentSessionDroppedFromContext(dbPath: string, sessionId: number
   }
 }
 
+/** 排一次 `ms` 之后的回调,返回撤掉它的函数。生命周期那一档的两个闸都按这个形状排。 */
+const realTimer: SilenceTimer = (fire, ms) => {
+  const timer = setTimeout(fire, ms);
+  return () => clearTimeout(timer);
+};
+
 /** 这个会话的两个计时器都停掉:生命周期那一档与流式合并窗口。 */
 function clearTimers(entry: RuntimeEntry): void {
-  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.timer?.();
   entry.timer = undefined;
   if (entry.stream.timer !== undefined) clearTimeout(entry.stream.timer);
   entry.stream.timer = undefined;
@@ -562,17 +573,17 @@ function clearTimers(entry: RuntimeEntry): void {
  * ——那几条还等着人回来让它接着跑,回收会把这个会话的「下一步」悄悄推到重建之后。
  */
 function rearm(sessionId: number, entry: RuntimeEntry): void {
-  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.timer?.();
   entry.timer = undefined;
   if (entry.disposed) return;
   if (entry.status === "running") {
-    const silence = entry.deps.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS;
-    entry.timer = setTimeout(() => silenceDeath(sessionId, entry), silence);
+    const arm = entry.deps.silenceTimer ?? realTimer;
+    entry.timer = arm(() => silenceDeath(sessionId, entry), SILENCE_TIMEOUT_MS);
     return;
   }
   if (entry.queue.length > 0) return;
   const idle = entry.deps.idleReclaimMs ?? IDLE_RECLAIM_MS;
-  entry.timer = setTimeout(() => reclaimIdle(sessionId, entry), idle);
+  entry.timer = realTimer(() => reclaimIdle(sessionId, entry), idle);
 }
 
 /** 记一次活动:最后活动时刻往前推,闸重排。每条子进程回传都是活着的证据。 */
@@ -688,7 +699,7 @@ function reclaimIdle(sessionId: number, entry: RuntimeEntry): void {
  * ——会话记录里得留着这一轮为什么断了,不然人只看到对话突然停住。
  */
 function silenceDeath(sessionId: number, entry: RuntimeEntry): void {
-  const minutes = (entry.deps.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS) / 60_000;
+  const minutes = SILENCE_TIMEOUT_MS / 60_000;
   console.error(`[agent-session] 会话 ${sessionId} 执行中连续 ${minutes} 分钟静默,判死`);
   reclaim(sessionId, entry);
   recordSystemMessage(entry.deps, sessionId, SILENCE_ABORTED);

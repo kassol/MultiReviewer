@@ -200,10 +200,10 @@ export type PanelHarnessOptions = {
    */
   agentSessionIdleReclaimMs?: number;
   /**
-   * Agent 会话子进程执行中的静默判死门槛(毫秒,issue #335)。省略取服务默认的五分钟;验判死
-   * 的用例拨到秒级,与 Reviewer 那套子进程注入静默闸同一做法。
+   * Agent 会话静默闸的时钟(issue #399)。省略即真实的 `setTimeout`;验判死的用例注入一份
+   * 自己说了算的,免得等满那个门槛。
    */
-  agentSessionSilenceTimeoutMs?: number;
+  agentSessionSilenceTimer?: WebhookServerDeps["agentSessionSilenceTimer"];
   /**
    * 仅 `startReadyPanelHarness` 认:起完就用 `GITEA_REPO` 的坐标注册这个仓库
    * (`POST /repos`),断言 201。省略即不注册。
@@ -378,9 +378,9 @@ export async function startPanelHarness(
     ...(options.agentSessionIdleReclaimMs === undefined
       ? {}
       : { agentSessionIdleReclaimMs: options.agentSessionIdleReclaimMs }),
-    ...(options.agentSessionSilenceTimeoutMs === undefined
+    ...(options.agentSessionSilenceTimer === undefined
       ? {}
-      : { agentSessionSilenceTimeoutMs: options.agentSessionSilenceTimeoutMs }),
+      : { agentSessionSilenceTimer: options.agentSessionSilenceTimer }),
     ...(options.now === undefined ? {} : { now: options.now }),
     onScheduledCheck: (rangeReviewId, result) => {
       scheduledChecks.push({ rangeReviewId, result });
