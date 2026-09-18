@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -757,8 +757,13 @@ function TrackerSection({
   canChat: boolean;
 }) {
   const [openSpec, setOpenSpec] = useState<TrackerSpec | null>(null);
-  /** 弹窗是受控的,没有 `Dialog.Trigger`,焦点得自己送回打开它的那颗 spec 标题键。 */
-  const returnFocus = useDialogReturnFocus();
+  /** 弹窗是受控的,没有 `Dialog.Trigger`,焦点得自己送回打开它的那颗 spec 标题键;
+   *  关掉 spec 后列表重取、那颗键被换掉时,按 spec id 找回新渲染的同一颗。 */
+  const lastOpenedSpecId = useRef<number | null>(null);
+  const returnFocus = useDialogReturnFocus(useCallback(
+    () => document.querySelector<HTMLElement>(`[data-spec-trigger="${lastOpenedSpecId.current}"]`),
+    [],
+  ));
   const ticketCount = specs.reduce((total, spec) => total + spec.tickets.length, 0);
   const pickable = pickableTickets(specs);
 
@@ -799,8 +804,10 @@ function TrackerSection({
                     color="gray"
                     size="2"
                     className="min-w-0 shrink justify-start text-left"
+                    data-spec-trigger={spec.id}
                     onClick={(event) => {
                       returnFocus.captureTrigger(event);
+                      lastOpenedSpecId.current = spec.id;
                       setOpenSpec(spec);
                     }}
                   >
