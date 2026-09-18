@@ -775,7 +775,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
                 color="gray"
                 radius="none"
                 size="3"
-                className="h-auto min-h-11 w-full justify-start gap-3 px-4 py-[11px] text-left sm:min-h-0"
+                className="h-auto w-full justify-start gap-3 px-4 py-[11px] text-left"
                 disabled={provider.conflict}
                 onClick={() => {
                   setCandidate({
@@ -1287,7 +1287,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
                     size="2"
                     key={model.identity}
                     className={cn(
-                      "flex min-h-11 cursor-pointer items-center gap-3 border-t border-line px-4 py-[11px] first:border-t-0 sm:min-h-0",
+                      "flex cursor-pointer items-center gap-3 border-t border-line px-4 py-[11px] pointer-coarse:min-h-11 first:border-t-0",
                       checked && "bg-accent-tint",
                     )}
                   >
@@ -2773,7 +2773,7 @@ function ServiceDetail({
   onConfigureCustom: () => void;
 }) {
   return (
-    <div className="flex min-w-0 flex-col gap-4 max-sm:[&_button]:min-h-11">
+    <div className="flex min-w-0 flex-col gap-4">
       <div className="flex min-w-0 flex-col gap-0.5">
         <h2 className="min-w-0 text-3xl font-extrabold tracking-[-0.02em]">{service.name}</h2>
         <p className="text-base text-text-muted">
@@ -2807,7 +2807,7 @@ function ServiceDetail({
                 params={{ provider: service.provider }}
                 activeOptions={{ exact: true }}
                 aria-current={active ? "page" : undefined}
-                className="min-h-11 data-[active]:before:inset-x-3.5 data-[active]:before:h-[3px] data-[active]:before:rounded-t-[3px] sm:min-h-0"
+                className="data-[active]:before:inset-x-3.5 data-[active]:before:h-[3px] data-[active]:before:rounded-t-[3px]"
               >
                 {label}
                 {candidate === "models" && service.models !== undefined ? (

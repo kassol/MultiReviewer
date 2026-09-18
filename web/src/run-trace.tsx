@@ -177,7 +177,7 @@ function BatchFiles({ files }: { files: readonly string[] }) {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
         aria-controls={listId}
-        className="flex min-h-11 items-center gap-1 self-start text-left text-xs text-text-secondary hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:min-h-0"
+        className="flex items-center gap-1 self-start text-left text-xs text-text-secondary pointer-coarse:min-h-11 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
       >
         {open ? <ChevronDownIcon aria-hidden /> : <ChevronRightIcon aria-hidden />}
         <span className="font-mono tabular-nums">{files.length}</span> 个文件
@@ -557,7 +557,7 @@ export function ToolCall({ event }: { event: { payload: Record<string, unknown> 
             onClick={() => setOpen(!open)}
             aria-expanded={open}
             aria-controls={argsId}
-            className="min-h-11 min-w-0 flex-1 truncate text-left font-mono text-xs text-text-secondary underline decoration-dotted underline-offset-4 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:min-h-0"
+            className="min-w-0 flex-1 truncate text-left font-mono text-xs text-text-secondary underline decoration-dotted underline-offset-4 pointer-coarse:min-h-11 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
           >
             {summarize(args)}
           </button>
@@ -585,7 +585,7 @@ export function ToolCall({ event }: { event: { payload: Record<string, unknown> 
             onClick={() => setNestedOpen(!nestedOpen)}
             aria-expanded={nestedOpen}
             aria-controls={nestedId}
-            className="flex min-h-11 items-center gap-1 self-start text-left text-xs text-text-secondary hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:min-h-0"
+            className="flex items-center gap-1 self-start text-left text-xs text-text-secondary pointer-coarse:min-h-11 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
           >
             {nestedOpen ? <ChevronDownIcon aria-hidden /> : <ChevronRightIcon aria-hidden />}
             取证过程（{nested.length} 条）

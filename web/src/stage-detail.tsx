@@ -681,7 +681,7 @@ function RerunAction({
                 variant="soft"
                 color="gray"
                 size={{ initial: "3", sm: "2" }}
-                className="min-h-11 w-full sm:min-h-0 sm:w-auto"
+                className="w-full sm:w-auto"
               >
                 取消
               </Button>
@@ -690,7 +690,7 @@ function RerunAction({
               type="submit"
               variant="solid"
               size={{ initial: "3", sm: "2" }}
-              className="min-h-11 w-full shadow-accent sm:min-h-0 sm:w-auto"
+              className="w-full shadow-accent sm:w-auto"
               disabled={rerun.isPending}
             >
               {rerun.isPending ? "触发中…" : "重跑"}
@@ -1090,7 +1090,6 @@ function RoundDrawer({
                 variant="soft"
                 color="gray"
                 size={{ initial: "3", sm: "2" }}
-                className="min-h-11 sm:min-h-0"
               >
                 <a href={pullUrl} target="_blank" rel="noreferrer">
                   <ExternalLinkIcon aria-hidden />

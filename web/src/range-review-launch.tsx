@@ -249,14 +249,14 @@ function LaunchDialogContent({
             </Text>
             <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex">
               <Dialog.Close>
-                <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }} className="min-h-11 w-full sm:min-h-0 sm:w-auto">
+                <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }} className="w-full sm:w-auto">
                   取消
                 </Button>
               </Dialog.Close>
               <Button
                 type="submit"
                 variant="solid"
-                className="min-h-11 w-full shadow-accent sm:min-h-0 sm:w-auto"
+                className="w-full shadow-accent sm:w-auto"
                 size={{ initial: "3", sm: "2" }}
                 disabled={!ready || create.isPending}
               >

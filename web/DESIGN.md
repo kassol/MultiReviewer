@@ -274,7 +274,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 组件的响应式 size 负责视觉密度，输入方式负责命中面积。两件事分开：size 看屏宽，命中面积看 `@media (pointer: coarse)`——触屏笔记本和横屏平板宽于 640px，也照样要 44px。
 
-规则只写在 `styles.css` 的 coarse 块里一处，页面不再新写 `max-sm:min-h-11`：按屏宽补高是旧写法，鼠标桌面把窗口拖窄也会变 44px。存量的 `max-sm:min-h-11` 已在 issue #387 清完，页面里不再有这个写法。覆盖范围：
+规则只写在 `styles.css` 的 coarse 块里一处，页面不再新写 `max-sm:min-h-11`：按屏宽补高是旧写法，鼠标桌面把窗口拖窄也会变 44px。存量的按屏宽补高已在 issue #387 与本轮补清完：`max-sm:min-h-11`、`max-sm:[&_button]:min-h-11` 与 `min-h-11 … sm:min-h-0` 三种写法在 `sm` 断点上都不再有。覆盖范围：
 
 | 控件 | 类名 | 做法 |
 | --- | --- | --- |
@@ -293,7 +293,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - Radix 控件（Themes 的 Button、IconButton、TextField、Select、菜单项、Tab）什么都不写，上表的 coarse 地板已经盖到。正文里想点的文字要凑命中区时，换成 `variant="ghost"` 的 Button 就落进这一档。
 - 正文流里的裸 `<a>` 与 Router `Link` 用 `.touch-link`：撑高整行会把下面的内容推下去，透明 `::after` 不占布局流。
 - 原生 `<button>`（不经 Themes 渲染的那几个）与 cmdk 选项自己写 `pointer-coarse:min-h-11`：没有 Radix 类名，coarse 地板认不出它。cmdk 选项写在 `CommandItem` 的基础类名里一处，全部调用点跟着走。
-- 不用 `max-sm:min-h-11`：它看屏宽，鼠标桌面拖窄窗口也会跟着变高。
+- 不用 `max-sm:min-h-11`，也不用 `min-h-11 … sm:min-h-0`、`max-sm:[&_button]:min-h-11` 这类换了写法的同一意图：它们都看屏宽，鼠标桌面拖窄窗口也会跟着变高。
 
 开关放在行尾时，整行包一层 `<label>`（权限行就是这样）：浏览器把 label 的点击转投给它标注的控件，Switch 渲染成 `<button>`，属于可标注元素，开关自身的键盘与焦点行为不变。
 

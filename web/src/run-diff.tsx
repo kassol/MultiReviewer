@@ -152,7 +152,7 @@ function OriginalSaid({ finding }: { finding: RunFinding }) {
     <Collapsible.Root className="group/said flex flex-col gap-1.5">
       <Collapsible.Trigger
         type="button"
-        className="flex min-h-11 cursor-pointer items-center gap-1.5 self-start text-sm text-text-secondary outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-ring/50 sm:min-h-0"
+        className="flex cursor-pointer items-center gap-1.5 self-start text-sm text-text-secondary outline-none pointer-coarse:min-h-11 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         <span>各模型原文</span>
         <ChevronDownIcon
@@ -265,7 +265,6 @@ export function FindingRow({
               variant="ghost"
               color="gray"
               radius="full"
-              className="min-h-11 min-w-11 sm:min-h-0 sm:min-w-0"
               asChild
             >
               <a
@@ -383,7 +382,6 @@ export function FindingRow({
                 variant="soft"
                 color="gray"
                 size={{ initial: "3", sm: "1" }}
-                className="min-h-11 sm:min-h-0"
                 highContrast
                 disabled={dispose.isPending}
                 onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
@@ -396,7 +394,6 @@ export function FindingRow({
                 <Button
                   variant="solid"
                   size={{ initial: "3", sm: "1" }}
-                  className="min-h-11 sm:min-h-0"
                   disabled={dispose.isPending}
                   onClick={() => dispose.mutate({ id: finding.id, disposition: "resolved", note })}
                   aria-label={`确认处置 ${finding.file}:${finding.line} 的 Finding`}
@@ -407,7 +404,6 @@ export function FindingRow({
                   variant="ghost"
                   color="gray"
                   size={{ initial: "3", sm: "1" }}
-                  className="min-h-11 sm:min-h-0"
                   highContrast
                   onClick={() => { setComposing(false); setNote(""); }}
                   aria-label={`取消处置 ${finding.file}:${finding.line} 的 Finding`}
@@ -420,7 +416,6 @@ export function FindingRow({
                 variant="soft"
                 color="gray"
                 size={{ initial: "3", sm: "1" }}
-                className="min-h-11 sm:min-h-0"
                 highContrast
                 onClick={() => setComposing(true)}
                 aria-label={`处置 ${finding.file}:${finding.line} 的 Finding`}
