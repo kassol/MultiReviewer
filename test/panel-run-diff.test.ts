@@ -9,18 +9,18 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  hashTestPassword,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const PASSWORD = "run-diff-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 type DiffFile = {
   path: string;

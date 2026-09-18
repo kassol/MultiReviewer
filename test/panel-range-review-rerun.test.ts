@@ -9,10 +9,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChangedFile } from "../src/forge/forge.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
+  hashTestPassword,
   startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
   userCookie as userCookieRow,
@@ -22,7 +22,7 @@ import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const PASSWORD = "range-rerun-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 type RangeReview = {
   id: number;

@@ -10,13 +10,13 @@ import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 
 import type { ChangedFile, Forge } from "../src/forge/forge.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import type { ReviewRange } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
   PANEL_ADMIN_USERNAME,
+  hashTestPassword,
   startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
   type PanelHarness,
@@ -25,7 +25,7 @@ import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const PASSWORD = "range-advance-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 type RangeReview = {
   id: number;

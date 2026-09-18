@@ -7,11 +7,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  hashTestPassword,
   startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
   type PanelHarness,
@@ -20,7 +20,7 @@ import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const PASSWORD = "run-directive-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 const DIRECTIVE = "这一轮只报 P0,重点看并发";
 

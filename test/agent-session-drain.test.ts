@@ -19,7 +19,6 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { CREDENTIAL_MASTER_KEY_ENV } from "../src/panel/credential-crypto.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import { makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { startFakeGitea } from "./support/fake-gitea.ts";
@@ -29,6 +28,7 @@ import {
   GITEA_REPO,
   HARNESS_SPEC,
   PANEL_CREDENTIAL_MASTER_KEY,
+  hashTestPassword,
   seedAvailableModelService,
 } from "./support/panel-harness.ts";
 
@@ -91,7 +91,7 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
   store.createPanelUser({
     username: USERNAME,
     displayName: null,
-    passwordHash: await hashPassword(PASSWORD),
+    passwordHash: await hashTestPassword(PASSWORD),
     mustChangePassword: false,
     createdAt: AT,
     isSystemAdmin: false,

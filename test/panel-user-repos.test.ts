@@ -8,12 +8,12 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   PANEL_ADMIN_USERNAME,
+  hashTestPassword,
   HARNESS_PR as PR,
   seedRepo,
   startReadyPanelHarness,
@@ -250,7 +250,7 @@ async function scopedUser(
     store.createPanelUser({
       username,
       displayName: null,
-      passwordHash: await hashPassword(PASSWORD),
+      passwordHash: await hashTestPassword(PASSWORD),
       mustChangePassword: false,
       createdAt: "2026-08-20T00:00:00.000Z",
       isSystemAdmin: false,

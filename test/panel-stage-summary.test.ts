@@ -12,20 +12,20 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore, type Store } from "../src/review/store.ts";
 import { seedRun as seedRunRow } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  hashTestPassword,
   startPanelHarness,
   userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
 const PASSWORD = "stage-summary-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 type SummaryFinding = {
   id: number;
