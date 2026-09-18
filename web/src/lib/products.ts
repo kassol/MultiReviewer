@@ -168,6 +168,34 @@ export function unassignedRepos<T extends ProductRepoRef>(
   return repos.filter((repo) => !taken.has(repo.repoId));
 }
 
+/** 要关掉的那一条:一条 spec,或一张票(issue #389)。 */
+export type TrackerCloseTarget =
+  | { kind: "spec"; id: number; title: string }
+  | { kind: "ticket"; id: number; title: string };
+
+/**
+ * 关掉一条 spec 或一张票之前,确认弹窗上的标题与说明(issue #389)。关这一下原先点完就写,
+ * 而它在弹窗头部,手机上一次滑动误触就把人家的 spec 关了。
+ *
+ * 文案写清关的是哪一条:spec 报标题,票报票号加标题——一条 spec 下的票标题常常只差几个字。
+ * 关掉 spec 不动它下面的票(服务端只改这一行的状态),关掉一张票会把被它挡着的票放开
+ * (`pickableTickets` 只看未关的阻塞),两句说明各自照这个写。
+ */
+export function trackerCloseConfirm(target: TrackerCloseTarget): {
+  title: string;
+  description: string;
+} {
+  return target.kind === "spec"
+    ? {
+        title: `关掉 spec「${target.title}」?`,
+        description: "它下面那几张票的开关不动。关错了再点一次「重新打开这条 spec」。",
+      }
+    : {
+        title: `关掉票 #${target.id}「${target.title}」?`,
+        description: "它不再算可开工的票,被它挡着的票跟着放开。关错了再点一次「重新打开」。",
+      };
+}
+
 /** 一条陈述拆出来的一段:`code` 为真即它写在一对反引号之间。 */
 export type StatementPart = { code: boolean; text: string };
 

@@ -21,7 +21,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { Fragment, useEffect, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -46,11 +46,13 @@ import {
   productQueryKey,
   specQueryKey,
   statementParts,
+  trackerCloseConfirm,
   type Product,
   type ProductKnowledge,
   type ProductRepo,
   type SpecDetail,
   type TicketLabel,
+  type TrackerCloseTarget,
   type TrackerSpec,
   type TrackerState,
   type TrackerTicket,
@@ -942,6 +944,8 @@ function SpecDialog({
 }) {
   const queryClient = useQueryClient();
   const [failure, setFailure] = useState<string | null>(null);
+  /** 等人点头才写的那一下(issue #389):null 即此刻没有要关的东西。 */
+  const [closing, setClosing] = useState<TrackerCloseTarget | null>(null);
   const detail = useQuery({
     queryKey: specQueryKey(productId, spec?.id),
     queryFn: () => fetchJson<SpecDetail>(`/products/${productId}/specs/${spec!.id}`),
@@ -972,6 +976,15 @@ function SpecDialog({
   ): void => {
     act.mutate({ path: `/products/${productId}/tickets/${ticketId}`, method: "PUT", payload });
   };
+  /**
+   * 确认弹窗关闭带退场动画,`closing` 一清空,还在淡出的那一帧就会渲染出「关掉票 #undefined」
+   * (issue #382 在权限页踩过同一脚)。记住最后一个非空值,退场期间照它渲染;点了做什么仍读
+   * `closing`。
+   */
+  const lastClosing = useRef(closing);
+  if (closing !== null) lastClosing.current = closing;
+  const shownClosing = closing ?? lastClosing.current;
+  const closeConfirm = shownClosing === null ? null : trackerCloseConfirm(shownClosing);
 
   return (
     <Dialog.Root
@@ -1019,13 +1032,18 @@ function SpecDialog({
                   color="gray"
                   disabled={busy}
                   onClick={() =>
-                    act.mutate({
-                      path: `/products/${productId}/specs/${detail.data.spec.id}`,
-                      method: "PUT",
-                      payload: {
-                        state: detail.data.spec.state === "open" ? "closed" : "open",
-                      },
-                    })
+                    // 关要先问一句(issue #389);重新打开照旧点完就写——它把状态放回去,误触没有代价。
+                    detail.data.spec.state === "open"
+                      ? setClosing({
+                          kind: "spec",
+                          id: detail.data.spec.id,
+                          title: detail.data.spec.title,
+                        })
+                      : act.mutate({
+                          path: `/products/${productId}/specs/${detail.data.spec.id}`,
+                          method: "PUT",
+                          payload: { state: "open" },
+                        })
                   }
                 >
                   {detail.data.spec.state === "open" ? "关掉这条 spec" : "重新打开这条 spec"}
@@ -1092,9 +1110,9 @@ function SpecDialog({
                       color="gray"
                       disabled={busy}
                       onClick={() =>
-                        ticketAction(ticket.id, {
-                          state: ticket.state === "open" ? "closed" : "open",
-                        })
+                        ticket.state === "open"
+                          ? setClosing({ kind: "ticket", id: ticket.id, title: ticket.title })
+                          : ticketAction(ticket.id, { state: "open" })
                       }
                     >
                       {ticket.state === "open" ? "关掉" : "重新打开"}
@@ -1123,6 +1141,38 @@ function SpecDialog({
             ))}
           </div>
         )}
+        <ConfirmDialog
+          open={closing !== null}
+          onOpenChange={(open) => {
+            if (!open) setClosing(null);
+          }}
+          maxWidth="440px"
+          title={closeConfirm?.title ?? ""}
+          titleSize="4"
+          titleMb="2"
+          description={closeConfirm?.description ?? ""}
+          descriptionClassName="break-words"
+          direction={{ initial: "column-reverse", sm: "row" }}
+          cancelLabel="取消"
+          cancelVariant="outline"
+          confirm={{
+            label: "关掉",
+            color: "gray",
+            highContrast: true,
+            closesDialog: true,
+            onClick: () => {
+              if (closing === null) return;
+              if (closing.kind === "ticket") ticketAction(closing.id, { state: "closed" });
+              else {
+                act.mutate({
+                  path: `/products/${productId}/specs/${closing.id}`,
+                  method: "PUT",
+                  payload: { state: "closed" },
+                });
+              }
+            },
+          }}
+        />
       </Dialog.Content>
     </Dialog.Root>
   );

@@ -2,7 +2,7 @@
  * 产品页那几个纯函数的单测(issue #331、#360、#363)。归属候选判反了的后果是一列只会回 409
  * 的候选,或者一个归不进任何产品的新仓库;术语分组漏一组的后果是那几条术语在产品页上不见
  * 了;可开工判错的后果是有人去做一张还被挡着、或者已经有人认领的票;陈述拆段判错的后果是
- * 半句话被当成代码渲染。
+ * 半句话被当成代码渲染;关掉前那句确认报错对象的后果是人照着它点头,关掉的却是另一条。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -12,6 +12,7 @@ import {
   groupedTerms,
   pickableTickets,
   statementParts,
+  trackerCloseConfirm,
   unassignedRepos,
   type ProductKnowledge,
   type TrackerSpec,
@@ -136,4 +137,16 @@ test("陈述按成对的反引号拆段,没配对的整句当正文", () => {
   // 一个反引号都没有,以及空串。
   assert.deepEqual(statementParts("一句普通的话"), [{ code: false, text: "一句普通的话" }]);
   assert.deepEqual(statementParts(""), [{ code: false, text: "" }]);
+});
+
+test("关掉前那句确认报清楚关的是哪一条", () => {
+  assert.deepEqual(trackerCloseConfirm({ kind: "spec", id: 7, title: "结算重构" }), {
+    title: "关掉 spec「结算重构」?",
+    description: "它下面那几张票的开关不动。关错了再点一次「重新打开这条 spec」。",
+  });
+  // 票报票号:一条 spec 下的票标题常常只差几个字,只报标题认不出是哪一张。
+  assert.deepEqual(trackerCloseConfirm({ kind: "ticket", id: 12, title: "补对账口径" }), {
+    title: "关掉票 #12「补对账口径」?",
+    description: "它不再算可开工的票,被它挡着的票跟着放开。关错了再点一次「重新打开」。",
+  });
 });
