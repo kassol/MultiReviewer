@@ -210,7 +210,7 @@ function SegmentButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "rounded-chip px-3.5 py-1 whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-60 max-sm:min-h-11 max-sm:px-4",
+        "rounded-chip px-3.5 py-1 whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-60 pointer-coarse:min-h-11 max-sm:px-4",
         active ? "bg-surface font-semibold shadow-control" : "text-text",
       )}
     >
@@ -322,7 +322,7 @@ export function RepoRowMenu({
             variant="ghost"
             color="gray"
             size={{ initial: "3", sm: "1" }}
-            className={cn("max-sm:min-h-11 max-sm:min-w-11", className)}
+            className={className}
             aria-label={`${repo.owner}/${repo.repo} 的操作`}
             onClick={returnFocus.captureTrigger}
           >
@@ -884,7 +884,7 @@ function ConfigureDialogContent({
             >
               <Select.Trigger
                 aria-label="本仓库的最低报告等级"
-                className="w-full max-sm:min-h-11 sm:w-auto"
+                className="w-full sm:w-auto"
               />
               <Select.Content>
                 {(["P0", "P1", "P2"] as const).map((severity) => (
@@ -929,7 +929,7 @@ function ConfigureDialogContent({
           >
             <Select.Trigger
               aria-label="本仓库的默认分支"
-              className="w-full max-sm:min-h-11 sm:w-auto"
+              className="w-full sm:w-auto"
             />
             <Select.Content>
               <Select.Item value={FOLLOW_GITEA_BRANCH}>跟随 Gitea 默认</Select.Item>
@@ -1121,7 +1121,6 @@ export function RerunPullRequest({
               size={{ initial: "3", sm: "2" }}
               placeholder="如:42"
               inputMode="numeric"
-              className="max-sm:min-h-11"
               value={pullNumber}
               onChange={(event) => setPullNumber(event.target.value)}
             />
@@ -1134,7 +1133,6 @@ export function RerunPullRequest({
               size={{ initial: "3", sm: "2" }}
               placeholder={RUN_DIRECTIVE_PLACEHOLDER}
               maxLength={500}
-              className="max-sm:min-h-11"
               value={directive}
               onChange={(event) => setDirective(event.target.value)}
             />
@@ -1146,7 +1144,7 @@ export function RerunPullRequest({
           <Text
             as="label"
             size="2"
-            className="flex cursor-pointer items-center gap-2 max-sm:min-h-11"
+            className="flex cursor-pointer items-center gap-2"
           >
             <Checkbox
               checked={fullReview}
@@ -1351,7 +1349,6 @@ function RegisterDialogContent({
                 variant="ghost"
                 color="gray"
                 size={{ initial: "3", sm: "1" }}
-                className="max-sm:min-h-11 max-sm:min-w-11"
                 aria-label="关闭注册仓库"
               >
                 <Cross2Icon aria-hidden />

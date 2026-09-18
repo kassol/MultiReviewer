@@ -262,7 +262,7 @@ export function BranchCombobox({
           variant="outline"
           color="gray"
           size={CONTROL_SIZE}
-          className={cn(OUTLINED_CONTROL, "w-full justify-between px-3 text-left max-sm:min-h-11")}
+          className={cn(OUTLINED_CONTROL, "w-full justify-between px-3 text-left")}
           aria-label="选择分支"
         >
           <span className={cn("min-w-0 truncate", branch === null && "font-normal text-text-muted")}>
@@ -299,7 +299,6 @@ export function BranchCombobox({
                   onSelect(item.name);
                   setOpen(false);
                 }}
-                className="max-sm:min-h-11"
               >
                 <CheckIcon aria-hidden className={item.name === branch ? "opacity-100" : "opacity-0"} />
                 <span className="min-w-0 flex-1 break-all">{item.name}</span>
@@ -364,7 +363,7 @@ function RoleCell({
       onClick={onClick}
       title={selection === null ? undefined : commitSelectionLabel(selection)}
       className={cn(
-        "min-w-0 rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 max-sm:min-h-11",
+        "min-w-0 rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 pointer-coarse:min-h-11",
         active
           ? "border-accent-track bg-accent-tint"
           : "border-input bg-surface shadow-control hover:bg-sunken",
@@ -409,7 +408,7 @@ function PickerFilters({
         value={filters.datePreset}
         onValueChange={(value) => onChange({ datePreset: value as DatePreset })}
       >
-        <Select.Trigger aria-label="提交日期" className="w-full max-sm:min-h-11 sm:w-auto" />
+        <Select.Trigger aria-label="提交日期" className="w-full sm:w-auto" />
         <Select.Content>
           <Select.Item value="all">不限日期</Select.Item>
           <Select.Item value="7">最近 7 天</Select.Item>
@@ -423,7 +422,7 @@ function PickerFilters({
         value={filters.merge}
         onValueChange={(value) => onChange({ merge: value as MergeFilter })}
       >
-        <Select.Trigger aria-label="合并提交筛选" className="w-full max-sm:min-h-11 sm:w-auto" />
+        <Select.Trigger aria-label="合并提交筛选" className="w-full sm:w-auto" />
         <Select.Content>
           <Select.Item value="all">全部提交</Select.Item>
           <Select.Item value="only">仅合并提交</Select.Item>
@@ -431,7 +430,7 @@ function PickerFilters({
         </Select.Content>
       </Select.Root>
       {legalContext ? (
-        <Text as="label" size="2" className="flex cursor-pointer items-center gap-2 px-1 whitespace-nowrap max-sm:min-h-11">
+        <Text as="label" size="2" className="flex cursor-pointer items-center gap-2 px-1 whitespace-nowrap">
           <Checkbox
             checked={filters.legalOnly}
             onCheckedChange={(checked) => onChange({ legalOnly: checked === true })}
@@ -681,7 +680,7 @@ export function CommitPicker({
               size={CONTROL_SIZE}
               value={mode}
               onValueChange={(value) => setMode(value as PickerMode)}
-              className="w-full max-sm:min-h-11"
+              className="w-full"
             >
               <SegmentedControl.Item value="branch" className="flex-1">分支</SegmentedControl.Item>
               <SegmentedControl.Item value="tag" className="flex-1">Tag</SegmentedControl.Item>
@@ -713,7 +712,7 @@ export function CommitPicker({
               variant="ghost"
               color="gray"
               size={CONTROL_SIZE}
-              className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+              className="shrink-0"
               aria-label="刷新分支与 Tag"
               disabled={syncedBranches.isFetching}
               onClick={refreshRefs}
@@ -733,7 +732,7 @@ export function CommitPicker({
             aria-label={mode === "branch" ? "搜索提交" : "搜索 Tag"}
             autoFocus={baseLocked}
             size={CONTROL_SIZE}
-            className="min-w-0 flex-1 max-sm:min-h-11"
+            className="min-w-0 flex-1"
           >
             <TextField.Slot><MagnifyingGlassIcon aria-hidden /></TextField.Slot>
           </TextField.Root>
@@ -755,7 +754,7 @@ export function CommitPicker({
                   variant="outline"
                   color="gray"
                   size={CONTROL_SIZE}
-                  className={cn(OUTLINED_CONTROL, "whitespace-nowrap max-sm:min-h-11")}
+                  className={cn(OUTLINED_CONTROL, "whitespace-nowrap")}
                 >
                   筛选
                   {secondaryFilterCount > 0 ? (
@@ -1005,7 +1004,7 @@ export function CommitPicker({
             color="gray"
             highContrast
             size={CONTROL_SIZE}
-            className="m-3 w-[calc(100%-1.5rem)] max-sm:min-h-11"
+            className="m-3 w-[calc(100%-1.5rem)]"
             disabled={currentQuery.isFetchingNextPage}
             aria-busy={currentQuery.isFetchingNextPage}
             onClick={() => void currentQuery.fetchNextPage()}

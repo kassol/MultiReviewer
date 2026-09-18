@@ -65,7 +65,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
                 id="new-password"
                 type="password"
                 size={{ initial: "3", sm: "2" }}
-                className="min-w-0 w-full max-sm:min-h-11"
+                className="min-w-0 w-full"
                 autoComplete="new-password"
                 autoFocus
                 value={password}
@@ -80,7 +80,7 @@ export function PasswordPage({ session, next }: { session: PanelSession; next: s
                 id="confirm-password"
                 type="password"
                 size={{ initial: "3", sm: "2" }}
-                className="min-w-0 w-full max-sm:min-h-11"
+                className="min-w-0 w-full"
                 autoComplete="new-password"
                 value={confirm}
                 aria-invalid={error !== null || undefined}

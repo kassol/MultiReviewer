@@ -237,7 +237,7 @@ export function ModelComposer({ value, onChange, provider, onValidityChange }: M
                       variant="ghost"
                       color="red"
                       size="1"
-                      className="-mr-1 shrink-0 touch-manipulation max-sm:min-h-11 max-sm:min-w-11"
+                      className="-mr-1 shrink-0 touch-manipulation"
                       onClick={() => toggle(identity)}
                     >
                       <Cross2Icon aria-hidden />
@@ -394,7 +394,7 @@ function ProviderPane({
       <div className="border-b border-line bg-sunken px-3 py-2">
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
-          className="min-w-0 w-full max-sm:min-h-11"
+          className="min-w-0 w-full"
           aria-label={`搜索 ${group.provider} 的模型`}
           placeholder={`搜索 ${group.provider} 的模型`}
           value={query}

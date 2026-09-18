@@ -71,7 +71,7 @@ export function AuxiliaryModelPicker({
           return onChange(modelRefWithLevel(next, first));
         }}
       >
-        <Select.Trigger id={`${id}-model`} placeholder="选择一个可用模型" className="max-sm:min-h-11" />
+        <Select.Trigger id={`${id}-model`} placeholder="选择一个可用模型" />
         <Select.Content position="popper">
           {emptyLabel === undefined ? null : (
             <Select.Item value={UNSET}>{emptyLabel}</Select.Item>

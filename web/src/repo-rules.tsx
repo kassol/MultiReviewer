@@ -614,7 +614,6 @@ function RuleSetDialogContent({
               variant="ghost"
               color="gray"
               size={{ initial: "3", sm: "1" }}
-              className="max-sm:min-h-11 max-sm:min-w-11"
               aria-label="关闭知识集"
             >
               <Cross2Icon aria-hidden />
@@ -1799,7 +1798,6 @@ function ExplorationLaunchContent({
             variant="ghost"
             color="gray"
             size="3"
-            className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭发起基点探索"
           >
             <Cross2Icon aria-hidden />
@@ -1961,7 +1959,6 @@ function ConsolidationLaunchContent({
             variant="ghost"
             color="gray"
             size="3"
-            className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭发起知识整理"
           >
             <Cross2Icon aria-hidden />

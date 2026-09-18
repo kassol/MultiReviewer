@@ -192,7 +192,6 @@ function LaunchDialogContent({
               onChange={(event) => setTitle(event.target.value)}
               placeholder="例如：认证流程重构"
               size={{ initial: "3", sm: "2" }}
-              className="max-sm:min-h-11"
             />
           </div>
           <Text id="range-review-title-help" as="p" size="1" color="gray" className="mt-1 text-right">
@@ -268,7 +267,6 @@ function LaunchDialogContent({
             variant="ghost"
             color="gray"
             size="3"
-            className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭发起范围审查"
           >
             <Cross2Icon aria-hidden />

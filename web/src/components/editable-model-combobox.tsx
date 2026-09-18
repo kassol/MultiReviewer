@@ -48,7 +48,7 @@ export function EditableModelCombobox({
         <TextField.Root
           id={inputId}
           size={{ initial: "3", sm: "2" }}
-          className="min-w-0 w-full rounded-r-none font-mono max-sm:min-h-11"
+          className="min-w-0 w-full rounded-r-none font-mono"
           placeholder="只填 model id，不带 provider 前缀"
           value={value}
           disabled={disabled}
@@ -67,7 +67,7 @@ export function EditableModelCombobox({
                 variant="outline"
                 color="gray"
                 size={{ initial: "3", sm: "2" }}
-                className="-ml-px rounded-l-none px-2.5 max-sm:min-h-11 max-sm:min-w-11"
+                className="-ml-px rounded-l-none px-2.5"
                 disabled={disabled}
                 aria-label="从自动发现的模型中选择"
                 aria-controls={listId}

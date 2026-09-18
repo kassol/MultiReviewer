@@ -412,7 +412,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
                     id={inputId}
                     size={{ initial: "3", sm: "2" }}
                     color={invalid ? "red" : "gray"}
-                    className="min-w-0 w-40 font-mono max-sm:min-h-11"
+                    className="min-w-0 w-40 font-mono"
                     inputMode="numeric"
                     placeholder={`系统默认 ${baseline.defaults[field]}`}
                     value={draft.limits[field]}
@@ -464,7 +464,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
             value={draft.severity}
             onValueChange={(next) => edit({ severity: next as Draft["severity"] })}
           >
-            <Select.Trigger id="min-report-severity" className="w-full max-sm:min-h-11 sm:w-auto" />
+            <Select.Trigger id="min-report-severity" className="w-full sm:w-auto" />
             <Select.Content>
               <Select.Item value={FOLLOW_DEFAULT}>
                 系统默认（{baseline.defaults.minReportSeverity}）

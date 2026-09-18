@@ -55,7 +55,6 @@ export function ThinkingLevelPicker({
           {...(triggerId === undefined ? {} : { id: triggerId })}
           {...(ariaLabel === undefined ? {} : { "aria-label": ariaLabel })}
           {...(placeholder === undefined ? {} : { placeholder })}
-          className="max-sm:min-h-11"
         />
         <Select.Content position="popper">
           {levels.map((level) => (

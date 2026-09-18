@@ -663,7 +663,7 @@ function RerunAction({
           <Text
             as="label"
             size="2"
-            className="mt-3 flex cursor-pointer items-center gap-2 max-sm:min-h-11"
+            className="mt-3 flex cursor-pointer items-center gap-2"
           >
             <Checkbox
               checked={fullReview}

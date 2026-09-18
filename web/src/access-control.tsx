@@ -621,7 +621,7 @@ export function AccessControlPage() {
         {shownConfirm?.kind === "reset" ? (
           <div className="mt-4 flex flex-col gap-1.5">
             <Text as="label" htmlFor="reset-password" size="2" weight="medium">临时密码</Text>
-            <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
+            <TextField.Root id="reset-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full" autoComplete="new-password" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} />
           </div>
         ) : null}
       </ConfirmDialog>
@@ -637,7 +637,7 @@ function RepoChecklist({ repos, selected, disabled, onToggle }: { repos: readonl
   return (
     <div className="flex max-h-56 flex-col gap-0.5 overflow-y-auto overscroll-contain rounded-lg border border-line p-1.5">
       {repos.map((repo) => (
-        <Text as="label" key={repo.repoId} size="2" className="flex min-h-9 cursor-pointer items-center gap-2 rounded-sm px-2 max-sm:min-h-11 hover:bg-sunken has-disabled:cursor-not-allowed has-disabled:opacity-70">
+        <Text as="label" key={repo.repoId} size="2" className="flex min-h-9 cursor-pointer items-center gap-2 rounded-sm px-2 hover:bg-sunken has-disabled:cursor-not-allowed has-disabled:opacity-70">
           <Checkbox
             size="2"
             checked={selected.includes(repo.repoId)}
@@ -681,15 +681,15 @@ function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUse
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-1.5">
                 <Text as="label" htmlFor="new-username" size="2" weight="medium">用户名</Text>
-                <TextField.Root id="new-username" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />
+                <TextField.Root id="new-username" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Text as="label" htmlFor="new-display-name" size="2" weight="medium">显示名</Text>
-                <TextField.Root id="new-display-name" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="可留空" />
+                <TextField.Root id="new-display-name" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="可留空" />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Text as="label" htmlFor="new-password" size="2" weight="medium">临时密码</Text>
-                <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+                <TextField.Root id="new-password" type="password" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
               </div>
               {/* 勾选组不是单个控件,标签靠 `aria-labelledby` 挂在整组上。 */}
               <div className="flex flex-col gap-1.5" role="group" aria-labelledby="new-user-repos-label">
@@ -705,7 +705,7 @@ function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUse
           ) : (
             <div className="flex flex-col gap-1.5">
               <Text as="label" htmlFor="new-role-name" size="2" weight="medium">角色名</Text>
-              <TextField.Root id="new-role-name" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full max-sm:min-h-11" autoFocus value={name} onChange={(event) => setName(event.target.value)} />
+              <TextField.Root id="new-role-name" size={{ initial: "3", sm: "2" }} className="min-w-0 w-full" autoFocus value={name} onChange={(event) => setName(event.target.value)} />
             </div>
           )}
           <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
@@ -720,7 +720,6 @@ function CreateDialog({ kind, open, busy, repos, trigger, onOpen, onClose, onUse
                 variant="ghost"
                 color="gray"
                 size={{ initial: "3", sm: "1" }}
-                className="max-sm:min-h-11 max-sm:min-w-11"
                 aria-label="关闭新建窗口"
               >
                 <Cross2Icon aria-hidden />

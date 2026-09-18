@@ -651,7 +651,7 @@ export function ModelServiceSetupLayout() {
                     color="gray"
                     radius="full"
                     size={{ initial: "3", sm: "2" }}
-                    className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+                    className="shrink-0"
                     aria-label="关闭配置模型服务"
                     onClick={confirmationFocus.captureTrigger}
                   >
@@ -740,7 +740,7 @@ export function ModelServiceSourcePage({ canWriteCustom }: { canWriteCustom: boo
         </div>
         <TextField.Root
           size={{ initial: "3", sm: "2" }}
-          className="w-full min-w-0 max-sm:min-h-11"
+          className="w-full min-w-0"
           aria-label="搜索内置 provider"
           placeholder="输入 provider 标识或名称"
           value={query}
@@ -882,7 +882,7 @@ export function BuiltinServiceDiscoverPage({ provider }: { provider: string }) {
             id="setup-builtin-credential"
             type="password"
             size={{ initial: "3", sm: "2" }}
-            className="w-full min-w-0 max-sm:min-h-11"
+            className="w-full min-w-0"
             autoComplete="off"
             value={credential}
             required
@@ -1220,7 +1220,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             <TextField.Root
               id="setup-custom-provider"
               size={{ initial: "3", sm: "2" }}
-              className="w-full min-w-0 font-mono max-sm:min-h-11"
+              className="w-full min-w-0 font-mono"
               value={active.provider}
               required
               disabled={phase !== null || editing}
@@ -1233,7 +1233,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
             <TextField.Root
               id="setup-custom-base-url"
               size={{ initial: "3", sm: "2" }}
-              className="w-full min-w-0 font-mono max-sm:min-h-11"
+              className="w-full min-w-0 font-mono"
               type="url"
               value={active.baseUrl}
               required
@@ -1250,7 +1250,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
               disabled={phase !== null}
               onValueChange={(value) => update({ api: value as CustomProtocol })}
             >
-              <Select.Trigger id="setup-custom-protocol" className="w-full min-w-0 max-sm:min-h-11" />
+              <Select.Trigger id="setup-custom-protocol" className="w-full min-w-0" />
               <Select.Content position="popper" color="gray">
                 <Select.Item value="openai-completions">{CUSTOM_PROTOCOL_LABEL["openai-completions"]}</Select.Item>
                 <Select.Item value="openai-responses">{CUSTOM_PROTOCOL_LABEL["openai-responses"]}</Select.Item>
@@ -1264,7 +1264,7 @@ export function CustomServiceDiscoverPage({ provider }: { provider?: string }) {
               id="setup-custom-credential"
               type="password"
               size={{ initial: "3", sm: "2" }}
-              className="w-full min-w-0 max-sm:min-h-11"
+              className="w-full min-w-0"
               autoComplete="off"
               value={active.credential}
               required
@@ -1750,7 +1750,6 @@ function CredentialControls({
                     color="gray"
                     radius="full"
                     size={{ initial: "3", sm: "2" }}
-                    className="max-sm:min-h-11 max-sm:min-w-11"
                     aria-label="关闭凭据维护"
                   >
                     <Cross2Icon aria-hidden />
@@ -1969,7 +1968,7 @@ function CustomServiceControls({
               <TextField.Root
                 id={`rename-provider-${service.provider}`}
                 size={{ initial: "3", sm: "2" }}
-                className="w-full min-w-0 font-mono max-sm:min-h-11"
+                className="w-full min-w-0 font-mono"
                 value={newProvider}
                 required
                 disabled={renameService.isPending}
@@ -2003,7 +2002,6 @@ function CustomServiceControls({
                   color="gray"
                   radius="full"
                   size={{ initial: "3", sm: "2" }}
-                  className="max-sm:min-h-11 max-sm:min-w-11"
                   aria-label="关闭服务迁移"
                 >
                   <Cross2Icon aria-hidden />
@@ -2166,7 +2164,7 @@ function CatalogControls({
           <TextField.Root
             id={inputId}
             size={{ initial: "3", sm: "2" }}
-            className="w-full min-w-0 font-mono max-sm:min-h-11"
+            className="w-full min-w-0 font-mono"
             value={model}
             disabled={busy || !canValidate}
             placeholder="例如 gpt-5.2-codex"
@@ -2425,7 +2423,7 @@ function ModelsTable({
             <TextField.Root
               id="model-list-search"
               size={{ initial: "3", sm: "2" }}
-              className="w-full min-w-0 max-sm:min-h-11"
+              className="w-full min-w-0"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="按名称或 model id 筛选"
@@ -2527,7 +2525,7 @@ function ModelsTable({
                   <Text
                     as="label"
                     size="2"
-                    className="mt-0.5 inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-start justify-center pt-0.5 max-sm:min-h-11 max-sm:min-w-11"
+                    className="mt-0.5 inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-start justify-center pt-0.5"
                   >
                     <Checkbox
                       size="2"

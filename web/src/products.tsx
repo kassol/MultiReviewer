@@ -478,7 +478,7 @@ function Annotations({ entry }: { entry: ProductKnowledge }) {
       <Collapsible.Trigger asChild>
         <button
           type="button"
-          className="flex min-h-9 items-center gap-1 text-sm text-text-muted max-sm:min-h-11 hover:text-text-secondary"
+          className="flex min-h-9 items-center gap-1 text-sm text-text-muted pointer-coarse:min-h-11 hover:text-text-secondary"
         >
           出处 <span className="tabular-nums">{entry.annotations.length}</span> 处
           <ChevronDownIcon

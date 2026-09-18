@@ -363,7 +363,7 @@ export function ProductRail({
                           variant="ghost"
                           color="gray"
                           size={{ initial: "3", sm: "1" }}
-                          className="shrink-0 max-sm:min-h-11 max-sm:min-w-11 transition-opacity md:opacity-0 md:group-hover/repo:opacity-100 md:group-focus-within/repo:opacity-100 md:focus-visible:opacity-100"
+                          className="shrink-0 transition-opacity md:opacity-0 md:group-hover/repo:opacity-100 md:group-focus-within/repo:opacity-100 md:focus-visible:opacity-100"
                           aria-label={`把 ${repoPath(repo)} 移出 ${current.name}`}
                           disabled={working}
                           onClick={() => {
@@ -597,7 +597,7 @@ export function NameDialog({
             <TextField.Root
               id="product-name"
               size={{ initial: "3", sm: "2" }}
-              className="min-w-0 w-full max-sm:min-h-11"
+              className="min-w-0 w-full"
               autoFocus
               maxLength={64}
               value={name}
@@ -661,7 +661,7 @@ function RoleField({
         aria-label={`改 ${repoPath(repo)} 的职责`}
         disabled={busy}
         onClick={() => setEditing(true)}
-        className="-mx-1 flex min-w-0 items-start gap-1 rounded-sm px-1 py-0.5 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 max-sm:min-h-11"
+        className="-mx-1 flex min-w-0 items-start gap-1 rounded-sm px-1 py-0.5 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:min-h-11"
       >
         <span className={repo.role === null ? "min-w-0 break-words text-text-disabled" : "min-w-0 break-words"}>
           {repo.role ?? "填写职责"}
@@ -790,7 +790,7 @@ function AttachDialog({
               <TextField.Root
                 id="attach-repo-role"
                 size={{ initial: "3", sm: "2" }}
-                className="min-w-0 w-full max-sm:min-h-11"
+                className="min-w-0 w-full"
                 placeholder="选填,例如:后端 API(Node)"
                 maxLength={64}
                 value={role}

@@ -345,7 +345,7 @@ function DailyIncrementDialogContent({
             variant="ghost"
             color="gray"
             size={{ initial: "3", sm: "2" }}
-            className="shrink-0 max-sm:min-h-11 max-sm:min-w-11"
+            className="shrink-0"
             aria-label="刷新分支"
             disabled={branchOptions.synced.isFetching}
             onClick={() => setRefreshGeneration((current) => current + 1)}
@@ -364,7 +364,6 @@ function DailyIncrementDialogContent({
             type="time"
             required
             size={{ initial: "3", sm: "2" }}
-            className="max-sm:min-h-11"
             value={time}
             onChange={(event) => {
               setError(null);
@@ -372,7 +371,7 @@ function DailyIncrementDialogContent({
             }}
           />
         </Text>
-        <Text as="label" size="2" className="flex cursor-pointer items-center gap-2 max-sm:min-h-11">
+        <Text as="label" size="2" className="flex cursor-pointer items-center gap-2">
           <Checkbox
             checked={fullReview}
             onCheckedChange={(checked) => {
@@ -617,7 +616,7 @@ function AdvanceDialogContent({
             <Text
               as="label"
               size="2"
-              className="mt-3 flex cursor-pointer items-center gap-2 max-sm:min-h-11"
+              className="mt-3 flex cursor-pointer items-center gap-2"
             >
               <Checkbox
                 checked={fullReview}
@@ -664,7 +663,6 @@ function AdvanceDialogContent({
             variant="ghost"
             color="gray"
             size="3"
-            className="max-sm:min-h-11 max-sm:min-w-11"
             aria-label="关闭增量评审"
           >
             <Cross2Icon aria-hidden />
