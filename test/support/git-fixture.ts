@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after } from "node:test";
@@ -199,9 +199,21 @@ function commit(
   return git(dir, "rev-parse", "HEAD");
 }
 
-/** 在临时目录中建一个真实仓库,形态与一个待审 pull request 一致。 */
-export function makeRepo(options: RepoFixtureOptions): RepoFixture {
-  const dir = mkdtempSync(join(tmpdir(), "multireviewer-repo-"));
+/** 已经建好的仓库模板,按选项一份。`dir` 只用来复制,不交给调用方。 */
+type RepoTemplate = { dir: string; baseSha: string; headSha: string; mergeBaseSha: string };
+
+/**
+ * 本文件建过的仓库模板(issue #400)。
+ *
+ * 建一个夹具仓库要十来个 git 子进程、约 195 毫秒,而一个测试文件里每条用例都建一个,
+ * 选项还常常一字不差。同一份选项只建一次,之后每次调用从模板复制一份目录(约 8 毫秒)。
+ */
+const repoTemplates = new Map<string, RepoTemplate>();
+
+/** 建一份模板仓库。它不返回给调用方,因此不会被任何用例写到。 */
+function buildRepoTemplate(options: RepoFixtureOptions): RepoTemplate {
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-repo-template-"));
+  fileCleanups.push(() => removeTempDir(dir));
   git(dir, "init", "--initial-branch=main", "--quiet");
 
   const mergeBaseSha = commit(dir, options.base, "base");
@@ -215,6 +227,27 @@ export function makeRepo(options: RepoFixtureOptions): RepoFixture {
     : mergeBaseSha;
 
   // 留在 base 分支上,使 clone 的默认分支与 head 不同,迫使实现显式 checkout。
+  return { dir, baseSha, headSha, mergeBaseSha };
+}
+
+/**
+ * 在临时目录中建一个真实仓库,形态与一个待审 pull request 一致。
+ *
+ * 每次调用拿到的都是一个独立的目录:模板只是省下那十来个 git 子进程,一条用例往自己
+ * 这份仓库里提交、建分支、删分支,别的用例看不见。同一份选项建出来的 commit sha 因此
+ * 也在整个文件里稳定不变。
+ */
+export function makeRepo(options: RepoFixtureOptions): RepoFixture {
+  const key = JSON.stringify(options);
+  let template = repoTemplates.get(key);
+  if (template === undefined) {
+    template = buildRepoTemplate(options);
+    repoTemplates.set(key, template);
+  }
+  const { baseSha, headSha, mergeBaseSha } = template;
+  const dir = mkdtempSync(join(tmpdir(), "multireviewer-repo-"));
+  cpSync(template.dir, dir, { recursive: true, preserveTimestamps: true });
+
   return {
     dir,
     baseSha,

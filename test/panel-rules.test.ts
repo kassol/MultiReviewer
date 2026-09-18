@@ -12,11 +12,11 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
+  hashTestPassword,
   seedRepo,
   startReadyPanelHarness,
   type PanelHarness,
@@ -120,7 +120,7 @@ async function scopedUser(
     store.createPanelUser({
       username,
       displayName: null,
-      passwordHash: await hashPassword(PASSWORD),
+      passwordHash: await hashTestPassword(PASSWORD),
       mustChangePassword: false,
       createdAt: "2026-08-20T00:00:00.000Z",
       isSystemAdmin: false,

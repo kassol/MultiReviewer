@@ -9,14 +9,20 @@ const TAG_BYTES = 32;
 
 const argon2Async = promisify(argon2);
 
+/** Argon2id 的代价参数。哈希时由调用方定,验证时从 PHC 串里读回来。 */
+export type PasswordParameters = { memory: number; passes: number; parallelism: number };
+
+/** RFC 9106 第二组推荐值。生产的每一次哈希都用它。 */
+const PRODUCTION_PARAMETERS: PasswordParameters = {
+  memory: MEMORY_KIB,
+  passes: PASSES,
+  parallelism: PARALLELISM,
+};
+
 function derive(
   password: string,
   salt: Buffer,
-  parameters: { memory: number; passes: number; parallelism: number } = {
-    memory: MEMORY_KIB,
-    passes: PASSES,
-    parallelism: PARALLELISM,
-  },
+  parameters: PasswordParameters,
 ): Promise<Buffer> {
   return argon2Async("argon2id", {
     message: password,
@@ -28,12 +34,22 @@ function derive(
   });
 }
 
-/** RFC 9106 second-recommended Argon2id parameters, stored as one PHC string. */
-export async function hashPassword(password: string): Promise<string> {
+/**
+ * 一次 Argon2id 哈希,存成一条 PHC 串。参数省略即 RFC 9106 的第二组推荐值,生产的每
+ * 一处调用都走它。
+ *
+ * 参数只给测试用(issue #400):推荐值下哈希一次约 70 毫秒、验证一次约 60 毫秒,而测试
+ * harness 每次启动至少登录一次。`verifyPassword` 认的是串里写着的那组参数,所以按下限
+ * 哈希出来的记录照样验得通。
+ */
+export async function hashPassword(
+  password: string,
+  parameters: PasswordParameters = PRODUCTION_PARAMETERS,
+): Promise<string> {
   const salt = randomBytes(SALT_BYTES);
-  const tag = await derive(password, salt);
+  const tag = await derive(password, salt, parameters);
   return (
-    `$argon2id$v=19$m=${MEMORY_KIB},t=${PASSES},p=${PARALLELISM}$` +
+    `$argon2id$v=19$m=${parameters.memory},t=${parameters.passes},p=${parameters.parallelism}$` +
     `${salt.toString("base64").replace(/=+$/, "")}$${tag.toString("base64").replace(/=+$/, "")}`
   );
 }

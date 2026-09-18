@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
+import { hashPassword, verifyPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
@@ -51,6 +51,17 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
     fetch(`${baseUrl}/api${path}`, init);
   return { baseUrl, dbPath: db.path, request };
 }
+
+test("哈希的代价参数:省略即生产推荐值,给了下限也验得通", async () => {
+  const production = await hashPassword(PASSWORD);
+  assert.match(production, /^\$argon2id\$v=19\$m=65536,t=3,p=4\$/);
+  assert.equal(await verifyPassword(production, PASSWORD), true);
+
+  const cheap = await hashPassword(PASSWORD, { memory: 8, passes: 1, parallelism: 1 });
+  assert.match(cheap, /^\$argon2id\$v=19\$m=8,t=1,p=1\$/);
+  assert.equal(await verifyPassword(cheap, PASSWORD), true);
+  assert.equal(await verifyPassword(cheap, "wrong"), false);
+});
 
 function cookie(response: Response): string {
   return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;

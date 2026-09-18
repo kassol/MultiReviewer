@@ -7,11 +7,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import { seedRun as seedRunRow } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
+  hashTestPassword,
   seedHistoricalRepo,
   startPanelHarness,
   type PanelHarness,
@@ -316,7 +316,7 @@ test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读�
   store.createPanelUser({
     username: "plain-user",
     displayName: null,
-    passwordHash: await hashPassword(password),
+    passwordHash: await hashTestPassword(password),
     mustChangePassword: false,
     createdAt: "2026-08-20T00:00:00.000Z",
     isSystemAdmin: false,

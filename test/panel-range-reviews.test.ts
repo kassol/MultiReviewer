@@ -9,13 +9,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Forge, RepoRef } from "../src/forge/forge.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
   HARNESS_PR_TITLE,
   PANEL_ADMIN_USERNAME,
+  hashTestPassword,
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
@@ -23,7 +23,7 @@ import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
 const PASSWORD = "range-review-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 type RangeReview = {
   id: number;

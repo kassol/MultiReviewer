@@ -5,7 +5,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import type { Reviewer, ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store.ts";
 import {
@@ -17,6 +16,7 @@ import {
 import {
   GITEA_REPO,
   HARNESS_PR,
+  hashTestPassword,
   seedHistoricalRepo,
   startPanelHarness,
   startReadyPanelHarness,
@@ -129,7 +129,7 @@ test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分
   store.createPanelUser({
     username: "no-permission",
     displayName: null,
-    passwordHash: await hashPassword(password),
+    passwordHash: await hashTestPassword(password),
     mustChangePassword: false,
     createdAt: "2026-08-25T00:00:00.000Z",
     isSystemAdmin: false,

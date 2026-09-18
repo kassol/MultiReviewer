@@ -4,7 +4,6 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { decryptCredential, encryptCredential } from "../src/panel/credential-crypto.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import {
   modelServiceTargetFingerprint,
@@ -16,13 +15,14 @@ import {
 } from "../src/review/store.ts";
 import {
   PANEL_CREDENTIAL_MASTER_KEY,
+  hashTestPassword,
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
 const PASSWORD = "model-service-reader-password";
-const PASSWORD_HASH = await hashPassword(PASSWORD);
+const PASSWORD_HASH = await hashTestPassword(PASSWORD);
 
 /**
  * 把这个仓库的模型覆盖换成这一份(null 即清成跟随全局)。写入口只有整块那一个

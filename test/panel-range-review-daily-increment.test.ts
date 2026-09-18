@@ -8,11 +8,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  hashTestPassword,
   startRangeReview as startRangeReviewRow,
   startReadyPanelHarness,
   userCookie,
@@ -21,7 +21,7 @@ import {
 import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 
 const PASSWORD = "range-daily-increment-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 type RangeReview = {
   id: number;

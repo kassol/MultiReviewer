@@ -39,9 +39,23 @@ import {
 } from "./git-fixture.ts";
 import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.ts";
 
+/**
+ * 用例的 Argon2id 代价参数(issue #400):`verifyPassword` 认的下限。
+ *
+ * 生产参数下哈希一次约 70 毫秒、验证一次约 60 毫秒,而面板 harness 每次启动都要登录
+ * 一次,整套测试为此花掉三十多秒 CPU。用例断言的是登录判定本身,与代价强度无关。要
+ * 断言 argon2 真实代价的 `panel-auth.test.ts` 照旧用生产参数哈希。
+ */
+const TEST_PASSWORD_PARAMETERS = { memory: 8, passes: 1, parallelism: 1 };
+
+/** 按用例参数哈希一个口令。建面板用户的用例一律用它,不直接调 `hashPassword`。 */
+export function hashTestPassword(password: string): Promise<string> {
+  return hashPassword(password, TEST_PASSWORD_PARAMETERS);
+}
+
 export const PANEL_ADMIN_USERNAME = "panel-admin";
 export const PANEL_ADMIN_PASSWORD = "panel-harness-password";
-const PANEL_ADMIN_PASSWORD_HASH = await hashPassword(PANEL_ADMIN_PASSWORD);
+const PANEL_ADMIN_PASSWORD_HASH = await hashTestPassword(PANEL_ADMIN_PASSWORD);
 export const PANEL_BASE_URL = "https://reviewer.example.test";
 
 export const GITEA_REPO = { id: 4242, owner: "acme", repo: "widgets" };
@@ -571,7 +585,7 @@ export async function scopedUser(
     store.createPanelUser({
       username,
       displayName: null,
-      passwordHash: await hashPassword(password),
+      passwordHash: await hashTestPassword(password),
       mustChangePassword: false,
       createdAt: at,
       isSystemAdmin: false,

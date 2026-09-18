@@ -9,7 +9,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Forge } from "../src/forge/forge.ts";
-import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore } from "../src/review/store.ts";
 import {
@@ -17,6 +16,7 @@ import {
   HARNESS_PR,
   HARNESS_SPEC,
   PANEL_ADMIN_USERNAME,
+  hashTestPassword,
   seedRepo,
   startReadyPanelHarness,
   type PanelHarness,
@@ -24,7 +24,7 @@ import {
 } from "./support/panel-harness.ts";
 
 const PASSWORD = "dispose-batch-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 /** 阶段汇总里要断言的那几格。 */
 type SummaryFinding = {

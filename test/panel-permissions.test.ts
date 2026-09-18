@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore } from "../src/review/store.ts";
 import { PANEL_ROUTES } from "../src/webhook/server.ts";
 import {
   GITEA_REPO,
+  hashTestPassword,
   scopedUser,
   seedRepo,
   startPanelHarness,
@@ -16,7 +16,7 @@ import {
 } from "./support/panel-harness.ts";
 
 const PASSWORD = "permission-test-password";
-const HASH = await hashPassword(PASSWORD);
+const HASH = await hashTestPassword(PASSWORD);
 
 const ROUTE_EXPECTATIONS = [
   ["POST", "/session", "public", "-"],

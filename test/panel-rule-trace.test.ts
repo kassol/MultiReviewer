@@ -8,7 +8,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hashPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
@@ -16,6 +15,7 @@ import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
+  hashTestPassword,
   startReadyPanelHarness,
   type PanelHarness,
   type PanelHarnessOptions,
@@ -253,7 +253,7 @@ test("知识轨迹的可见性与知识集读侧一致:分配外 404,别的仓�
     store.createPanelUser({
       username: "outsider",
       displayName: null,
-      passwordHash: await hashPassword(PASSWORD),
+      passwordHash: await hashTestPassword(PASSWORD),
       mustChangePassword: false,
       createdAt: AT,
       isSystemAdmin: false,
