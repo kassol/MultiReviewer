@@ -10,7 +10,7 @@ const TAG_BYTES = 32;
 const argon2Async = promisify(argon2);
 
 /** Argon2id 的代价参数。哈希时由调用方定,验证时从 PHC 串里读回来。 */
-export type PasswordParameters = { memory: number; passes: number; parallelism: number };
+type PasswordParameters = { memory: number; passes: number; parallelism: number };
 
 /** RFC 9106 第二组推荐值。生产的每一次哈希都用它。 */
 const PRODUCTION_PARAMETERS: PasswordParameters = {
