@@ -167,7 +167,7 @@ export function SummaryRate() {
     return (
       <Link
         to="/stats"
-        className="flex min-h-11 items-center gap-1.5 rounded-sm border border-danger/30 bg-danger-tint px-2.5 py-1.5 text-danger outline-none transition-colors hover:border-danger/50 focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-0"
+        className="flex items-center gap-1.5 rounded-sm border border-danger/30 bg-danger-tint px-2.5 py-1.5 text-danger outline-none transition-colors pointer-coarse:min-h-11 hover:border-danger/50 focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         <ExclamationTriangleIcon className="size-4" aria-hidden />
         <span className="text-xs font-medium">处置率读取失败</span>
@@ -183,7 +183,7 @@ export function SummaryRate() {
   return (
     <Link
       to="/stats"
-      className="flex min-h-11 items-baseline gap-1.5 rounded-sm border border-card-line bg-surface px-2.5 py-1.5 outline-none transition-colors hover:border-primary/50 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50 lg:min-h-0"
+      className="flex items-baseline gap-1.5 rounded-sm border border-card-line bg-surface px-2.5 py-1.5 outline-none transition-colors pointer-coarse:min-h-11 hover:border-primary/50 hover:text-primary focus-visible:ring-3 focus-visible:ring-ring/50"
     >
       <b className="font-mono text-base font-semibold tabular-nums">{percent(all)}%</b>
       <span className="text-xs text-text-muted">

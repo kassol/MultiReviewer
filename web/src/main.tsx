@@ -261,7 +261,9 @@ function TopBar({
             onClick={onSearch}
             aria-label="搜索或跳转"
             aria-keyshortcuts="Meta+K Control+K"
-            className="flex min-h-11 min-w-11 items-center justify-center gap-[7px] rounded-md bg-fill px-0 text-md text-text-muted outline-none transition-colors hover:bg-fill/80 focus-visible:ring-2 focus-visible:ring-ring/40 sm:w-[300px] sm:justify-between sm:px-3 lg:min-h-0 lg:min-w-0 lg:py-1.5"
+            // `min-w-11` 是布局宽度不是命中面积:`sm` 以下这颗只剩放大镜图标、内边距为 0,
+            // 宽度只能由它给,去掉就塌成 14px 的图标宽。
+            className="flex min-w-11 items-center justify-center gap-[7px] rounded-md bg-fill px-0 py-1.5 text-md text-text-muted outline-none transition-colors pointer-coarse:min-h-11 hover:bg-fill/80 focus-visible:ring-2 focus-visible:ring-ring/40 sm:w-[300px] sm:justify-between sm:px-3"
           >
             <span className="flex items-center gap-[7px]">
               <MagnifyingGlassIcon className="size-3.5" aria-hidden />
@@ -323,7 +325,7 @@ function NavLink({ item }: { item: NavigationItem }) {
       to={item.to}
       activeOptions={{ exact: item.to === "/" }}
       aria-current={stageUnderRecords ? "page" : undefined}
-      className="flex min-h-11 shrink-0 flex-col items-stretch justify-end outline-none focus-visible:ring-2 focus-visible:ring-ring/40 lg:min-h-0"
+      className="flex shrink-0 flex-col items-stretch justify-end outline-none pointer-coarse:min-h-11 focus-visible:ring-2 focus-visible:ring-ring/40"
     >
       {({ isActive }) => {
         const active = isActive || stageUnderRecords;
@@ -366,7 +368,7 @@ function UserMenu({ session, onLogout }: { session: PanelSession; onLogout: () =
         <button
           type="button"
           aria-label={`账户 ${name}`}
-          className="flex size-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/40 lg:size-[27px]"
+          className="flex size-[27px] shrink-0 items-center justify-center rounded-full outline-none pointer-coarse:size-11 focus-visible:ring-2 focus-visible:ring-ring/40"
         >
           <span className="flex size-[27px] items-center justify-center rounded-full bg-[image:var(--v8-avatar-gradient)] text-base font-medium text-white">
             {name.slice(0, 1).toUpperCase()}
