@@ -174,8 +174,9 @@ export type PanelHarnessOptions = {
   /** Reviewer 的组装。省略即按 spec 建脚本 Reviewer;真组装那一档传 `buildReviewers`。 */
   buildReviewers?: WebhookServerDeps["buildReviewers"];
   /**
-   * 本轮合并 agent 的组装(issue #304)。省略即用真实的 Pi 子进程实现;要断言这一轮的
-   * 合并用了哪一处模型的用例注入脚本化实现,收到的那份运行模型就是解析出的辅助模型。
+   * 本轮合并 agent 的组装(issue #304)。省略即注入一个当场报失败的实现(见下面那处
+   * 默认值);要断言这一轮的合并用了哪一处模型的用例注入脚本化实现,收到的那份运行模型
+   * 就是解析出的辅助模型。
    */
   buildMergeAgent?: WebhookServerDeps["buildMergeAgent"];
   /** 先写进库的全局模型组合。省略取 `[HARNESS_SPEC]`,给空数组即「还没配组合」。 */
@@ -354,9 +355,14 @@ export async function startPanelHarness(
       if (options.buildReviewers !== undefined) return options.buildReviewers(plans);
       return plans.map((plan) => scriptedReviewer(plan.spec.model, []));
     },
-    ...(options.buildMergeAgent === undefined
-      ? {}
-      : { buildMergeAgent: options.buildMergeAgent }),
+    // 默认注入一个当场报失败的合并 agent(issue #395)。不给的话本轮合并会去 fork 真的
+    // Pi 子进程,而 harness 上的模型服务指向的是一个假地址:那一次请求要等满 Pi 的请求
+    // 超时(约 25 秒)才报「Request timed out.」,每条报出两条以上 Finding 的用例都白等
+    // 一遍。失败即整体退回算法合并,轨迹照旧记一条 `merge_fallback`——与真跑一次超时的
+    // 结果逐字相同,只有那句原因换了措辞。要真实子进程的用例自己传 `buildMergeAgent`。
+    buildMergeAgent:
+      options.buildMergeAgent ??
+      (() => async () => ({ groups: [], failure: "harness 没有注入合并 agent" })),
     cacheDir: cache.dir,
     dbPath: db.path,
     bootstrapSecret: "panel-harness-bootstrap",
