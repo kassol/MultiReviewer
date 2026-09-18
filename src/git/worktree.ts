@@ -162,6 +162,27 @@ async function ensureClone(
 }
 
 /**
+ * 缺哪一个 commit 才取回(issue #400)。
+ *
+ * 一次比较项推进要连着解析范围、推分支、备工作树三步,每一步各 `ensureClone` 一次,而
+ * 一次 `fetch --prune` 约 70 毫秒:后两步要的 commit 第一步刚取回来,再取一遍只是把同
+ * 一件事做第二遍。副本还没建出来时 `resolveCommit` 解析不到,照旧 clone。
+ */
+async function ensureCommits(
+  path: string,
+  cloneUrl: string,
+  auth: readonly string[],
+  revisions: readonly string[],
+): Promise<void> {
+  for (const revision of revisions) {
+    if ((await resolveCommit(path, revision)) === undefined) {
+      await ensureClone(path, cloneUrl, auth);
+      return;
+    }
+  }
+}
+
+/**
  * 备好一份读得到 head commit 的工作副本:缓存 clone 首次 clone、之后增量 fetch,再从它
  * 派生一份只属于这次调用的工作树(issue #212)。
  *
@@ -178,7 +199,8 @@ export async function prepareWorktree(
   const clonePath = repoCachePath(options.cacheDir, options.ref);
   const auth = authArgs(options.cloneUrl, options.credentials);
 
-  await ensureClone(clonePath, options.cloneUrl, auth);
+  // 工作树与 merge-base 要的只是这两个 commit 解析得到,两端都在副本里就不再取回。
+  await ensureCommits(clonePath, options.cloneUrl, auth, [options.baseSha, options.headSha]);
 
   const mergeBaseSha = (
     await git(clonePath, ["merge-base", options.baseSha, options.headSha])
@@ -377,7 +399,8 @@ export async function pushBranch(options: PushBranchOptions): Promise<void> {
   const path = repoCachePath(options.cacheDir, options.ref);
   const auth = authArgs(options.cloneUrl, options.credentials);
 
-  await ensureClone(path, options.cloneUrl, auth);
+  // 推的是本地已有的那个 commit,远端跟踪 ref 新不新与这一推无关:sha 在副本里就直接推。
+  await ensureCommits(path, options.cloneUrl, auth, [options.sha]);
   await git(path, [
     ...auth,
     "push",
