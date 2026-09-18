@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type MouseEventHandler } from "react";
 
-import { CheckIcon, ChevronDownIcon, CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Popover, Select, Skeleton, Tabs, Text, TextArea } from "@radix-ui/themes";
+import { ChevronDownIcon, CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
+import { Badge, Callout, Select, Skeleton, Tabs, Text, TextArea } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
@@ -11,8 +11,8 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
-import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { disposableInGroup, foldByRootCause, type RootCauseRef } from "@/lib/root-cause";
+import { firstReportedFrom, roundFilterOptions, roundNumbers } from "@/lib/stage-rounds";
 import { localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -153,73 +153,6 @@ function bucketOf(finding: StageFinding): Exclude<DispositionFilter, "all"> {
   if (finding.disposition === "fixed") return "fixed";
   if (finding.disposition === "resolved") return "resolved";
   return "pending";
-}
-
-/**
- * 文件筛选:可搜索(输入过滤选项),结构照搬 `commit-picker.tsx` 的 `BranchCombobox`——
- * Popover 里挂 `ui/command`,列表已经整份在内存里,cmdk 自带的过滤就够用,不必再自管
- * 一份 search state。
- */
-function FileFilterCombobox({
-  value,
-  files,
-  onChange,
-}: {
-  value: string;
-  files: string[];
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger>
-        <Button
-          type="button"
-          variant="surface"
-          color="gray"
-          highContrast
-          size="1"
-          className="max-w-56 justify-between gap-1 px-2"
-          aria-label="按文件筛选"
-        >
-          <span className="min-w-0 truncate font-mono">{value === "all" ? "全部文件" : value}</span>
-          <ChevronDownIcon aria-hidden className="shrink-0 text-text-muted" />
-        </Button>
-      </Popover.Trigger>
-      <Popover.Content sideOffset={6} align="start" className="w-[min(24rem,calc(100vw-2rem))] p-0">
-        <Command>
-          <CommandInput placeholder="搜索文件" aria-label="搜索文件" />
-          <CommandList>
-            <CommandEmpty>没有匹配的文件</CommandEmpty>
-            <CommandItem
-              value="all"
-              keywords={["全部文件"]}
-              onSelect={() => {
-                onChange("all");
-                setOpen(false);
-              }}
-            >
-              <CheckIcon aria-hidden className={value === "all" ? "opacity-100" : "opacity-0"} />
-              全部文件
-            </CommandItem>
-            {files.map((file) => (
-              <CommandItem
-                key={file}
-                value={file}
-                onSelect={() => {
-                  onChange(file);
-                  setOpen(false);
-                }}
-              >
-                <CheckIcon aria-hidden className={value === file ? "opacity-100" : "opacity-0"} />
-                <span className="min-w-0 truncate break-all font-mono">{file}</span>
-              </CommandItem>
-            ))}
-          </CommandList>
-        </Command>
-      </Popover.Content>
-    </Popover.Root>
-  );
 }
 
 /**
@@ -523,25 +456,24 @@ export function StageSummaryView({
 }) {
   const summary = useStageSummary(scope);
   const [disposition, setDisposition] = useState<DispositionFilter>("all");
-  const [filePath, setFilePath] = useState("all");
+  const [round, setRound] = useState("all");
   const [lineAuthor, setLineAuthor] = useState("all");
   const [severity, setSeverity] = useState<SeverityFilter>("all");
 
   const findings = summary.data?.findings ?? [];
   const entries = summary.data?.timeline ?? [];
-  const files = [...new Set(findings.map((finding) => finding.file))].sort();
   const authors = [
     ...new Set(findings.map((finding) => finding.lineAuthor?.name ?? UNKNOWN_AUTHOR)),
   ].sort();
+  // 轮次序号按这个阶段自己数:一条 Finding「第几轮首次报出」比一个库 id 有意义。
+  const roundOf = roundNumbers(entries);
   const visible = findings.filter(
     (finding) =>
       (disposition === "all" || bucketOf(finding) === disposition) &&
-      (filePath === "all" || finding.file === filePath) &&
+      firstReportedFrom(round, finding.firstRunId, roundOf) &&
       (lineAuthor === "all" || (finding.lineAuthor?.name ?? UNKNOWN_AUTHOR) === lineAuthor) &&
       (severity === "all" || finding.severity === severity),
   );
-  // 轮次序号按这个阶段自己数:一条 Finding「第几轮首次报出」比一个库 id 有意义。
-  const roundOf = new Map(entries.map((entry, index) => [entry.runId, index + 1]));
   // 「处置整组」按整组算,不按筛选后看得见的那几条:筛掉的成员照样会被写进去。判据用
   // 服务端跳过的那一份,没有评论载体的成员不算待处置——否则按钮点得动而一条都写不进去。
   const pendingGroups = new Set(
@@ -625,7 +557,19 @@ export function StageSummaryView({
                 <Select.Item value="fixed">已修复</Select.Item>
               </Select.Content>
             </Select.Root>
-            <FileFilterCombobox value={filePath} files={files} onChange={setFilePath} />
+            {/*
+              轮次筛选(issue #369):选中第 N 轮即「首次报出在第 N 轮或之后」。每天看一次
+              的人要的是这几天新出的那批,与「待处置」叠起来就是当天的工作集。
+            */}
+            <Select.Root value={round} onValueChange={setRound} size="1">
+              <Select.Trigger aria-label="按首次报出轮次筛选" />
+              <Select.Content>
+                <Select.Item value="all">全部轮次</Select.Item>
+                {roundFilterOptions(entries).map((option) => (
+                  <Select.Item key={option.value} value={option.value}>{option.label}</Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
             <Select.Root value={lineAuthor} onValueChange={setLineAuthor} size="1">
               <Select.Trigger aria-label="按行作者筛选" />
               <Select.Content>
