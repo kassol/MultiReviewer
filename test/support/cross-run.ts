@@ -78,7 +78,6 @@ export function asPublished(forge: MemoryForge, resolved: boolean): ExistingRevi
   return forge.publishedComments.map((comment) => ({ ...comment, resolved }));
 }
 
-
 /** 落库的处置人与处置时刻,按落库顺序。 */
 export function dispositionMarks(dbPath: string): { by: unknown; at: unknown }[] {
   return query(dbPath, "SELECT disposed_by, disposed_at FROM finding ORDER BY id").map(
@@ -118,4 +117,3 @@ export function latestDispositions(dbPath: string): string[] {
 
 /** 本轮什么都不报、也不给复核结论的 Reviewer。 */
 export const SILENT = [scriptedReviewer("model-a", [])];
-

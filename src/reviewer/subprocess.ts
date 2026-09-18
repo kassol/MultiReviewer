@@ -38,7 +38,8 @@ type ChildMessage = { kind: string; failure?: string };
  */
 export type SilenceTimer = (onSilence: () => void, ms: number) => () => void;
 
-const realSilenceTimer: SilenceTimer = (onSilence, ms) => {
+/** 生产用的那一份:真 `setTimeout`。`webhook/agent-session.ts` 的生命周期两个闸也用它排。 */
+export const realSilenceTimer: SilenceTimer = (onSilence, ms) => {
   const timer = setTimeout(onSilence, ms);
   return () => clearTimeout(timer);
 };

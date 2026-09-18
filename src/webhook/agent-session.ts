@@ -62,7 +62,7 @@ import {
   type TrackerRequest,
 } from "../reviewer/session-protocol.ts";
 import type { SessionSubagentRun } from "../reviewer/session-subagent.ts";
-import type { SilenceTimer } from "../reviewer/subprocess.ts";
+import { realSilenceTimer, type SilenceTimer } from "../reviewer/subprocess.ts";
 import { runTrackerRequest } from "./product-tracker.ts";
 
 const WORKER_PATH = fileURLToPath(new URL("../reviewer/session-worker.ts", import.meta.url));
@@ -170,7 +170,8 @@ type RuntimeEntry = {
    * 执行中是静默闸、空闲是回收闸,两档共用这一格:同一时刻只有一种在计时,而「换档」正是
    * 状态变化那一刻要做的事(`rearm`)。
    */
-  timer: (() => void) | undefined;
+  /** 撤掉当前排着的那一个闸(空闲回收或静默判死)。 */
+  cancelTimer: (() => void) | undefined;
   child: ChildProcess | undefined;
   /**
    * 正在跑的那一次 `boot`(评审复核)。收拢与 `letGo` 先等它落定:备工作树那段里删会话根,
@@ -554,16 +555,11 @@ export function agentSessionDroppedFromContext(dbPath: string, sessionId: number
   }
 }
 
-/** 排一次 `ms` 之后的回调,返回撤掉它的函数。生命周期那一档的两个闸都按这个形状排。 */
-const realTimer: SilenceTimer = (fire, ms) => {
-  const timer = setTimeout(fire, ms);
-  return () => clearTimeout(timer);
-};
 
 /** 这个会话的两个计时器都停掉:生命周期那一档与流式合并窗口。 */
 function clearTimers(entry: RuntimeEntry): void {
-  entry.timer?.();
-  entry.timer = undefined;
+  entry.cancelTimer?.();
+  entry.cancelTimer = undefined;
   if (entry.stream.timer !== undefined) clearTimeout(entry.stream.timer);
   entry.stream.timer = undefined;
 }
@@ -573,17 +569,17 @@ function clearTimers(entry: RuntimeEntry): void {
  * ——那几条还等着人回来让它接着跑,回收会把这个会话的「下一步」悄悄推到重建之后。
  */
 function rearm(sessionId: number, entry: RuntimeEntry): void {
-  entry.timer?.();
-  entry.timer = undefined;
+  entry.cancelTimer?.();
+  entry.cancelTimer = undefined;
   if (entry.disposed) return;
   if (entry.status === "running") {
-    const arm = entry.deps.silenceTimer ?? realTimer;
-    entry.timer = arm(() => silenceDeath(sessionId, entry), SILENCE_TIMEOUT_MS);
+    const arm = entry.deps.silenceTimer ?? realSilenceTimer;
+    entry.cancelTimer = arm(() => silenceDeath(sessionId, entry), SILENCE_TIMEOUT_MS);
     return;
   }
   if (entry.queue.length > 0) return;
   const idle = entry.deps.idleReclaimMs ?? IDLE_RECLAIM_MS;
-  entry.timer = realTimer(() => reclaimIdle(sessionId, entry), idle);
+  entry.cancelTimer = realSilenceTimer(() => reclaimIdle(sessionId, entry), idle);
 }
 
 /** 记一次活动:最后活动时刻往前推,闸重排。每条子进程回传都是活着的证据。 */
@@ -1345,7 +1341,7 @@ export function deliverAgentSessionMessage(
     status: "running",
     lastActiveAt: deps.now(),
     modelKey: key,
-    timer: undefined,
+    cancelTimer: undefined,
     child: undefined,
     booting: undefined,
     sessionRoot: undefined,
