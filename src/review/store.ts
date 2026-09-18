@@ -6236,7 +6236,9 @@ export function openStore(dbPath: string): Store {
     },
 
     takeAgentSessionPendingMessages(sessionId) {
-      db.exec("BEGIN");
+      // 先读后删:延迟 BEGIN 要在读完之后升级成写锁,别的连接正等着提交时 SQLite 不走
+      // busy timeout、当场报 database is locked(issue #401)。一开头就拿写锁才等得起。
+      db.exec("BEGIN IMMEDIATE");
       try {
         const messages = agentSessionPendingMessages(db, sessionId);
         db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
