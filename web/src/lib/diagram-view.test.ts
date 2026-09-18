@@ -112,3 +112,21 @@ test("适应:窄画布上图比画布矮时仍然纵向居中", () => {
   assert.equal(view.scale, 0.5);
   assert.equal(view.y, 250);
 });
+
+test("适应:超宽的图按宽装到底,不被 0.25 挡在溢出的位置", () => {
+  const canvas = { width: 358, height: 700 };
+  const diagram = { width: 2593, height: 213 };
+  const view = fitView(canvas, diagram);
+  near(diagram.width * view.scale, canvas.width, "装好之后图的宽度");
+  assert.ok(view.scale < MIN_SCALE);
+  near(view.x, 0, "横向对齐");
+});
+
+test("适应到 0.25 以下之后,缩小停在适应那一档,放大照常", () => {
+  const floor = 0.138;
+  const view: DiagramView = { scale: floor, x: 0, y: 0 };
+  assert.equal(zoomAround(view, floor / 1.25, 179, 350, floor).scale, floor);
+  near(zoomAround(view, floor * 1.25, 179, 350, floor).scale, floor * 1.25, "放大一档");
+  // 下界只为这张图放宽:手动缩小仍然到 0.25 为止。
+  assert.equal(zoomAround({ scale: 1, x: 0, y: 0 }, 0.01, 179, 350).scale, MIN_SCALE);
+});

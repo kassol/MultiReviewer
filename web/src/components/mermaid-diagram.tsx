@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 
 import {
   fitView,
+  MIN_SCALE,
   pinchView,
   zoomAround,
   type DiagramView,
@@ -242,19 +243,25 @@ function DiagramStage({ svg, title }: { svg: string; title: string }) {
   // 捏合期间画布左上角在客户端坐标里的位置。浮层是 fixed 的,一次手势里不会动,按下第二根
   // 手指时量一次就够——每帧都 getBoundingClientRect 是一次白搭的布局读取。
   const origin = useRef<Point | null>(null);
+  // 手动缩小的下界。一张特别宽的图「适应」之后会落在 0.25 以下(2593×213 在 358px 画布上是
+  // 0.138),此时仍按 0.25 夹就成了按「缩小」图反而变大、而且再也回不到适应那一档。下界因此
+  // 跟着适应那一档走,人往下缩最多缩到「整张装得下」为止;0.25 对别的图照旧。
+  const minScale = useRef(MIN_SCALE);
 
   /** 整张图按「适应」摆好:宽屏两轴都装下,窄屏按宽装、高度留给纵向拖动。 */
   const fit = useCallback(() => {
     const canvas = canvasRef.current;
     if (canvas === null || size === null) return;
-    setView(fitView({ width: canvas.clientWidth, height: canvas.clientHeight }, size));
+    const fitted = fitView({ width: canvas.clientWidth, height: canvas.clientHeight }, size);
+    minScale.current = Math.min(MIN_SCALE, fitted.scale);
+    setView(fitted);
   }, [size]);
 
   const zoomAtCenter = useCallback((scale: number) => {
     const canvas = canvasRef.current;
     if (canvas === null) return;
     setView((current) =>
-      zoomAround(current, scale, canvas.clientWidth / 2, canvas.clientHeight / 2),
+      zoomAround(current, scale, canvas.clientWidth / 2, canvas.clientHeight / 2, minScale.current),
     );
   }, []);
 
@@ -278,6 +285,7 @@ function DiagramStage({ svg, title }: { svg: string; title: string }) {
           current.scale * factor,
           event.clientX - rect.left,
           event.clientY - rect.top,
+          minScale.current,
         ),
       );
     };
@@ -363,7 +371,8 @@ function DiagramStage({ svg, title }: { svg: string; title: string }) {
           if (before.length >= 2 && anchor !== null) {
             const from = pairFrom(before, anchor);
             const to = pairFrom([...pointers.current.values()], anchor);
-            if (from !== null && to !== null) setView((current) => pinchView(current, from, to));
+            if (from !== null && to !== null)
+              setView((current) => pinchView(current, from, to, minScale.current));
             return;
           }
           const dx = event.clientX - previous.x;
