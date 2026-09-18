@@ -1005,6 +1005,11 @@ function SpecDialog({
   const lastClosing = useRef(closing);
   if (closing !== null) lastClosing.current = closing;
   const shownClosing = closing ?? lastClosing.current;
+  /** 确认弹窗关掉后焦点回到按下的那颗「关掉」;它被换掉时退到本弹窗的关闭键。 */
+  const confirmFocus = useDialogReturnFocus(useCallback(
+    () => document.querySelector<HTMLElement>('[role="dialog"] [aria-label="关闭"]'),
+    [],
+  ));
   const closeConfirm = shownClosing === null ? null : trackerCloseConfirm(shownClosing);
 
   return (
@@ -1072,14 +1077,14 @@ function SpecDialog({
                   variant="soft"
                   color="gray"
                   disabled={busy}
-                  onClick={() =>
+                  onClick={(event) =>
                     // 关要先问一句(issue #389);重新打开照旧点完就写——它把状态放回去,误触没有代价。
                     detail.data.spec.state === "open"
-                      ? setClosing({
+                      ? (confirmFocus.captureTrigger(event), setClosing({
                           kind: "spec",
                           id: detail.data.spec.id,
                           title: detail.data.spec.title,
-                        })
+                        }))
                       : act.mutate({
                           path: `/products/${productId}/specs/${detail.data.spec.id}`,
                           method: "PUT",
@@ -1150,9 +1155,9 @@ function SpecDialog({
                       variant="soft"
                       color="gray"
                       disabled={busy}
-                      onClick={() =>
+                      onClick={(event) =>
                         ticket.state === "open"
-                          ? setClosing({ kind: "ticket", id: ticket.id, title: ticket.title })
+                          ? (confirmFocus.captureTrigger(event), setClosing({ kind: "ticket", id: ticket.id, title: ticket.title }))
                           : ticketAction(ticket.id, { state: "open" })
                       }
                     >
@@ -1187,6 +1192,7 @@ function SpecDialog({
           onOpenChange={(open) => {
             if (!open) setClosing(null);
           }}
+          onCloseAutoFocus={confirmFocus.onCloseAutoFocus}
           maxWidth="440px"
           title={closeConfirm?.title ?? ""}
           titleSize="4"
