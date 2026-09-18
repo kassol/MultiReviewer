@@ -1792,14 +1792,20 @@ export function AgentSessionPage({
                 </Collapsible.Content>
               </Collapsible.Root>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            {/* sm 以下这层壳换成 `contents`:两颗控件升成头部那层 flex 的直接子项,
+                分段控件才能凭 `w-full` 自己占一行,「更多操作」留在标题这一行。sm 起壳
+                照常是一行(issue #388)。 */}
+            <div className="flex shrink-0 items-center gap-2 max-sm:contents">
               {hasWrote ? (
+                // sm 以下分段控件让开标题行:162px 的它与返回、更多操作三件挤在一行时,
+                // 390px 上标题只剩 27px。`order-last` 把它排到「更多操作」之后,`w-full`
+                // 逼它换行,于是成为头部正下方的整行(issue #388)。
                 <SegmentedControl.Root
-                  size="1"
+                  size={{ initial: "3", sm: "1" }}
                   value={pane}
                   onValueChange={(next) => setPane(next as "chat" | "wrote")}
                   aria-label="中栏内容"
-                  className="xl:hidden"
+                  className="max-sm:order-last max-sm:w-full xl:hidden"
                 >
                   <SegmentedControl.Item value="chat">对话</SegmentedControl.Item>
                   <SegmentedControl.Item value="wrote">spec 与票</SegmentedControl.Item>
