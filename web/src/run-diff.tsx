@@ -7,6 +7,7 @@ import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
 import { Button } from "@/components/theme-button";
+import { isAnchorable } from "@/lib/finding-position";
 import { localClock, localDay } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -510,12 +511,15 @@ export function FilePatch({
       hunk.lines.flatMap((line) => (line.newLine === null ? [] : [line.newLine])),
     ),
   );
+  // 可锚定的判据同一份(issue #368 追加修复):行号落在这一轮渲染范围内,且没带
+  // placedRunId、或 placedRunId 就是这一轮——位置属于别的轮次时行号即使落在范围内
+  // 也不算,那是另一轮代码上的巧合。
   const byLine = new Map<number, RunFinding[]>();
   for (const finding of findings) {
-    if (!rendered.has(finding.line)) continue;
+    if (!isAnchorable(finding, runId, rendered)) continue;
     byLine.set(finding.line, [...(byLine.get(finding.line) ?? []), finding]);
   }
-  const unanchored = findings.filter((finding) => !rendered.has(finding.line));
+  const unanchored = findings.filter((finding) => !isAnchorable(finding, runId, rendered));
   const focusLine = findings.find((finding) => finding.id === focusFindingId)?.line;
 
   if (patch.isPending) {

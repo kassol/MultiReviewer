@@ -162,6 +162,8 @@ test("重定位只写 placed_line / placed_run_id,报出位置、归属与评论
   const [finding] = summary.findings;
   assert.equal(finding!.line, 16);
   assert.equal(finding!.reportedLine, 6);
+  assert.equal(finding!.placedRunId, second);
+  // 报出位置的所属轮次不受重定位影响:这一行本就是在 second 那一轮报出的。
   assert.equal(finding!.lastRunId, second);
   assert.equal(finding!.firstRunId, first);
 });
@@ -191,7 +193,9 @@ test("只复核那一轮:代码只是下移时位置跟到本轮,不落新行、
   const [finding] = summary.findings;
   assert.equal(finding!.line, SHIFTED_LINE);
   assert.equal(finding!.reportedLine, 6);
-  assert.equal(finding!.lastRunId, second!.runId);
+  assert.equal(finding!.placedRunId, second!.runId);
+  // 只复核那一轮没报新的,这条 Finding 报出的仍是第一轮;重定位只挪位置,不改报出轮次。
+  assert.equal(finding!.lastRunId, first!.runId);
   assert.equal(finding!.firstRunId, first!.runId);
   // 回填读回的是 Forge 上那条未 resolve 的评论,处置值因此仍是人没碰过的那一档。
   assert.equal(finding!.disposition, "unresolved");
@@ -224,7 +228,9 @@ test("已处置的那条同样跟着本轮走", async () => {
   const [finding] = summary.findings;
   assert.equal(finding!.line, SHIFTED_LINE);
   assert.equal(finding!.reportedLine, 6);
-  assert.equal(finding!.lastRunId, summary.timeline[1]!.runId);
+  assert.equal(finding!.placedRunId, summary.timeline[1]!.runId);
+  // 报出的仍是第一轮:第二轮只做了重定位与自动处置,没有新报。
+  assert.equal(finding!.lastRunId, summary.timeline[0]!.runId);
   assert.equal(finding!.disposition, "resolved");
   assert.equal(query(db.path, "SELECT id FROM finding").length, 1);
 });
@@ -244,6 +250,8 @@ test("那处代码被改写、复核又判无法判断时,位置与所属轮次�
   const summary = summaryOf(db.path);
   const [finding] = summary.findings;
   assert.equal(finding!.line, 6);
+  assert.equal(finding!.placedRunId, summary.timeline[0]!.runId);
+  // 没重定位过,位置所属轮次退回报出那一轮,两格同值。
   assert.equal(finding!.lastRunId, summary.timeline[0]!.runId);
   assert.deepEqual(placedRows(db.path), [{ line: null, runId: null }]);
 });

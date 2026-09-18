@@ -119,6 +119,11 @@ export type RunFinding = {
   }[];
   file: string;
   line: number;
+  /**
+   * `line` 属于哪一轮(issue #368):只有阶段汇总里的 Finding 带这一格,轮次页自己的
+   * Finding 没有——它本就只认本轮,不需要另外比对。
+   */
+  placedRunId?: number;
   severity: "P0" | "P1" | "P2";
   category: string;
   /** 代表段(issue #278):描述最长的那条归属的问题、影响与建议,三段同出一条。 */

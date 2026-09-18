@@ -937,7 +937,7 @@ function FindingDrawer({
   const source =
     finding === undefined
       ? null
-      : findingDiffSource(finding.lastRunId, summary.data?.timeline ?? []);
+      : findingDiffSource(finding.placedRunId, summary.data?.timeline ?? []);
 
   return (
     <StageDrawer
@@ -954,7 +954,8 @@ function FindingDrawer({
                   <span className="flex flex-wrap items-center gap-1 text-sm text-warning">
                     已过期 · 代码差异基于第 {source.stale.round} 轮
                     <CommitChip sha={source.stale.headSha} />
-                    ，pull request 已推进
+                    ，
+                    {scope.kind === "pull-request" ? "pull request 已推进" : "比较项已推进"}
                   </span>
                 )}
               </span>

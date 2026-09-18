@@ -75,6 +75,8 @@ type SummaryFinding = {
   lastReportedAt: string;
   /** 它被报出来时的那一行(issue #368),与当前位置 `line` 分开。 */
   reportedLine: number;
+  /** `line` 属于哪一轮(issue #368);侧滑按它取 diff。 */
+  placedRunId: number;
 };
 
 type TimelineEntry = {
@@ -341,7 +343,7 @@ test("阶段汇总:同一条只出现一次、状态取最新一轮,已延续不
 
 /**
  * 代码差异侧滑要的就是这两格(issue #368):一条 Finding 此刻指着哪一行,以及那一行是在
- * 哪一轮的 head 上算出来的。侧滑按 `lastRunId` 取 diff,再对照时间线判要不要标「已过期」。
+ * 哪一轮的 head 上算出来的。侧滑按 `placedRunId` 取 diff,再对照时间线判要不要标「已过期」。
  */
 test("阶段汇总:位置跟到重定位的那一轮,没重定位的停在报出它的那一轮", async () => {
   const h = await startPanelHarness();
@@ -389,12 +391,15 @@ test("阶段汇总:位置跟到重定位的那一轮,没重定位的停在报出
   const moved = body.findings.find((finding) => finding.description === "正文 fp-moved")!;
   assert.equal(moved.line, 16);
   assert.equal(moved.reportedLine, 6);
-  assert.equal(moved.lastRunId, run2);
+  assert.equal(moved.placedRunId, run2);
+  // 报出的仍是第一轮:重定位只挪位置,不改报出轮次。
+  assert.equal(moved.lastRunId, run1);
 
   // 解析不到的那条位置不动:侧滑画第 1 轮的 diff 并标「已过期」。
   const frozen = body.findings.find((finding) => finding.description === "正文 fp-frozen")!;
   assert.equal(frozen.line, 3);
   assert.equal(frozen.reportedLine, 3);
+  assert.equal(frozen.placedRunId, run1);
   assert.equal(frozen.lastRunId, run1);
 
   // 标记上的「第 1 轮」与短 sha 出自时间线:轮次编号就是它在这份时间线里的次序。

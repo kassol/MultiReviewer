@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { findingDiffSource } from "./finding-position.ts";
+import { findingDiffSource, isAnchorable } from "./finding-position.ts";
 
 const TIMELINE = [
   { runId: 11, headSha: "1111111111111111111111111111111111111111" },
@@ -26,4 +26,19 @@ test("位置跟到最新一轮:画最新那一轮的 diff,不标已过期", () =
 test("一轮都还没跑过、或这条已经不在阶段汇总里:给不出来源", () => {
   assert.equal(findingDiffSource(12, []), null);
   assert.equal(findingDiffSource(99, TIMELINE), null);
+});
+
+const RENDERED = new Set([10, 20]);
+
+test("位置属于这一轮、行号在渲染范围内:锚定", () => {
+  assert.equal(isAnchorable({ line: 10, placedRunId: 12 }, 12, RENDERED), true);
+});
+
+test("位置属于别的轮次、行号凑巧在渲染范围内:不锚定", () => {
+  assert.equal(isAnchorable({ line: 10, placedRunId: 11 }, 12, RENDERED), false);
+});
+
+test("没有 placedRunId(轮次页自己的 Finding):只看行号", () => {
+  assert.equal(isAnchorable({ line: 10 }, 12, RENDERED), true);
+  assert.equal(isAnchorable({ line: 99 }, 12, RENDERED), false);
 });

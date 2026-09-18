@@ -2433,9 +2433,14 @@ export type StageSummaryFinding = {
   file: string;
   /**
    * 这条 Finding 此刻指着的那一行(issue #368):每一轮开跑时按内容指纹重定位一次,
-   * 解析不到就停在上一次定下的位置上。它属于 `lastRunId` 那一轮的 head。
+   * 解析不到就停在上一次定下的位置上。它属于 `placedRunId` 那一轮的 head。
    */
   line: number;
+  /**
+   * `line` 属于哪一轮(issue #368):重定位过就是定下它的那一轮,没重定位过就是报出
+   * 它的那一轮。面板的代码差异侧滑按它取 diff——行号只有对着算出它的那个 head 才成立。
+   */
+  placedRunId: number;
   /** 它被报出来时的那一行。归属与首次报出按这一份算;面板不展示它。 */
   reportedLine: number;
   /** 代表段那条归属给的标题:与 `description` 同一条来源;升级前的行没有它,占位为空。 */
@@ -2474,10 +2479,6 @@ export type StageSummaryFinding = {
   lineAuthor: RecordedLineAuthor | null;
   firstRunId: number;
   firstReportedAt: string;
-  /**
-   * `line` 属于哪一轮(issue #368):重定位过就是定下它的那一轮,没重定位过就是报出
-   * 它的那一轮。面板的代码差异侧滑按它取 diff——行号只有对着算出它的那个 head 才成立。
-   */
   lastRunId: number;
   lastReportedAt: string;
   /** 这条属于哪个同根因组(issue #309);未入组即 null。 */
@@ -8552,12 +8553,13 @@ export function openStore(dbPath: string): Store {
           // 当前位置(issue #368):重定位过的按 placed_*,没有的退回报出它的那一行与
           // 那一轮。两格一起取——行号与它成立的那个 head 分开取就是这一票要修的病。
           const placedLine = row["placed_line"];
-          const placedRunId = row["placed_run_id"];
-          const lastRunId = placedRunId === null ? latest.runId : Number(placedRunId);
+          const rawPlacedRunId = row["placed_run_id"];
+          const placedRunId = rawPlacedRunId === null ? latest.runId : Number(rawPlacedRunId);
           return {
             id: latest.id,
             file: latest.file,
             line: placedLine === null ? Number(row["line"]) : Number(placedLine),
+            placedRunId,
             reportedLine: Number(row["line"]),
             title: representative.title,
             severity: String(row["severity"]) as Severity,
@@ -8594,8 +8596,8 @@ export function openStore(dbPath: string): Store {
                   },
             firstRunId: identity.firstRow.runId,
             firstReportedAt: startedAt.get(identity.firstRow.runId)!,
-            lastRunId,
-            lastReportedAt: startedAt.get(lastRunId)!,
+            lastRunId: latest.runId,
+            lastReportedAt: startedAt.get(latest.runId)!,
             rootCause: rootCauseOfRow.get(latest.id) ?? null,
           };
         });

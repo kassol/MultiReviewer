@@ -2235,8 +2235,9 @@ export async function runReview(
       auxiliaryModel: deps.auxiliaryModel ?? null,
     }));
 
-    // 重定位落库(issue #368):位置与它成立的那一轮同一笔写下。这一步不建行、不写评论、
-    // 不写复核结论、不写处置——它只回答「这条 Finding 此刻在哪一行」。
+    // 重定位落库(issue #368):紧接 `startRun` 写下,不是同一笔——两次写入之间崩溃,这一
+    // 轮的位置就缺失,下一轮开跑时按内容指纹重算补回。这一步不建行、不写评论、不写复核
+    // 结论、不写处置——它只回答「这条 Finding 此刻在哪一行」。
     if (relocations.length > 0) opened(() => store.recordFindingRelocations(runId, relocations));
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,

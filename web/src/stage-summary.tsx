@@ -39,6 +39,7 @@ export type StageFinding = RunFinding & {
   firstReportedAt: string;
   lastRunId: number;
   lastReportedAt: string;
+  placedRunId: number;
   /** 这条属于哪个同根因组(issue #309);未入组即 null,列表照旧逐条列出。 */
   rootCause: RootCauseRef | null;
 };
