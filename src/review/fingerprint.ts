@@ -22,25 +22,59 @@ export function contentFingerprint(
 }
 
 /**
- * 一个文件此刻算得出的全部指纹。
+ * 一个文件此刻算得出的全部指纹,以及每个指纹落在哪几行(升序)。
  *
- * 「所指代码是不是已改写」的判据:上一轮的指纹落在这个集合里,那处代码就还在原样,
+ * 「所指代码是不是已改写」的判据:上一轮的指纹落在这份表里,那处代码就还在原样,
  * 不论它被上下挪了多少行。按历史评论记的行号原地重算做不到这一点——作者在上面插
  * 几行,整个文件的 Finding 都会被读成已改写。
  *
  * 自 ADR 0016 起它不再是自动处置的证据(那由复核结论决定),只作「已延续」的判据:
  * 复核判仍在而旧指纹在这里算不出,那处代码就是被改写了,同一条 Finding 要交接到新位置。
+ *
+ * 行号自 issue #368 起一并给出:每轮开跑时的位置重定位要知道那处代码挪到了第几行,只
+ * 答「还在不在」定不下 Finding 的当前位置。同一扇窗口在一个文件里可以出现多次(重复的
+ * 代码块),因此是一个行号数组而不是一个行号。
  */
-export function fileFingerprints(worktreePath: string, file: string): Set<string> {
-  const fingerprints = new Set<string>();
+export function fileFingerprints(worktreePath: string, file: string): Map<string, number[]> {
+  const fingerprints = new Map<string, number[]>();
   const lines = readLines(worktreePath, file);
   // 文件被删掉或改名时读不到,一个指纹都算不出:那处代码确实已经不在了。
   if (lines === undefined) return fingerprints;
   for (let line = 1; line <= lines.length; line += 1) {
     const fingerprint = windowFingerprint(lines, line);
-    if (fingerprint !== undefined) fingerprints.add(fingerprint);
+    if (fingerprint === undefined) continue;
+    const at = fingerprints.get(fingerprint);
+    if (at === undefined) fingerprints.set(fingerprint, [line]);
+    else at.push(line);
   }
   return fingerprints;
+}
+
+/**
+ * 一处旧位置在本轮 head 上重定位到的行(issue #368):`undefined` 即位置不变。
+ *
+ * 三种情况给不出新位置:指纹在这一轮算不出(那处代码被改写了,交给复核与延续收口)、
+ * 它一次都没出现,或者最近的两处一样近。最后一档不猜——上下各有一处等距的同样代码时,
+ * 挑哪一处都是五五开,把 Finding 挪到错的那一处比留在旧位置更难发现。
+ */
+export function relocatedLine(
+  occurrences: readonly number[] | undefined,
+  previous: number,
+): number | undefined {
+  let nearest: number | undefined;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  let tied = false;
+  for (const line of occurrences ?? []) {
+    const distance = Math.abs(line - previous);
+    if (distance < nearestDistance) {
+      nearest = line;
+      nearestDistance = distance;
+      tied = false;
+    } else if (distance === nearestDistance) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : nearest;
 }
 
 /** 读工作副本里的一个文件,按行切开。读不到即没有指纹可算。 */

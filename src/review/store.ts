@@ -222,7 +222,13 @@ CREATE TABLE IF NOT EXISTS finding (
   -- 落的行与补录路径写的那些,读回按 0。
   line_author_adjacent INTEGER,
   -- 命中的那条评审规则,没有命中或升级前落的行为 NULL。
-  rule_id INTEGER
+  rule_id INTEGER,
+  -- 这条 Finding 此刻的位置,以及位置是在哪一轮的 head 上定下的(issue #368)。每一轮
+  -- 开跑时按内容指纹把本阶段每条 Identity 的最新一行重定位到那一轮的 head 上,解析得到
+  -- 才写这两列。两列同 NULL 即「与 line / run_id 相同」:line 与 run_id 说的始终是它在
+  -- 哪一轮的哪一行被报出来的,归属、首次报出与指纹窗口都按那一份算,重定位一格不动它们。
+  placed_line INTEGER,
+  placed_run_id INTEGER REFERENCES review_run(id)
 );
 
 CREATE INDEX IF NOT EXISTS finding_by_run ON finding(run_id);
@@ -1153,6 +1159,10 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
                   SET completed_at = created_at
                 WHERE purpose = 'product-survey' AND completed_at IS NULL`,
   },
+  // 位置重定位(issue #368):两列可空,补完即「这些行还没被重定位过」,读回退回
+  // line / run_id,与这一票之前逐字一致。下一轮 Review Run 开跑时按指纹现填。
+  { table: "finding", column: "placed_line INTEGER" },
+  { table: "finding", column: "placed_run_id INTEGER REFERENCES review_run(id)" },
 ];
 
 /**
@@ -1613,6 +1623,22 @@ export type ContinuationCandidate = {
  * 没有可折叠上去的评论。
  */
 export type HistoryPlacement = ContinuationCandidate & { disposition: Disposition };
+
+/**
+ * 一条要在这一轮重新定位的 Finding(issue #368)。
+ *
+ * `line` 是它此刻的位置(`placed_line ?? line`),不是它被报出来时的那一行:重定位一轮
+ * 接一轮地接力,拿报出位置去找最近的那一处会在代码连着挪几轮之后挑错地方。
+ */
+export type RelocationCandidate = {
+  findingId: number;
+  file: string;
+  line: number;
+  fingerprint: string;
+};
+
+/** 一条 Finding 在这一轮 head 上解析到的新位置(issue #368)。 */
+export type FindingRelocation = { findingId: number; line: number };
 
 /**
  * 面板处置一条 Finding 要用的那几项。处置写在承载它的那条 Forge 评论上,因此这里
@@ -2405,7 +2431,13 @@ export type RunListItem = {
 export type StageSummaryFinding = {
   id: number;
   file: string;
+  /**
+   * 这条 Finding 此刻指着的那一行(issue #368):每一轮开跑时按内容指纹重定位一次,
+   * 解析不到就停在上一次定下的位置上。它属于 `lastRunId` 那一轮的 head。
+   */
   line: number;
+  /** 它被报出来时的那一行。归属与首次报出按这一份算;面板不展示它。 */
+  reportedLine: number;
   /** 代表段那条归属给的标题:与 `description` 同一条来源;升级前的行没有它,占位为空。 */
   title: string;
   severity: Severity;
@@ -2442,6 +2474,10 @@ export type StageSummaryFinding = {
   lineAuthor: RecordedLineAuthor | null;
   firstRunId: number;
   firstReportedAt: string;
+  /**
+   * `line` 属于哪一轮(issue #368):重定位过就是定下它的那一轮,没重定位过就是报出
+   * 它的那一轮。面板的代码差异侧滑按它取 diff——行号只有对着算出它的那个 head 才成立。
+   */
   lastRunId: number;
   lastReportedAt: string;
   /** 这条属于哪个同根因组(issue #309);未入组即 null。 */
@@ -3855,6 +3891,22 @@ export type Store = {
    * 不设条数上限;已处置的条目由调用方按 `disposition` 只用那一行的字段。
    */
   stageHistory(scope: StageScope): HistoryFinding[];
+  /**
+   * 本审查阶段里要在这一轮重新定位的那些 Finding(issue #368)。
+   *
+   * 折叠键、阶段范围与「已延续」那道筛都与 `stageHistory` 同一份:一条 Identity 只有
+   * 最新那一行说得出它此刻在哪里。**已处置的也在里面**——它们既进不了复核也进不了延续,
+   * 不在这里挪位置就永远停在报出它的那一轮上。算不出指纹的行不在里面:没有指纹就没有
+   * 重新定位的依据。
+   */
+  relocationCandidates(scope: StageScope): RelocationCandidate[];
+  /**
+   * 把这一轮解析到的新位置写进 `placed_line` / `placed_run_id`(issue #368)。
+   *
+   * 只碰这两列:`line` 与 `run_id` 说的是它在哪一轮的哪一行被报出来的,归属、评论载体
+   * 与指纹窗口都按那一份算。不新建行、不写评论、不写复核结论、不写处置。
+   */
+  recordFindingRelocations(runId: number, placements: readonly FindingRelocation[]): void;
   /**
    * 一个仓库的历史 Finding,供 Agent 会话的查询工具按需取(issue #338)。
    *
@@ -8150,10 +8202,13 @@ export function openStore(dbPath: string): Store {
       // 改动代码上的两个不同问题因此各注入一条(ADR 0030),不再被指纹压成一条。
       // 最新一行是「已延续」的整条不注入:这处 Finding 已经交接到新位置,新位置那条
       // 自己在历史里,再给一遍就是同一个问题让模型复核两次。
+      // 行号取当前位置(issue #368):本轮开跑时已经把它重定位到这一轮的 head 上,注入
+      // 给 Reviewer 的必须是它此刻指着的那一行,而不是几轮之前被报出来时的那一行。
       const rows = db
         .prepare(
           `WITH scoped AS (
-             SELECT f.id AS id, f.file AS file, f.line AS line, f.title AS title,
+             SELECT f.id AS id, f.file AS file,
+                    COALESCE(f.placed_line, f.line) AS line, f.title AS title,
                     f.severity AS severity, f.category AS category,
                     f.description AS description, f.disposition AS disposition,
                     f.disposition_note AS note,
@@ -8191,6 +8246,44 @@ export function openStore(dbPath: string): Store {
               }),
         };
       });
+    },
+
+    relocationCandidates(scope) {
+      const [where, params] = stageScope(scope);
+      // 折叠与筛选与 `stageHistory` 逐字同源,只多一道「算得出指纹」:没有指纹的行
+      // 找不回自己那扇窗口,重定位对它无从下手。
+      const rows = db
+        .prepare(
+          `WITH scoped AS (
+             SELECT f.id AS id, f.file AS file,
+                    COALESCE(f.placed_line, f.line) AS line,
+                    f.fingerprint AS fingerprint, f.disposition AS disposition,
+                    ${identityKey("f.")} AS fp
+               FROM finding f
+               JOIN review_run run ON f.run_id = run.id
+              WHERE ${where}
+           )
+           SELECT s.* FROM scoped s
+            WHERE s.id = (SELECT MAX(latest.id) FROM scoped latest
+                           WHERE latest.file = s.file AND latest.fp = s.fp)
+              AND s.disposition <> 'continued'
+              AND s.fingerprint IS NOT NULL
+            ORDER BY s.id`,
+        )
+        .all(...params);
+      return rows.map((row) => ({
+        findingId: Number(row["id"]),
+        file: String(row["file"]),
+        line: Number(row["line"]),
+        fingerprint: String(row["fingerprint"]),
+      }));
+    },
+
+    recordFindingRelocations(runId, placements) {
+      const update = db.prepare(
+        "UPDATE finding SET placed_line = ?, placed_run_id = ? WHERE id = ?",
+      );
+      for (const placement of placements) update.run(placement.line, runId, placement.findingId);
     },
 
     listRepoFindings(query, limit) {
@@ -8276,6 +8369,7 @@ export function openStore(dbPath: string): Store {
                   f.line_author_sha AS line_author_sha, f.line_author_name AS line_author_name,
                   f.line_author_email AS line_author_email, f.line_author_at AS line_author_at,
                   f.line_author_adjacent AS line_author_adjacent,
+                  f.placed_line AS placed_line, f.placed_run_id AS placed_run_id,
                   ${identityKey("f.")} AS fp
              FROM finding f
              JOIN review_run run ON f.run_id = run.id
@@ -8455,10 +8549,16 @@ export function openStore(dbPath: string): Store {
           const said = attributions.get(latest.id) ?? [];
           // 代表段(issue #278):升级前落的行两列为 NULL,按同一规则从归属现算。
           const representative = representativeSegment(row, said);
+          // 当前位置(issue #368):重定位过的按 placed_*,没有的退回报出它的那一行与
+          // 那一轮。两格一起取——行号与它成立的那个 head 分开取就是这一票要修的病。
+          const placedLine = row["placed_line"];
+          const placedRunId = row["placed_run_id"];
+          const lastRunId = placedRunId === null ? latest.runId : Number(placedRunId);
           return {
             id: latest.id,
             file: latest.file,
-            line: Number(row["line"]),
+            line: placedLine === null ? Number(row["line"]) : Number(placedLine),
+            reportedLine: Number(row["line"]),
             title: representative.title,
             severity: String(row["severity"]) as Severity,
             category: String(row["category"]) as Category,
@@ -8494,8 +8594,8 @@ export function openStore(dbPath: string): Store {
                   },
             firstRunId: identity.firstRow.runId,
             firstReportedAt: startedAt.get(identity.firstRow.runId)!,
-            lastRunId: latest.runId,
-            lastReportedAt: startedAt.get(latest.runId)!,
+            lastRunId,
+            lastReportedAt: startedAt.get(lastRunId)!,
             rootCause: rootCauseOfRow.get(latest.id) ?? null,
           };
         });
