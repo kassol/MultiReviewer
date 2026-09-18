@@ -159,6 +159,13 @@ function git(dir: string, ...args: string[]): string {
       GIT_AUTHOR_EMAIL: "fixture@example.invalid",
       GIT_COMMITTER_NAME: "fixture",
       GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+      // 关掉 commit 之后那个脱离父进程的自动维护(issue #401):它在 `.git/objects` 里放一个
+      // 转眼就删的文件,负载高时 `makeRepo` 复制模板正好读到它,`cpSync` 报 ENOENT。
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "maintenance.auto",
+      GIT_CONFIG_VALUE_0: "false",
+      GIT_CONFIG_KEY_1: "gc.auto",
+      GIT_CONFIG_VALUE_1: "0",
     },
   }).trim();
 }
