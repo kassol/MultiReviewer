@@ -9,9 +9,10 @@
  * 全程不碰收费模型。
  *
  * 脚本按请求到达顺序消费:取证一律前台跑,父会话等子会话回来才发下一次请求,顺序
- * 因此是确定的。每次请求解析出的形状记进 `requests`,测试据它断言「文件内容确实回到了
- * 模型请求里」这类事。脚本用完还有请求进来即回 500——那说明链路多发了一次调用,让它
- * 当场失败比静默回一份空响应好。
+ * 因此是确定的。一次取证被停下之后两边各自发请求,顺序就由机器负载决定,那种用例给
+ * `match` 按「谁在问」认领(issue #397)。每次请求解析出的形状记进 `requests`,测试据它
+ * 断言「文件内容确实回到了模型请求里」这类事。脚本用完还有请求进来即回 500——那说明链路
+ * 多发了一次调用,让它当场失败比静默回一份空响应好。
  */
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -50,6 +51,12 @@ export type StubTurn = {
    * `insufficient_quota` 之类的额度字样则两层都不重试。
    */
   status?: number;
+  /**
+   * 只回给匹配的请求(issue #397)。脚本默认按到达顺序消费,而父会话与子会话各自发请求的
+   * 用例里谁先到取决于机器负载——取证超时那一条就是父会话的收尾与被停下的子会话抢同一条
+   * 脚本。给了它就按「谁在问」认领(工具面分得出父子),到达顺序不再进判据。
+   */
+  match?: (request: StubRequest) => boolean;
 };
 
 /** 一次请求里测试关心的几样:带了哪些工具、消息序列长什么样。 */
@@ -182,6 +189,8 @@ function sseBody(turn: StubTurn, serial: number, model: string): string {
 /** 起一个假模型服务,脚本按到达顺序消费。返回的 `baseUrl` 直接当运行模型的 `baseUrl` 用。 */
 export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelStub> {
   const requests: StubRequest[] = [];
+  /** 已经认领掉的那几条。带 `match` 的用例里认领顺序与到达顺序不一定相同。 */
+  const taken = turns.map(() => false);
   let next = 0;
   /**
    * 还没到点的延迟响应(issue #335)。`close()` 要把它们清掉:一个挂着的 `setTimeout` 会让
@@ -195,8 +204,13 @@ export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelS
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
       const parsed = parseRequest(body);
       requests.push(parsed);
-      const turn = turns[next];
       next += 1;
+      // 没给 `match` 的一条谁都认:脚本因此默认还是按到达顺序消费。
+      const index = turns.findIndex(
+        (candidate, position) => !taken[position] && (candidate.match?.(parsed) ?? true),
+      );
+      const turn = index === -1 ? undefined : turns[index];
+      if (index !== -1) taken[index] = true;
       if (turn === undefined) {
         res.writeHead(500, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: `脚本只有 ${turns.length} 次响应,这是第 ${next} 次请求` } }));
@@ -230,6 +244,10 @@ export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelS
       else void turn.release.then(afterDelay);
     });
   });
+  // 空闲的 keep-alive 连接不由服务端关(issue #397,同 `fake-gitea.ts`):服务端 5 秒、客户端
+  // 4 秒,负载下客户端晚一秒就会在一条已关的连接上发请求并拿回 ECONNRESET,而那一次失败在
+  // Pi 那边会变成一次重试,把脚本多吃一条。
+  server.keepAliveTimeout = 0;
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {

@@ -29,6 +29,20 @@ export type ChildOutcome = { failure?: string; exitCode?: number };
 /** 两条链路的收尾消息共用这一个形状:`runWorkerChild` 只认这两个字段。 */
 type ChildMessage = { kind: string; failure?: string };
 
+/**
+ * 静默闸的定时器:排一次 `ms` 之后的回调,返回撤掉它的函数。
+ *
+ * 生产用真实的 `setTimeout`,测试注入一份按消息节拍推进的时钟(issue #397)。「每收到一条
+ * 消息就重置计时」这件事本来只能靠「消息间隔小于上限」的真实时间来验,机器负载一高间隔就
+ * 拖过上限,健康的子进程被判卡死;时钟交给测试之后,判据回到消息本身。
+ */
+export type SilenceTimer = (onSilence: () => void, ms: number) => () => void;
+
+const realSilenceTimer: SilenceTimer = (onSilence, ms) => {
+  const timer = setTimeout(onSilence, ms);
+  return () => clearTimeout(timer);
+};
+
 export type ChildRun<M extends ChildMessage> = {
   workerPath: string;
   /**
@@ -51,6 +65,8 @@ export type ChildRun<M extends ChildMessage> = {
   onMessage: (message: M, reply: (payload: Serializable) => void) => void;
   /** 静默上限的测试注入口。生产不传,取默认的五分钟。 */
   inactivityTimeoutMs?: number;
+  /** 静默闸的时钟。生产不传,用真实 `setTimeout`。 */
+  silenceTimer?: SilenceTimer;
 };
 
 /**
@@ -86,7 +102,7 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
     const finish = (failure: string | undefined, exitCode?: number): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cancelSilence();
       if (graceTimer !== undefined) clearTimeout(graceTimer);
       child.removeAllListeners();
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
@@ -99,7 +115,8 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
 
     const silence = run.inactivityTimeoutMs ?? INACTIVITY_TIMEOUT_MS;
     const silenceFailure = `${run.timeoutSubject} 卡死:连续 ${silence / 60_000} 分钟没有任何回传`;
-    let timer = setTimeout(() => finish(silenceFailure), silence);
+    const armSilence = run.silenceTimer ?? realSilenceTimer;
+    let cancelSilence = armSilence(() => finish(silenceFailure), silence);
 
     const reply = (payload: Serializable): void => {
       // 带 callback 的投递:断开之后 Node 会异步抛 EPIPE,没有它一次晚到的回应会掀掉
@@ -110,9 +127,9 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
     child.on("message", (message: M) => {
       run.onMessage(message, reply);
       // 每一条消息都是活着的证据,静默计时从头再来。
-      clearTimeout(timer);
+      cancelSilence();
       if (message.kind !== "done") {
-        timer = setTimeout(() => finish(silenceFailure), silence);
+        cancelSilence = armSilence(() => finish(silenceFailure), silence);
         return;
       }
       done = message;

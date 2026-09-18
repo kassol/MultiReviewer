@@ -11,7 +11,7 @@ import { test } from "node:test";
 import type { ReviewerEvent, ReviewerInput } from "../src/review/finding.ts";
 import { runInChild } from "../src/reviewer/pi-reviewer.ts";
 import { runRuleAgentChild, type RuleAgentEvent } from "../src/reviewer/rule-agent.ts";
-import { runWorkerChild } from "../src/reviewer/subprocess.ts";
+import { runWorkerChild, type SilenceTimer } from "../src/reviewer/subprocess.ts";
 import { sessionThinkingLevel } from "../src/reviewer/worker-tools.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 
@@ -54,6 +54,34 @@ function worker(body: string): string {
   const path = join(dir, "worker.mjs");
   writeFileSync(path, body);
   return path;
+}
+
+/**
+ * 静默闸用的受控时钟(issue #397):虚拟时间只在测试推进时前进。静默上限本来按真实时间量,
+ * 机器负载一高,健康子进程的消息间隔就会拖过上限而被误杀;把时钟交给测试之后,「每条消息
+ * 重置计时」按消息节拍判定,子进程真的隔多久发下一条不再进判据。
+ */
+function silenceClock(): {
+  timer: SilenceTimer;
+  /** 推进虚拟时间,到点的回调当场执行。 */
+  advance(ms: number): void;
+} {
+  let now = 0;
+  const pending = new Set<{ at: number; fire: () => void }>();
+  return {
+    timer: (onSilence, ms) => {
+      const entry = { at: now + ms, fire: onSilence };
+      pending.add(entry);
+      return () => pending.delete(entry);
+    },
+    advance: (ms) => {
+      now += ms;
+      for (const entry of [...pending]) {
+        if (entry.at > now || !pending.delete(entry)) continue;
+        entry.fire();
+      }
+    },
+  };
 }
 
 const RAW = {
@@ -748,7 +776,9 @@ test("模型不声明推理能力时会话档位落回 off,配了档位也照常
 
 test("连续静默超过上限的子进程被判卡死", async () => {
   const path = worker(`process.on("message", () => { setInterval(() => {}, 1000); });`);
-  const outcome = await runWorkerChild({
+  const clock = silenceClock();
+  // 闸在 `runWorkerChild` 返回之前就排上了,推进虚拟时间即「一条消息都没等到」。
+  const pending = runWorkerChild({
     workerPath: path,
     worktreePath: tmpdir(),
     apiKey: "k",
@@ -756,54 +786,68 @@ test("连续静默超过上限的子进程被判卡死", async () => {
     payload: {},
     onMessage: () => {},
     inactivityTimeoutMs: 300,
+    silenceTimer: clock.timer,
   });
+  clock.advance(300);
+  const outcome = await pending;
   assert.match(outcome.failure!, /卡死.*没有任何回传/);
 });
 
 test("总时长超过静默上限但持续有回传的子进程不被误杀", async () => {
-  // 六条消息各隔 100ms,总时长两倍于 300ms 的静默上限:按总时长计会死,按静默计不会。
+  // 六条消息,每条之前虚拟时间走 100ms,总时长两倍于 300ms 的静默上限:按总时长计会死,
+  // 按静默计不会。少了「每条消息重置计时」,第三条就撞上闸。
   const path = worker(`process.on("message", () => {
     let n = 0;
     const t = setInterval(() => {
       n += 1;
       process.send({ kind: "event", n });
       if (n === 6) { clearInterval(t); process.send({ kind: "done" }); process.exit(0); }
-    }, 100);
+    }, 10);
   });`);
   const kinds: string[] = [];
+  const clock = silenceClock();
   const outcome = await runWorkerChild({
     workerPath: path,
     worktreePath: tmpdir(),
     apiKey: "k",
     timeoutSubject: "受控 worker",
     payload: {},
-    onMessage: (message) => kinds.push(message.kind),
+    onMessage: (message) => {
+      kinds.push(message.kind);
+      clock.advance(100);
+    },
     inactivityTimeoutMs: 300,
+    silenceTimer: clock.timer,
   });
   assert.equal(outcome.failure, undefined);
   assert.equal(kinds.filter((kind) => kind === "event").length, 6);
 });
 
 test("只发心跳的子进程不被判卡死:长思考期间它是唯一的活着证据", async () => {
-  // 六条心跳各隔 100ms,总时长两倍于 300ms 的静默上限,期间一条完整消息、一次工具调用
-  // 都没有——高思考档位下真实的样子。
+  // 六条心跳,每条之前虚拟时间走 100ms,总时长两倍于 300ms 的静默上限,期间一条完整消息、
+  // 一次工具调用都没有——高思考档位下真实的样子。
   const path = worker(`process.on("message", () => {
     let n = 0;
     const t = setInterval(() => {
       n += 1;
       process.send({ kind: "heartbeat" });
       if (n === 6) { clearInterval(t); process.send({ kind: "done" }); process.exit(0); }
-    }, 100);
+    }, 10);
   });`);
   const kinds: string[] = [];
+  const clock = silenceClock();
   const outcome = await runWorkerChild({
     workerPath: path,
     worktreePath: tmpdir(),
     apiKey: "k",
     timeoutSubject: "受控 worker",
     payload: {},
-    onMessage: (message) => kinds.push(message.kind),
+    onMessage: (message) => {
+      kinds.push(message.kind);
+      clock.advance(100);
+    },
     inactivityTimeoutMs: 300,
+    silenceTimer: clock.timer,
   });
   assert.equal(outcome.failure, undefined);
   assert.equal(kinds.filter((kind) => kind === "heartbeat").length, 6);
