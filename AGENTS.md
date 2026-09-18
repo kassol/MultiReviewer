@@ -23,7 +23,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出 Forge 凭据与面板配置、写 `.env`、拉镜像起容器、以「面板能用」为验收自检;新实例从日志抽出一次性 bootstrap 口令交给第一个系统管理员,仓库接入、用户与角色、模型凭据及模型组合在面板上做。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
-- `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则。
+- `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则、并行 worktree 批次的检查分工。
 - `docs/research/` — 一手来源调研笔记,每条结论标出处。
 
 ## 常用命令
@@ -156,8 +156,20 @@ Issue 与 spec 存放于本仓库的 GitHub Issues,通过 `gh` CLI 读写。见 
 
 Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.md`。
 
+### 并行 worktree 批次
+
+一批票分给多个子代理、各自在独立 worktree 里落地时,检查按下面的分工跑。派发子代理时把本节贴进每个子代理的 prompt,见 `docs/agents/parallel-batches.md`。
+
+测得的账:整套测试单跑 6.6 分钟(1161 个后端用例,壁钟由最慢的那个文件决定),6 到 10 路并发时同一套要跑 23 到 30 分钟;2026-09-18 的 #387–#392 批次累计跑了 29 次全量,539 分钟机器时间。全量测试并发跑不动,是这套分工的由来。
+
+- 实现子代理只跑与自己改动范围对应的检查。改 `web/` 跑 `pnpm --filter @multireviewer/web typecheck`、`test`、`build`;改 `src/` 跑它碰过的那几个测试文件(`node --test test/<file>.test.ts`)加 `pnpm typecheck`。根 `pnpm check` 归主会话,基线对比也归主会话。测试失败就如实报告并停下,包括看着像计时抖动的那种——判它是不是抖动由主会话做,子代理不复跑。
+- 根 `pnpm check` 由主会话在全部分支合完、机器空下来之后跑一次。
+- 评审子代理(规范 / 票面两轴)只读代码,不跑测试。
+- 三份 AGENTS.md(根 / `web/` / `src/`)的变更日志段由主会话独占:子代理把条目文本交回,主会话一次写齐。六路合并零冲突靠的是这一条。
+
 ## 变更日志
 
+- 2026-09-18: **并行 worktree 批次的检查分工写进规范**(`AGENTS.md`「并行 worktree 批次」,`docs/agents/parallel-batches.md`,issue #398)。实现子代理只跑与自己改动范围对应的检查,失败即报告并停下;根 `pnpm check` 由主会话在全部分支合完、机器空下来之后跑一次;评审子代理只读;三份 AGENTS.md 的变更日志段由主会话独占,条目文本由子代理交回。#387–#392 批次的账是由来:套件单跑 6.6 分钟,6 到 10 路并发时每次 23 到 30 分钟,那一批 29 次全量共 539 分钟机器时间。
 - 2026-09-18: **移动端补走查批次 #387–#392 发到 00-test**。纯前端与文档改动,无 schema 变更,库未备份。六票由并行 worktree 各自落地后合并,两轴评审(规范 / 票面)补了两处:spec 弹窗与关票确认弹窗的返回焦点接上稳定后备,#387 再清掉 23 处 `min-h-11 … sm:min-h-0` 与 `max-sm:[&_button]:min-h-11` 的同义写法。发版前 `pnpm check` 全绿(后端 1161、前端 46);验收在部署实例上用真实浏览器按各票验收项量过(390×844 粗指针与 600 / 768 / 1440 细指针,结果见各 issue 的关闭评论),#389 的关票写路径在评审验证产品的票 #3 上走了关掉→重新打开一轮并复原。留下两条跟进:`md:` / `lg:` 断点上按屏宽补 44px 的写法(9 处)与增量评审弹窗里同样的选择器挤压,各开一票。
 - 2026-09-18: **移动端批次 #370–#384 发到 00-test**。前端与文档改动,无 schema 变更,库未备份。本机 `scripts/build-push.sh` 出镜像,主机 `docker compose pull && docker compose up -d`,容器起后首页已带 `viewport-fit=cover`。发版前 `pnpm check` 全绿(后端 1161、前端 43)。验收在部署实例上用真实浏览器 390×844 粗指针按各票验收项逐条量过(结果见各 issue 的关闭评论);真机项(iOS Safari / Android Chrome 走查、软键盘、聚焦缩放)未验。#385(tracker 区、知识区、提问卡的补走查)在发版后跑。
 - 2026-09-17: 开地图 [实现会话用途——票在本平台上被消费](https://github.com/kassol/MultiReviewer/issues/386)(`wayfinder:map`,未开工):第一个带写工具的会话用途,#326 定的边界是前提;grill 第一轮四题(交付物 / 写权限边界 / 测试在哪跑 / 谁发起)作者暂缓,原样记在地图的 Not yet specified 里。
