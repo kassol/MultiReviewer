@@ -173,7 +173,7 @@ export function MermaidDiagram({ code, source }: { code: string; source: ReactNo
             color="gray"
             size="1"
             aria-label="放大预览"
-            className="absolute top-1.5 right-1.5 min-h-11 min-w-11 transition-opacity md:min-h-0 md:min-w-0 md:opacity-0 md:group-hover/diagram:opacity-100 md:group-focus-within/diagram:opacity-100 md:focus-visible:opacity-100"
+            className="absolute top-1.5 right-1.5 transition-opacity md:opacity-0 md:group-hover/diagram:opacity-100 md:group-focus-within/diagram:opacity-100 md:focus-visible:opacity-100"
           >
             <EnterFullScreenIcon />
           </IconButton>
@@ -183,7 +183,7 @@ export function MermaidDiagram({ code, source }: { code: string; source: ReactNo
       <Collapsible.Root className="group/source border-t border-line">
         <Collapsible.Trigger
           type="button"
-          className="flex min-h-11 w-full cursor-pointer items-center gap-1.5 px-3 text-sm text-text-secondary outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset sm:min-h-9"
+          className="flex min-h-9 w-full cursor-pointer items-center gap-1.5 px-3 text-sm text-text-secondary outline-none pointer-coarse:min-h-11 hover:text-text focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
         >
           <span>源码</span>
           <ChevronDownIcon
@@ -338,7 +338,6 @@ function DiagramStage({ svg, title }: { svg: string; title: string }) {
             variant="ghost"
             color="gray"
             size="2"
-            className="min-h-11 min-w-11 md:min-h-0 md:min-w-0"
             aria-label={`关闭${title}`}
           >
             <Cross2Icon />

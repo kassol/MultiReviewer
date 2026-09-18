@@ -86,7 +86,7 @@ export function CommandPalette({
                   color="gray"
                   size="2"
                   // 关闭键与页脚的键位提示此消彼长:触屏或窄屏上出现,鼠标宽屏上让位给 esc 提示。
-                  className="hidden min-h-11 min-w-11 shrink-0 max-sm:inline-flex pointer-coarse:inline-flex"
+                  className="hidden shrink-0 max-sm:inline-flex pointer-coarse:inline-flex"
                   aria-label="关闭命令面板"
                 >
                   <Cross2Icon aria-hidden />

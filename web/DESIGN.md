@@ -274,7 +274,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 组件的响应式 size 负责视觉密度，输入方式负责命中面积。两件事分开：size 看屏宽，命中面积看 `@media (pointer: coarse)`——触屏笔记本和横屏平板宽于 640px，也照样要 44px。
 
-规则只写在 `styles.css` 的 coarse 块里一处，页面不再新写 `max-sm:min-h-11`：按屏宽补高是旧写法，鼠标桌面把窗口拖窄也会变 44px。存量的按屏宽补高已在 issue #387 与本轮补清完：`max-sm:min-h-11`、`max-sm:[&_button]:min-h-11` 与 `min-h-11 … sm:min-h-0` 三种写法在 `sm` 断点上都不再有。覆盖范围：
+规则只写在 `styles.css` 的 coarse 块里一处，页面不再新写 `max-sm:min-h-11`：按屏宽补高是旧写法，鼠标桌面把窗口拖窄也会变 44px。存量的按屏宽补高已在 issue #387 与本轮补清完：`max-sm:min-h-11`、`max-sm:[&_button]:min-h-11` 与 `min-h-11 … sm:min-h-0` 三种写法在 `sm` 断点上都不再有；`md:` / `lg:` 断点上的同形写法(`min-h-11 … md:min-h-0`、`min-h-11 … lg:min-h-0`、`min-h-11 … sm:min-h-9`)已在 issue #393 一并清完。覆盖范围：
 
 | 控件 | 类名 | 做法 |
 | --- | --- | --- |

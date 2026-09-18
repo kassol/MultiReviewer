@@ -891,7 +891,6 @@ function StageDrawer({
                 variant="ghost"
                 color="gray"
                 size="2"
-                className="min-h-11 min-w-11 md:min-h-0 md:min-w-0"
                 aria-label={`关闭${title}`}
               >
                 <Cross2Icon />
