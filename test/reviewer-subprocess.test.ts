@@ -823,6 +823,38 @@ test("总时长超过静默上限但持续有回传的子进程不被误杀", as
   assert.equal(kinds.filter((kind) => kind === "event").length, 6);
 });
 
+test("收过几条消息之后真静默到点仍判卡死:重置计时不等于停掉计时", async () => {
+  // 三条消息每条推 100ms,闸每次重排到 now+300;之后子进程挂住不再发,推进 300ms 撞闸。
+  // 盖住「重排的那一步把闸撤了却没再排上」这一类回归——上一条只证明不误杀,不证明还会杀。
+  const path = worker(`process.on("message", () => {
+    let n = 0;
+    const t = setInterval(() => {
+      n += 1;
+      process.send({ kind: "event", n });
+      if (n === 3) { clearInterval(t); setInterval(() => {}, 1000); }
+    }, 10);
+  });`);
+  const clock = silenceClock();
+  let seen = 0;
+  const pending = runWorkerChild({
+    workerPath: path,
+    worktreePath: tmpdir(),
+    apiKey: "k",
+    timeoutSubject: "受控 worker",
+    payload: {},
+    onMessage: () => {
+      seen += 1;
+      clock.advance(100);
+      if (seen === 3) setImmediate(() => clock.advance(300));
+    },
+    inactivityTimeoutMs: 300,
+    silenceTimer: clock.timer,
+  });
+  const outcome = await pending;
+  assert.equal(seen, 3);
+  assert.match(outcome.failure!, /卡死.*没有任何回传/);
+});
+
 test("只发心跳的子进程不被判卡死:长思考期间它是唯一的活着证据", async () => {
   // 六条心跳,每条之前虚拟时间走 100ms,总时长两倍于 300ms 的静默上限,期间一条完整消息、
   // 一次工具调用都没有——高思考档位下真实的样子。
