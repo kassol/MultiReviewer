@@ -368,7 +368,7 @@ function UserMenu({ session, onLogout }: { session: PanelSession; onLogout: () =
         <button
           type="button"
           aria-label={`账户 ${name}`}
-          className="flex size-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/40 lg:size-[27px]"
+          className="flex size-[27px] shrink-0 items-center justify-center rounded-full outline-none pointer-coarse:size-11 focus-visible:ring-2 focus-visible:ring-ring/40"
         >
           <span className="flex size-[27px] items-center justify-center rounded-full bg-[image:var(--v8-avatar-gradient)] text-base font-medium text-white">
             {name.slice(0, 1).toUpperCase()}
