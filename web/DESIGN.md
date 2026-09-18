@@ -291,7 +291,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 按元素类型选做法，同一需求只有一种写法：
 
 - Radix 控件（Themes 的 Button、IconButton、TextField、Select、菜单项、Tab）什么都不写，上表的 coarse 地板已经盖到。正文里想点的文字要凑命中区时，换成 `variant="ghost"` 的 Button 就落进这一档。
-- 正文流里的裸 `<a>` 与 Router `Link` 用 `.touch-link`：撑高整行会把下面的内容推下去，透明 `::after` 不占布局流。
+- 正文流里的裸 `<a>` 与 Router `Link` 用 `.touch-link`：撑高整行会把下面的内容推下去，透明 `::after` 不占布局流。渲染成带边框底色的盒子的 `Link`（统计页的处置率药丸、桌面导航项）不在正文流里，盒子本身就是命中区，同原生 `<button>` 写 `pointer-coarse:min-h-11`；给它套 `.touch-link` 会让触屏上的盒子缩回原高。
 - 原生 `<button>`（不经 Themes 渲染的那几个）与 cmdk 选项自己写 `pointer-coarse:min-h-11`：没有 Radix 类名，coarse 地板认不出它。cmdk 选项写在 `CommandItem` 的基础类名里一处，全部调用点跟着走。
 - 不用 `max-sm:min-h-11`，也不用 `min-h-11 … sm:min-h-0`、`max-sm:[&_button]:min-h-11` 这类换了写法的同一意图：它们都看屏宽，鼠标桌面拖窄窗口也会跟着变高。
 
