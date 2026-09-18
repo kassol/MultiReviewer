@@ -201,13 +201,18 @@ function LaunchDialogContent({
           </Text>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4">
-          <CommitPicker
-            repo={repo}
-            base={base}
-            comparison={comparison}
-            onPick={pick}
-          />
+        {/* 窄屏这一列放不下选择器与指令两块:390×844 只有 290px 分给选择器,它自己的工具条就占 279px,
+            结果区被挤到 9px,空态整块溢出到结果区之外——「查看全部提交」落在指令 textarea 的位置上,
+            点下去点到的是 textarea(issue #391)。这一列因此自己滚,选择器保住工具条加一屏结果区的高度。 */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
+          <div className="flex min-h-100 flex-1 flex-col">
+            <CommitPicker
+              repo={repo}
+              base={base}
+              comparison={comparison}
+              onPick={pick}
+            />
+          </div>
 
           <div className="shrink-0">
             <Text as="label" htmlFor="range-review-directive" size="1" color="gray">
