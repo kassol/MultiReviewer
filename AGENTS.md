@@ -16,7 +16,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `web/` — 管理面板前端(Vite + TanStack Router/Query),结构约定见 `web/AGENTS.md`。产物在 Docker 多阶段构建里生成,不进版本库。
 - `vendor/skills/` — 随镜像发的会话 skill(CONTEXT.md 会话 skill)。作者机器上 `~/.claude/skills/{ask-matt,grilling,domain-modeling,to-spec,to-tickets}` 的副本,上游是 mattpocock-skills 插件 1.2.3(MIT;`grilling` 在它的 `skills/productivity/`,其余四个在 `skills/engineering/`),作者在上游基础上改过标点,vendor 的是作者那一份。只拷 `SKILL.md` 与它引用的格式文件(`ask-matt/PHASE-BOUNDARIES.md`、`domain-modeling/{CONTEXT,ADR}-FORMAT.md`);各 skill 目录下的 `agents/` 是别的 harness 的元数据,不拷。升级 skill = 重拷一遍这个目录再出一版镜像,运行时不联网取。
-- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)、SSE 响应的逐帧读取与面板 harness。
+- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)、SSE 响应的逐帧读取、面板 harness,以及 Agent 会话与跨轮次这两组拆开之后的公用 harness。
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git、ripgrep 与 fd(fd 是 release 的静态 musl 二进制,版本钉在 `FD_VERSION`,单独一层按目标架构取包再拷进运行镜像——Debian 的 fd-find 是 8.6,不认 Pi 传的 `--no-require-git`),依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。装 ripgrep 与 fd 是给 Reviewer 的 `grep` / `find` 工具用:缺二进制时 Pi 会去 GitHub 下载,容器里下不动就各卡满 120 秒超时,一轮 Review Run 白等约 4 分钟。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。

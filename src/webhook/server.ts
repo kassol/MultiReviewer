@@ -224,6 +224,7 @@ import {
 import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
 import type { AgentSessionMessageMode } from "../reviewer/session-protocol.ts";
+import type { SilenceTimer } from "../reviewer/subprocess.ts";
 import {
   agentSessionImageMimeType,
   agentSessionImageRef,
@@ -304,10 +305,10 @@ export type WebhookServerDeps = {
    */
   agentSessionIdleReclaimMs?: number;
   /**
-   * Agent 会话子进程执行中的静默判死门槛(毫秒,issue #335),默认 `SILENCE_TIMEOUT_MS`
-   * (五分钟)。与 Reviewer 那套子进程的 `inactivityTimeoutMs` 同一档,只该测试注入。
+   * Agent 会话静默闸的时钟(issue #399),默认真实的 `setTimeout`。判死的门槛仍是写死的
+   * 五分钟,拨得动的只有钟。只该测试注入,写法与 Reviewer 子进程那一格同(issue #397)。
    */
-  agentSessionSilenceTimeoutMs?: number;
+  agentSessionSilenceTimer?: SilenceTimer;
   /**
    * 一个范围审查跑完一次定时检查(issue #314)。不传则写 stdout——凌晨发生了什么,
    * 第二天只有这行日志说得出。与工作副本准备同一条口径。
@@ -3402,9 +3403,9 @@ function agentSessionRuntimeDeps(
     ...(deps.agentSessionIdleReclaimMs === undefined
       ? {}
       : { idleReclaimMs: deps.agentSessionIdleReclaimMs }),
-    ...(deps.agentSessionSilenceTimeoutMs === undefined
+    ...(deps.agentSessionSilenceTimer === undefined
       ? {}
-      : { silenceTimeoutMs: deps.agentSessionSilenceTimeoutMs }),
+      : { silenceTimer: deps.agentSessionSilenceTimer }),
   };
 }
 
