@@ -28,6 +28,9 @@ import { startModelStub, type StubTurn, type StubUsage } from "./support/model-s
 
 const cleanups = testCleanups();
 
+/** 永不兑现的放行:这一条脚本响应永远不发出去(issue #397)。 */
+const NEVER: Promise<never> = new Promise(() => {});
+
 /** 工作副本里给子会话读的那个文件。内容故意独一无二,好在模型请求里认出来。 */
 const TARGET_FILE = "target.txt";
 const TARGET_CONTENT = "EVIDENCE-MARKER-7f3c: caller passes req.query.customerId unchecked\n";
@@ -423,16 +426,26 @@ test("取证超时:子会话被停下,之后不再发请求,父会话拿到超�
       },
       usage: usage[0],
     },
-    // 子会话的第一次响应拖过超时:它带着一次 read 调用,子会话要是没停,收到后会执行 read
-    // 再发第二次请求。
-    { text: "读目标文件", toolCall: { name: "read", args: { path: TARGET_FILE } }, usage: usage[1], delayMs: 700 },
-    // 父会话收尾也拖一拖,让 Reviewer 子进程活到子会话那次迟到的响应之后。
-    { text: "取证超时,按已读到的代码收尾", usage: usage[2], delayMs: 900 },
+    // 子会话那一次请求一直挂着,不给它响应:超时落在子会话发出请求之前还是之后取决于机器
+    // 负载(pi-subagents 的中止在请求发出之前是空操作),而一份不到的响应两种顺序下都不会
+    // 引出第二次子请求、也不会带回用量。两边各自发请求,谁先到因此按工具面认领。
+    {
+      text: "读目标文件",
+      toolCall: { name: "read", args: { path: TARGET_FILE } },
+      usage: usage[1],
+      release: NEVER,
+      match: (request) => !request.tools.includes(SUBAGENT_TOOL),
+    },
+    { text: "取证超时,按已读到的代码收尾", usage: usage[2], match: (request) => request.tools.includes(SUBAGENT_TOOL) },
   ]);
 
   assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
-  // 父、子、父各一次:子会话停下之后那次迟到的响应没有引出第二次子请求。
-  assert.equal(requests.length, 3, "超时的子会话不该再发请求");
+  // 父会话两次、子会话至多一次:停下的子会话那次请求没被重发,父会话也没替它接着跑。
+  // 子会话到底发出过那一次没有,取决于超时落在 pi-subagents 建起子会话之前还是之后,那是
+  // 机器负载说了算的事;这里钉的是「停下之后不再有第二次」。
+  const childRequests = requests.filter((request) => !request.tools.includes(SUBAGENT_TOOL));
+  assert.equal(requests.length - childRequests.length, 2, "父会话只该有派取证与收尾两次");
+  assert.ok(childRequests.length <= 1, `超时的子会话不该再发请求,却发了 ${childRequests.length} 次`);
   const [call] = evidenceCalls(events);
   assert.ok(call);
   assert.equal(call.isError, true);

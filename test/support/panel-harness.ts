@@ -404,6 +404,10 @@ export async function startPanelHarness(
       settled.push({ event, ...(error === undefined ? {} : { error }) });
     },
   });
+  // 空闲的 keep-alive 连接不由服务端关(issue #397,同 `fake-gitea.ts`):测试进程用 `api()`
+  // 发下一个请求的间隔由夹具里那些 git 操作决定,服务端 5 秒、客户端 4 秒的两档一撞就是
+  // ECONNRESET。生产那一侧照旧走 Node 默认,这一行只改测试起的这个实例。
+  server.keepAliveTimeout = 0;
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });

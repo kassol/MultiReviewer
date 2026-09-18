@@ -180,6 +180,10 @@ export async function startFakeGitea(repo: {
     return json(404, { message: "not found" });
   });
 
+  // 空闲的 keep-alive 连接不由服务端关(issue #397)。默认 5 秒,而客户端(undici)自己那
+  // 一档是 4 秒:机器负载下客户端的定时器落后一秒就会把一条服务端已经关掉的连接拿来发下
+  // 一个请求,拿回 ECONNRESET。两个用例之间隔多久由 git 夹具的耗时决定,不该进判据。
+  server.keepAliveTimeout = 0;
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
   });
