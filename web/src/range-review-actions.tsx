@@ -549,7 +549,11 @@ function AdvanceDialogContent({
           </Dialog.Title>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 py-3 sm:px-5 sm:py-4">
+        {/* 与发起弹窗同一处挤压(issue #391):窄屏这一列放不下选择器与指令两块,结果区被压到几个
+            像素,空态整块溢出到结果区之外——「查看全部提交」落在指令 textarea 的位置上,点下去点到的
+            是 textarea(issue #394)。这一列因此自己滚,选择器保住工具条加一屏结果区的高度;这一档还多
+            一行 dl 与「完整审查」复选框,它们排在滚动内容里,不再吃选择器的高度。 */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
           <dl className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-3">
             <div className="min-w-0 rounded-lg bg-sunken px-3 py-2">
               <dt className="flex items-center gap-1.5 text-sm text-text-muted">
@@ -576,25 +580,27 @@ function AdvanceDialogContent({
             </div>
           </dl>
 
-          <CommitPicker
-            repo={{ owner: rangeReview.owner, repo: rangeReview.repo }}
-            base={{ sha: rangeReview.baseSha }}
-            comparison={comparison}
-            baseLocked
-            {...(rangeReview.comparisonSource === null
-              ? {}
-              : {
-                  initialMode: rangeReview.comparisonSource.kind,
-                  ...(rangeReview.comparisonSource.kind === "branch"
-                    ? { initialBranch: rangeReview.comparisonSource.name }
-                    : {}),
-                })}
-            current={{ sha: rangeReview.comparisonSha }}
-            onPick={(_role, selection) => {
-              setError(null);
-              setComparison(selection);
-            }}
-          />
+          <div className="flex min-h-100 flex-1 flex-col">
+            <CommitPicker
+              repo={{ owner: rangeReview.owner, repo: rangeReview.repo }}
+              base={{ sha: rangeReview.baseSha }}
+              comparison={comparison}
+              baseLocked
+              {...(rangeReview.comparisonSource === null
+                ? {}
+                : {
+                    initialMode: rangeReview.comparisonSource.kind,
+                    ...(rangeReview.comparisonSource.kind === "branch"
+                      ? { initialBranch: rangeReview.comparisonSource.name }
+                      : {}),
+                  })}
+              current={{ sha: rangeReview.comparisonSha }}
+              onPick={(_role, selection) => {
+                setError(null);
+                setComparison(selection);
+              }}
+            />
+          </div>
 
           <div className="shrink-0">
             <Text as="label" htmlFor="advance-directive" size="1" color="gray">
