@@ -62,6 +62,7 @@ import {
   fileFingerprints,
   fingerprintAnchor,
   parseFingerprintAnchors,
+  relocatedLine,
 } from "./fingerprint.ts";
 import {
   changedLinesByFile,
@@ -80,10 +81,12 @@ import {
   type FindingCommentRef,
   type FindingPlacement,
   type FindingRecord,
+  type FindingRelocation,
   type HistoryPlacement,
   type OutcomeRecord,
   type RecordedLineAuthor,
   type ResumeState,
+  type StageScope,
   type Store,
   type VerdictRecord,
 } from "./store.ts";
@@ -862,7 +865,7 @@ type Continuation = {
  * 延续问的是同一批文件,一轮里同一个文件因此只算一次。
  */
 function stillOnHead(
-  cache: Map<string, Set<string>>,
+  cache: Map<string, Map<string, number[]>>,
   worktreePath: string,
   file: string,
   fingerprint: string,
@@ -876,6 +879,36 @@ function stillOnHead(
 }
 
 /**
+ * 每一轮开跑时把本阶段每条 Finding 的位置重定位到这一轮的 head 上(issue #368)。
+ *
+ * 只挪位置,一个模型都不参与:旧指纹在这一轮的 head 上还算得出,那处代码就只是被上下
+ * 挪了几行,Finding 还是同一条,它此刻指着的是解析到的那一行。作者在上面插几行、之后
+ * 再打开代码差异侧滑时看到的才是当初报出的那段代码;已处置的那些既进不了复核也进不了
+ * 延续,不在这里挪就永远停在报出它的那一轮上。
+ *
+ * 解析不到(代码被改写)、或者最近的两处一样近时位置原样不动,复核与延续照旧收口。
+ */
+function relocateHistory(
+  store: Store,
+  scope: StageScope,
+  worktreePath: string,
+): FindingRelocation[] {
+  // 按文件缓存,理由同 `stillOnHead`:一个文件的全部指纹要通读整份文件再逐行 hash。
+  const cache = new Map<string, Map<string, number[]>>();
+  const placements: FindingRelocation[] = [];
+  for (const candidate of store.relocationCandidates(scope)) {
+    let fingerprints = cache.get(candidate.file);
+    if (fingerprints === undefined) {
+      fingerprints = fileFingerprints(worktreePath, candidate.file);
+      cache.set(candidate.file, fingerprints);
+    }
+    const line = relocatedLine(fingerprints.get(candidate.fingerprint), candidate.line);
+    if (line !== undefined) placements.push({ findingId: candidate.findingId, line });
+  }
+  return placements;
+}
+
+/**
  * 合并 agent 命中的那条历史该不该折叠(issue #240)。折叠即给出本轮那条要挂上去的那条
  * 历史评论,不折叠即 undefined。
  *
@@ -885,7 +918,7 @@ function stillOnHead(
  */
 function agentFold(
   hit: HistoryPlacement,
-  cache: Map<string, Set<string>>,
+  cache: Map<string, Map<string, number[]>>,
   worktreePath: string,
 ): PriorDisposition | undefined {
   const disposed = hit.disposition === "resolved" || hit.disposition === "fixed";
@@ -935,7 +968,7 @@ function planContinuations(
   diffRanges: DiffRanges,
   worktreePath: string,
   positions: ReadonlyMap<number, PresentPosition>,
-  fingerprintCache: Map<string, Set<string>>,
+  fingerprintCache: Map<string, Map<string, number[]>>,
   claimedGroups: ReadonlySet<number>,
 ): { plans: Continuation[]; synthesized: ReviewGroup[] } {
   // 合并 agent 已经认领的那几组不再参与词法配对(issue #243):它们承接的是 agent
@@ -2026,6 +2059,19 @@ export async function runReview(
       }
     };
 
+    const stageScope: StageScope =
+      deps.rangeReviewId === undefined
+        ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
+        : { rangeReviewId: deps.rangeReviewId };
+
+    // 本阶段每条 Finding 在这一轮 head 上的位置(issue #368)。算在读历史之前:注入给
+    // Reviewer 的、落进本轮历史快照的都得是重定位之后的行号。落库要等 `startRun` 给出
+    // 轮次 id——位置属于哪一轮与位置本身是一格事实的两半,分开写就又回到这一票要修的病。
+    // 续跑不做:它接着跑的是原来那一轮,位置在那一轮开跑时已经定过(issue #248)。
+    const relocations =
+      resume === undefined ? opened(() => relocateHistory(store, stageScope, worktree.path)) : [];
+    const relocatedLines = new Map(relocations.map((one) => [one.findingId, one.line]));
+
     // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
     // 本轮自己的 Finding 还没落库,这份历史因此正是「上一轮为止」的那些。
     // 它也是只复核那一轮过滤文件集的依据(issue #242),两处同一份读取,口径不会分叉。
@@ -2034,11 +2080,9 @@ export async function runReview(
     let history: readonly HistoryFinding[] =
       resume?.history ??
       opened(() =>
-        store.stageHistory(
-          deps.rangeReviewId === undefined
-            ? { owner: event.owner, repo: event.repo, pullNumber: event.number }
-            : { rangeReviewId: deps.rangeReviewId },
-        ),
+        store
+          .stageHistory(stageScope)
+          .map((entry) => ({ ...entry, line: relocatedLines.get(entry.id) ?? entry.line })),
       );
 
     // 所在文件不在本轮可审文件集里的未处置历史,开跑就地自动处置(issue #272):它们
@@ -2190,6 +2234,10 @@ export async function runReview(
       // 之后改配置追不上这一轮,续跑读这一行而不重新解析。
       auxiliaryModel: deps.auxiliaryModel ?? null,
     }));
+
+    // 重定位落库(issue #368):位置与它成立的那一轮同一笔写下。这一步不建行、不写评论、
+    // 不写复核结论、不写处置——它只回答「这条 Finding 此刻在哪一行」。
+    if (relocations.length > 0) opened(() => store.recordFindingRelocations(runId, relocations));
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
     // 而第一条编排事件紧接着就发出来了。
@@ -2479,7 +2527,7 @@ export async function runReview(
       );
       // 「旧指纹在本轮 head 上算不算得出」这一问,折叠与延续问的是同一批文件,共用一份
       // 指纹表(issue #240)。
-      const fingerprintCache = new Map<string, Set<string>>();
+      const fingerprintCache = new Map<string, Map<string, number[]>>();
 
       // 本轮的合并组:Finding、它的指纹与它折叠到的历史评论同属一项(issue #186)。指纹在
       // 新 head commit 的工作副本下重算,代码没变则与上一轮的锚点相同;跨轮匹配整批先算出

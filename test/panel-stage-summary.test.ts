@@ -73,6 +73,8 @@ type SummaryFinding = {
   firstReportedAt: string;
   lastRunId: number;
   lastReportedAt: string;
+  /** 它被报出来时的那一行(issue #368),与当前位置 `line` 分开。 */
+  reportedLine: number;
 };
 
 type TimelineEntry = {
@@ -334,6 +336,74 @@ test("阶段汇总:同一条只出现一次、状态取最新一轮,已延续不
   assert.equal(
     body.counts.pending + body.counts.resolved + body.counts.fixed,
     body.findings.length,
+  );
+});
+
+/**
+ * 代码差异侧滑要的就是这两格(issue #368):一条 Finding 此刻指着哪一行,以及那一行是在
+ * 哪一轮的 head 上算出来的。侧滑按 `lastRunId` 取 diff,再对照时间线判要不要标「已过期」。
+ */
+test("阶段汇总:位置跟到重定位的那一轮,没重定位的停在报出它的那一轮", async () => {
+  const h = await startPanelHarness();
+  const store = openStore(h.db.path);
+  store.registerRepo({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    generation: 1,
+    key: "relocation-key",
+  });
+  const rangeReviewId = store.createRangeReview({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    title: "重定位夹具",
+    baseSha: "base-sha",
+    comparisonSha: "sha-1",
+    createdBy: "operator",
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  const container = { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 901 };
+  const run1 = seedRun(
+    store,
+    { ...container, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z", rangeReviewId },
+    [
+      { file: "src/moved.ts", line: 6, fingerprint: "fp-moved", commentId: "c1" },
+      { file: "src/frozen.ts", line: 3, fingerprint: "fp-frozen", commentId: "c2" },
+    ],
+  );
+  // 第二轮一条都没报出:只把 moved 那条的位置挪到这一轮的 head 上。
+  const run2 = seedRun(
+    store,
+    { ...container, headSha: "sha-2", startedAt: "2026-08-20T02:00:00.000Z", rangeReviewId },
+    [],
+  );
+  store.recordFindingRelocations(run2, [
+    { findingId: findingId(store, run1, "fp-moved"), line: 16 },
+  ]);
+  store.close();
+
+  const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
+
+  // 指纹解析到新行:位置与它成立的那一轮一起前进,侧滑因此画最新一轮、不标已过期。
+  const moved = body.findings.find((finding) => finding.description === "正文 fp-moved")!;
+  assert.equal(moved.line, 16);
+  assert.equal(moved.reportedLine, 6);
+  assert.equal(moved.lastRunId, run2);
+
+  // 解析不到的那条位置不动:侧滑画第 1 轮的 diff 并标「已过期」。
+  const frozen = body.findings.find((finding) => finding.description === "正文 fp-frozen")!;
+  assert.equal(frozen.line, 3);
+  assert.equal(frozen.reportedLine, 3);
+  assert.equal(frozen.lastRunId, run1);
+
+  // 标记上的「第 1 轮」与短 sha 出自时间线:轮次编号就是它在这份时间线里的次序。
+  assert.deepEqual(
+    body.timeline.map((entry) => [entry.runId, entry.headSha]),
+    [
+      [run1, "sha-1"],
+      [run2, "sha-2"],
+    ],
   );
 });
 

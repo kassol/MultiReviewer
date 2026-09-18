@@ -35,6 +35,7 @@ import {
   useDialogReturnFocus,
   visibleNavCurrentItem,
 } from "@/components/use-dialog-return-focus";
+import { findingDiffSource } from "@/lib/finding-position";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -360,7 +361,6 @@ export function StageDetailPage({
             <FindingDrawer
               key={location.drawer.id}
               scope={scopeOf(body.stage)}
-              latestRunId={body.stage.latestRunId}
               findingId={location.drawer.id}
               canDispose={canDispose}
               onClose={closeDrawer}
@@ -907,20 +907,21 @@ function StageDrawer({
 }
 
 /**
- * 一条 Finding 的侧滑:最新一轮 Review Range 里它所在文件的 diff,滚到并高亮它锚定的
- * 那一行,同文件的其它 Finding 挂在各自行下。处置就在卡片里做,与列表是同一个动作。
+ * 一条 Finding 的侧滑:它当前位置所属那一轮 Review Range 里、它所在文件的 diff,滚到并
+ * 高亮它锚定的那一行,同文件的其它 Finding 挂在各自行下。处置就在卡片里做,与列表是同一
+ * 个动作。
+ *
+ * 画哪一轮由位置说了算(issue #368):行号是在那一轮的 head 上算出来的,拿它去画后来
+ * 某一轮的 diff 会静默高亮到别的代码。位置停在更早那一轮时头部标「已过期」。
  */
 function FindingDrawer({
   scope,
-  latestRunId,
   findingId,
   canDispose,
   onClose,
   onCloseAutoFocus,
 }: {
   scope: StageScope;
-  /** 这个阶段最新一轮 Review Run;一轮都还没跑过时为 null,那时也不会有 Finding。 */
-  latestRunId: number | null;
   findingId: number;
   canDispose: boolean;
   onClose: () => void;
@@ -933,6 +934,10 @@ function FindingDrawer({
     finding === undefined
       ? []
       : (summary.data?.findings ?? []).filter((entry) => entry.file === finding.file);
+  const source =
+    finding === undefined
+      ? null
+      : findingDiffSource(finding.lastRunId, summary.data?.timeline ?? []);
 
   return (
     <StageDrawer
@@ -941,8 +946,17 @@ function FindingDrawer({
         ? {}
         : {
             headline: (
-              <span className="break-all font-mono text-base text-text-secondary">
-                {finding.file}:{finding.line}
+              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="break-all font-mono text-base text-text-secondary">
+                  {finding.file}:{finding.line}
+                </span>
+                {source?.stale == null ? null : (
+                  <span className="flex flex-wrap items-center gap-1 text-sm text-warning">
+                    已过期 · 代码差异基于第 {source.stale.round} 轮
+                    <CommitChip sha={source.stale.headSha} />
+                    ，pull request 已推进
+                  </span>
+                )}
               </span>
             ),
           })}
@@ -959,7 +973,7 @@ function FindingDrawer({
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
           <Callout.Text>{(summary.error as Error).message}</Callout.Text>
         </Callout.Root>
-      ) : finding === undefined || latestRunId === null ? (
+      ) : finding === undefined || source === null ? (
         <EmptyState
           title="该 Finding 已不在当前审查阶段的汇总中"
           titleAs="h2"
@@ -967,7 +981,7 @@ function FindingDrawer({
         />
       ) : (
         <FilePatch
-          runId={latestRunId}
+          runId={source.runId}
           path={finding.file}
           findings={sameFile}
           canDispose={canDispose}
