@@ -37,7 +37,12 @@ import {
   testCleanups,
   type RepoFixture,
 } from "./git-fixture.ts";
-import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.ts";
+import {
+  memoryForge,
+  scriptedMergeAgent,
+  scriptedReviewer,
+  type MemoryForge,
+} from "./memory-forge.ts";
 
 export const PANEL_ADMIN_USERNAME = "panel-admin";
 export const PANEL_ADMIN_PASSWORD = "panel-harness-password";
@@ -174,8 +179,9 @@ export type PanelHarnessOptions = {
   /** Reviewer 的组装。省略即按 spec 建脚本 Reviewer;真组装那一档传 `buildReviewers`。 */
   buildReviewers?: WebhookServerDeps["buildReviewers"];
   /**
-   * 本轮合并 agent 的组装(issue #304)。省略即用真实的 Pi 子进程实现;要断言这一轮的
-   * 合并用了哪一处模型的用例注入脚本化实现,收到的那份运行模型就是解析出的辅助模型。
+   * 本轮合并 agent 的组装(issue #304)。省略即注入一个当场报失败的脚本实现,合并因此
+   * 走算法档;要断言这一轮的合并用了哪一处模型的用例注入自己的脚本化实现,收到的那份
+   * 运行模型就是解析出的辅助模型。
    */
   buildMergeAgent?: WebhookServerDeps["buildMergeAgent"];
   /** 先写进库的全局模型组合。省略取 `[HARNESS_SPEC]`,给空数组即「还没配组合」。 */
@@ -354,9 +360,12 @@ export async function startPanelHarness(
       if (options.buildReviewers !== undefined) return options.buildReviewers(plans);
       return plans.map((plan) => scriptedReviewer(plan.spec.model, []));
     },
-    ...(options.buildMergeAgent === undefined
-      ? {}
-      : { buildMergeAgent: options.buildMergeAgent }),
+    // 默认注入一个当场报失败的合并 agent:不给的话本轮合并会去 fork 真的 Pi 子进程,
+    // 而 harness 上的模型服务指向的是一个假地址——那一次要等二十多秒才失败,而结果与
+    // 「合并没跑成、退回算法合并」逐字相同。要断言合并本身的用例自己传实现。
+    buildMergeAgent:
+      options.buildMergeAgent ??
+      (() => scriptedMergeAgent([], { failure: "harness 不跑真的合并 agent" })),
     cacheDir: cache.dir,
     dbPath: db.path,
     bootstrapSecret: "panel-harness-bootstrap",
