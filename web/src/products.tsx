@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   CheckCircledIcon,
   ChevronDownIcon,
+  Cross2Icon,
   CrossCircledIcon,
   DotsHorizontalIcon,
   Pencil1Icon,
@@ -36,6 +37,7 @@ import {
   type SessionBaseline,
 } from "@/components/repo-baseline-rows";
 import { Button } from "@/components/theme-button";
+import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import type { CommitSelection } from "@/commit-picker";
 import { sessionsQueryKey, type AgentSession } from "@/lib/agent-sessions";
 import {
@@ -755,6 +757,8 @@ function TrackerSection({
   canChat: boolean;
 }) {
   const [openSpec, setOpenSpec] = useState<TrackerSpec | null>(null);
+  /** 弹窗是受控的,没有 `Dialog.Trigger`,焦点得自己送回打开它的那颗 spec 标题键。 */
+  const returnFocus = useDialogReturnFocus();
   const ticketCount = specs.reduce((total, spec) => total + spec.tickets.length, 0);
   const pickable = pickableTickets(specs);
 
@@ -795,7 +799,10 @@ function TrackerSection({
                     color="gray"
                     size="2"
                     className="min-w-0 shrink justify-start text-left"
-                    onClick={() => setOpenSpec(spec)}
+                    onClick={(event) => {
+                      returnFocus.captureTrigger(event);
+                      setOpenSpec(spec);
+                    }}
                   >
                     <span className="min-w-0 break-words font-medium">{spec.title}</span>
                   </Button>
@@ -826,7 +833,10 @@ function TrackerSection({
                       const notes = ticketNotes(ticket);
                       return (
                         // 标签、状态那几格宽度固定,390px 下把标题挤成一行一个字。让这一行
-                        // 可折行,标题留一道 12rem 的下限:窄屏里它自己占一行,宽屏照旧一行排完。
+                        // 可折行,`sm` 以下标题的 flex 基准给满行宽:它自己独占一行,元信息被
+                        // 挤到下一行,读起来是 编号 → 标题 → 元信息;此前元信息落在标题第一行
+                        // 右端,标题从它左边起折到下一行,像标题里插了一段(issue #390)。
+                        // 宽屏基准回到 0、留 12rem 下限,照旧一行排完。
                         <li
                           key={ticket.id}
                           className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1"
@@ -847,8 +857,8 @@ function TrackerSection({
                             size="2"
                             className={
                               ticket.state === "closed"
-                                ? "min-w-[12rem] flex-1 break-words text-text-muted line-through"
-                                : "min-w-[12rem] flex-1 break-words"
+                                ? "min-w-[12rem] grow basis-full break-words text-text-muted line-through sm:basis-0"
+                                : "min-w-[12rem] grow basis-full break-words sm:basis-0"
                             }
                           >
                             {ticket.title}
@@ -873,6 +883,7 @@ function TrackerSection({
         canChat={canChat}
         pickable={pickable}
         onClose={() => setOpenSpec(null)}
+        onCloseAutoFocus={returnFocus.onCloseAutoFocus}
       />
     </CardShell>
   );
@@ -933,6 +944,7 @@ function SpecDialog({
   canChat,
   pickable,
   onClose,
+  onCloseAutoFocus,
 }: {
   productId: number;
   spec: TrackerSpec | null;
@@ -941,6 +953,8 @@ function SpecDialog({
   /** 可开工的票号,与产品页那一列同一份。 */
   pickable: ReadonlySet<number>;
   onClose: () => void;
+  /** 关闭后把焦点送回打开它的那颗 spec 标题键。 */
+  onCloseAutoFocus: (event: Event) => void;
 }) {
   const queryClient = useQueryClient();
   const [failure, setFailure] = useState<string | null>(null);
@@ -996,10 +1010,30 @@ function SpecDialog({
         }
       }}
     >
-      <Dialog.Content maxWidth="820px" size={{ initial: "2", sm: "3" }}>
-        <Dialog.Title size="4" mb="2">
-          {spec?.title ?? ""}
-        </Dialog.Title>
+      <Dialog.Content
+        maxWidth="820px"
+        size={{ initial: "2", sm: "3" }}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
+        {/* 关闭键在标题行右端(issue #390)。此前浮层里一个 `Dialog.Close` 都没有,390px 上
+            的出口只剩两侧那道 16px 空隙与 Tab 栏上方的窄条。与仓库配置弹窗同一形状。 */}
+        <div className="flex items-start justify-between gap-3">
+          <Dialog.Title size="4" mb="2" className="min-w-0 break-words">
+            {spec?.title ?? ""}
+          </Dialog.Title>
+          <Dialog.Close>
+            <IconButton
+              type="button"
+              variant="ghost"
+              color="gray"
+              size={{ initial: "3", sm: "1" }}
+              className="shrink-0"
+              aria-label="关闭"
+            >
+              <Cross2Icon aria-hidden />
+            </IconButton>
+          </Dialog.Close>
+        </div>
         <Dialog.Description size="2" color="gray" mb="3">
           spec 与票的正文由会话写,这里读它,并认领、改标签、开关与评论。
         </Dialog.Description>
