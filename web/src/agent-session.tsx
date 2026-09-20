@@ -431,7 +431,8 @@ function Conversation({
           </div>
         )}
         {running ? (
-          <div className="flex flex-col gap-1">
+          // 「在跑」与流的连接状态并成一行:两行小字上下叠着像两条互不相干的提示。
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <p className="flex items-center gap-1.5 px-1 text-sm text-text-muted" aria-live="polite">
               <Spinner size="1" />
               agent 在跑
@@ -627,7 +628,12 @@ function QuestionRoundCard({
                 ) : null}
               </p>
               {question.body === "" ? null : (
-                <p className="max-w-[46em] text-md whitespace-pre-wrap text-text-secondary">{question.body}</p>
+                // 还等着人答的那一轮,题干是要读的正文,走主文字色;答过或过期的退到次级色。
+                <p
+                  className={`max-w-[46em] text-md whitespace-pre-wrap ${answerable ? "text-text" : "text-text-secondary"}`}
+                >
+                  {question.body}
+                </p>
               )}
               {settled !== undefined ? (
                 <ul className="flex flex-col gap-1">
@@ -1160,7 +1166,8 @@ function QueueBlock({
           </li>
         ))}
       </ol>
-      <Text as="p" size="2" color="gray">
+      {/* `sm` 以下不画这句:排队块加输入区已经占掉半屏,手机上对话流只剩一条缝。 */}
+      <Text as="p" size="2" color="gray" className="max-sm:hidden">
         不支持单条撤回,只能整队清空。
       </Text>
     </div>
