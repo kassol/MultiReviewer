@@ -57,7 +57,6 @@ import { RunTrace } from "./run-trace.tsx";
 import {
   rerunRangeReviewRequest,
   runStatus,
-  StageCounts,
   stageLabel,
   StageSourceBadge,
   StageStatusBadge,
@@ -319,7 +318,6 @@ export function StageDetailPage({
           <div className="flex flex-wrap items-center gap-2">
             <StageSourceBadge stage={body.stage} />
             <StageStatusBadge stage={body.stage} />
-            <StageCounts stage={body.stage} />
           </div>
 
           {feedback === null ? null : (

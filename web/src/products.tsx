@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -36,6 +36,7 @@ import {
   RepoBaselineRows,
   type SessionBaseline,
 } from "@/components/repo-baseline-rows";
+import { Statement } from "@/components/statement";
 import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import type { CommitSelection } from "@/commit-picker";
@@ -47,7 +48,6 @@ import {
   PRODUCTS_QUERY_KEY,
   productQueryKey,
   specQueryKey,
-  statementParts,
   trackerCloseConfirm,
   type Product,
   type ProductKnowledge,
@@ -449,26 +449,6 @@ function SurveyDialog({
         </form>
       </Dialog.Content>
     </Dialog.Root>
-  );
-}
-
-/**
- * 一条陈述的正文。拆段在 `lib/products.ts` 的 `statementParts`(反引号圈住的那几段按行内
- * 代码渲染,与会话页同一种样子),这里只画。
- */
-function Statement({ text }: { text: string }) {
-  return (
-    <>
-      {statementParts(text).map((part, index) =>
-        part.code ? (
-          <code key={index} className="rounded-chip bg-fill px-1 py-0.5 font-mono text-xs">
-            {part.text}
-          </code>
-        ) : (
-          <Fragment key={index}>{part.text}</Fragment>
-        ),
-      )}
-    </>
   );
 }
 

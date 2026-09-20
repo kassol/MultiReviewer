@@ -6,6 +6,7 @@ import { Badge, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/theme
 import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
+import { Statement } from "@/components/statement";
 import { Button } from "@/components/theme-button";
 import { isAnchorable } from "@/lib/finding-position";
 import { localClock, localDay } from "@/lib/time";
@@ -111,9 +112,9 @@ function AttributionSaid({ said }: { said: RunFinding["attributions"][number] })
   return (
     <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
       <span className="min-w-0 break-all font-mono">{said.model}</span>
-      <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
-      {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：{said.impact}</p> : null}
-      {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：{said.suggestion}</p> : null}
+      <p className="text-base leading-relaxed break-words">问题：<Statement text={said.description} /></p>
+      {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：<Statement text={said.impact ?? ""} /></p> : null}
+      {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：<Statement text={said.suggestion ?? ""} /></p> : null}
     </div>
   );
 }
@@ -135,9 +136,9 @@ function CarriedSaid({ said }: { said: RunFinding["carried"][number] }) {
         <CommitChip sha={said.headSha} />
         <span>上的说法 · 尚未针对新代码重新验证</span>
       </p>
-      <p className="text-base leading-relaxed break-words">问题：{said.description}</p>
-      {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：{said.impact}</p> : null}
-      {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：{said.suggestion}</p> : null}
+      <p className="text-base leading-relaxed break-words">问题：<Statement text={said.description} /></p>
+      {hasText(said.impact) ? <p className="text-base leading-relaxed break-words">影响：<Statement text={said.impact ?? ""} /></p> : null}
+      {hasText(said.suggestion) ? <p className="text-base leading-relaxed break-words">建议：<Statement text={said.suggestion ?? ""} /></p> : null}
     </div>
   );
 }
@@ -208,6 +209,44 @@ function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }
 }
 
 /**
+ * 严重度与类别两枚徽章。已处置的那条把严重度换成绿勾:它不再等人排优先级。阶段列表的
+ * 卡头与 diff 里的卡片共用这一份。
+ */
+export function FindingBadges({ finding }: { finding: RunFinding }) {
+  return (
+    <>
+      {findingDisposed(finding) ? (
+        <CheckCircledIcon className="size-4 shrink-0 text-success" aria-label="已处置" />
+      ) : (
+        <Badge color={SEVERITY_COLOR[finding.severity]} variant="soft" radius="full">
+          {finding.severity}
+        </Badge>
+      )}
+      <Badge color="gray" variant="soft" radius="full">{finding.category}</Badge>
+    </>
+  );
+}
+
+/**
+ * 正文的一段。正文是这张卡的内容,走主文字色;「影响」「建议」两个标签退一档。行宽封在
+ * 56rem:内容轨不设上限之后,宽屏上一行一百多个汉字读不回行首。
+ */
+function BodyPart({ label, text, resolved }: { label?: string; text: string; resolved: boolean }) {
+  return (
+    <p
+      className={`max-w-4xl text-base leading-relaxed break-words ${
+        resolved ? "text-text-secondary" : "text-text"
+      } ${resolved && label === undefined ? "line-through" : ""}`}
+    >
+      {label === undefined ? null : (
+        <span className="font-medium text-text-secondary">{label}：</span>
+      )}
+      <Statement text={text} />
+    </p>
+  );
+}
+
+/**
  * 一条 Finding 的卡片:正文、严重度、类别、文件与行、跳到 Forge 看原版的链接,加上
  * 行内处置。它挂在 diff 的对应行下面,fallback 那一批则单独成段;阶段汇总把同一张
  * 卡片摆在自己的列表里——同一条 Finding 在两处显示成同一个样子,处置也是同一个动作。
@@ -218,9 +257,13 @@ function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }
 export function FindingRow({
   finding,
   canDispose,
+  heading = true,
 }: {
-  finding: RunFinding;
+  /** 阶段汇总里的 Finding 带标题;轮次自己的没有。 */
+  finding: RunFinding & { title?: string };
   canDispose: boolean;
+  /** 徽章与标题由卡片自己画。阶段列表的卡头已经画了这两样,那里传 false。 */
+  heading?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
@@ -248,64 +291,32 @@ export function FindingRow({
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-overlay-line px-4 py-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-          {resolved ? (
-            <CheckCircledIcon className="size-4 shrink-0 text-success" aria-label="已处置" />
-          ) : (
-            <Badge color={SEVERITY_COLOR[finding.severity]} variant="soft" radius="full">
-              {finding.severity}
-            </Badge>
+      {heading ? (
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <FindingBadges finding={finding} />
+          </div>
+          {finding.title === undefined || finding.title === "" ? null : (
+            <p className="text-lg font-semibold break-words">{finding.title}</p>
           )}
-          <Badge color="gray" variant="soft" radius="full">{finding.category}</Badge>
         </div>
-        {finding.commentHtmlUrl === null ? null : (
-          <Tooltip content="在 Forge 查看原始评论">
-            <IconButton
-              size="1"
-              variant="ghost"
-              color="gray"
-              radius="full"
-              asChild
-            >
-              <a
-                href={finding.commentHtmlUrl}
-                target="_blank"
-                rel="noreferrer"
-                aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
-              >
-                <ExternalLinkIcon />
-              </a>
-            </IconButton>
-          </Tooltip>
-        )}
-      </div>
+      ) : null}
 
       {/* 正文是代表段那一份问题 / 影响 / 建议(issue #278):几个模型报同一处时人要读的
           是一份说清楚的说法,谁报的退到下面那一行。 */}
-      <p
-        className={`text-base leading-relaxed break-words ${
-          resolved ? "text-text-secondary line-through" : "text-text-secondary"
-        }`}
-      >
-        {finding.description}
-      </p>
+      <BodyPart text={finding.description} resolved={resolved} />
       {hasText(finding.impact) ? (
-        <p className="text-base leading-relaxed break-words text-text-secondary">
-          影响：{finding.impact}
-        </p>
+        <BodyPart label="影响" text={finding.impact ?? ""} resolved={resolved} />
       ) : null}
       {hasText(finding.suggestion) ? (
-        <p className="text-base leading-relaxed break-words text-text-secondary">
-          建议：{finding.suggestion}
-        </p>
+        <BodyPart label="建议" text={finding.suggestion ?? ""} resolved={resolved} />
       ) : null}
 
       {/* 归属一行(ADR 0015):报出它的模型全列出来,一个都不藏,但不再抢正文。 */}
-      <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-secondary">
+      <p className="flex flex-wrap items-center gap-1.5 pt-1 text-sm text-text-secondary">
         <span>由 {finding.models.length} 个模型报出：</span>
         {finding.models.map((model) => (
-          <span key={model} className="min-w-0 break-all font-mono">
+          <span key={model} className="min-w-0 rounded-chip bg-fill px-1.5 py-0.5 font-mono text-xs break-all">
             {model}
           </span>
         ))}
@@ -366,9 +377,9 @@ export function FindingRow({
         <p className="text-sm text-text-secondary">
           该 Finding 仅发布在 pull request review 正文中，未生成可处置的行级评论。
         </p>
-      ) : canDispose ? (
-        <div className="flex flex-col gap-2">
-          {composing ? (
+      ) : (
+        <div className="flex flex-col gap-2 pt-1">
+          {canDispose && composing ? (
             <TextField.Root
               value={note}
               onChange={(event) => setNote(event.target.value)}
@@ -378,7 +389,7 @@ export function FindingRow({
             />
           ) : null}
           <div className="flex items-center gap-2">
-            {resolved ? (
+            {!canDispose ? null : resolved ? (
               <Button
                 variant="soft"
                 color="gray"
@@ -424,9 +435,24 @@ export function FindingRow({
                 处置
               </Button>
             )}
+            {/* 原始评论的外链与处置并排:两样都是「对这条 Finding 做点什么」。 */}
+            {finding.commentHtmlUrl === null ? null : (
+              <Tooltip content="在 Forge 查看原始评论">
+                <IconButton size="1" variant="ghost" color="gray" radius="full" className="ml-auto" asChild>
+                  <a
+                    href={finding.commentHtmlUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
+                  >
+                    <ExternalLinkIcon />
+                  </a>
+                </IconButton>
+              </Tooltip>
+            )}
           </div>
         </div>
-      ) : null}
+      )}
 
       {dispose.isError ? (
         <p role="alert" className="text-sm break-words text-danger">
@@ -454,11 +480,19 @@ function FindingCells({
     <>
       {findings.map((finding) => (
         <tr key={finding.id}>
-          <td
-            colSpan={3}
-            className={`p-0 ${finding.id === focusFindingId ? "bg-accent-tint" : "bg-surface"}`}
-          >
-            <FindingRow finding={finding} canDispose={canDispose} />
+          {/* 表格是 font-mono text-xs 的代码面,卡片是正文:字体与字号在这一格换回来,
+              否则 Finding 的中文正文会被等宽字体撑开。卡片内嵌成一张独立的卡,读的人
+              分得清哪里是代码、哪里是评论。 */}
+          <td colSpan={3} className="bg-sunken px-3 py-2 font-sans text-base whitespace-normal">
+            <div
+              className={`overflow-hidden rounded-lg border shadow-control [&>div]:border-t-0 ${
+                finding.id === focusFindingId
+                  ? "border-primary bg-accent-tint"
+                  : "border-overlay-line bg-surface"
+              }`}
+            >
+              <FindingRow finding={finding} canDispose={canDispose} />
+            </div>
           </td>
         </tr>
       ))}
@@ -581,7 +615,7 @@ export function FilePatch({
                     不参与。各表共用同一份 colgroup 加 table-fixed,列宽因此对齐。行号列
                     48px:等宽字号抬到 12px 后(issue #371),40px 那一档连四位行号都装不下,
                     数字会溢出格子压到隔壁列上。 */}
-                <table className="w-full table-fixed border-collapse font-mono text-xs">
+                <table className="w-full table-fixed border-collapse font-mono text-xs leading-5">
                   <colgroup>
                     <col className="w-12" />
                     <col className="w-12" />

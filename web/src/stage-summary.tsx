@@ -17,7 +17,7 @@ import { localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
 import { type RerunMode } from "./repo-actions.tsx";
-import { FindingRow } from "./run-diff.tsx";
+import { FindingBadges, FindingRow } from "./run-diff.tsx";
 import type { RunFinding } from "./runs.tsx";
 
 /**
@@ -144,6 +144,13 @@ const DISPOSITION_LABEL: Record<Exclude<DispositionFilter, "all">, string> = {
   fixed: "已修复",
 };
 
+/** 三个计数前的状态点:待处置是要人动手的那一档,已修复是成了的那一档。 */
+const COUNT_DOT: Record<Exclude<DispositionFilter, "all">, string> = {
+  pending: "bg-warning-icon",
+  resolved: "bg-neutral-dot",
+  fixed: "bg-success-icon",
+};
+
 type SeverityFilter = "all" | "P0" | "P1" | "P2";
 
 /** 行作者筛选里 `lineAuthor` 为 null 的那一档:与 `run-diff.tsx` 的「无法追溯」同一件事。 */
@@ -190,11 +197,15 @@ function FindingCard({
         replace
         onClick={onDrawerTrigger}
         aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
-        className="group block px-4 pt-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="group block px-4 pt-3 pb-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
       >
-        <span className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
-            {finding.file}:{finding.line}
+        <span className="flex items-start justify-between gap-x-3">
+          {/* 等级排在最前:几百条里往下扫,先看到的是轻重,再是哪个文件。 */}
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <FindingBadges finding={finding} />
+            <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
+              {finding.file}:{finding.line}
+            </span>
           </span>
           <span
             className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint-strong text-primary transition-colors group-hover:bg-accent-track"
@@ -204,7 +215,7 @@ function FindingCard({
           </span>
         </span>
         {finding.title === "" ? null : (
-          <span className="block pt-1 text-lg font-semibold break-words">{finding.title}</span>
+          <span className="block pt-1.5 text-lg font-semibold break-words">{finding.title}</span>
         )}
         <span className="block pt-1 text-sm text-text-secondary tabular-nums">
           第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
@@ -212,7 +223,7 @@ function FindingCard({
           {localMinute(finding.lastReportedAt)}
         </span>
       </Link>
-      <FindingRow finding={finding} canDispose={canDispose} />
+      <FindingRow finding={finding} canDispose={canDispose} heading={false} />
     </section>
   );
 }
@@ -494,7 +505,7 @@ export function StageSummaryView({
       ) : null}
 
       {/* 三个计数是这个阶段的进度:待处置在最前,人看的就是它。 */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-3 gap-2 sm:flex">
         {(
           [
             ["pending", counts.pending],
@@ -512,14 +523,17 @@ export function StageSummaryView({
               setDisposition(disposition === id ? "all" : id);
               if (tab !== "findings") onTabChange("findings");
             }}
-            className={`flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left ${
+            className={`flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 sm:min-w-40 ${
               disposition === id
                 ? "border-primary bg-accent-tint"
-                : "border-card-line bg-surface"
+                : "border-card-line bg-surface hover:bg-sunken"
             }`}
           >
-            <span className="text-sm text-text-secondary">{DISPOSITION_LABEL[id]}</span>
-            <span className="text-4xl font-bold tabular-nums">{value}</span>
+            <span className="flex items-center gap-1.5 text-sm text-text-secondary">
+              <span aria-hidden className={`size-1.5 rounded-full ${COUNT_DOT[id]}`} />
+              {DISPOSITION_LABEL[id]}
+            </span>
+            <span className="font-mono text-3xl font-bold tabular-nums">{value}</span>
           </button>
         ))}
       </div>
