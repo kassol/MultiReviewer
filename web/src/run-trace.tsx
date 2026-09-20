@@ -774,6 +774,78 @@ export function ToolCall({ event }: { event: { payload: Record<string, unknown> 
   );
 }
 
+/**
+ * 一个 Reviewer 这一批的收尾(issue #408)。它排在该模型该批那一组的末尾——事件按 seq
+ * 排,这一条是这一批最后落库的。
+ *
+ * 两处标警示色:复核结论给出得比应给的少,以及末回合的停止原因不是正常收工。这两样正是
+ * 「模型在某几批上无声结束、整批历史漏成没复核」的形状,不标出来就得逐条读事件去数。
+ */
+function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
+  const exitCode = num(payload, "exitCode");
+  const stopReason = str(payload, "stopReason");
+  const given = num(payload, "verdictsGiven") ?? 0;
+  const expected = num(payload, "verdictsExpected") ?? 0;
+  const turns = num(payload, "turns");
+  const usage = record(payload, "usage");
+  const total = usage === null ? null : num(usage, "totalTokens");
+  const durationMs = num(payload, "durationMs");
+
+  if (payload["failed"] === true) {
+    return (
+      <Callout.Root role="alert" color="red" size="1">
+        <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
+        <Callout.Text>
+          本批运行失败：{str(payload, "failure") ?? "未记录原因"}
+          {exitCode === null ? null : `（退出码 ${exitCode}）`}
+        </Callout.Text>
+      </Callout.Root>
+    );
+  }
+
+  // Pi 的停止原因里只有 `stop` 是说完了自然收尾,其余几档(length / toolUse / error /
+  // aborted / pending / deferred)都是半路停下。取不到时不标——那只是没记下来。
+  const abnormal = stopReason !== null && stopReason !== "stop";
+  return (
+    <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+      <span>
+        本批完成 · 报出 <span className="font-mono tabular-nums">{num(payload, "findings") ?? 0}</span> 条
+      </span>
+      {expected === 0 ? null : (
+        <span className={given < expected ? "text-warning" : undefined}>
+          复核结论 <span className="font-mono tabular-nums">{given}</span>/
+          <span className="font-mono tabular-nums">{expected}</span>
+        </span>
+      )}
+      {stopReason === null ? null : (
+        <span className={abnormal ? "text-warning" : "text-sm text-text-secondary"}>
+          停止原因 <span className="font-mono">{stopReason}</span>
+        </span>
+      )}
+      <span className="text-sm text-text-secondary">
+        {turns === null ? null : (
+          <>
+            <span className="font-mono tabular-nums">{turns}</span> 回合 ·{" "}
+          </>
+        )}
+        <span className="font-mono tabular-nums">{num(payload, "toolCalls") ?? 0}</span> 次工具
+        {total === null ? null : (
+          <>
+            {" · "}
+            <span className="font-mono tabular-nums">{total}</span> tokens
+          </>
+        )}
+        {durationMs === null ? null : (
+          <>
+            {" · "}
+            <span className="font-mono tabular-nums">{Math.round(durationMs / 1000)}</span> 秒
+          </>
+        )}
+      </span>
+    </span>
+  );
+}
+
 /** Reviewer 级的一条事件。 */
 function ReviewerEvent({ event }: { event: TraceEvent }) {
   const payload = event.payload;
@@ -797,6 +869,8 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
           </Callout.Root>
         );
       }
+      case "reviewer_batch_finished":
+        return <BatchFinished payload={payload} />;
       case "reviewer_finished": {
         const findings = num(payload, "findings");
         const rejected = num(payload, "rejectedToolCalls");
@@ -878,7 +952,14 @@ function sectionStatus(input: {
   finishedBatches: ReadonlySet<number>;
   live: boolean;
 }): SectionStatus {
-  if (input.failure !== null || input.events.some((event) => event.kind === "reviewer_failed")) {
+  if (
+    input.failure !== null ||
+    input.events.some(
+      (event) =>
+        event.kind === "reviewer_failed" ||
+        (event.kind === "reviewer_batch_finished" && event.payload["failed"] === true),
+    )
+  ) {
     return "error";
   }
   // 收尾组没有批次序号,它的完成信号是模型级的那条收尾事件。
@@ -982,7 +1063,16 @@ function ReviewerTrace({
   onToggle: () => void;
 }) {
   const toolCalls = events.filter((event) => event.kind === "tool_call").length;
-  const messages = events.filter((event) => event.kind === "assistant_message").length;
+  // 空回合也落事件(issue #407),「段文本」只数说了话的那些。
+  const messages = events.filter(
+    (event) => event.kind === "assistant_message" && (str(event.payload, "text") ?? "") !== "",
+  ).length;
+  // 这一批漏给了复核结论(issue #408):分组默认折着,不挂在标题上就得逐批展开才看得见。
+  const batchEnd = events.find((event) => event.kind === "reviewer_batch_finished");
+  const missedVerdicts =
+    batchEnd === undefined
+      ? 0
+      : (num(batchEnd.payload, "verdictsExpected") ?? 0) - (num(batchEnd.payload, "verdictsGiven") ?? 0);
   return (
     <section className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
       <button
@@ -1024,6 +1114,9 @@ function ReviewerTrace({
                 <span className="font-mono tabular-nums">{toolCalls}</span> 次工具
               </span>
             )}
+            {missedVerdicts > 0 ? (
+              <StatusBadge tone="warning">漏复核 {missedVerdicts} 条</StatusBadge>
+            ) : null}
           </span>
         </span>
       </button>

@@ -547,7 +547,14 @@ export async function runAgentWorker(
   options: AgentSessionOptions & {
     prompt: string;
     /** 收尾消息由调用方拼:三条协议的 `done` 形状各不相同,用量也不是三条都记。 */
-    done: (outcome: { usage: ReviewerUsage; failure?: string }) => void;
+    done: (outcome: {
+      usage: ReviewerUsage;
+      failure?: string;
+      /** 末条 assistant 消息的停止原因,一条 assistant 消息都没有时缺席(issue #408)。 */
+      stopReason?: string;
+      /** 这次会话的回合数(assistant 消息条数,issue #408)。 */
+      turns: number;
+    }) => void;
   },
 ): Promise<void> {
   const session = await openAgentSession(options);
@@ -561,6 +568,12 @@ export async function runAgentWorker(
 
   // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
   const failure = sessionFailure(session, thrown, options.runtime.apiKey);
+
+  // 回合数与末回合的停止原因只有会话自己数得出(issue #408):空文本的回合不发
+  // `assistant_message` 事件,轨迹里数出来的段数少于真实回合数;而「读完一次工具结果
+  // 就无声结束」这种收工不报错、不留文本,停止原因是它唯一的线索。
+  const assistants = session.messages.filter((message) => message.role === "assistant");
+  const stopReason = assistants.at(-1)?.stopReason;
 
   // 用量必须在 dispose 之前读:会话销毁后统计随之消失。只取 token 明细,`stats.cost`
   // 是 Pi 按自带价目表折算的估算,产品不记账,读它没有意义。
@@ -578,6 +591,11 @@ export async function runAgentWorker(
   };
 
   session.dispose();
-  options.done({ usage, ...(failure === undefined ? {} : { failure }) });
+  options.done({
+    usage,
+    turns: assistants.length,
+    ...(stopReason === undefined ? {} : { stopReason }),
+    ...(failure === undefined ? {} : { failure }),
+  });
   process.exit(0);
 }

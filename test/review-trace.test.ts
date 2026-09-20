@@ -101,7 +101,8 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
   const reviewerEvents = trace(db.path).filter((e) => e.scope === "reviewer");
   assert.deepEqual(
     reviewerEvents.map((e) => e.kind),
-    ["assistant_message", "tool_call", "tool_call", "reviewer_finished"],
+    // 倒数第二条是这一批的收尾(issue #408),末一条才是整个模型的收尾。
+    ["assistant_message", "tool_call", "tool_call", "reviewer_batch_finished", "reviewer_finished"],
   );
   assert.ok(
     reviewerEvents.every((e) => e.reviewer === "model-a"),
@@ -121,7 +122,7 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
   // 被拒的那次带原因,返回正文只留长度(ADR 0017)。
   assert.equal(reviewerEvents[2]!.payload["isError"], true);
   assert.equal(reviewerEvents[2]!.payload["error"], "severity must be one of P0, P1, P2");
-  assert.deepEqual(reviewerEvents[3]!.payload, {
+  assert.deepEqual(reviewerEvents[4]!.payload, {
     findings: 1,
     rejectedToolCalls: 0,
     anchorRejections: 0,
@@ -285,13 +286,14 @@ test("Reviewer 失败:末尾一条失败事件带原因,它之前发出的事件
   const failed = trace(db.path).filter((e) => e.reviewer === "model-a");
   assert.deepEqual(
     failed.map((e) => e.kind),
-    ["assistant_message", "reviewer_failed"],
+    // 中间那条是这一批的收尾(issue #408),失败与正常同一档;轮次级的失败原因仍补在末尾。
+    ["assistant_message", "reviewer_batch_finished", "reviewer_failed"],
     "崩溃前已经发生的事件要留着,失败原因补在末尾",
   );
-  assert.deepEqual(failed[1]!.payload, { failure: "模型返回 401", exitCode: null });
+  assert.deepEqual(failed[2]!.payload, { failure: "模型返回 401", exitCode: null });
   // 跑成功的那个走的是另一档,两者不混。
   assert.equal(
-    trace(db.path).find((e) => e.reviewer === "model-b")!.kind,
+    trace(db.path).findLast((e) => e.reviewer === "model-b")!.kind,
     "reviewer_finished",
   );
 });

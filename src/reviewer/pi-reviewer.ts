@@ -113,6 +113,8 @@ export async function runInChild(
   let rejectedToolCalls = 0;
   let anchorRejections = 0;
   let usage: ReviewerUsage | undefined;
+  let stopReason: string | undefined;
+  let turns: number | undefined;
 
   const request: ReviewerRequest = {
     runtimeModel: config.runtimeModel,
@@ -181,6 +183,8 @@ export async function runInChild(
       rejectedToolCalls = message.rejectedToolCalls;
       anchorRejections = message.anchorRejections;
       usage = message.usage;
+      stopReason = message.stopReason;
+      turns = message.turns;
     },
   });
 
@@ -194,5 +198,8 @@ export async function runInChild(
     ...(failure === undefined ? {} : { failure }),
     ...(exitCode === undefined ? {} : { exitCode }),
     ...(usage === undefined ? {} : { usage }),
+    // 子进程没回报收尾消息就退出时两格都取不到(issue #408),如实缺失。
+    ...(stopReason === undefined ? {} : { stopReason }),
+    ...(turns === undefined ? {} : { turns }),
   };
 }
