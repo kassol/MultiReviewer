@@ -648,7 +648,7 @@ function ConfigureDialogContent({
           </IconButton>
         </Tooltip>
       </div>
-      <div className="mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto">
+      <div className="-mr-2 mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto pr-2">
         {feedback === null ? null : (
           <Callout.Root
             role={feedback.isError ? "alert" : "status"}

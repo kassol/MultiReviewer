@@ -840,7 +840,7 @@ function EntryCard({
           {entry.scope === "" ? "全仓库" : entry.scope}
         </Badge>
         {canWrite ? (
-          <div className="flex shrink-0 gap-1">
+          <div className="flex shrink-0 items-center gap-4">
             <Button
               variant="ghost"
               color="gray"
@@ -1079,7 +1079,7 @@ function IntentSection({
                   下面一行(flex-wrap 的默认行为,不必另写 max-sm 覆盖)。 */}
               <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
                 <Text as="p" size="2" className="min-w-0 flex-1 wrap-anywhere">{intent.text}</Text>
-                <div className="flex shrink-0 flex-wrap items-center gap-1">
+                <div className="flex shrink-0 flex-wrap items-center gap-4">
                   {/* 反哺那一行的 Finding 引用(issue #296):走提案出处上那个既有的
                       `?finding=` 侧滑,人点进去就是那条 Finding 的 diff。 */}
                   {intent.targetKind === "finding" &&
@@ -1425,7 +1425,7 @@ function ProposalSection({
                     </Badge>
                   </span>
                   {canWrite ? (
-                    <div className="flex shrink-0 gap-1">
+                    <div className="flex shrink-0 items-center gap-4">
                       {/* 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #295):人写
                           一句话,agent 换陈述与作用范围并追加一条附注。废止型没有这一颗
                           ——它说的就是废止哪一条,改不出别的内容。 */}
@@ -1671,7 +1671,7 @@ function ExplorationSection({
                       {rule.scope === "" ? "全仓库" : rule.scope}
                     </Badge>
                   </span>
-                  <div className="flex shrink-0 gap-1">
+                  <div className="flex shrink-0 items-center gap-4">
                     {/* 「改写」就地展开与顶部同一个意图框(ADR 0028,issue #298):人写一句话
                         说要改成什么样,agent 读代码并把这一行原地换掉。首次确认前从此也不用
                         手写陈述——手填与逐条修改那张表已经撤掉(issue #299),「删除」照旧。 */}
