@@ -424,7 +424,8 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
   const outcomes = query(db.path, "SELECT * FROM reviewer_outcome ORDER BY model");
   assert.equal(outcomes[0]!["total_tokens"], 2500);
   const slowRow = outcomes.find((r) => r["model"] === "slow-model")!;
-  assert.ok((slowRow["duration_ms"] as number) >= 30, "Reviewer 的耗时没有被记录");
+  // 定时器可能比 Date.now 的差值早一两毫秒触发,下限留出余量。
+  assert.ok((slowRow["duration_ms"] as number) >= 25, "Reviewer 的耗时没有被记录");
 
   const run = query(db.path, "SELECT * FROM review_run")[0]!;
   assert.equal(run["input_tokens"], 2400);
