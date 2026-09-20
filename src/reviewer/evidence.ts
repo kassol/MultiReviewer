@@ -462,7 +462,7 @@ export function pinSubagentCall(
 /**
  * 子代理契约在工具边界的那一道(issue #262、#328、#358):与 pi-subagents 一起装进父会话的
  * 进程内扩展,在 `subagent` 工具执行之前做两件事——把能力天花板登记到这个会话名下,把调用
- * 参数按 `pinSubagentCall` 钉成契约形状。一律改参数而不拒调用(issue #404):模型要的是
+ * 参数按 `pinSubagentCall` 钉成契约形状。能派的一律改参数而不拒调用(issue #404):模型要的是
  * 证据,给它证据,只是不按它写的方式派;放行清单外的参数剥掉就好,到不了 pi-subagents。
  * Pi 的 `tool_call` 钩子对扩展注册的工具同样生效,`event.input` 就地改写后进入执行,
  * 这一层不再校验。被剥的键在审查轨迹上照样看得见:轨迹记的 `args` 取自
@@ -484,6 +484,14 @@ export function subagentContractExtension(
         if (event.toolName !== SUBAGENT_TOOL) return undefined;
         const input = event.input as Record<string, unknown>;
         const pinned = pinSubagentCall(input, worktreePath);
+        // 剥完没有可派的东西(模型拿 `action: "list"` 之类探能力,issue #404 线上验收):交给
+        // pi-subagents 只会得到一句通用的形状报错,模型看不出错在哪。这一档在这里指路。
+        if (!["agent", "tasks", "chain"].some((key) => key in pinned.params)) {
+          return {
+            block: true,
+            reason: `subagent has no ${pinned.stripped.join(", ") || "management"} action here; call it with agent "${agent}" and task`,
+          };
+        }
         registerSubagentCeiling(
           ctx.sessionManager.getSessionFile() ?? ctx.sessionManager.getSessionId(),
           agent,

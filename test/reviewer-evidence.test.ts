@@ -229,6 +229,13 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
   hook(read, ctx);
   assert.deepEqual(read.input, { path: "a.ts", async: true });
 
+  // 剥完没有可派的东西:拦下并指路,不把空调用交给 pi-subagents(issue #404)。
+  const probe = { toolName: SUBAGENT_TOOL, input: { action: "list", capabilities: true } };
+  assert.deepEqual(hook(probe, ctx), {
+    block: true,
+    reason: `subagent has no action, capabilities action here; call it with agent "${EVIDENCE_AGENT}" and task`,
+  });
+
   // 放行清单外的参数剥掉,调用照常派出(issue #404):打回只会让模型去掉那几项重试一遍。
   const management = {
     toolName: SUBAGENT_TOOL,
