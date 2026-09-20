@@ -661,7 +661,7 @@ export function FilePatch({
                             {line.newLine ?? ""}
                           </td>
                           <td
-                            className={`pr-2 pl-[calc(0.5rem+2ch)] -indent-[2ch] align-top whitespace-pre-wrap break-words text-text ${
+                            className={`pr-2 pl-[calc(0.5rem+2ch)] -indent-[2ch] align-top whitespace-pre-wrap break-words max-sm:break-all text-text ${
                               wholeFileAdded ? "" : CODE_TINT[line.kind]
                             }`}
                           >
