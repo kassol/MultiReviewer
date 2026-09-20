@@ -489,4 +489,9 @@ test("子代理卡头的任务只留人要读的那半句", () => {
   // 两样都没有的原样显示;裁剪之后空了也退回全文。
   assert.equal(subagentTaskLabel("读一遍 CONTEXT.md"), "读一遍 CONTEXT.md");
   assert.equal(subagentTaskLabel("任务:"), "任务:");
+  // 工具行上的派单目标走同一份裁法。
+  assert.equal(
+    describeTool("subagent", { task: "在会话根目录 /tmp/x 下,读 kassol/web。任务:找出登录态是怎么存的" }).target,
+    "找出登录态是怎么存的",
+  );
 });

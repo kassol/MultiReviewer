@@ -224,7 +224,11 @@ export function describeTool(name: string, args: unknown): ToolStep {
       return {
         kind: "subagent",
         label: "派子代理",
-        target: tasks.filter((task) => task !== "").join("、"),
+        // 与嵌套卡头同一份裁法:工具行只有一行宽,铺装那半句会把真正的任务挤出视野。
+        target: tasks
+          .filter((task) => task !== "")
+          .map(subagentTaskLabel)
+          .join("、"),
       };
     }
     case "ask_question_round":

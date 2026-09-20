@@ -872,7 +872,7 @@ function TrackerSection({
             content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
           />
           {/* 两个数各带单位:「4 / 17」读着像做完了几件,而它说的是这里有几条 spec、几张票。 */}
-          {pending ? null : (
+          {pending || specs.length === 0 ? null : (
             <span className="ml-1 text-sm text-text-muted">
               <span className="font-mono tabular-nums">{specs.length}</span> 条 spec ·{" "}
               <span className="font-mono tabular-nums">{ticketCount}</span> 张票

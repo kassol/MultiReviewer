@@ -528,8 +528,9 @@ function SessionRail({
                     ) : null}
                   </span>
                   <MasterListItemText className="mt-px block truncate text-sm font-normal">
+                    {/* 没有标题的那几场(产品梳理)名字都一样,谈没谈完先说,再是时刻。 */}
                     {session.title === null
-                      ? `${localMinute(session.lastActiveAt)} · ${session.createdBy}`
+                      ? `${session.purpose === "product-survey" ? (session.completedAt === null ? "未谈完 · " : "已谈完 · ") : ""}${localMinute(session.lastActiveAt)} · ${session.createdBy}`
                       : `${PURPOSE_LABEL[session.purpose]} · ${localMinute(session.lastActiveAt)} · ${session.createdBy}`}
                   </MasterListItemText>
                 </Link>
