@@ -59,6 +59,7 @@ import {
   conversation,
   describeTool,
   groupConversation,
+  subagentTaskLabel,
   summarizeTools,
   type AgentSessionRecord,
   type ToolCallItem,
@@ -73,6 +74,7 @@ import {
   agentSessionQueryKey,
   PURPOSE_LABEL,
   sessionsQueryKey,
+  sessionTitle,
   type AgentSession,
   type AgentSessionBaseline,
 } from "@/lib/agent-sessions";
@@ -384,7 +386,12 @@ function Conversation({
         ) : (
           <ol className="flex min-w-0 flex-col gap-3" aria-label="对话">
             {groups.map((item, index) => (
-              <li key={`${item.seq}-${item.kind}`} className="min-w-0">
+              // 一轮对话从一条用户消息起。轮内保持原来的密度,轮与轮之间多留一档:一屏里
+              // 二三十条消息连着排时,看不出一次提问带出的那几条回复到哪里为止。
+              <li
+                key={`${item.seq}-${item.kind}`}
+                className={item.kind === "user" && index > 0 ? "mt-3 min-w-0" : "min-w-0"}
+              >
                 <ConversationRow
                   item={item}
                   sessionId={sessionId}
@@ -519,8 +526,11 @@ function ConversationRow({
   return <AssistantReply item={item} expanded={expanded} onToggleExpand={onToggleExpand!} />;
 }
 
-/** 「其他」那一项的取值。用不可能与选项文字撞上的哨位,选项文字因此不必再做转义。 */
-const OTHER_OPTION = " 其他";
+/**
+ * 「其他」那一项的取值。用不可能与选项文字撞上的哨位(一个 NUL),选项文字因此不必再做转义。
+ * 哨位写成转义序列:裸 NUL 会让 git 把整份文件判成二进制,从此 diff 看不了。
+ */
+const OTHER_OPTION = "\0其他";
 
 /**
  * 一轮提问的选择卡片(CONTEXT.md 提问轮次,issue #359)。材质与 agent 的回复卡同一份
@@ -605,7 +615,9 @@ function QuestionRoundCard({
           );
           return (
             <li key={index} className="flex min-w-0 flex-col gap-1.5">
-              <p className="text-base font-medium">
+              {/* 题目标题此前 13px、题干 14px,标题比它要回答的那句话还小。提一档到题干那一档,
+                  轻重仍由字重分。 */}
+              <p className="text-md font-medium">
                 {index + 1}. {question.title}
                 {question.multiple ? (
                   <span className="ml-1.5 text-sm font-normal text-text-muted">多选</span>
@@ -855,6 +867,9 @@ function SubagentCards({ runs }: { runs: readonly SubagentRun[] }) {
 
 function SubagentCard({ run }: { run: SubagentRun }) {
   const [expanded, setExpanded] = useState(false);
+  /** 结论也会长成一篇文档。与 agent 回复卡同一道阈值、同一种收法,不另立一套规则。 */
+  const [readingAll, setReadingAll] = useState(false);
+  const longConclusion = isLongReply(run.conclusion);
   const failed = run.status === "failed";
   return (
     <Collapsible.Root
@@ -865,7 +880,7 @@ function SubagentCard({ run }: { run: SubagentRun }) {
       <Collapsible.Trigger asChild>
         <button
           type="button"
-          className="flex min-w-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+          className="flex min-w-0 items-center gap-1.5 rounded-lg px-4 py-2.5 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
         >
           {run.status === "running" ? (
             <Spinner size="1" className="shrink-0" />
@@ -876,8 +891,9 @@ function SubagentCard({ run }: { run: SubagentRun }) {
             />
           )}
           <PersonIcon aria-hidden className="shrink-0 text-text-muted" />
+          {/* 卡头一行只装得下一句,派单提示开头那段铺装说明因此裁掉;全文留在 `title` 上。 */}
           <span className="min-w-0 flex-1 truncate text-text" title={run.task}>
-            {run.task === "" ? "子代理" : run.task}
+            {run.task === "" ? "子代理" : subagentTaskLabel(run.task)}
           </span>
           <span className="shrink-0 text-sm tabular-nums text-text-muted">
             {run.status === "running" ? "在跑 · " : failed ? "失败 · " : ""}
@@ -887,7 +903,7 @@ function SubagentCard({ run }: { run: SubagentRun }) {
       </Collapsible.Trigger>
       <Collapsible.Content>
         <ol
-          className="mx-2.5 mb-1 flex min-w-0 flex-col border-l border-line pl-3"
+          className="mx-4 mb-1 flex min-w-0 flex-col border-l border-line pl-3"
           aria-label="子代理的工具调用"
         >
           {run.calls.map((call, index) => (
@@ -901,9 +917,33 @@ function SubagentCard({ run }: { run: SubagentRun }) {
       </Collapsible.Content>
       {run.conclusion === "" ? null : (
         <div
-          className={`min-w-0 border-t border-card-line px-2.5 py-2 ${failed ? "text-danger" : ""}`}
+          className={`flex min-w-0 flex-col border-t border-card-line px-4 py-3 ${failed ? "text-danger" : ""}`}
         >
-          <Markdown text={run.conclusion} />
+          {longConclusion && !readingAll ? (
+            <div className="relative max-h-[320px] overflow-hidden">
+              <Markdown text={run.conclusion} />
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-surface to-transparent"
+              />
+            </div>
+          ) : (
+            <Markdown text={run.conclusion} />
+          )}
+          {longConclusion ? (
+            <div className="mt-1 flex">
+              <Button
+                type="button"
+                variant="ghost"
+                color="gray"
+                size="1"
+                onClick={() => setReadingAll((open) => !open)}
+              >
+                <ChevronDownIcon aria-hidden />
+                {readingAll ? "收起" : "展开"}
+              </Button>
+            </div>
+          ) : null}
         </div>
       )}
     </Collapsible.Root>
@@ -1128,8 +1168,18 @@ const EMPTY_WROTE: SessionWrote = { specs: [], tickets: [] };
  * 不另开查询:读会话那一份带着它回,在跑时的续查因此就是这一栏的刷新。
  */
 function WrotePanel({ productId, wrote }: { productId: number; wrote: SessionWrote }) {
-  const rows: { key: string; label: string; title: string }[] = [
-    ...wrote.specs.map((spec) => ({ key: `spec-${spec.id}`, label: "spec", title: spec.title })),
+  /*
+   * spec 那几行链接带上 `?spec=`:产品页落地即展开那一条的全文弹窗,不用人在 tracker 区里
+   * 再找一遍。票那几行不带——读会话那一份只给票的 id 与标题,它属于哪条 spec 服务端没回,
+   * 点过去落在产品页的 tracker 区上。
+   */
+  const rows: { key: string; label: string; title: string; spec?: number }[] = [
+    ...wrote.specs.map((spec) => ({
+      key: `spec-${spec.id}`,
+      label: "spec",
+      title: spec.title,
+      spec: spec.id,
+    })),
     ...wrote.tickets.map((ticket) => ({
       key: `ticket-${ticket.id}`,
       label: `#${ticket.id}`,
@@ -1138,13 +1188,14 @@ function WrotePanel({ productId, wrote }: { productId: number; wrote: SessionWro
   ];
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <h2 className="text-lg font-bold">本会话写的 spec 与票</h2>
+      <h2 className="text-2xl font-bold tracking-[-0.015em]">本会话写的 spec 与票</h2>
       <ul className="flex flex-col gap-1.5">
         {rows.map((row) => (
           <li key={row.key}>
             <Link
               to="/products/$productId"
               params={{ productId: String(productId) }}
+              search={row.spec === undefined ? {} : { spec: row.spec }}
               className="flex min-w-0 items-start gap-2 rounded-lg border border-card-line bg-surface px-3 py-2 transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
             >
               <Badge color="gray" variant="soft" className="shrink-0">
@@ -1273,7 +1324,17 @@ function Composer({
             </Tooltip>
           ) : null}
           <Tooltip content={`${sendLabel}(回车)`}>
-            <IconButton type="submit" variant="solid" size="2" aria-label={sendLabel} disabled={!canSend}>
+            {/* 禁用态换成淡蓝 tint 底加弱文字色:Themes 给实心键的禁用态是 12% 灰底加
+                `--v8-text-faint` 的图标,在白底的输入框里几乎看不出还有这么一颗键,空着的
+                会话因此像没有发送入口。这是唯一一处覆写 Themes 的禁用态(DESIGN.md 7.5)。 */}
+            <IconButton
+              type="submit"
+              variant="solid"
+              size="2"
+              aria-label={sendLabel}
+              disabled={!canSend}
+              className="disabled:bg-accent-tint disabled:text-text-muted"
+            >
               <PaperPlaneIcon aria-hidden />
             </IconButton>
           </Tooltip>
@@ -1672,9 +1733,10 @@ export function AgentSessionPage({
   const loadError = sessionQuery.error;
   const wrotePanel = <WrotePanel productId={productId} wrote={wrote} />;
   // sm 以下页头留白收到 16px:390px 上顶栏、输入区与 Tab 栏已固定吃掉 245px,余下的
-  // 每一段留白都从对话流里扣(issue #384)。sm 起照常 24px。
+  // 每一段留白都从对话流里扣(issue #384)。sm 起照常 24px。底部留白也收一档:输入区自己
+  // 是这一页的底,`PageBody` 默认那段为滚到底的最后一张卡留的空在这里只是把输入区顶上去。
   return (
-    <PageBody className="h-full pt-4 pb-6 sm:pt-6">
+    <PageBody className="h-full pt-4 pb-4 sm:pt-6">
       {feedback === null ? null : (
         <Callout.Root
           role={feedback.error ? "alert" : "status"}
@@ -1747,9 +1809,15 @@ export function AgentSessionPage({
                       `title=` 补全文——标题区不再吃掉三行高度,屏幕留给对话流。 */}
                   <h1
                     className="min-w-0 line-clamp-1 break-words text-2xl font-bold tracking-[-0.015em] sm:line-clamp-2"
-                    title={session === undefined ? undefined : (session.title ?? PURPOSE_LABEL[session.purpose])}
+                    title={
+                      session === undefined
+                        ? undefined
+                        : sessionTitle(session.title, PURPOSE_LABEL[session.purpose])
+                    }
                   >
-                    {session === undefined ? "Agent 会话" : (session.title ?? PURPOSE_LABEL[session.purpose])}
+                    {session === undefined
+                      ? "Agent 会话"
+                      : sessionTitle(session.title, PURPOSE_LABEL[session.purpose])}
                   </h1>
                   {running ? <StatusBadge tone="running">在跑</StatusBadge> : null}
                   {surveyDone ? <StatusBadge tone="success">已谈完</StatusBadge> : null}

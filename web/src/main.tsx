@@ -32,6 +32,7 @@ import { DropdownMenu, Skeleton } from "@radix-ui/themes";
 import {
   agentSessionQueryKey,
   PURPOSE_LABEL,
+  sessionTitle,
   type AgentSession,
 } from "@/lib/agent-sessions";
 import { productQueryKey, type ProductDetail } from "@/lib/products";
@@ -301,7 +302,8 @@ function useProductCrumbs(pathname: string): string[] {
   });
   const data = session.data?.session;
   // 会话标题(`title`,服务端从首条用户消息派生)优先于用途名,与头部标题同一读法。
-  const sessionCrumb = data === undefined ? undefined : (data.title ?? PURPOSE_LABEL[data.purpose]);
+  const sessionCrumb =
+    data === undefined ? undefined : sessionTitle(data.title, PURPOSE_LABEL[data.purpose]);
   return [product.data?.product.name, sessionCrumb].filter((crumb) => crumb !== undefined);
 }
 

@@ -11,6 +11,7 @@ import {
   conversation,
   describeTool,
   groupConversation,
+  subagentTaskLabel,
   summarizeTools,
   SYSTEM_MESSAGE_ENTRY,
   toolSummary,
@@ -471,4 +472,21 @@ test("提问轮次条目投成选择卡片,三态由它后面第一条用户消�
     ]),
     [],
   );
+});
+
+test("子代理卡头的任务只留人要读的那半句", () => {
+  // 有「任务:」就从它之后起,铺装那一段丢掉。全角冒号同律。
+  assert.equal(
+    subagentTaskLabel("在会话根目录 /tmp/x 下,读 kassol/web。任务:找出登录态是怎么存的"),
+    "找出登录态是怎么存的",
+  );
+  assert.equal(subagentTaskLabel("任务：查清这三处调用链"), "查清这三处调用链");
+  // 没有标记时去掉开头那句「在…下,」。
+  assert.equal(
+    subagentTaskLabel("在会话根目录 /tmp/x 下,查清 webhook 的准入是怎么判的"),
+    "查清 webhook 的准入是怎么判的",
+  );
+  // 两样都没有的原样显示;裁剪之后空了也退回全文。
+  assert.equal(subagentTaskLabel("读一遍 CONTEXT.md"), "读一遍 CONTEXT.md");
+  assert.equal(subagentTaskLabel("任务:"), "任务:");
 });

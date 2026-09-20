@@ -11,7 +11,8 @@ export function Statement({ text }: { text: string }) {
     <>
       {statementParts(text).map((part, index) =>
         part.code ? (
-          <code key={index} className="rounded-chip bg-fill px-1 py-0.5 font-mono text-xs">
+          // 字号跟着所在那一行走,与 `Markdown` 的行内 code 同值。
+          <code key={index} className="rounded-chip bg-fill px-1 py-0.5 font-mono text-[0.9em]">
             {part.text}
           </code>
         ) : (

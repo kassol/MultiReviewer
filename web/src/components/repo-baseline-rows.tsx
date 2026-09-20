@@ -99,8 +99,9 @@ function BaselineRow({
         <Text as="span" size="2" weight="medium" className="break-all">
           {repo.owner}/{repo.repo}
         </Text>
-        <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
-          {fallback.loading && picked === undefined ? <Skeleton className="h-4 w-40" /> : null}
+        {/* 这一行给最小高度:骨架与读回来的 chip 同高,弹窗不会在读到默认分支那一刻跳一次。 */}
+        <span className="mt-0.5 flex min-h-6 flex-wrap items-center gap-1.5">
+          {fallback.loading && picked === undefined ? <Skeleton className="h-5 w-40" /> : null}
           {sha === null && !fallback.loading ? (
             <Text as="span" size="1" color="gray">
               {fallback.failed ? "读不到默认分支,开选择器自己选一个提交" : "跟随生效的默认分支"}

@@ -54,6 +54,24 @@ export type SubagentRun = {
   conclusion: string;
 };
 
+/**
+ * 子代理卡头上显示的那一句任务。派单的提示常常先交代一遍工作目录怎么铺的
+ * (「在会话根目录 /tmp/… 下,」),真正要做的事写在「任务:」后面——卡头一行只装得下一句,
+ * 铺装那一段挤掉的正是人要读的那半句。
+ *
+ * 有「任务:」就取它之后的部分;没有就去掉开头那句「在…下,」。两样都没有时原样显示,
+ * 裁剪不成立时给全文比给半句好。全文照旧挂在卡头的 `title` 上。
+ */
+export function subagentTaskLabel(task: string): string {
+  const marker = /任务[:：]\s*/.exec(task);
+  const rest =
+    marker === null
+      ? task.replace(/^在[^。]{0,120}?下[,,]\s*/, "")
+      : task.slice(marker.index + marker[0].length);
+  const trimmed = rest.trim();
+  return trimmed === "" ? task : trimmed;
+}
+
 /** 提问轮次那一条 `custom` 的类型(CONTEXT.md 提问轮次,issue #359),与服务端同值。 */
 export const AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE = "multireviewer-session-question-round";
 

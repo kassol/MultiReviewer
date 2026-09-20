@@ -29,6 +29,7 @@ import {
   AGENT_SESSION_PURPOSES,
   PURPOSE_LABEL,
   sessionsQueryKey,
+  sessionTitle,
   type AgentSession,
   type AgentSessionPurpose,
 } from "@/lib/agent-sessions";
@@ -516,7 +517,7 @@ function SessionRail({
                   */}
                   <span className="flex items-center gap-2">
                     <span className="min-w-0 flex-1 line-clamp-2 break-all text-lg">
-                      {session.title ?? PURPOSE_LABEL[session.purpose]}
+                      {sessionTitle(session.title, PURPOSE_LABEL[session.purpose])}
                     </span>
                     {session.status === "running" ? (
                       <span

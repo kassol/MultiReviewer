@@ -58,6 +58,25 @@ export type AgentSession = {
   baselines: AgentSessionBaseline[];
 };
 
+/**
+ * 服务端派生会话标题时的截断上限(`src/review/store.ts` 的 `agentSessionTitle`),与那一侧
+ * 同一个数。它截得不带省略号,面板因此要自己补。
+ */
+const TITLE_LIMIT = 80;
+
+/**
+ * 面板上显示的会话名:标题截到上限时补一个省略号,没有标题的会话退回用途名。左栏「我的
+ * 会话」、会话页头部与顶栏面包屑都走它——三处各写一份的话,同一个会话会在三个地方断在
+ * 不同的地方。
+ *
+ * 正好写满 80 字的第一条消息也会带上省略号:截没截断在这一侧分不出来,而漏掉省略号让人
+ * 以为这就是全文。
+ */
+export function sessionTitle(title: string | null, fallback: string): string {
+  if (title === null) return fallback;
+  return title.length >= TITLE_LIMIT ? `${title}…` : title;
+}
+
 /** 一个产品下「我的会话」那一份读缓存的键。产品页左栏与会话页读的是同一个。 */
 export function sessionsQueryKey(productId: number): readonly unknown[] {
   return ["products", productId, "sessions"];

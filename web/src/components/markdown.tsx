@@ -1,3 +1,4 @@
+import { CheckCircledIcon, CircleIcon } from "@radix-ui/react-icons";
 import type { ComponentProps } from "react";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -87,12 +88,38 @@ function markdownComponents(size: "chat" | "article"): Components {
         )}
       />
     ),
+    // GFM 的任务清单项自带 `task-list-item`:圆点与前面那颗勾重复说同一件事,去掉圆点。
     li: ({ node: _node, className, ...props }) => (
       <li
         {...props}
-        className={cn("break-words", article ? "my-1 text-xl leading-[1.7]" : "my-0.5 text-lg", className)}
+        className={cn(
+          "break-words",
+          article ? "my-1 text-xl leading-[1.7]" : "my-0.5 text-lg",
+          typeof className === "string" && className.includes("task-list-item") ? "list-none" : "",
+          className,
+        )}
       />
     ),
+    /*
+     * 任务清单的勾选框。GFM 给的是一个 `disabled` 的原生 checkbox——浏览器画的灰方框既不是
+     * 这套设计的材质,又长得像一个点不动的控件。换成静态图标,状态给读屏留一句话。
+     */
+    input: ({ node: _node, type, checked, ...props }: ComponentProps<"input"> & { node?: unknown }) => {
+      if (type !== "checkbox") return <input {...props} type={type} checked={checked} />;
+      const Icon = checked === true ? CheckCircledIcon : CircleIcon;
+      return (
+        <>
+          <Icon
+            aria-hidden
+            className={cn(
+              "mr-1.5 inline-block align-[-0.125em]",
+              checked === true ? "text-success-icon" : "text-text-faint",
+            )}
+          />
+          <span className="sr-only">{checked === true ? "已完成" : "未完成"}</span>
+        </>
+      );
+    },
     strong: ({ node: _node, className, ...props }) => (
       <strong {...props} className={cn("font-semibold", className)} />
     ),
@@ -125,7 +152,9 @@ function markdownComponents(size: "chat" | "article"): Components {
         <code
           {...props}
           className={cn(
-            fenced ? "font-mono" : "rounded-chip bg-fill px-1 py-0.5 font-mono text-xs",
+            // 行内 code 的字号跟着它所在那一行走(`0.9em`):写死一档会让它在标题里显得过小、
+            // 在小字里显得过大。`Statement` 那一处同值。
+            fenced ? "font-mono" : "rounded-chip bg-fill px-1 py-0.5 font-mono text-[0.9em]",
             className,
           )}
         />
