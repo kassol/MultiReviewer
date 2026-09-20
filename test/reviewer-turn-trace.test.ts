@@ -84,6 +84,14 @@ function turns(events: readonly ReviewerEvent[]) {
   );
 }
 
+/** 轨迹里的自动重试事件,按发生顺序。 */
+function retries(events: readonly ReviewerEvent[]) {
+  return events.filter(
+    (event): event is Extract<ReviewerEvent, { kind: "model_retry" }> =>
+      event.kind === "model_retry",
+  );
+}
+
 test("读完工具结果就无声结束的那一回合照样落进轨迹(issue #407)", async () => {
   const { outcome, requests, events } = await reviewWithStub([
     { text: "先读一眼改动", toolCall: { name: "read", args: { path: TARGET_FILE } }, usage: { input: 40, output: 9 } },
@@ -118,4 +126,30 @@ test("读完工具结果就无声结束的那一回合照样落进轨迹(issue #
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
   });
+});
+
+test("瞬时的模型服务失败被重试吞掉之后,轨迹里留得下这次重试(issue #409)", async () => {
+  const { outcome, requests, events } = await reviewWithStub([
+    // 第一次请求回 5xx:Pi 判它可重试,等一轮退避再发第二次。
+    { status: 503, text: "upstream temporarily unavailable", usage: { input: 0, output: 0 } },
+    { text: "重试之后读到了改动,没有问题", usage: { input: 44, output: 11 } },
+  ]);
+
+  assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
+  assert.equal(requests.length, 2, "失败那一次与重试那一次,各一条请求");
+
+  const [waiting, settled] = retries(events);
+  assert.equal(waiting?.outcome, "waiting");
+  assert.equal(waiting?.attempt, 1);
+  assert.ok((waiting?.delayMs ?? 0) > 0, "等待时长该是 Pi 算出来的那个退避");
+  assert.ok(
+    waiting?.error?.includes("upstream temporarily unavailable"),
+    `触发重试的错误原文没进事件: ${waiting?.error}`,
+  );
+  // 最终成功与最终放弃分得出来。
+  assert.equal(settled?.outcome, "succeeded");
+  assert.equal(settled?.attempt, 1);
+
+  // 重试之后那一回合照常落进轨迹。
+  assert.equal(turns(events).at(-1)?.text, "重试之后读到了改动,没有问题");
 });

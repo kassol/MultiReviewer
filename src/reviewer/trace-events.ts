@@ -14,6 +14,9 @@ type PiSessionEvent =
   | { type: "message_end"; message: unknown }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
+  | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+  | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+  | { type: "compaction_end"; reason: string; result: unknown; aborted: boolean; errorMessage?: string }
   | { type: string };
 
 /** Pi 的文本内容块。工具返回与 assistant 消息用的是同一种。 */
@@ -120,6 +123,63 @@ export function reviewerEventStream(
           : {}),
         content: turnContent(message.content),
         ...(usage === undefined ? {} : { usage }),
+      });
+      return;
+    }
+
+    // Pi 的自动重试(issue #409)。排上与落定各一条:攒到落定再一起发的话,进程在等待
+    // 那几秒里死掉就连触发它的错误都看不到,而那正是要查的东西。
+    if (event.type === "auto_retry_start") {
+      const started = event as { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string };
+      emit({
+        kind: "model_retry",
+        outcome: "waiting",
+        attempt: started.attempt,
+        maxAttempts: started.maxAttempts,
+        delayMs: started.delayMs,
+        error: redactModelCredential(started.errorMessage, credential),
+      });
+      return;
+    }
+
+    if (event.type === "auto_retry_end") {
+      const ended = event as { success: boolean; attempt: number; finalError?: string };
+      emit({
+        kind: "model_retry",
+        outcome: ended.success ? "succeeded" : "gave_up",
+        attempt: ended.attempt,
+        error:
+          typeof ended.finalError === "string" && ended.finalError !== ""
+            ? redactModelCredential(ended.finalError, credential)
+            : null,
+      });
+      return;
+    }
+
+    // Pi 的一次上下文压缩(issue #409)。没成时前后 token 数取不到,只剩那句原因。
+    if (event.type === "compaction_end") {
+      const compacted = event as {
+        reason: string;
+        result: unknown;
+        aborted: boolean;
+        errorMessage?: string;
+      };
+      const result = compacted.result as
+        | { tokensBefore?: unknown; estimatedTokensAfter?: unknown }
+        | undefined;
+      const tokens = (value: unknown): number | null =>
+        typeof value === "number" ? value : null;
+      emit({
+        kind: "context_compacted",
+        reason: compacted.reason,
+        tokensBefore: tokens(result?.tokensBefore),
+        tokensAfter: tokens(result?.estimatedTokensAfter),
+        error:
+          typeof compacted.errorMessage === "string" && compacted.errorMessage !== ""
+            ? redactModelCredential(compacted.errorMessage, credential)
+            : compacted.aborted
+              ? "压缩被中止"
+              : null,
       });
       return;
     }

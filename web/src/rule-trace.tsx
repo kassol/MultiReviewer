@@ -9,8 +9,8 @@ import { Button } from "@/components/theme-button";
 import { num, str } from "@/lib/payload";
 
 import {
-  AssistantTurn,
   EventTime,
+  SessionEvent,
   StreamStatus,
   ToolCall,
   UnknownEvent,
@@ -87,7 +87,9 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
       );
     }
     case "assistant_message":
-      return <AssistantTurn payload={payload} />;
+    case "model_retry":
+    case "context_compacted":
+      return <SessionEvent kind={event.kind} payload={payload} />;
     case "tool_call":
       return <ToolCall event={event} />;
     case "rule_proposed": {

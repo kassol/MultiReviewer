@@ -387,6 +387,37 @@ export type ReviewerEvent =
        * 从这里嵌进来才进得了审查轨迹。事件形状与外层同一套,面板因此用同一个渲染器。
        */
       nested?: readonly ReviewerEvent[];
+    }
+  /**
+   * Pi 的一次自动重试(issue #409)。瞬时的模型服务错误被重试吞掉之后此前不留痕,排障时
+   * 分不出「模型自己停了」与「错误重试之后才停」。
+   *
+   * 排上与落定各一条,不攒到落定再一起发:攒起来的话进程在等待那几秒里死掉就连触发它的
+   * 错误都看不到,而那正是要查的东西。`waiting` 是排上那一条,带最多重试几次与等多久;
+   * 另两档是这一串重试的结局,Pi 只在这时才知道成没成。
+   */
+  | {
+      kind: "model_retry";
+      outcome: "waiting" | "succeeded" | "gave_up";
+      /** 这次重试排第几次。 */
+      attempt: number;
+      maxAttempts?: number;
+      delayMs?: number;
+      /** 触发它的错误原文,或最终放弃时那一句。已脱敏;成功那一条没有。 */
+      error: string | null;
+    }
+  /**
+   * Pi 的一次上下文压缩(issue #409)。压缩改变会话走向,而轨迹里此前完全看不到它发生过。
+   * 压缩没成时前后 token 数取不到,`error` 说得出是中止还是出错。
+   */
+  | {
+      kind: "context_compacted";
+      /** 手动、到阈值还是上下文溢出。 */
+      reason: string;
+      tokensBefore: number | null;
+      /** Pi 给的是估算值(`estimatedTokensAfter`)。 */
+      tokensAfter: number | null;
+      error: string | null;
     };
 
 /**

@@ -375,6 +375,106 @@ test("子会话事件为空时不长出 nested 这一格", () => {
   assert.ok(events[0]?.kind === "tool_call" && !("nested" in events[0]));
 });
 
+test("自动重试排上与落定各留一条,错误原文脱敏(issue #409)", () => {
+  const { events, observe } = collector();
+  observe({
+    type: "auto_retry_start",
+    attempt: 1,
+    maxAttempts: 1,
+    delayMs: 2000,
+    errorMessage: `502 Bad Gateway (key ${CREDENTIAL})`,
+  } as never);
+  observe({ type: "auto_retry_end", success: true, attempt: 1 } as never);
+
+  assert.deepEqual(events, [
+    {
+      kind: "model_retry",
+      outcome: "waiting",
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: 2000,
+      error: "502 Bad Gateway (key [REDACTED])",
+    },
+    { kind: "model_retry", outcome: "succeeded", attempt: 1, error: null },
+  ]);
+});
+
+test("重试最终放弃时带那一句最终错误", () => {
+  const { events, observe } = collector();
+  observe({
+    type: "auto_retry_end",
+    success: false,
+    attempt: 2,
+    finalError: `503 upstream down for ${CREDENTIAL}`,
+  } as never);
+
+  assert.deepEqual(events, [
+    {
+      kind: "model_retry",
+      outcome: "gave_up",
+      attempt: 2,
+      error: "503 upstream down for [REDACTED]",
+    },
+  ]);
+});
+
+test("上下文压缩落一条,带压缩前后的 token 数(issue #409)", () => {
+  const { events, observe } = collector();
+  observe({
+    type: "compaction_end",
+    reason: "threshold",
+    result: { tokensBefore: 120_000, estimatedTokensAfter: 30_000 },
+    aborted: false,
+    willRetry: false,
+  } as never);
+
+  assert.deepEqual(events, [
+    {
+      kind: "context_compacted",
+      reason: "threshold",
+      tokensBefore: 120_000,
+      tokensAfter: 30_000,
+      error: null,
+    },
+  ]);
+});
+
+test("压缩没成也落一条:前后 token 数取不到就留空,原因说得出是中止还是出错", () => {
+  const { events, observe } = collector();
+  observe({
+    type: "compaction_end",
+    reason: "overflow",
+    result: undefined,
+    aborted: false,
+    willRetry: false,
+    errorMessage: `Compaction failed: 401 for ${CREDENTIAL}`,
+  } as never);
+  observe({
+    type: "compaction_end",
+    reason: "manual",
+    result: undefined,
+    aborted: true,
+    willRetry: false,
+  } as never);
+
+  assert.deepEqual(events, [
+    {
+      kind: "context_compacted",
+      reason: "overflow",
+      tokensBefore: null,
+      tokensAfter: null,
+      error: "Compaction failed: 401 for [REDACTED]",
+    },
+    {
+      kind: "context_compacted",
+      reason: "manual",
+      tokensBefore: null,
+      tokensAfter: null,
+      error: "压缩被中止",
+    },
+  ]);
+});
+
 test("子会话事件与本层同一道脱敏", () => {
   const leaked: ReviewerEvent[] = [
     { kind: "assistant_message", text: `子会话把请求头回显了:Authorization Bearer ${CREDENTIAL}` },
