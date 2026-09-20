@@ -303,11 +303,10 @@ export function RuleTraceButton({
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger>
         <Button
-          variant="outline"
+          variant="ghost"
           color="gray"
           highContrast
           size={{ initial: "3", sm: "1" }}
-          className={OUTLINED_ACTION}
         >
           {label}
         </Button>

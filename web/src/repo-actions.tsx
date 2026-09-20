@@ -160,17 +160,17 @@ function visibleElement(selector: string): HTMLElement | null {
   return null;
 }
 
-/** 键值行:配置弹窗里成对出现的那一行。 */
+/** 键值行:配置弹窗里成对出现的那一行。左标签常规灰、右值默认常规黑,基线对齐。 */
 function Kv({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
       <span className="text-text-muted">{label}</span>
-      <span className="ml-auto text-right">{children}</span>
+      <span className="ml-auto text-right text-text">{children}</span>
     </div>
   );
 }
 
-/** 配置弹窗里的一个区块。区块之间一条分隔线,首个区块不画。 */
+/** 配置弹窗里的一个区块。区块之间一条分隔线,首个区块不画,分隔线上下留白统一。 */
 function Section({
   title,
   action,
@@ -181,9 +181,9 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-2.5 border-t border-line pt-3.5 first:border-t-0 first:pt-0">
+    <section className="flex flex-col gap-2.5 border-t border-line pt-4 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-        <h3 className="flex items-center gap-1.5 text-2xl font-bold tracking-[-0.015em]">{title}</h3>
+        <h3 className="flex items-center gap-1.5 text-lg font-semibold">{title}</h3>
         {action}
       </div>
       {children}
@@ -617,6 +617,12 @@ function ConfigureDialogContent({
       maxWidth="760px"
       maxHeight="calc(100dvh - 2rem)"
       size={{ initial: "2", sm: "3" }}
+      // 默认焦点落在第一个可聚焦元素——这里是关闭键,会把它的 Tooltip 顶出来。焦点改落
+      // 浮层本身,与 stage-detail.tsx 的侧滑同一处理。
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        (event.currentTarget as HTMLElement).focus();
+      }}
       onCloseAutoFocus={onCloseAutoFocus}
       className="flex flex-col overflow-hidden"
     >
@@ -624,7 +630,10 @@ function ConfigureDialogContent({
           关闭键会一并滚出视口,出口只剩 Esc 与动作条的「取消」(issue #378)。 */}
       <div className="flex shrink-0 items-start justify-between gap-3">
         <Dialog.Title size="4" mb="1" className="min-w-0 break-all">
-          配置 {repo.owner}/{repo.repo}
+          配置
+          <span className="ml-2 break-all text-md font-normal text-text-secondary">
+            {repo.owner}/{repo.repo}
+          </span>
         </Dialog.Title>
         <Tooltip content="关闭配置">
           <IconButton
@@ -639,7 +648,7 @@ function ConfigureDialogContent({
           </IconButton>
         </Tooltip>
       </div>
-      <div className="flex min-h-0 flex-col gap-3.5 overflow-y-auto">
+      <div className="mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto">
         {feedback === null ? null : (
           <Callout.Root
             role={feedback.isError ? "alert" : "status"}
@@ -1034,27 +1043,30 @@ function ConfigureDialogContent({
       </div>
 
       {/* 配置的动作条固定在底部:上面两块是表单,准入 Key 与工作副本是各自的动作。
-          它是浮层这一列的末项,滚动只发生在中间那段,所以不再需要 `sticky`。 */}
-      <div className="mt-3.5 flex shrink-0 flex-wrap items-center gap-3 border-t border-line pt-3">
-        <Button
-          variant="solid"
-          size={{ initial: "4", sm: "2" }}
-          className="shadow-accent"
-          disabled={!dirty || save.isPending || modelsBlocked}
-          onClick={() => save.mutate()}
-        >
-          {save.isPending ? "保存中…" : "保存"}
-        </Button>
-        <Button
-          variant="soft"
-          color="gray"
-          size={{ initial: "4", sm: "2" }}
-          disabled={save.isPending}
-          onClick={onRequestClose}
-        >
-          取消
-        </Button>
+          它是浮层这一列的末项,滚动只发生在中间那段,所以不再需要 `sticky`。取消在前、
+          保存在后、整组靠右,与注册仓库、发起范围审查两处弹窗同一个顺序。 */}
+      <div className="mt-4 flex shrink-0 flex-wrap items-center gap-3 border-t border-line pt-4">
         {dirty ? <span className="text-base text-text-muted">有未保存改动</span> : null}
+        <div className="ml-auto flex shrink-0 gap-3">
+          <Button
+            variant="soft"
+            color="gray"
+            size={{ initial: "4", sm: "2" }}
+            disabled={save.isPending}
+            onClick={onRequestClose}
+          >
+            取消
+          </Button>
+          <Button
+            variant="solid"
+            size={{ initial: "4", sm: "2" }}
+            className="shadow-accent"
+            disabled={!dirty || save.isPending || modelsBlocked}
+            onClick={() => save.mutate()}
+          >
+            {save.isPending ? "保存中…" : "保存"}
+          </Button>
+        </div>
       </div>
     </Dialog.Content>
   );
@@ -1116,8 +1128,8 @@ export function RerunPullRequest({
       {/* 工具行里只留这颗按钮:三个控件平铺会把整行挤到换行,而自由文本框贴着
           筛选 chips 会被读成筛选器。表单收进 Popover,字段名义由可见 label 承担。 */}
       <Popover.Content width="300px" align="end">
-        <form onSubmit={submit} className="flex flex-col gap-2" aria-busy={rerun.isPending}>
-          <label className="flex flex-col gap-1">
+        <form onSubmit={submit} className="flex flex-col gap-3" aria-busy={rerun.isPending}>
+          <label className="flex flex-col gap-1.5">
             <Text size="1" color="gray">
               PR 编号
             </Text>
@@ -1129,7 +1141,7 @@ export function RerunPullRequest({
               onChange={(event) => setPullNumber(event.target.value)}
             />
           </label>
-          <label className="flex flex-col gap-1">
+          <label className="flex flex-col gap-1.5">
             <Text size="1" color="gray">
               本轮指令(选填)
             </Text>
@@ -1140,25 +1152,25 @@ export function RerunPullRequest({
               value={directive}
               onChange={(event) => setDirective(event.target.value)}
             />
+            <p className="text-sm text-text-muted">{RUN_DIRECTIVE_HINT}</p>
           </label>
-          <Text size="1" color="gray">
-            {RUN_DIRECTIVE_HINT}
-          </Text>
           {/* 默认只复核历史(issue #242):清历史是重跑的常态,整段范围再审一遍不是。 */}
-          <Text
-            as="label"
-            size="2"
-            className="flex cursor-pointer items-center gap-2"
-          >
-            <Checkbox
-              checked={fullReview}
-              onCheckedChange={(checked) => setFullReview(checked === true)}
-            />
-            完整审查
-          </Text>
-          <Text size="1" color="gray">
-            {FULL_REVIEW_HINT}。指令只作用于这一轮;要长期生效的要求请录进知识集。
-          </Text>
+          <div className="flex flex-col gap-1.5">
+            <Text
+              as="label"
+              size="2"
+              className="flex cursor-pointer items-center gap-2"
+            >
+              <Checkbox
+                checked={fullReview}
+                onCheckedChange={(checked) => setFullReview(checked === true)}
+              />
+              完整审查
+            </Text>
+            <p className="text-sm text-text-muted">
+              {FULL_REVIEW_HINT}。指令只作用于这一轮;要长期生效的要求请录进知识集。
+            </p>
+          </div>
           {/* 触屏上点浮层外收起是唯一出口,人看不见它;给一个明说的「取消」(issue #378)。 */}
           <Flex justify="end" gap="2" mt="1">
             <Popover.Close>
@@ -1281,13 +1293,17 @@ function RegisterDialogContent({
                   <Skeleton aria-hidden className="h-9" />
                 </div>
               ) : data === undefined || debounced.trim() === "" ? (
-                <p className="p-4 text-text-muted">输入关键词开始搜索可访问的仓库。</p>
+                <Flex align="center" justify="center" className="min-h-40 px-4 py-6">
+                  <p className="text-text-muted">输入关键词开始搜索可访问的仓库。</p>
+                </Flex>
               ) : data.state === "no-match" ? (
-                <EmptyState
-                  title="没有匹配的仓库"
-                  description="请确认 Gitea 中的 bot 账号已获得该仓库的访问权限。"
-                  className="p-4"
-                />
+                <Flex align="center" justify="center" className="min-h-40 py-6">
+                  <EmptyState
+                    title="没有匹配的仓库"
+                    description="请确认 Gitea 中的 bot 账号已获得该仓库的访问权限。"
+                    align="center"
+                  />
+                </Flex>
               ) : (
                 <CommandGroup>
                   {data.results.map((row) => {

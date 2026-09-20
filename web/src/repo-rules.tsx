@@ -2,8 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useId, useState, type ReactNode } from "react";
 
-import { Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
+import { ChevronRightIcon, Cross2Icon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Checkbox, Dialog, IconButton, Skeleton, Tabs, Text, TextArea, Tooltip } from "@radix-ui/themes";
+import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
@@ -351,21 +352,36 @@ function RuleSetDialogContent({
       // 高度定死而不是随内容:四个 tab 的内容量差得远,跟着内容缩放的话每次切 tab
       // 整个弹窗都在跳。
       className="flex h-[min(820px,calc(100dvh-4.5rem))] flex-col overflow-hidden"
+      // 打开时焦点落在浮层本身:默认落到第一个可聚焦元素(关闭按钮),会让它的 Tooltip
+      // 一打开就弹出来(与 stage-detail.tsx 的侧滑同一处修法)。
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        (event.currentTarget as HTMLElement).focus();
+      }}
     >
+      {/* 标题形态与发起范围审查、发起基点探索同一套(range-review-launch.tsx):
+          主标题 + 灰色常规字重的仓库名,可访问名称因此仍含仓库名。 */}
       <Dialog.Title size="4" mb="1" className="shrink-0 pr-9 break-all">
-        {repo.owner}/{repo.repo} 的知识集
+        知识集
+        <span className="ml-2 text-md font-normal text-text-secondary">
+          {repo.owner}/{repo.repo}
+        </span>
+        {data !== undefined && typeof data.version === "number" ? (
+          <Badge color="gray" variant="soft" size="1" className="ml-2 align-middle">
+            版本 {data.version}
+          </Badge>
+        ) : null}
       </Dialog.Title>
-      {data === undefined ? null : typeof data.version === "number" ? (
-        <Text as="p" size="1" color="gray" mb="2">
-          知识集版本 {data.version}
-        </Text>
-      ) : (
+      {data !== undefined && data.version === null ? (
         /* 门禁分代(issue #206):没有知识集版本即还没确认,这个仓库暂不执行 Review Run。
            默认 tab 就落在知识草案上,引导到位。 */
-        <Text as="p" size="1" color="orange" mb="2">
-          知识集未确认:完成知识确认前,这个仓库的投递只记录不审,面板也发起不了审查。
-        </Text>
-      )}
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <Badge color="amber" variant="soft" size="1">知识集未确认</Badge>
+          <Text as="span" size="1" color="gray">
+            完成知识确认前,这个仓库的投递只记录不审,面板也发起不了审查。
+          </Text>
+        </div>
+      ) : null}
 
       {ruleSet.isPending ? (
         <div className="flex flex-col gap-2" role="status" aria-live="polite">
@@ -536,26 +552,39 @@ function RuleSetDialogContent({
             </section>
                 ) : null}
 
-                {/* 废止的不再生效但仍要查得到(issue #203):收进折叠,与已裁决同一语法。 */}
+                {/* 废止的不再生效但仍要查得到(issue #203):收进折叠,与已裁决同一语法。
+                    折叠用 Collapsible,不用原生 `<details>`——后者的三角标记与项目其它
+                    折叠(products.tsx 的出处、同根因组)不是同一套视觉语言。 */}
                 {data.retired.length === 0 ? null : (
-                  <details>
-                    <summary className="cursor-pointer text-sm text-text-secondary">
-                      已废止 {data.retired.length} 条
-                    </summary>
-                    <ul className="mt-2 overflow-hidden rounded-lg border border-card-line">
-                      {data.retired.map((rule) => (
-                        <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                          <Text as="p" size="2" color="gray" className="line-through wrap-anywhere">
-                            {rule.statement}
-                          </Text>
-                          <span className="mt-1.5 inline-block">
-                            {/* 废止的那一条也要说得出它是哪一型。 */}
-                            <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
+                  <Collapsible.Root className="group/retired">
+                    <Collapsible.Trigger asChild>
+                      <button
+                        type="button"
+                        className="flex items-center gap-1 text-sm text-text-muted hover:text-text-secondary focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+                      >
+                        <ChevronRightIcon
+                          aria-hidden
+                          className="transition-transform group-data-[state=open]/retired:rotate-90"
+                        />
+                        已废止 {data.retired.length} 条
+                      </button>
+                    </Collapsible.Trigger>
+                    <Collapsible.Content className="collapsible-motion">
+                      <ul className="mt-2 overflow-hidden rounded-lg border border-card-line">
+                        {data.retired.map((rule) => (
+                          <li key={rule.id} className="border-t border-line px-4 py-3 first:border-t-0">
+                            <Text as="p" size="2" color="gray" className="line-through wrap-anywhere">
+                              {rule.statement}
+                            </Text>
+                            <span className="mt-1.5 inline-block">
+                              {/* 废止的那一条也要说得出它是哪一型。 */}
+                              <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </Collapsible.Content>
+                  </Collapsible.Root>
                 )}
               </div>
             </Tabs.Content>
@@ -652,6 +681,14 @@ function SelectAll({
 
 const CHANGE_LABEL = { add: "新增", modify: "修改", retire: "废止", merge: "合并" } as const;
 
+/** 变更类型的徽章颜色:人扫一眼底部那排 chip 就认得出这条提案要做什么。 */
+const CHANGE_COLOR: Record<RuleProposal["change"], "green" | "blue" | "red" | "amber"> = {
+  add: "green",
+  modify: "blue",
+  retire: "red",
+  merge: "amber",
+};
+
 /**
  * 一条已裁决提案的结论说法。裁决的对象是提案而不是条目:光写「已驳回」会被读成「这条
  * 规则被驳回」,而被驳回的其实是「废止它的提案」——条目还在。因此按裁决 × 变更类型合成
@@ -694,51 +731,62 @@ function sourceSummary(sources: readonly RuleProposalSource[]): string {
 function ProposalSources({ repoId, proposal }: { repoId: number; proposal: RuleProposal }) {
   if (proposal.sources.length === 0) return null;
   return (
-    <details className="mt-1.5">
-      <summary className="cursor-pointer text-xs text-text-secondary">
-        出处:{sourceSummary(proposal.sources)}
-      </summary>
-      <ul className="mt-1.5 flex flex-col gap-2 border-l border-line pl-3">
-        {proposal.sources.map((entry) => (
-          <li key={entry.id} className="flex min-w-0 flex-col gap-1">
-            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <Badge color="gray" variant="soft">
-                {SOURCE_LABEL[entry.origin] ?? entry.origin}
-              </Badge>
-              {entry.findingId === null || entry.findingStageId === null ? null : (
-                <Link
-                  to="/stages/$stageId"
-                  params={{ stageId: entry.findingStageId }}
-                  search={{ finding: entry.findingId }}
-                  className={`${OUTLINED_ACTION} px-2 py-1 text-sm text-text-secondary hover:bg-sunken`}
-                >
-                  查看 Finding
-                </Link>
+    <Collapsible.Root className="mt-1.5 group/sources">
+      <Collapsible.Trigger asChild>
+        <button
+          type="button"
+          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+        >
+          <ChevronRightIcon
+            aria-hidden
+            className="transition-transform group-data-[state=open]/sources:rotate-90"
+          />
+          出处:{sourceSummary(proposal.sources)}
+        </button>
+      </Collapsible.Trigger>
+      <Collapsible.Content className="collapsible-motion">
+        <ul className="mt-1.5 flex flex-col gap-2 border-l border-line pl-3">
+          {proposal.sources.map((entry) => (
+            <li key={entry.id} className="flex min-w-0 flex-col gap-1">
+              <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <Badge color="gray" variant="soft">
+                  {SOURCE_LABEL[entry.origin] ?? entry.origin}
+                </Badge>
+                {entry.findingId === null || entry.findingStageId === null ? null : (
+                  <Link
+                    to="/stages/$stageId"
+                    params={{ stageId: entry.findingStageId }}
+                    search={{ finding: entry.findingId }}
+                    className={`${OUTLINED_ACTION} px-2 py-1 text-sm text-text-secondary hover:bg-sunken`}
+                  >
+                    查看 Finding
+                  </Link>
+                )}
+                {entry.traceTaskId === null ? null : (
+                  <RuleTraceButton
+                    repoId={repoId}
+                    taskId={entry.traceTaskId}
+                    context={`来自提案:${proposal.statement}`}
+                    highlight={proposal.statement}
+                  />
+                )}
+              </span>
+              {entry.note === null ? null : (
+                <Text as="p" size="1" color="gray" className="wrap-anywhere">
+                  备注:{entry.note}
+                </Text>
               )}
-              {entry.traceTaskId === null ? null : (
-                <RuleTraceButton
-                  repoId={repoId}
-                  taskId={entry.traceTaskId}
-                  context={`来自提案:${proposal.statement}`}
-                  highlight={proposal.statement}
-                />
+              {/* 依据(issue #287):陈述只留那一句结论,凭什么成立在这里。为空即不显示。 */}
+              {entry.evidence === null ? null : (
+                <Text as="p" size="1" color="gray" className="wrap-anywhere">
+                  依据:{entry.evidence}
+                </Text>
               )}
-            </span>
-            {entry.note === null ? null : (
-              <Text as="p" size="1" color="gray" className="wrap-anywhere">
-                备注:{entry.note}
-              </Text>
-            )}
-            {/* 依据(issue #287):陈述只留那一句结论,凭什么成立在这里。为空即不显示。 */}
-            {entry.evidence === null ? null : (
-              <Text as="p" size="1" color="gray" className="wrap-anywhere">
-                依据:{entry.evidence}
-              </Text>
-            )}
-          </li>
-        ))}
-      </ul>
-    </details>
+            </li>
+          ))}
+        </ul>
+      </Collapsible.Content>
+    </Collapsible.Root>
   );
 }
 
@@ -781,27 +829,31 @@ function EntryCard({
     >
       <Text as="p" size="2" className="wrap-anywhere">{entry.statement}</Text>
       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-        <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
+        {/* 作用范围是一段 glob,等宽字体读起来才像路径;「全仓库」不是路径,保持非等宽。 */}
+        <Badge
+          color="gray"
+          variant="soft"
+          className={`min-w-0 shrink break-all whitespace-normal ${
+            entry.scope === "" ? "" : "font-mono text-sm"
+          }`}
+        >
           {entry.scope === "" ? "全仓库" : entry.scope}
         </Badge>
         {canWrite ? (
           <div className="flex shrink-0 gap-1">
             <Button
-              variant="outline"
+              variant="ghost"
               color="gray"
               highContrast
               size={{ initial: "3", sm: "1" }}
-              className={OUTLINED_ACTION}
               onClick={onRewrite}
             >
               改写
             </Button>
             <Button
-              variant="outline"
-              color="gray"
-              highContrast
+              variant="ghost"
+              color="red"
               size={{ initial: "3", sm: "1" }}
-              className={OUTLINED_ACTION}
               disabled={busy}
               onClick={onRetire}
             >
@@ -1023,7 +1075,60 @@ function IntentSection({
               key={intent.id}
               className="flex flex-col gap-1 border-t border-line px-3 py-2 first:border-t-0"
             >
-              <Text as="p" size="2" className="wrap-anywhere">{intent.text}</Text>
+              {/* 第一行:原文靠左(自己折行),动作靠右钉住;放不下时动作整体折到标题
+                  下面一行(flex-wrap 的默认行为,不必另写 max-sm 覆盖)。 */}
+              <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
+                <Text as="p" size="2" className="min-w-0 flex-1 wrap-anywhere">{intent.text}</Text>
+                <div className="flex shrink-0 flex-wrap items-center gap-1">
+                  {/* 反哺那一行的 Finding 引用(issue #296):走提案出处上那个既有的
+                      `?finding=` 侧滑,人点进去就是那条 Finding 的 diff。 */}
+                  {intent.targetKind === "finding" &&
+                  intent.targetId !== null &&
+                  intent.targetStageId !== null ? (
+                    <Button asChild variant="ghost" color="gray" highContrast size={{ initial: "3", sm: "1" }}>
+                      <Link
+                        to="/stages/$stageId"
+                        params={{ stageId: intent.targetStageId }}
+                        search={{ finding: intent.targetId }}
+                      >
+                        查看 Finding
+                      </Link>
+                    </Button>
+                  ) : null}
+                  {intent.traceTaskId === null ? null : (
+                    <RuleTraceButton
+                      repoId={repoId}
+                      taskId={intent.traceTaskId}
+                      context={intent.text}
+                    />
+                  )}
+                  {/* 只给失败行(issue #316):运行中的还在跑,完成的再跑一次就是第二份产出。 */}
+                  {canWrite && intent.state === "failed" ? (
+                    <Button
+                      variant="ghost"
+                      color="gray"
+                      highContrast
+                      size={{ initial: "3", sm: "1" }}
+                      disabled={retry.isPending}
+                      onClick={() => retry.mutate(intent.id)}
+                    >
+                      重试
+                    </Button>
+                  ) : null}
+                  {canWrite && intent.state !== "running" ? (
+                    <Button
+                      variant="ghost"
+                      color="red"
+                      size={{ initial: "3", sm: "1" }}
+                      disabled={remove.isPending}
+                      onClick={() => remove.mutate(intent.id)}
+                    >
+                      删除
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              {/* 第二行:来源与状态徽章,加提交人 · 模型 · 思考档位与目标引用。 */}
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 {/* 来源徽章(issue #296):处置备注那一行与人在弹窗里写的那一行同形,人要
                     一眼分得出这段话是谁在哪写下的。 */}
@@ -1042,13 +1147,13 @@ function IntentSection({
                 >
                   {INTENT_STATE_LABEL[intent.state]}
                 </Badge>
-                <Text as="span" size="1" color="gray">
+                <span className="text-sm text-text-muted">
                   {intent.submittedBy}
                   {intent.model === null ? null : ` · 模型 ${intent.model}`}
                   {intent.thinkingLevel === null
                     ? null
                     : ` · 思考 ${THINKING_LEVEL_LABEL[intent.thinkingLevel]}`}
-                </Text>
+                </span>
                 {/* 目标引用(issue #295、#297、#298):点它切到目标所在的 tab 并滚到那张卡片,
                     不另开一页——改写与被改写的那一条本来就在同一个弹窗里。 */}
                 {intent.targetId === null ? null : intent.targetKind === "proposal" ? (
@@ -1083,62 +1188,6 @@ function IntentSection({
                     onClick={() => onShow({ kind: "draft", id: intent.targetId! })}
                   >
                     改写草案 #{intent.targetId}
-                  </Button>
-                ) : null}
-                {/* 反哺那一行的 Finding 引用(issue #296):走提案出处上那个既有的
-                    `?finding=` 侧滑,人点进去就是那条 Finding 的 diff。 */}
-                {intent.targetKind === "finding" &&
-                intent.targetId !== null &&
-                intent.targetStageId !== null ? (
-                  <Button
-                    asChild
-                    variant="outline"
-                    color="gray"
-                    highContrast
-                    size={{ initial: "3", sm: "1" }}
-                    className={OUTLINED_ACTION}
-                  >
-                    <Link
-                      to="/stages/$stageId"
-                      params={{ stageId: intent.targetStageId }}
-                      search={{ finding: intent.targetId }}
-                    >
-                      查看 Finding
-                    </Link>
-                  </Button>
-                ) : null}
-                {intent.traceTaskId === null ? null : (
-                  <RuleTraceButton
-                    repoId={repoId}
-                    taskId={intent.traceTaskId}
-                    context={intent.text}
-                  />
-                )}
-                {/* 只给失败行(issue #316):运行中的还在跑,完成的再跑一次就是第二份产出。 */}
-                {canWrite && intent.state === "failed" ? (
-                  <Button
-                    variant="outline"
-                    color="gray"
-                    highContrast
-                    size={{ initial: "3", sm: "1" }}
-                    className={OUTLINED_ACTION}
-                    disabled={retry.isPending}
-                    onClick={() => retry.mutate(intent.id)}
-                  >
-                    重试
-                  </Button>
-                ) : null}
-                {canWrite && intent.state !== "running" ? (
-                  <Button
-                    variant="outline"
-                    color="gray"
-                    highContrast
-                    size={{ initial: "3", sm: "1" }}
-                    className={OUTLINED_ACTION}
-                    disabled={remove.isPending}
-                    onClick={() => remove.mutate(intent.id)}
-                  >
-                    删除
                   </Button>
                 ) : null}
               </div>
@@ -1243,25 +1292,28 @@ function ProposalSection({
           {retyped}
         </Text>
       );
+    // 引用样式:中性 line 色的 2px 左边框缩进,与正文分开——这是在引一条别处已经存在的
+    // 陈述,不是这条提案自己写的内容。
     if (rows.length === 1) {
       return (
-        <>
-          <Text as="p" size="1" color="gray" className="mt-1.5 wrap-anywhere">
-            目标知识条目:{rows[0]!.label}
+        <div className="mt-1.5 border-l-2 border-line pl-2.5">
+          <Text as="p" size="1" className="wrap-anywhere">
+            <span className="text-text-muted">目标知识条目:</span>{" "}
+            <span className="text-text-secondary">{rows[0]!.label}</span>
           </Text>
           {retypedLine}
-        </>
+        </div>
       );
     }
     return (
-      <div className="mt-1.5">
-        <Text as="p" size="1" color="gray">
+      <div className="mt-1.5 border-l-2 border-line pl-2.5">
+        <Text as="p" size="1" className="text-text-muted">
           目标知识条目({rows.length} 条):
         </Text>
         <ul className="mt-0.5 list-disc pl-4">
           {rows.map((row) => (
             <li key={row.id}>
-              <Text as="span" size="1" color="gray" className="wrap-anywhere">
+              <Text as="span" size="1" className="wrap-anywhere text-text-secondary">
                 {row.label}
                 {row.scope === "" ? null : `(${row.scope})`}
               </Text>
@@ -1295,7 +1347,8 @@ function ProposalSection({
               onChange={pick.toggleAll}
             />
             <Button
-              variant="solid"
+              variant="soft"
+              color="blue"
               size={{ initial: "3", sm: "1" }}
               disabled={busy || pick.selected.length === 0}
               onClick={() => onDecideAll(pick.selected, true)}
@@ -1303,11 +1356,9 @@ function ProposalSection({
               采纳勾选的 {pick.selected.length} 条
             </Button>
             <Button
-              variant="outline"
-              color="gray"
-              highContrast
+              variant="ghost"
+              color="red"
               size={{ initial: "3", sm: "1" }}
-              className={OUTLINED_ACTION}
               disabled={busy || pick.selected.length === 0}
               onClick={() => onDecideAll(pick.selected, false)}
             >
@@ -1359,8 +1410,17 @@ function ProposalSection({
                   <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
                     {/* 采纳的后果两型不同(issue #222):规则违反即 Finding,事实只作判断依据。 */}
                     <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
-                    <Badge color="gray" variant="soft">{CHANGE_LABEL[proposal.change]}</Badge>
-                    <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
+                    {/* 变更类型按色区分,扫一眼底部这排 chip 就认得出这条提案要做什么。 */}
+                    <Badge color={CHANGE_COLOR[proposal.change]} variant="soft">
+                      {CHANGE_LABEL[proposal.change]}
+                    </Badge>
+                    <Badge
+                      color="gray"
+                      variant="soft"
+                      className={`min-w-0 shrink break-all whitespace-normal ${
+                        proposal.scope === "" ? "" : "font-mono text-sm"
+                      }`}
+                    >
                       {proposal.scope === "" ? "全仓库" : proposal.scope}
                     </Badge>
                   </span>
@@ -1371,11 +1431,10 @@ function ProposalSection({
                           ——它说的就是废止哪一条,改不出别的内容。 */}
                       {proposal.change === "retire" ? null : (
                         <Button
-                          variant="outline"
+                          variant="ghost"
                           color="gray"
                           highContrast
                           size={{ initial: "3", sm: "1" }}
-                          className={OUTLINED_ACTION}
                           onClick={() =>
                             setRewriting((open) => (open === proposal.id ? null : proposal.id))
                           }
@@ -1383,11 +1442,11 @@ function ProposalSection({
                           改写
                         </Button>
                       )}
+                      {/* 采纳是这一行的主动作(soft blue),驳回退到 ghost red——与顶部批量条
+                          同一套配色。 */}
                       <Button
-                        variant="outline"
-                        color="gray"
-                        highContrast
-                        className={OUTLINED_ACTION}
+                        variant="soft"
+                        color="blue"
                         size={{ initial: "3", sm: "1" }}
                         disabled={busy}
                         onClick={() => onDecide(proposal.id, true)}
@@ -1395,11 +1454,9 @@ function ProposalSection({
                         采纳
                       </Button>
                       <Button
-                        variant="outline"
-                        color="gray"
-                        highContrast
+                        variant="ghost"
+                        color="red"
                         size={{ initial: "3", sm: "1" }}
-                        className={OUTLINED_ACTION}
                         disabled={busy}
                         onClick={() => onDecide(proposal.id, false)}
                       >
@@ -1429,30 +1486,41 @@ function ProposalSection({
       )}
 
       {decided.length === 0 ? null : (
-        <details>
-          <summary className="cursor-pointer text-sm text-text-secondary">
-            已裁决 {decided.length} 条
-          </summary>
-          <ul className="mt-2 overflow-hidden rounded-lg border border-card-line">
-            {decided.map((proposal) => (
-              <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
-                <Text as="p" size="2" color="gray" className="wrap-anywhere">{proposal.statement}</Text>
-                <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
-                  {/* 短语已经带上变更类型,同行不再挂 CHANGE_LABEL 徽章:那枚徽章与
-                      短语说的是同一件事,并排只会把人读回「条目被驳回」那个误解。 */}
-                  <StatusBadge tone={proposal.state === "accepted" ? "success" : "neutral"}>
-                    {proposal.state === "accepted"
-                      ? DECISION_LABEL.accepted[proposal.change]
-                      : DECISION_LABEL.rejected[proposal.change]}
-                  </StatusBadge>
-                  <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
-                </span>
-                {/* 裁决过的那些同样看得到出处:队列历史要说得出它当初被哪几件事提过。 */}
-                <ProposalSources repoId={repo.repoId} proposal={proposal} />
-              </li>
-            ))}
-          </ul>
-        </details>
+        <Collapsible.Root className="group/decided">
+          <Collapsible.Trigger asChild>
+            <button
+              type="button"
+              className="flex items-center gap-1 text-sm text-text-muted hover:text-text-secondary focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+            >
+              <ChevronRightIcon
+                aria-hidden
+                className="transition-transform group-data-[state=open]/decided:rotate-90"
+              />
+              已裁决 {decided.length} 条
+            </button>
+          </Collapsible.Trigger>
+          <Collapsible.Content className="collapsible-motion">
+            <ul className="mt-2 overflow-hidden rounded-lg border border-card-line">
+              {decided.map((proposal) => (
+                <li key={proposal.id} className="border-t border-line px-4 py-3 first:border-t-0">
+                  <Text as="p" size="2" color="gray" className="wrap-anywhere">{proposal.statement}</Text>
+                  <span className="mt-1.5 inline-flex flex-wrap items-center gap-1.5">
+                    {/* 短语已经带上变更类型,同行不再挂 CHANGE_LABEL 徽章:那枚徽章与
+                        短语说的是同一件事,并排只会把人读回「条目被驳回」那个误解。 */}
+                    <StatusBadge tone={proposal.state === "accepted" ? "success" : "neutral"}>
+                      {proposal.state === "accepted"
+                        ? DECISION_LABEL.accepted[proposal.change]
+                        : DECISION_LABEL.rejected[proposal.change]}
+                    </StatusBadge>
+                    <Badge color="gray" variant="soft">{TYPE_LABEL[proposal.type]}</Badge>
+                  </span>
+                  {/* 裁决过的那些同样看得到出处:队列历史要说得出它当初被哪几件事提过。 */}
+                  <ProposalSources repoId={repo.repoId} proposal={proposal} />
+                </li>
+              ))}
+            </ul>
+          </Collapsible.Content>
+        </Collapsible.Root>
       )}
     </section>
   );
@@ -1496,8 +1564,10 @@ function ExplorationSection({
   return (
     // tab 本身已经命名这一段,头行直接是探索状态与发起按钮,不再立一层大标题。
     <section className="flex flex-col gap-2" aria-label={confirmed ? "基点探索" : "知识草案"}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      {/* 状态句与发起按钮同一行:状态句 `min-w-0 flex-1` 吃满剩余宽度自己折行,
+          按钮 `shrink-0` 钉住不掉行(与 ConsolidationRow 同一套写法)。 */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
           {exploration === null ? (
             <Text as="span" size="1" color="gray">还没探索过这个仓库</Text>
           ) : (
@@ -1523,7 +1593,9 @@ function ExplorationSection({
             }
           />
         </div>
-        <ExplorationLaunch repo={repo} busy={running} onLaunched={onChanged} />
+        <div className="shrink-0">
+          <ExplorationLaunch repo={repo} busy={running} onLaunched={onChanged} />
+        </div>
       </div>
 
       {exploration?.state === "failed" && exploration.failure !== null ? (
@@ -1589,7 +1661,13 @@ function ExplorationSection({
                   <span className="inline-flex flex-wrap items-center gap-1.5">
                     {/* 草案里两型并列(ADR 0020),确认时一起进知识集,徽章要分得出哪条是哪型。 */}
                     <Badge color="gray" variant="soft">{TYPE_LABEL[rule.type]}</Badge>
-                    <Badge color="gray" variant="soft" className="min-w-0 shrink break-all whitespace-normal">
+                    <Badge
+                      color="gray"
+                      variant="soft"
+                      className={`min-w-0 shrink break-all whitespace-normal ${
+                        rule.scope === "" ? "" : "font-mono text-sm"
+                      }`}
+                    >
                       {rule.scope === "" ? "全仓库" : rule.scope}
                     </Badge>
                   </span>
@@ -1598,21 +1676,18 @@ function ExplorationSection({
                         说要改成什么样,agent 读代码并把这一行原地换掉。首次确认前从此也不用
                         手写陈述——手填与逐条修改那张表已经撤掉(issue #299),「删除」照旧。 */}
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       color="gray"
                       highContrast
                       size={{ initial: "3", sm: "1" }}
-                      className={OUTLINED_ACTION}
                       onClick={() => setRewriting((open) => (open === rule.id ? null : rule.id))}
                     >
                       改写
                     </Button>
                     <Button
-                      variant="outline"
-                      color="gray"
-                      highContrast
+                      variant="ghost"
+                      color="red"
                       size={{ initial: "3", sm: "1" }}
-                      className={OUTLINED_ACTION}
                       disabled={busy}
                       onClick={() => onDeleteDraft(rule.id)}
                     >
@@ -1824,8 +1899,10 @@ function ConsolidationRow({
   const running = consolidation?.state === "running";
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      {/* 状态句与「知识整理」按钮同一行:状态句常常比基点探索那一行长(带两组数),
+          `min-w-0 flex-1` 让它在自己的宽度里折行,不把按钮挤到下一行。 */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
           {consolidation === null ? (
             <Text as="span" size="1" color="gray">还没整理过这个队列</Text>
           ) : (
@@ -1850,7 +1927,9 @@ function ConsolidationRow({
           )}
           <HelpTooltip content="知识整理让 agent 读这份队列与当前生效的知识集:说同一件事的提案合成一条,现集已经有的新增改成指向那条的修改。它不替你裁决。" />
         </div>
-        <ConsolidationLaunch repo={repo} busy={running} />
+        <div className="shrink-0">
+          <ConsolidationLaunch repo={repo} busy={running} />
+        </div>
       </div>
 
       {consolidation?.state === "failed" && consolidation.failure !== null ? (

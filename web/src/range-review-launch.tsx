@@ -222,13 +222,13 @@ function LaunchDialogContent({
               size="2"
               rows={2}
               maxLength={500}
-              className="mt-1"
+              className="mt-1.5"
               aria-describedby="range-review-directive-help"
               placeholder={RUN_DIRECTIVE_PLACEHOLDER}
               value={directive}
               onChange={(event) => setDirective(event.target.value)}
             />
-            <Text id="range-review-directive-help" as="p" size="1" color="gray" className="mt-1">
+            <Text id="range-review-directive-help" as="p" size="1" color="gray" className="mt-1.5">
               指令只作用于发起出来的这一轮;要长期生效的要求请录进知识集。{RUN_DIRECTIVE_HINT}
             </Text>
           </div>
