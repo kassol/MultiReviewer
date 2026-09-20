@@ -223,7 +223,10 @@ import {
 } from "../reviewer/model-runtime.ts";
 import { createPiMergeAgent } from "../reviewer/merge-agent.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../reviewer/evidence.ts";
-import type { AgentSessionMessageMode } from "../reviewer/session-protocol.ts";
+import {
+  AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
+  type AgentSessionMessageMode,
+} from "../reviewer/session-protocol.ts";
 import type { SilenceTimer } from "../reviewer/subprocess.ts";
 import {
   agentSessionImageMimeType,
@@ -3135,12 +3138,47 @@ function agentSessionMessageMode(value: unknown): AgentSessionMessageMode | unde
 }
 
 /**
+ * 这条消息是不是**还等着人答的**那一轮提问的答案(issue #406)。`answersRound` 是面板给的那条
+ * 提问轮次条目的 seq:成立的判据只有两条——那一格上落的确实是一轮提问,而且它后面还没有别的
+ * 用户消息(没人答过、也没被另一句话顶掉)。
+ *
+ * 不成立即按普通消息处理,顺序一格不变:这个标记是面板说的一句话,认不出来时该照常把消息
+ * 发出去,而不是回绝。
+ */
+function answersPendingQuestionRound(
+  dbPath: string,
+  sessionId: number,
+  value: unknown,
+): boolean {
+  if (typeof value !== "number" || !Number.isInteger(value)) return false;
+  const since = withStore(dbPath, (store) =>
+    store.listAgentSessionEntries(sessionId, value - 1),
+  );
+  const round = since[0];
+  if (round?.seq !== value || round.type !== "custom") return false;
+  if (
+    (round.entry as { customType?: unknown } | null)?.customType !==
+    AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE
+  ) {
+    return false;
+  }
+  return !since.slice(1).some((record) => {
+    if (record.type !== "message") return false;
+    const message = (record.entry as { message?: { role?: unknown } } | null)?.message;
+    return message?.role === "user";
+  });
+}
+
+/**
  * 发消息(issue #333,排队与插话在 issue #334)。门禁照旧:非创建者(系统管理员也算)一律
  * 动不了别人的会话。
  *
  * 受理即回 202,结果走记录流。去重按客户端消息 id:同一个 id 重发回第一次的受理结果而不再
  * 投递一次——人点两次发送、或者网络重试,都只跑一个回合。**去重判在「在不在跑」之前**:
  * 重发的那一条正是在跑的这一条,再投一次就是多跑一个回合。
+ *
+ * 带 `answersRound` 的那一条是提问轮次的答案(issue #406):它指的那一轮还等着人答时,这一条
+ * 排在留存的排队消息**前面**投出去——不然那几条会先把这张提问卡顶成过期,而答案随后照样送达。
  *
  * 空闲时两种模式都等同直接开跑,执行中按模式进 Pi 的插话 / 排队队列。**入队那一档不解析
  * 仓库与辅助模型**:子进程已经开着,那两样是开跑时取的值;产品的仓库在这一轮里被移走,
@@ -3155,9 +3193,13 @@ async function handleAgentSessionMessage(
 ): Promise<void> {
   const session = agentSessionForCreator(res, deps, sessionId, caller);
   if (session === undefined) return;
-  const payload = await readJson<
-    { clientMessageId?: unknown; text?: unknown; mode?: unknown; images?: unknown } | null
-  >(req, res);
+  const payload = await readJson<{
+    clientMessageId?: unknown;
+    text?: unknown;
+    mode?: unknown;
+    images?: unknown;
+    answersRound?: unknown;
+  } | null>(req, res);
   if (payload === undefined) return;
   const clientMessageId =
     typeof payload?.clientMessageId === "string" ? payload.clientMessageId.trim() : "";
@@ -3184,6 +3226,9 @@ async function handleAgentSessionMessage(
   );
   if (seen !== undefined) return accepted(seen);
 
+  // 执行中这一档不看 `answersRound`(issue #406):提问卡推到面板与这个回合真正停下之间隔着
+  // 一次 abort,人赶在那一下之前交答案就落在这里,答案按所选模式进队尾。窗口只有 abort 那几
+  // 十毫秒,为它在 Pi 的队列里插队不值当;落在这一档的答案仍会送达,只是排在留存消息之后。
   if (agentSessionStatus(sessionId) === "running") {
     const queued = accept();
     // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
@@ -3206,6 +3251,7 @@ async function handleAgentSessionMessage(
     plan.model,
     plan.repos,
     images,
+    answersPendingQuestionRound(deps.dbPath, sessionId, payload?.answersRound),
   );
   return accepted(acceptance.acceptedAt);
 }

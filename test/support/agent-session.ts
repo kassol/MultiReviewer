@@ -175,6 +175,8 @@ export function send(
   mode?: "followUp" | "steer",
   /** 这条消息带的图片 id(issue #336)。 */
   images?: readonly string[],
+  /** 这一条答的是哪一轮提问(issue #406):那条提问轮次条目的 seq。 */
+  answersRound?: number,
 ): Promise<Response> {
   return fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/messages`, {
     method: "POST",
@@ -184,6 +186,7 @@ export function send(
       text,
       ...(mode === undefined ? {} : { mode }),
       ...(images === undefined ? {} : { images }),
+      ...(answersRound === undefined ? {} : { answersRound }),
     }),
   });
 }

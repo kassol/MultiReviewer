@@ -470,15 +470,18 @@ function postQuestionRound(round: QuestionRound): void {
 }
 
 /**
- * 抛完一轮提问就收尾这个回合(issue #359)。与人点停止的差别:不清 Pi 的队列——人在这一轮
- * 之前排过的消息照样该投出去,那条更新的用户消息本来就让这张卡片过期。不落系统消息:对话流
- * 里已经有那张卡片,再加一行「已中止」只是噪音。
+ * 抛完一轮提问就收尾这个回合(issue #359)。与人点停止逐字相同的一件事:排队的消息从 Pi 的
+ * 队列里清出来、留在主进程的镜像里,下次开跑时由它定顺序投递(issue #406)——不清的话这几条
+ * 还在 Pi 手里,下一个回合末尾它自己会再投一遍,而主进程的镜像也会投一遍,同一条跑两次。
+ * 人交上来的答案因此排得到它们前面,这张提问卡不被自己的旧消息顶成过期。
+ *
+ * 与人点停止的差别只剩不落系统消息:对话流里已经有那张卡片,再加一行「已中止」只是噪音。
  */
 async function endTurnAfterRound(): Promise<void> {
   if (session === undefined || !running) return;
-  // 与人点停止同一格:这次中止是这条链路自己要的,不是这一轮跑坏了,不该报成回合失败。
-  stopped = true;
-  await session.abort();
+  // `abortCurrentStep` 里的 `stopped` 与人点停止同一格:这次中止是这条链路自己要的,不是
+  // 这一轮跑坏了,不该报成回合失败。
+  await abortCurrentStep(session);
 }
 
 /**

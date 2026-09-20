@@ -243,7 +243,7 @@ function Conversation({
   sessionId: number;
   running: boolean;
   /** 交一轮提问的答案(issue #359):合成的那条用户消息走与输入区同一条发消息路径。 */
-  onAnswerRound: (text: string) => Promise<void>;
+  onAnswerRound: (text: string, roundSeq: number) => Promise<void>;
   /** 空态教学文案只对发得出消息的人说;发不了的人看到的是一句陈述。答不答得了提问也按它。 */
   canSend: boolean;
   hasBaselines: boolean;
@@ -471,7 +471,7 @@ function ConversationRow({
   sessionId: number;
   /** 这一轮提问由谁答:发得出消息的人才答得了(与输入区同一判据)。 */
   canAnswerRound: boolean;
-  onAnswerRound: (text: string) => Promise<void>;
+  onAnswerRound: (text: string, roundSeq: number) => Promise<void>;
   liveTool?: string | undefined;
   open?: boolean;
   /** 长回复此刻是摊开还是收着,只对 `kind === "assistant"` 有意义(`Conversation` 按 `seq` 记)。 */
@@ -551,7 +551,7 @@ function QuestionRoundCard({
 }: {
   item: Extract<ConversationGroup, { kind: "round" }>;
   canAnswer: boolean;
-  onAnswer: (text: string) => Promise<void>;
+  onAnswer: (text: string, roundSeq: number) => Promise<void>;
 }) {
   const questions = item.round.questions;
   const settled = item.answers;
@@ -570,7 +570,8 @@ function QuestionRoundCard({
   const submit = async (): Promise<void> => {
     setSending(true);
     try {
-      await onAnswer(roundAnswerText(item.round, answers));
+      // 带上这张卡片自己的 seq:服务端凭它把这条答案排在留存的排队消息前面(issue #406)。
+      await onAnswer(roundAnswerText(item.round, answers), item.seq);
     } finally {
       setSending(false);
     }
@@ -1675,14 +1676,18 @@ export function AgentSessionPage({
   /**
    * 交一轮提问的答案(issue #359)。走与输入区同一个端点,但不经 `post`:那一份会把草稿与
    * 已选的图片清掉——人没发那条草稿,它不该因为答了一轮题就消失。会话此刻空闲,模式取排队。
+   *
+   * `answersRound` 是这张卡片那条记录的 seq(issue #406):这一轮还等着人答时,服务端把这条
+   * 答案排在留存的排队消息前面,卡片因此不会被自己那几条旧消息顶成过期。
    */
-  const answerRound = async (text: string): Promise<void> => {
+  const answerRound = async (text: string, roundSeq: number): Promise<void> => {
     try {
       await send(`/agent-sessions/${sessionId}/messages`, "POST", {
         clientMessageId: crypto.randomUUID(),
         text,
         mode: "followUp",
         images: [],
+        answersRound: roundSeq,
       });
       setFeedback(null);
       await refresh();

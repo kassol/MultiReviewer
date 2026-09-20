@@ -1273,17 +1273,22 @@ async function boot(
  * `queue` 里留存的那些先投递(上一次停止留下的,issue #334),再投这一条:子进程侧第一条
  * 立刻开跑、后面的进 Pi 的队列,顺序因此就是人当初写下它们的顺序。留存的那几条交出去之后
  * 从镜像里摘掉——排着的定义是「还没投出去」;进了 Pi 队列的那些由它的 `queue_update` 报回来。
+ *
+ * `first` 是提问轮次的答案那一档(issue #406):它排在留存的那几条**前面**。这一轮以提问卡
+ * 收尾时留存的消息还排着,让它先投等于用一条更新的用户消息把这张卡片顶成过期——而人紧接着
+ * 交上来的答案随后照样送达,卡片上的话与事实相反。留存的那几条仍按原顺序跟在答案后面。
  */
 function startRun(
   sessionId: number,
   entry: RuntimeEntry,
   last: AgentSessionQueuedMessage,
+  first = false,
 ): void {
   entry.status = "running";
   // 闸换档:这一刻起计的是执行中的连续静默(issue #335)。
   touch(sessionId, entry);
   const retained = entry.queue.splice(0, entry.queue.length);
-  for (const message of [...retained, last]) {
+  for (const message of first ? [last, ...retained] : [...retained, last]) {
     sendCommand(entry, {
       kind: "prompt",
       text: message.text,
@@ -1316,6 +1321,8 @@ export function deliverAgentSessionMessage(
   repos: readonly ProductRepoRecord[],
   /** 这条消息带的那几张图(issue #336)。省略即没带图。 */
   images: readonly AgentSessionImageRef[] = [],
+  /** 这一条是等着人答的那一轮提问的答案(issue #406):它排在留存的排队消息前面。 */
+  first = false,
 ): void {
   const message: AgentSessionQueuedMessage = {
     mode,
@@ -1325,7 +1332,7 @@ export function deliverAgentSessionMessage(
   const key = modelKey(model);
   const existing = registry.get(session.id);
   if (existing !== undefined && existing.modelKey === key) {
-    startRun(session.id, existing, message);
+    startRun(session.id, existing, message, first);
     return;
   }
   if (existing !== undefined) {
@@ -1355,7 +1362,7 @@ export function deliverAgentSessionMessage(
     stream: { text: "", tool: undefined, subagent: undefined, timer: undefined },
   };
   registry.set(session.id, entry);
-  startRun(session.id, entry, message);
+  startRun(session.id, entry, message, first);
   const booting = boot(deps, session, model, repos, entry);
   entry.booting = booting;
   void booting

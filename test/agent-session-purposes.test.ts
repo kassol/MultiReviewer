@@ -22,11 +22,13 @@ import { GITEA_REPO, type PanelHarness } from "./support/panel-harness.ts";
 import { type StubTurn } from "./support/model-stub.ts";
 import {
   AT,
+  bodyOf,
   idle,
   MESSAGE,
   messagesAtLeast,
   POLL_ATTEMPTS,
   POLL_MS,
+  queueOf,
   records,
   requestsAtLeast,
   send,
@@ -1091,6 +1093,102 @@ test("不合规的一轮走正常返回打回:不落条目,回合照旧跑下去
     assert.match(results[0]!, /this round has no questions/);
     assert.match(results[1]!, /question 1 has 1 options/);
     assert.match(results[2]!, /question 2 has 0 recommended options/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/**
+ * 这一轮以提问卡收尾时,执行中排队的那条消息留在队列里没投出去(`endTurnAfterRound` 中止当前
+ * 这一步,Pi 的 agent loop 不再排空队列)。人紧接着交答案时它要是先投出去,这张卡片就被自己
+ * 的旧消息顶成过期,而答案随后照样送达——卡片上的话与事实相反(issue #406)。
+ */
+test("提问轮次的答案排在留存的排队消息前面:卡片不被自己的旧消息顶成过期", async () => {
+  // 第一次回应等排队那一条进去之后才放行:窗口由测试放行,不靠延迟跑赢机器负载(issue #397)。
+  const { promise: queuedIn, resolve: go } = Promise.withResolvers<void>();
+  const turns: StubTurn[] = [
+    {
+      toolCall: { name: ASK_QUESTION_ROUND_TOOL, args: ROUND_ARGS },
+      usage: { input: 90, output: 18 },
+      release: queuedIn,
+    },
+    { text: "按答案接着办", usage: { input: 60, output: 12 } },
+    { text: "排队那一条也回了", usage: { input: 50, output: 10 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await requestsAtLeast(requests, 1);
+    assert.equal((await send(h, cookie, sessionId, "c2", "再补一句", "followUp")).status, 202);
+    go();
+
+    const rounds = await roundsAtLeast(h, cookie, sessionId, 1);
+    await idle(h, cookie, sessionId);
+    // 回合以提问卡收尾,排队的那一条还排着:它是这一票要跨过去的那条消息。
+    assert.deepEqual(await queueOf(h, cookie, sessionId), [
+      { mode: "followUp", text: "再补一句" },
+    ]);
+
+    const roundSeq = rounds[0]!.seq;
+    assert.equal(
+      (await send(h, cookie, sessionId, "c3", ROUND_ANSWER, "followUp", undefined, roundSeq))
+        .status,
+      202,
+    );
+    await requestsAtLeast(requests, 3);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 3);
+    // 答案先投,留存的那一条跟在后面。
+    assert.ok(bodyOf(requests[1]!).includes("提问轮次的回答"), "答案没先投出去");
+    assert.ok(!bodyOf(requests[1]!).includes("再补一句"), "留存的排队消息插到答案前面了");
+    assert.ok(bodyOf(requests[2]!).includes("再补一句"), "留存的排队消息没投递");
+    assert.deepEqual(await queueOf(h, cookie, sessionId), []);
+
+    // 卡片因此是「已回答」:面板按这张卡后面第一条用户消息定三态,那一条得是这一轮的答案。
+    const after = (await records(h, cookie, sessionId)).filter(
+      (row) =>
+        row.seq > roundSeq &&
+        row.type === "message" &&
+        (row.entry.message as { role?: string } | undefined)?.role === "user",
+    );
+    assert.match(JSON.stringify(after[0]!.entry.message?.content), /提问轮次的回答/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("答的不是待答的那一轮:按普通消息处理,留存的排队消息仍先投", async () => {
+  const { promise: queuedIn, resolve: go } = Promise.withResolvers<void>();
+  const turns: StubTurn[] = [
+    {
+      toolCall: { name: ASK_QUESTION_ROUND_TOOL, args: ROUND_ARGS },
+      usage: { input: 90, output: 18 },
+      release: queuedIn,
+    },
+    { text: "先回排队那一条", usage: { input: 60, output: 12 } },
+    { text: "再回后来这一条", usage: { input: 50, output: 10 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await requestsAtLeast(requests, 1);
+    assert.equal((await send(h, cookie, sessionId, "c2", "再补一句", "followUp")).status, 202);
+    go();
+    await roundsAtLeast(h, cookie, sessionId, 1);
+    await idle(h, cookie, sessionId);
+
+    // 标记指的那一格上落的不是一轮提问(seq 1 是人发的第一条消息):按普通消息处理。
+    assert.equal(
+      (await send(h, cookie, sessionId, "c3", ROUND_ANSWER, "followUp", undefined, 1)).status,
+      202,
+    );
+    await requestsAtLeast(requests, 3);
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 3);
+    assert.ok(bodyOf(requests[1]!).includes("再补一句"), "留存的排队消息没先投");
+    assert.ok(bodyOf(requests[2]!).includes("提问轮次的回答"));
   } finally {
     await disposeAgentSessions();
     await close();
