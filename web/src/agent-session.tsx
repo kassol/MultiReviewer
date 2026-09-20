@@ -79,6 +79,7 @@ import {
   type AgentSessionBaseline,
 } from "@/lib/agent-sessions";
 import { localMinute, localSecond } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 import { api, apiUrl, errorText, fetchJson, send } from "./api.ts";
 import { ProductRail, useProductDetail } from "./product-rail.tsx";
@@ -499,30 +500,7 @@ function ConversationRow({
     return <QuestionRoundCard item={item} canAnswer={canAnswerRound} onAnswer={onAnswerRound} />;
   }
   if (item.kind === "user") {
-    return (
-      <div className="group flex flex-col items-end gap-1">
-        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent-tint px-4 py-2.5">
-          <p className="min-w-0 break-words whitespace-pre-wrap text-lg">{item.text}</p>
-          {/* 带的图片以缩略图出现在这条消息里(issue #336),点开看原图。 */}
-          {item.images.length === 0 ? null : (
-            <ul className="mt-2 flex flex-wrap gap-2" aria-label="这条消息带的图片">
-              {item.images.map((imageId) => (
-                <li key={imageId}>
-                  <a href={imageSrc(sessionId, imageId)} target="_blank" rel="noreferrer">
-                    <img
-                      src={imageSrc(sessionId, imageId)}
-                      alt="这条消息带的图片"
-                      className="size-20 rounded-lg border border-line object-cover"
-                    />
-                  </a>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <MessageTime at={item.at} />
-      </div>
-    );
+    return <UserMessage item={item} sessionId={sessionId} />;
   }
   return <AssistantReply item={item} expanded={expanded} onToggleExpand={onToggleExpand!} />;
 }
@@ -802,19 +780,22 @@ function AssistantReply({
             : "mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted md:absolute md:-top-3 md:right-0 md:mt-0 md:gap-4 md:rounded-md md:border md:border-overlay-line md:bg-surface md:px-3 md:opacity-0 md:shadow-control md:transition-opacity md:group-focus-within:opacity-100 md:group-hover:opacity-100"
         }
       >
-        <MessageTime at={item.at} />
+        {/* 折叠态:「展开」贴正文左缘(它接着被截断的那一段),时刻与其余动作靠右。 */}
+        {long && !expanded ? (
+          <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
+            <ChevronDownIcon aria-hidden />
+            展开
+          </Button>
+        ) : (
+          <MessageTime at={item.at} />
+        )}
         {/* ghost 键的 hover 底靠负外边距向四周撑出 8px,相邻两颗要留 gap-5 才不会叠在一起。
             「阅读」「复制 Markdown」与已展开状态下的「收起」只在指到卡片时现,同 `MessageTime`
             的规则;折叠态的「展开」是找回全文的唯一入口,常显不进 hover 组。
             sm 以下三颗带文字要 234px、卡里只有 226px,「复制 Markdown」被切掉一半:那一档
             只留图标,文字用 `sr-only` 留给读屏,键距同步收一档(issue #384)。 */}
         <div className="flex items-center gap-5 max-sm:gap-3">
-          {long && !expanded ? (
-            <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
-              <ChevronDownIcon aria-hidden />
-              <span className="max-sm:sr-only">展开</span>
-            </Button>
-          ) : null}
+          {long && !expanded ? <MessageTime at={item.at} /> : null}
           <div className="flex items-center gap-5 transition-opacity max-sm:gap-3 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
             {long && expanded ? (
               <Button type="button" variant="ghost" color="gray" size="1" onClick={onToggleExpand}>
@@ -853,6 +834,69 @@ function AssistantReply({
           onCloseAutoFocus={returnFocus.onCloseAutoFocus}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * 人的一条消息。提问轮次的答案合成出来常常几十行,整块摊开就是一面蓝墙:与 agent 的长回复同一道
+ * 阈值(`isLongReply`)收到 320px,底部用 mask 渐隐——气泡底色带透明度,叠一层同色渐变会更深。
+ */
+function UserMessage({
+  item,
+  sessionId,
+}: {
+  item: Extract<ConversationGroup, { kind: "user" }>;
+  sessionId: number;
+}) {
+  const long = isLongReply(item.text);
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="group flex flex-col items-end gap-1">
+      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent-tint px-4 py-2.5">
+        <p
+          className={cn(
+            "min-w-0 break-words whitespace-pre-wrap text-lg",
+            long && !expanded
+              ? "max-h-[320px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_calc(100%-4rem),transparent)]"
+              : null,
+          )}
+        >
+          {item.text}
+        </p>
+        {/* 带的图片以缩略图出现在这条消息里(issue #336),点开看原图。 */}
+        {item.images.length === 0 ? null : (
+          <ul className="mt-2 flex flex-wrap gap-2" aria-label="这条消息带的图片">
+            {item.images.map((imageId) => (
+              <li key={imageId}>
+                <a href={imageSrc(sessionId, imageId)} target="_blank" rel="noreferrer">
+                  <img
+                    src={imageSrc(sessionId, imageId)}
+                    alt="这条消息带的图片"
+                    className="size-20 rounded-lg border border-line object-cover"
+                  />
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="flex min-h-6 items-center gap-4">
+        {long ? (
+          <Button
+            type="button"
+            variant="ghost"
+            color="gray"
+            size="1"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            <ChevronDownIcon aria-hidden className={expanded ? "rotate-180" : undefined} />
+            {expanded ? "收起" : "展开"}
+          </Button>
+        ) : null}
+        <MessageTime at={item.at} />
+      </div>
     </div>
   );
 }
@@ -1210,7 +1254,11 @@ function WrotePanel({ productId, wrote }: { productId: number; wrote: SessionWro
   ];
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <h2 className="text-2xl font-bold tracking-[-0.015em]">本会话写的 spec 与票</h2>
+      {/* 与左栏 `RailCard` 的卡头同一份字样:两侧都是栏,不该一边小灰字一边大黑字。 */}
+      <h2 className="flex items-baseline gap-2 text-base font-bold text-text-muted">
+        本会话写的 spec 与票
+        <span className="font-mono text-xs font-normal tabular-nums">{rows.length}</span>
+      </h2>
       {/* 行与行之间一根发丝线,不给每行再套一层带边的盒子:这一栏本身已经是一张卡。 */}
       <ul className="-mx-2 flex flex-col">
         {rows.map((row) => (
