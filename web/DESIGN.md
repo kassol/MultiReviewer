@@ -508,8 +508,8 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 | 令牌 | 值 | Tailwind | 用在什么 |
 | --- | --- | --- | --- |
 | `--v8-radius-chip` | 5px | `rounded-chip` | commit hash chip、键帽 |
-| `--v8-radius-mark` | 8px | `rounded-sm` | 品牌方块、小号输入与 Select |
-| `--v8-radius-control` | 9px | `rounded-md` | 标准按钮、搜索入口、分段控件外壳、输入框 |
+| `--v8-radius-mark` | 8px | `rounded-sm` | 品牌方块；Themes `size="2"` 的控件（桌面端的标准按钮、输入框与 Select，经 `--radius-2`） |
+| `--v8-radius-control` | 9px | `rounded-md` | 搜索入口、分段控件外壳这类手写 `rounded-md` 的表面；Themes `size="3"` 的控件（经 `--radius-3`） |
 | `--v8-radius-card` | 12px | `rounded-lg` | 桌面卡片、通知条、详情内嵌卡 |
 | `--v8-radius-card-mobile` | 14px | `rounded-xl` | 移动端卡片（写法是 `rounded-xl sm:rounded-lg`） |
 | `--v8-radius-panel` | 16px | `rounded-2xl` | 登录卡、命令面板 |
@@ -774,6 +774,11 @@ Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`Pa
 - `theme-button.ts`：Radix Button 的类型适配出口，不增加组件、行为或 DOM。
 - `Markdown`：agent 回复的 GFM 渲染(react-markdown + remark-gfm,`skipHtml`),元素映射到产品排版令牌,表格套横向滚动、链接新标签打开。
 - `HelpTooltip`、`ModelComposer`、`SetupChecklist`：集中产品语义与跨页行为。
+- `CardShell`：卡片外壳。Themes 的 Card 把圆角画在伪元素上，而卡片圆角随视口在 14 / 12 之间换档，所以壳走 utility + 令牌，壳里的通用件仍是 Themes 组件。
+- `ConfirmDialog`：受控 AlertDialog 确认块的唯一实现，每个视觉细节都是显式 prop。
+- `RailCard` 与 `ProductRail`（`src/product-rail.tsx`）：产品页与会话页共用的左栏及其三段式卡片。
+- `ThinkingLevelPicker`：一处模型引用的思考档位控件，模型组合编辑器与辅助模型控件共用，只列这个模型支持的档位。
+- `MermaidDiagram`：Markdown 里 mermaid 围栏的图卡与全屏缩放预览，mermaid 只由它动态加载（7.5）。
 
 Calendar 与 Command 留在 `components/ui` 作为第三方行为适配层，只由对应产品组件或明确的搜索场景调用。简单展开继续直接组合 Collapsible Primitive。普通局部滚动使用原生 overflow；当前没有 Toast 与 ScrollArea 产品组件，关键结果留在页面内。
 
