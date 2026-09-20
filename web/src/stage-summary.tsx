@@ -461,6 +461,7 @@ export function StageSummaryView({
   timeline,
   onFeedback,
   onDrawerTrigger,
+  onVisibleOrder,
 }: {
   scope: StageScope;
   /** 有 `finding:dispose` 权限时行内出现处置动作。 */
@@ -478,6 +479,8 @@ export function StageSummaryView({
   timeline?: (entries: StageTimelineEntry[]) => React.ReactNode;
   /** 侧滑打开前记录触发链接,关闭后恢复焦点。 */
   onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
+  /** 列表此刻从上到下的 Finding id(筛选与同根因折叠之后):侧滑的上一条 / 下一条按它走。 */
+  onVisibleOrder?: (ids: number[]) => void;
 }) {
   const summary = useStageSummary(scope);
   const [disposition, setDisposition] = useState<DispositionFilter>("all");
@@ -507,6 +510,14 @@ export function StageSummaryView({
     ),
   );
   const counts = summary.data?.counts ?? { pending: 0, resolved: 0, fixed: 0 };
+  const rows = foldByRootCause(visible);
+  // 拼成一个串当依赖:数组每次渲染都是新的,按它报会每次渲染都往上报一遍。
+  const order = rows
+    .flatMap((row) => (row.kind === "finding" ? [row.finding.id] : row.members.map((m) => m.id)))
+    .join(",");
+  useEffect(() => {
+    onVisibleOrder?.(order === "" ? [] : order.split(",").map(Number));
+  }, [order, onVisibleOrder]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -642,7 +653,7 @@ export function StageSummaryView({
             </p>
           ) : null}
 
-          {foldByRootCause(visible).map((row) =>
+          {rows.map((row) =>
             row.kind === "finding" ? (
               <FindingCard
                 key={row.finding.id}

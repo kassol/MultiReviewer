@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useRef, useState } from "react";
+import type { HLJSApi } from "highlight.js";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { CheckCircledIcon, ChevronDownIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
 import { Badge, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
@@ -9,6 +10,7 @@ import { CommitChip } from "@/components/commit-chip";
 import { Statement } from "@/components/statement";
 import { Button } from "@/components/theme-button";
 import { isAnchorable } from "@/lib/finding-position";
+import { languageOf, splitHighlightedLines } from "@/lib/highlight-lines";
 import { localClock, localDay } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -603,9 +605,45 @@ export function FilePatch({
   const focusRow = useRef<HTMLTableRowElement>(null);
   useEffect(() => {
     focusRow.current?.scrollIntoView({ block: "center" });
-  }, [patch.data]);
+    // 上一条 / 下一条落在同一个文件里时 patch 不变,变的只有焦点。
+  }, [patch.data, focusFindingId]);
 
-  const hunks = patch.data === undefined ? [] : parseUnifiedDiff(patch.data.patch);
+  const hunks = useMemo(
+    () => (patch.data === undefined ? [] : parseUnifiedDiff(patch.data.patch)),
+    [patch.data],
+  );
+  // 语法高亮:highlight.js 只在认得出语言的文件上按需加载(独立 chunk),到手之前与认不出的
+  // 文件一样显示纯文本。一个 hunk 整段高亮再按行拆,跨行注释的第二行起仍是注释;hunk 的
+  // 开头若落在一段跨行注释中间,那几行会被当成代码——hunk 之外的内容这里拿不到。
+  const language = languageOf(path);
+  const [hljs, setHljs] = useState<HLJSApi | null>(null);
+  useEffect(() => {
+    if (language === undefined) return;
+    let live = true;
+    void import("highlight.js/lib/common").then((module) => {
+      if (live) setHljs(module.default);
+    });
+    return () => {
+      live = false;
+    };
+  }, [language]);
+  const highlighted = useMemo(
+    () =>
+      hljs === null || language === undefined
+        ? null
+        : hunks.map((hunk) =>
+            // ponytail: 同步高亮,超过 3000 行的 hunk 直接不高亮;要覆盖它得挪进 worker。
+            hunk.lines.length > 3000
+              ? null
+              : splitHighlightedLines(
+                  hljs.highlight(hunk.lines.map((line) => line.text).join("\n"), {
+                    language,
+                    ignoreIllegals: true,
+                  }).value,
+                ),
+          ),
+    [hljs, language, hunks],
+  );
   const rendered = new Set(
     hunks.flatMap((hunk) =>
       hunk.lines.flatMap((line) => (line.newLine === null ? [] : [line.newLine])),
@@ -747,7 +785,15 @@ export function FilePatch({
                             <span className="inline-block w-[2ch] indent-0 select-none text-text-secondary">
                               {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                             </span>
-                            {line.text}
+                            {highlighted?.[hunkIndex]?.[index] === undefined ? (
+                              line.text
+                            ) : (
+                              // highlight.js 的产出:源码里的 < > & 已由它转义,标签只有它自己加的 span。
+                              <span
+                                className="diff-code"
+                                dangerouslySetInnerHTML={{ __html: highlighted[hunkIndex][index] }}
+                              />
+                            )}
                           </td>
                         </tr>
                         {line.newLine === null ? null : (

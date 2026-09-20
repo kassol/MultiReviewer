@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState, type MouseEventHandler } from
 import {
   ArrowLeftIcon,
   CheckCircledIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   Cross2Icon,
   CrossCircledIcon,
   ExternalLinkIcon,
@@ -221,6 +223,16 @@ export function StageDetailPage({
       };
     },
   });
+  // 列表此刻的 Finding 顺序,由 `StageSummaryView` 报上来;侧滑的上一条 / 下一条按它走。
+  const [findingOrder, setFindingOrder] = useState<number[]>([]);
+  const openFinding = (id: number): void => {
+    void navigate({
+      to: "/stages/$stageId",
+      params: { stageId },
+      search: (prev: Record<string, unknown>) => ({ ...prev, finding: id, trace: undefined }),
+      replace: true,
+    });
+  };
   // 开关侧滑都走 replace:它是这一页里的一次下钻,不该往浏览器历史里塞一条。
   const closeDrawer = (): void => {
     void navigate({
@@ -345,6 +357,7 @@ export function StageDetailPage({
               onTabChange={selectTab}
               onFeedback={setFeedback}
               onDrawerTrigger={returnFocus.captureTrigger}
+              onVisibleOrder={setFindingOrder}
               timeline={(entries) => (
                 <StageTimeline
                   stageId={stageId}
@@ -359,9 +372,13 @@ export function StageDetailPage({
 
           {location.drawer === null ? null : location.drawer.kind === "finding" ? (
             <FindingDrawer
-              key={location.drawer.id}
+              // 不按 Finding id 重挂:上一条 / 下一条换的只是侧滑里的内容,重挂会让整个浮层
+              // 重放一次进场。
+              key="finding"
               scope={scopeOf(body.stage)}
               findingId={location.drawer.id}
+              order={findingOrder}
+              onNavigate={openFinding}
               canDispose={canDispose}
               onClose={closeDrawer}
               onCloseAutoFocus={returnFocus.onCloseAutoFocus}
@@ -852,6 +869,7 @@ function RoundIcon({ entry }: { entry: StageTimelineEntry }) {
 function StageDrawer({
   title,
   headline,
+  actions,
   onClose,
   onCloseAutoFocus,
   children,
@@ -859,6 +877,8 @@ function StageDrawer({
   title: string;
   /** 标题下面那一行元信息;还没读到内容时不给。 */
   headline?: React.ReactNode;
+  /** 头部右侧、关闭键之前的动作(Finding 侧滑的上一条 / 下一条)。 */
+  actions?: React.ReactNode;
   onClose: () => void;
   onCloseAutoFocus: (event: { preventDefault: () => void }) => void;
   children: React.ReactNode;
@@ -891,16 +911,19 @@ function StageDrawer({
               </Dialog.Title>
               {headline}
             </div>
-            <Dialog.Close asChild>
-              <IconButton
-                variant="ghost"
-                color="gray"
-                size="2"
-                aria-label={`关闭${title}`}
-              >
-                <Cross2Icon />
-              </IconButton>
-            </Dialog.Close>
+            <div className="flex shrink-0 items-center gap-2">
+              {actions}
+              <Dialog.Close asChild>
+                <IconButton
+                  variant="ghost"
+                  color="gray"
+                  size="2"
+                  aria-label={`关闭${title}`}
+                >
+                  <Cross2Icon />
+                </IconButton>
+              </Dialog.Close>
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-5 sm:py-4 md:pb-4">
             {children}
@@ -922,12 +945,17 @@ function StageDrawer({
 function FindingDrawer({
   scope,
   findingId,
+  order,
+  onNavigate,
   canDispose,
   onClose,
   onCloseAutoFocus,
 }: {
   scope: StageScope;
   findingId: number;
+  /** 列表此刻从上到下的 Finding id。 */
+  order: number[];
+  onNavigate: (id: number) => void;
   canDispose: boolean;
   onClose: () => void;
   onCloseAutoFocus: (event: { preventDefault: () => void }) => void;
@@ -944,9 +972,67 @@ function FindingDrawer({
       ? null
       : findingDiffSource(finding.placedRunId, summary.data?.timeline ?? []);
 
+  // 这一条在列表里的位置。处置之后它可能被筛选滤掉(停在「待处置」时最常见):记住它原来
+  // 的位置,「下一条」就是滑进这个位置的那一条,人不用关掉侧滑重新找。
+  const lastIndex = useRef(0);
+  const found = order.indexOf(findingId);
+  if (found !== -1) lastIndex.current = found;
+  const prevId = order[(found === -1 ? lastIndex.current : found) - 1];
+  const nextId = found === -1 ? order[lastIndex.current] : order[found + 1];
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      // 正在打字(处置备注)时 j / k 是字,不是导航。
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable]") != null) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const id = event.key === "j" ? nextId : event.key === "k" ? prevId : undefined;
+      if (id === undefined) return;
+      event.preventDefault();
+      onNavigate(id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [prevId, nextId, onNavigate]);
+
   return (
     <StageDrawer
       title="代码差异"
+      actions={
+        order.length === 0 ? null : (
+          <div className="flex items-center gap-1">
+            <span className="px-1 text-sm whitespace-nowrap text-text-secondary tabular-nums">
+              {found === -1 ? "—" : <span className="font-mono">{found + 1}</span>} /{" "}
+              <span className="font-mono">{order.length}</span>
+            </span>
+            <Tooltip content="上一条 Finding（K）">
+              <IconButton
+                variant="soft"
+                color="gray"
+                size="2"
+                disabled={prevId === undefined}
+                onClick={() => prevId !== undefined && onNavigate(prevId)}
+                aria-label="上一条 Finding"
+                aria-keyshortcuts="K"
+              >
+                <ChevronUpIcon />
+              </IconButton>
+            </Tooltip>
+            <Tooltip content="下一条 Finding（J）">
+              <IconButton
+                variant="soft"
+                color="gray"
+                size="2"
+                disabled={nextId === undefined}
+                onClick={() => nextId !== undefined && onNavigate(nextId)}
+                aria-label="下一条 Finding"
+                aria-keyshortcuts="J"
+              >
+                <ChevronDownIcon />
+              </IconButton>
+            </Tooltip>
+          </div>
+        )
+      }
       {...(finding === undefined
         ? {}
         : {

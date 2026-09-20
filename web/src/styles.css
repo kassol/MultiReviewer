@@ -76,6 +76,8 @@
   --v8-danger: #cf222e;
   --v8-danger-tint: rgba(207, 34, 46, 0.09);
   --v8-neutral-dot: #d2d2d7;
+  /* diff 语法高亮的关键字色:--v8-accent 在新增行的绿底上不到 4.5:1,压深一档。 */
+  --v8-code-keyword: #0058b0;
 
   /*
    * 材质。层级越高,模糊半径越大、底色越不透明——这是浮层深度的唯一表达方式,
@@ -671,4 +673,38 @@
   #panel-portal .rt-BaseDialogOverlay {
     z-index: 40;
   }
+}
+
+/*
+ * diff 语法高亮(run-diff.tsx)。类名是 highlight.js 产出的,挂不了 utility,只能写在这里。
+ * 只用四种颜色,都取自现有令牌:关键字蓝、字符串绿、数字与注解琥珀、注释次级灰;函数与
+ * 类名不另起颜色,只加粗。每一种在白底与增删行的半档 tint 上都过 4.5:1。
+ */
+.diff-code .hljs-keyword,
+.diff-code .hljs-built_in,
+.diff-code .hljs-type,
+.diff-code .hljs-literal,
+.diff-code .hljs-tag,
+.diff-code .hljs-name,
+.diff-code .hljs-attr,
+.diff-code .hljs-selector-tag,
+.diff-code .hljs-selector-class {
+  color: var(--v8-code-keyword);
+}
+.diff-code .hljs-string,
+.diff-code .hljs-regexp,
+.diff-code .hljs-template-string {
+  color: var(--v8-success);
+}
+.diff-code .hljs-number,
+.diff-code .hljs-meta,
+.diff-code .hljs-symbol {
+  color: var(--v8-warning);
+}
+.diff-code .hljs-comment,
+.diff-code .hljs-doctag {
+  color: var(--v8-text-secondary);
+}
+.diff-code .hljs-title {
+  font-weight: 600;
 }
