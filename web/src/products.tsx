@@ -265,7 +265,7 @@ export function ProductsPage({
       )}
       {selected === undefined ? null : (
         <KnowledgeSection
-          key={selected.id}
+          key={`knowledge-${selected.id}`}
           product={selected}
           knowledge={knowledge}
           pending={knowledgeQuery.isPending}
@@ -276,7 +276,7 @@ export function ProductsPage({
       )}
       {selected === undefined ? null : (
         <TrackerSection
-          key={selected.id}
+          key={`tracker-${selected.id}`}
           product={selected}
           specs={knowledgeQuery.data?.tracker.specs ?? []}
           pending={knowledgeQuery.isPending}
@@ -619,7 +619,10 @@ function KnowledgeSection({
     first
       ? "flex min-w-0 flex-col gap-1.5"
       : "flex min-w-0 flex-col gap-1.5 border-t border-line pt-3";
-  const rowClass = "flex min-w-0 flex-col gap-1 border-t border-line py-2.5 first:border-t-0 first:pt-0";
+  // 宽屏上条目排两列:正文限了行宽,单列会在右边空出半张卡。每行都画上边线、整体上提 1px
+  // 由 `ul` 裁掉第一排那一根——两列时「第一条」不止一条,`first:` 选不中第二列那一条。
+  const listClass = "grid min-w-0 overflow-hidden xl:grid-cols-2 xl:gap-x-10";
+  const rowClass = "-mt-px flex min-w-0 flex-col gap-1 border-t border-line py-2.5";
 
   return (
     <CardShell className="min-w-0 px-5 py-4">
@@ -670,7 +673,7 @@ function KnowledgeSection({
                       topic={group.topic}
                       count={group.terms.length}
                     >
-                      <ul>
+                      <ul className={listClass}>
                         {group.terms.map((entry) => (
                           <li key={entry.id} className={rowClass}>
                             <span className={STATEMENT_CLASS}>
@@ -703,7 +706,7 @@ function KnowledgeSection({
                   title="仓库关系"
                   count={relationships.length}
                 />
-                <ul>
+                <ul className={listClass}>
                   {relationships.map((entry) => (
                     <li key={entry.id} className={rowClass}>
                       <span className={STATEMENT_CLASS}>
@@ -726,7 +729,7 @@ function KnowledgeSection({
                   title="产品决策"
                   count={decisions.length}
                 />
-                <ul>
+                <ul className={listClass}>
                   {decisions.map((entry) => (
                     // 左侧一根细状态条:生效的走 success,被取代的走中性——一列决策里哪几条
                     // 还算数,扫一眼边缘就看得出,不必逐条读徽章。
