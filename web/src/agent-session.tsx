@@ -614,17 +614,20 @@ function QuestionRoundCard({
             </span>
           );
           return (
-            <li key={index} className="flex min-w-0 flex-col gap-1.5">
+            <li
+              key={index}
+              className="flex min-w-0 flex-col gap-1.5 border-t border-line pt-3 first:border-t-0 first:pt-0"
+            >
               {/* 题目标题此前 13px、题干 14px,标题比它要回答的那句话还小。提一档到题干那一档,
                   轻重仍由字重分。 */}
-              <p className="text-md font-medium">
+              <p className="text-lg font-semibold">
                 {index + 1}. {question.title}
                 {question.multiple ? (
                   <span className="ml-1.5 text-sm font-normal text-text-muted">多选</span>
                 ) : null}
               </p>
               {question.body === "" ? null : (
-                <p className="text-md whitespace-pre-wrap text-text-secondary">{question.body}</p>
+                <p className="max-w-[46em] text-md whitespace-pre-wrap text-text-secondary">{question.body}</p>
               )}
               {settled !== undefined ? (
                 <ul className="flex flex-col gap-1">
@@ -757,7 +760,7 @@ function AssistantReply({
   return (
     <div
       ref={cardRef}
-      className="group flex flex-col rounded-lg border border-overlay-line bg-surface px-4 py-3"
+      className="group relative flex flex-col rounded-lg border border-overlay-line bg-surface px-4 py-3"
     >
       <span className="sr-only">agent</span>
       {copyError === null ? null : (
@@ -779,8 +782,16 @@ function AssistantReply({
       ) : (
         <Markdown text={item.text} />
       )}
-      {/* footer 不画分隔线:动作平时藏着,一条线下面空着一行只会像漏了什么。 */}
-      <div className="mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted">
+      {/* 时刻与动作 `md` 起浮在卡片右上沿(指到卡片才现),不在卡底占一行:一句话的回复此前
+          下面空着半张卡。折叠态例外——「展开」是找回全文的唯一入口,常显,留在卡底那一行。
+          `md` 以下没有 hover,照旧在卡底。 */}
+      <div
+        className={
+          long && !expanded
+            ? "mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted"
+            : "mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted md:absolute md:-top-3.5 md:right-3 md:mt-0 md:gap-4 md:rounded-md md:border md:border-overlay-line md:bg-surface md:px-3 md:opacity-0 md:shadow-control md:transition-opacity md:group-focus-within:opacity-100 md:group-hover:opacity-100"
+        }
+      >
         <MessageTime at={item.at} />
         {/* ghost 键的 hover 底靠负外边距向四周撑出 8px,相邻两颗要留 gap-5 才不会叠在一起。
             「阅读」「复制 Markdown」与已展开状态下的「收起」只在指到卡片时现,同 `MessageTime`
