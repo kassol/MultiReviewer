@@ -203,7 +203,7 @@ function FindingCard({
           {/* 等级排在最前:几百条里往下扫,先看到的是轻重,再是哪个文件。 */}
           <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
             <FindingBadges finding={finding} />
-            <span className="min-w-0 font-mono text-sm break-all text-text-secondary">
+            <span className="min-w-0 font-mono text-sm break-all text-text-secondary max-sm:basis-full">
               {finding.file}:{finding.line}
             </span>
           </span>
@@ -558,22 +558,9 @@ export function StageSummaryView({
           </Tabs.Trigger>
         </Tabs.List>
 
-        {/* 四个筛选只属于 Finding 页;筛选值是组件内状态,切到时间线再切回来仍在。 */}
+        {/* 三个筛选只属于 Finding 页;筛选值是组件内状态,切到时间线再切回来仍在。 */}
         <Tabs.Content value="findings" className="flex flex-col gap-3 pt-3">
           <div className="flex flex-wrap items-center gap-2">
-            <Select.Root
-              value={disposition}
-              onValueChange={(next) => setDisposition(next as DispositionFilter)}
-              size="1"
-            >
-              <Select.Trigger aria-label="按处置状态筛选" />
-              <Select.Content>
-                <Select.Item value="all">全部处置状态</Select.Item>
-                <Select.Item value="pending">待处置</Select.Item>
-                <Select.Item value="resolved">人工已处置</Select.Item>
-                <Select.Item value="fixed">已修复</Select.Item>
-              </Select.Content>
-            </Select.Root>
             {/*
               轮次筛选(issue #369):选中第 N 轮即「首次报出在第 N 轮或之后」。每天看一次
               的人要的是这几天新出的那批,与「待处置」叠起来就是当天的工作集。
@@ -609,6 +596,22 @@ export function StageSummaryView({
               <span className="text-sm text-text-secondary">
                 <span className="font-mono tabular-nums">{visible.length}</span> / {findings.length} 条
               </span>
+            )}
+            {/* 处置状态由上面三个计数键筛,不在这一排重复一个下拉;四个筛选一处清。 */}
+            {disposition === "all" && round === "all" && lineAuthor === "all" && severity === "all" ? null : (
+              <Button
+                variant="ghost"
+                color="gray"
+                size={{ initial: "3", sm: "1" }}
+                onClick={() => {
+                  setDisposition("all");
+                  setRound("all");
+                  setLineAuthor("all");
+                  setSeverity("all");
+                }}
+              >
+                清除筛选
+              </Button>
             )}
           </div>
 

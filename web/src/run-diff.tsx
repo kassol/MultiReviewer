@@ -91,6 +91,9 @@ async function disposeRequest(input: {
   );
 }
 
+const GUTTER_TINT = { add: "bg-success-tint", del: "bg-danger-tint", context: "" } as const;
+const CODE_TINT = { add: "bg-success-tint/50", del: "bg-danger-tint/50", context: "" } as const;
+
 const SEVERITY_COLOR = { P0: "red", P1: "amber", P2: "gray" } as const;
 
 /** 已处置:人工与「已修复」自动处置都算。 */
@@ -491,7 +494,7 @@ function FindingCells({
           {/* 表格是 font-mono text-xs 的代码面,卡片是正文:字体与字号在这一格换回来,
               否则 Finding 的中文正文会被等宽字体撑开。卡片内嵌成一张独立的卡,读的人
               分得清哪里是代码、哪里是评论。 */}
-          <td colSpan={3} className="bg-sunken px-3 py-2 font-sans text-base whitespace-normal">
+          <td colSpan={3} className="bg-sunken px-3 py-2 max-sm:px-1.5 font-sans text-base whitespace-normal">
             <div
               className={`overflow-hidden rounded-lg border shadow-control [&>div]:border-t-0 ${
                 finding.id === focusFindingId
@@ -562,6 +565,9 @@ export function FilePatch({
     byLine.set(finding.line, [...(byLine.get(finding.line) ?? []), finding]);
   }
   const unanchored = findings.filter((finding) => !isAnchorable(finding, runId, rendered));
+  // 整个文件都是新增(新文件)时,「哪几行是新的」不携带信息:代码格不铺绿,只留行号槽那
+  // 一道,免得一整屏绿底。
+  const wholeFileAdded = hunks.every((hunk) => hunk.lines.every((line) => line.kind === "add"));
   const focusLine = findings.find((finding) => finding.id === focusFindingId)?.line;
 
   if (patch.isPending) {
@@ -625,7 +631,9 @@ export function FilePatch({
                     数字会溢出格子压到隔壁列上。 */}
                 <table className="w-full table-fixed border-collapse font-mono text-xs leading-5">
                   <colgroup>
-                    <col className="w-12" />
+                    {/* 窄屏收掉旧行号列:390px 上两列行号占掉四分之一,深缩进的代码一行折五六段。
+                        Finding 只锚新侧行号,删除行靠红底与 − 认。 */}
+                    <col className="w-12 max-sm:hidden" />
                     <col className="w-12" />
                     <col />
                   </colgroup>
@@ -641,21 +649,20 @@ export function FilePatch({
                           {...(line.newLine !== null && line.newLine === focusLine
                             ? { ref: focusRow }
                             : {})}
-                          className={
-                            line.kind === "add"
-                              ? "bg-success-tint"
-                              : line.kind === "del"
-                                ? "bg-danger-tint"
-                                : ""
-                          }
                         >
-                          <td className="w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                          {/* 底色分两档:行号槽铺满 tint,代码格减半——改动在哪靠槽认,代码本身
+                              保持好读。 */}
+                          <td className={`w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none max-sm:hidden ${GUTTER_TINT[line.kind]}`}>
                             {line.oldLine ?? ""}
                           </td>
-                          <td className="w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
+                          <td className={`w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none ${GUTTER_TINT[line.kind]}`}>
                             {line.newLine ?? ""}
                           </td>
-                          <td className="pr-2 pl-[calc(0.5rem+2ch)] -indent-[2ch] align-top whitespace-pre-wrap break-words text-text">
+                          <td
+                            className={`pr-2 pl-[calc(0.5rem+2ch)] -indent-[2ch] align-top whitespace-pre-wrap break-words text-text ${
+                              wholeFileAdded ? "" : CODE_TINT[line.kind]
+                            }`}
+                          >
                             <span className="inline-block w-[2ch] indent-0 select-none text-text-secondary">
                               {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                             </span>
