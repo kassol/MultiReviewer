@@ -904,26 +904,28 @@ function StageDrawer({
           style={{ backdropFilter: "var(--v8-drawer-blur)" }}
           className="fixed inset-x-0 bottom-0 z-50 flex h-[86dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-[color:var(--v8-drawer-bg)] shadow-overlay outline-none md:inset-y-3.5 md:right-3.5 md:left-auto md:h-auto md:w-[min(920px,calc(100vw-28px))] md:rounded-3xl"
         >
-          <div className="flex items-start justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
-            <div className="flex min-w-0 flex-col gap-1">
+          {/* 标题与动作一行,headline 另起一行铺满:文件路径与右侧那排键并排时,390px 上路径
+              只剩半宽、折成五行。 */}
+          <div className="flex flex-col gap-1 border-b border-overlay-line px-4 py-3 sm:px-5 sm:py-4">
+            <div className="flex items-center justify-between gap-3">
               <Dialog.Title className="min-w-0 break-all text-3xl font-semibold">
                 {title}
               </Dialog.Title>
-              {headline}
+              <div className="flex shrink-0 items-center gap-2">
+                {actions}
+                <Dialog.Close asChild>
+                  <IconButton
+                    variant="ghost"
+                    color="gray"
+                    size="2"
+                    aria-label={`关闭${title}`}
+                  >
+                    <Cross2Icon />
+                  </IconButton>
+                </Dialog.Close>
+              </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {actions}
-              <Dialog.Close asChild>
-                <IconButton
-                  variant="ghost"
-                  color="gray"
-                  size="2"
-                  aria-label={`关闭${title}`}
-                >
-                  <Cross2Icon />
-                </IconButton>
-              </Dialog.Close>
-            </div>
+            {headline}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-5 sm:py-4 md:pb-4">
             {children}
