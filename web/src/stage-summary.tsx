@@ -9,6 +9,7 @@ import { Collapsible } from "radix-ui";
 import { CommitChip } from "@/components/commit-chip";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { FilePath } from "@/components/file-path";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 import { disposableInGroup, foldByRootCause, type RootCauseRef } from "@/lib/root-cause";
@@ -199,17 +200,20 @@ function FindingCard({
         aria-label={`查看 ${finding.file}:${finding.line} 对应的代码差异`}
         className="group block px-4 pt-3 pb-2.5 outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
       >
-        <span className="flex items-start justify-between gap-x-3">
-          {/* 等级排在最前:几百条里往下扫,先看到的是轻重,再是哪个文件。 */}
-          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        {/* 等级排在最前:几百条里往下扫,先看到的是轻重,再是哪个文件。窄屏上路径独占第二
+            行(order 调到入口之后),不被徽章与入口夹成三行。 */}
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="flex shrink-0 items-center gap-1.5">
             <FindingBadges finding={finding} />
-            <span className="min-w-0 font-mono text-sm break-all text-text-secondary max-sm:basis-full">
-              {finding.file}:{finding.line}
-            </span>
           </span>
+          <FilePath
+            file={finding.file}
+            line={finding.line}
+            className="order-3 basis-full text-sm sm:order-none sm:flex-1 sm:basis-0"
+          />
           {/* 入口写出名字:光一颗图标看不出点了是开侧滑。窄屏只留图标。 */}
           <span
-            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-accent-tint-strong px-1.5 text-sm font-medium text-primary transition-colors group-hover:bg-accent-track"
+            className="ml-auto inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-accent-tint-strong px-1.5 text-sm font-medium text-primary transition-colors group-hover:bg-accent-track"
             aria-hidden
           >
             <FileTextIcon />
@@ -217,7 +221,13 @@ function FindingCard({
           </span>
         </span>
         {finding.title === "" ? null : (
-          <span className="block pt-1.5 text-lg font-semibold break-words">{finding.title}</span>
+          <span
+            className={`block pt-1.5 text-lg font-semibold break-words ${
+              bucketOf(finding) === "pending" ? "" : "text-text-secondary line-through"
+            }`}
+          >
+            {finding.title}
+          </span>
         )}
         <span className="block pt-1 text-sm text-text-secondary tabular-nums">
           第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}

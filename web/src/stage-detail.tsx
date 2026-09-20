@@ -26,6 +26,7 @@ import { Dialog } from "radix-ui";
 import { CommitChip } from "@/components/commit-chip";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { FilePath } from "@/components/file-path";
 import { MasterListItem } from "@/components/master-list-item";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
@@ -949,9 +950,7 @@ function FindingDrawer({
         : {
             headline: (
               <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="break-all font-mono text-base text-text-secondary">
-                  {finding.file}:{finding.line}
-                </span>
+                <FilePath file={finding.file} line={finding.line} className="text-base" />
                 {source?.stale == null ? null : (
                   <span className="flex flex-wrap items-center gap-1 text-sm text-warning">
                     已过期 · 代码差异基于第 {source.stale.round} 轮

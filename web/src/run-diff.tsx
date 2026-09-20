@@ -185,13 +185,25 @@ function OriginalSaid({ finding }: { finding: RunFinding }) {
  * 作者取自相邻改动时在末尾补一句「相邻改动」(issue #241):落点这一行本身这一轮没改,
  * 不说明这一点,读的人会以为责任人指的是这一行。
  */
+/**
+ * 元信息的一行:左边一格定宽的标签,右边是值。几行标签对齐成一列,读的人先扫标签
+ * 再读值,不用逐行找冒号。
+ */
+function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-2 text-sm text-text-secondary">
+      <span className="w-14 shrink-0">{label}</span>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-text">{children}</div>
+    </div>
+  );
+}
+
 function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }) {
   if (lineAuthor === null) {
-    return <p className="text-sm text-text-secondary">行作者：无法追溯</p>;
+    return <MetaRow label="行作者">无法追溯</MetaRow>;
   }
   return (
-    <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-secondary">
-      <span>行作者：</span>
+    <MetaRow label="行作者">
       <Tooltip content={lineAuthor.email}>
         <span tabIndex={0} className="break-all">
           {lineAuthor.name}
@@ -207,7 +219,7 @@ function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }
           <span>相邻改动</span>
         </>
       ) : null}
-    </p>
+    </MetaRow>
   );
 }
 
@@ -234,12 +246,23 @@ export function FindingBadges({ finding }: { finding: RunFinding }) {
  * 正文的一段。正文是这张卡的内容,走主文字色;「影响」「建议」两个标签退一档。行宽封在
  * 56rem:内容轨不设上限之后,宽屏上一行一百多个汉字读不回行首。
  */
-function BodyPart({ label, text, resolved }: { label?: string; text: string; resolved: boolean }) {
+function BodyPart({
+  label,
+  text,
+  resolved,
+  struck = false,
+}: {
+  label?: string;
+  text: string;
+  resolved: boolean;
+  /** 已处置的划线。只在没有标题可划时落到问题那一段上。 */
+  struck?: boolean;
+}) {
   return (
     <p
       className={`max-w-4xl text-base leading-relaxed break-words ${
         resolved ? "text-text-secondary" : "text-text"
-      } ${resolved && label === undefined ? "line-through" : ""}`}
+      } ${struck ? "line-through" : ""}`}
     >
       {label === undefined ? null : (
         <span className="font-medium text-text-secondary">{label}：</span>
@@ -305,14 +328,20 @@ export function FindingRow({
                 <FindingBadges finding={finding} />
               </div>
               {finding.title === undefined || finding.title === "" ? null : (
-                <p className="text-lg font-semibold break-words">{finding.title}</p>
+                <p className={`text-lg font-semibold break-words ${resolved ? "text-text-secondary line-through" : ""}`}>
+                  {finding.title}
+                </p>
               )}
             </div>
           ) : null}
 
           {/* 正文是代表段那一份问题 / 影响 / 建议(issue #278):几个模型报同一处时人要读的
               是一份说清楚的说法,谁报的退到下面那一行。 */}
-          <BodyPart text={finding.description} resolved={resolved} />
+          <BodyPart
+            text={finding.description}
+            resolved={resolved}
+            struck={resolved && (finding.title === undefined || finding.title === "")}
+          />
           {hasText(finding.impact) ? (
             <BodyPart label="影响" text={finding.impact ?? ""} resolved={resolved} />
           ) : null}
@@ -324,19 +353,18 @@ export function FindingRow({
         </div>
         <div className="flex min-w-0 flex-col gap-1.5 @5xl:border-l @5xl:border-overlay-line @5xl:pl-6">
           {/* 归属一行(ADR 0015):报出它的模型全列出来,一个都不藏,但不再抢正文。 */}
-          <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-secondary">
-            <span>由 {finding.models.length} 个模型报出：</span>
+          <MetaRow label="报出模型">
             {finding.models.map((model) => (
               <span key={model} className="min-w-0 rounded-chip bg-fill px-1.5 py-0.5 font-mono text-xs break-all">
                 {model}
               </span>
             ))}
-          </p>
+          </MetaRow>
 
           <LineAuthorLine lineAuthor={finding.lineAuthor} />
 
           {finding.continuedFrom === null ? null : (
-            <p className="text-sm text-text-secondary">
+            <MetaRow label="延续">
               <a
                 href={finding.continuedFrom}
                 target="_blank"
@@ -345,8 +373,8 @@ export function FindingRow({
               >
                 延续自上一处评论
               </a>
-              {" · "}原位置代码已改写；复核判定该 Finding 仍在
-            </p>
+              <span>原位置代码已改写；复核判定该 Finding 仍在</span>
+            </MetaRow>
           )}
 
           {/* 交接未完成(ADR 0025):旧评论还留在 Forge 上待关闭。摆在处置状态旁,读的人知道
@@ -358,7 +386,7 @@ export function FindingRow({
           ) : null}
 
           {autoDisposed ? (
-            <p className="text-sm text-text-secondary">
+            <MetaRow label="处置">
               已修复 · 自动处置
               {finding.disposedAt === null ? null : (
                 <>
@@ -368,17 +396,17 @@ export function FindingRow({
                   </span>
                 </>
               )}
-            </p>
+            </MetaRow>
           ) : finding.disposedBy === null ? null : (
-            <p className="text-sm text-text-secondary">
+            <MetaRow label="处置">
               {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
               <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
-            </p>
+            </MetaRow>
           )}
           {finding.note === null ? null : (
-            <p className="rounded-lg bg-fill px-2.5 py-1.5 text-sm break-words text-text-secondary">
-              备注：{finding.note}
-            </p>
+            <MetaRow label="备注">
+              <span className="rounded-lg bg-fill px-2.5 py-1.5 break-words">{finding.note}</span>
+            </MetaRow>
           )}
 
           {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
