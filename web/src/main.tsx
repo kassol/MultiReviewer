@@ -172,6 +172,16 @@ function Shell() {
     document.title = page === undefined ? "MultiReviewer" : `${page} · MultiReviewer`;
   }, [pathname]);
 
+  /*
+   * 换一级页面时外壳滚回顶部。滚动容器是常驻的,不重置的话上一页滚到哪、下一页就从哪
+   * 开始;评审记录页的列表自己滚且不把滚轮让给外层(overscroll-contain),从滚过的阶段
+   * 页点回来,被顶出视口的那一截就再也够不着。同一级之内(详情 Tab、会话)不动。
+   */
+  const section = pathname.split("/")[1] ?? "";
+  useEffect(() => {
+    document.getElementById("panel-main-scroll")?.scrollTo(0, 0);
+  }, [section]);
+
   async function logout(): Promise<void> {
     await api("/session", { method: "DELETE" }).catch(() => undefined);
     clearPanelSession();
