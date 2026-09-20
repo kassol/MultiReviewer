@@ -516,7 +516,7 @@ function Annotations({ entry }: { entry: ProductKnowledge }) {
         </button>
       </Collapsible.Trigger>
       <Collapsible.Content>
-        <ul className="flex flex-col gap-1 border-l border-line pl-3">
+        <ul className="flex max-w-[46em] flex-col gap-1.5 border-l border-line pb-1 pl-3">
           {entry.annotations.map((note, index) => (
             <li key={index} className="flex min-w-0 flex-col">
               <span className="break-all font-mono text-xs text-text-secondary">
@@ -619,10 +619,12 @@ function KnowledgeSection({
     first
       ? "flex min-w-0 flex-col gap-1.5"
       : "flex min-w-0 flex-col gap-1.5 border-t border-line pt-3";
-  // 宽屏上条目排两列:正文限了行宽,单列会在右边空出半张卡。每行都画上边线、整体上提 1px
-  // 由 `ul` 裁掉第一排那一根——两列时「第一条」不止一条,`first:` 选不中第二列那一条。
-  const listClass = "grid min-w-0 overflow-hidden xl:grid-cols-2 xl:gap-x-10";
-  const rowClass = "-mt-px flex min-w-0 flex-col gap-1 border-t border-line py-2.5";
+  // 条目按定义列表排:`lg` 起名字一列、正文一列,三段的正文因此落在同一条左缘上——正文限了
+  // 行宽,名字挪到左边那一列正好把卡的宽度用掉,一行一条,展开出处也只推自己下面的。
+  const rowClass =
+    "flex min-w-0 flex-col gap-1 border-t border-line py-3 first:border-t-0 first:pt-0 lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-x-8";
+  const nameClass = "min-w-0 break-words text-lg font-semibold";
+  const bodyClass = "flex min-w-0 flex-col gap-1";
 
   return (
     <CardShell className="min-w-0 px-5 py-4">
@@ -673,20 +675,21 @@ function KnowledgeSection({
                       topic={group.topic}
                       count={group.terms.length}
                     >
-                      <ul className={listClass}>
+                      <ul>
                         {group.terms.map((entry) => (
                           <li key={entry.id} className={rowClass}>
-                            <span className={STATEMENT_CLASS}>
-                              <span className="font-semibold">{entry.name}</span>
-                              {" — "}
-                              <Statement text={entry.body} />
-                            </span>
-                            {entry.avoided.length === 0 ? null : (
-                              <span className="break-words text-sm text-text-muted">
-                                不说:{entry.avoided.join("、")}
+                            <span className={nameClass}>{entry.name}</span>
+                            <div className={bodyClass}>
+                              <span className={STATEMENT_CLASS}>
+                                <Statement text={entry.body} />
                               </span>
-                            )}
-                            <Annotations entry={entry} />
+                              {entry.avoided.length === 0 ? null : (
+                                <span className="break-words text-sm text-text-muted">
+                                  不说:{entry.avoided.join("、")}
+                                </span>
+                              )}
+                              <Annotations entry={entry} />
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -706,13 +709,16 @@ function KnowledgeSection({
                   title="仓库关系"
                   count={relationships.length}
                 />
-                <ul className={listClass}>
+                <ul>
                   {relationships.map((entry) => (
                     <li key={entry.id} className={rowClass}>
-                      <span className={STATEMENT_CLASS}>
-                        <Statement text={entry.body} />
-                      </span>
-                      <Annotations entry={entry} />
+                      {/* 仓库关系没有名字:正文仍落在第二列,与术语、决策的正文同一条左缘。 */}
+                      <div className={`${bodyClass} lg:col-start-2`}>
+                        <span className={STATEMENT_CLASS}>
+                          <Statement text={entry.body} />
+                        </span>
+                        <Annotations entry={entry} />
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -729,42 +735,40 @@ function KnowledgeSection({
                   title="产品决策"
                   count={decisions.length}
                 />
-                <ul className={listClass}>
+                <ul>
                   {decisions.map((entry) => (
-                    // 左侧一根细状态条:生效的走 success,被取代的走中性——一列决策里哪几条
-                    // 还算数,扫一眼边缘就看得出,不必逐条读徽章。
-                    <li
-                      key={entry.id}
-                      className={`${rowClass} border-l-2 pl-3 ${
-                        entry.supersededBy === null ? "border-l-success-icon" : "border-l-neutral-dot"
-                      }`}
-                    >
-                      <Text as="span" size="2" className="flex min-w-0 items-start gap-2">
-                        <span className="min-w-0 break-words font-semibold">{entry.name}</span>
+                    <li key={entry.id} className={rowClass}>
+                      <div className="flex min-w-0 flex-col items-start gap-1.5">
+                        <span className={nameClass}>{entry.name}</span>
                         {entry.supersededBy === null ? (
-                          <Badge color="green" variant="soft" size="1" className="mt-0.5 shrink-0">
+                          <Badge color="green" variant="soft" size="1">
                             生效
                           </Badge>
                         ) : (
-                          <Badge color="amber" variant="soft" size="1" className="mt-0.5 shrink-0">
+                          <Badge color="amber" variant="soft" size="1">
                             被条目 {entry.supersededBy} 取代
                           </Badge>
                         )}
-                      </Text>
-                      <span className={STATEMENT_CLASS}>
-                        <Statement text={entry.body} />
-                      </span>
-                      {entry.options === null ? null : (
-                        <span className="break-words text-sm text-text-muted">
-                          备选:<Statement text={entry.options} />
+                      </div>
+                      {/* 被取代的那一条正文退一档颜色:一列决策里哪几条还算数,扫一眼就看得出。 */}
+                      <div
+                        className={`${bodyClass} ${entry.supersededBy === null ? "" : "text-text-secondary"}`}
+                      >
+                        <span className={STATEMENT_CLASS}>
+                          <Statement text={entry.body} />
                         </span>
-                      )}
-                      {entry.consequences === null ? null : (
-                        <span className="break-words text-sm text-text-muted">
-                          后果:<Statement text={entry.consequences} />
-                        </span>
-                      )}
-                      <Annotations entry={entry} />
+                        {entry.options === null ? null : (
+                          <span className="max-w-[46em] break-words text-sm text-text-muted">
+                            备选:<Statement text={entry.options} />
+                          </span>
+                        )}
+                        {entry.consequences === null ? null : (
+                          <span className="max-w-[46em] break-words text-sm text-text-muted">
+                            后果:<Statement text={entry.consequences} />
+                          </span>
+                        )}
+                        <Annotations entry={entry} />
+                      </div>
                     </li>
                   ))}
                 </ul>
