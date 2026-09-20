@@ -633,7 +633,7 @@ export function FilePatch({
                   <colgroup>
                     {/* 窄屏收掉旧行号列:390px 上两列行号占掉四分之一,深缩进的代码一行折五六段。
                         Finding 只锚新侧行号,删除行靠红底与 − 认。 */}
-                    <col className="w-12 max-sm:hidden" />
+                    <col className="w-12 max-sm:w-0" />
                     <col className="w-12" />
                     <col />
                   </colgroup>
@@ -652,8 +652,10 @@ export function FilePatch({
                         >
                           {/* 底色分两档:行号槽铺满 tint,代码格减半——改动在哪靠槽认,代码本身
                               保持好读。 */}
-                          <td className={`w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none max-sm:hidden ${GUTTER_TINT[line.kind]}`}>
-                            {line.oldLine ?? ""}
+                          <td className={`w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none max-sm:w-0 max-sm:px-0 ${GUTTER_TINT[line.kind]}`}>
+                            {/* 列宽收到 0 而不是 display:none:整格拿掉会让后两格各往前挪一列,
+                                代码落进 48px 的行号列里。 */}
+                            <span className="max-sm:hidden">{line.oldLine ?? ""}</span>
                           </td>
                           <td className={`w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none ${GUTTER_TINT[line.kind]}`}>
                             {line.newLine ?? ""}
