@@ -596,6 +596,14 @@ export function FilePatch({
   // 整个文件都是新增(新文件)时,「哪几行是新的」不携带信息:代码格不铺绿,只留行号槽那
   // 一道,免得一整屏绿底。
   const wholeFileAdded = hunks.every((hunk) => hunk.lines.every((line) => line.kind === "add"));
+  // 行号槽的宽度跟着这个文件最大的行号走:定宽 48px 装得下四位,两万多行的文件五位行号
+  // 会在槽里折成两行。最少按四位留,小文件之间槽宽不跳。
+  const gutterDigits = Math.max(
+    4,
+    ...hunks.flatMap((hunk) =>
+      hunk.lines.map((line) => String(Math.max(line.oldLine ?? 0, line.newLine ?? 0)).length),
+    ),
+  );
   const focusLine = findings.find((finding) => finding.id === focusFindingId)?.line;
 
   if (patch.isPending) {
@@ -634,7 +642,12 @@ export function FilePatch({
         </div>
       )}
       {hunks.length === 0 ? null : (
-        <div className="min-w-0" role="group" aria-label={`${path} 的代码差异`}>
+        <div
+          className="min-w-0"
+          role="group"
+          aria-label={`${path} 的代码差异`}
+          style={{ "--gutter": `calc(${gutterDigits}ch + 0.75rem)` } as React.CSSProperties}
+        >
           {hunks.map((hunk, hunkIndex) => {
             const hasFocusLine =
               focusLine !== undefined && hunk.lines.some((line) => line.newLine === focusLine);
@@ -655,14 +668,13 @@ export function FilePatch({
               >
                 {/* 每个 hunk 一张表:一张大表的布局要把全部行算一遍,分表之后跳过的那些
                     不参与。各表共用同一份 colgroup 加 table-fixed,列宽因此对齐。行号列
-                    48px:等宽字号抬到 12px 后(issue #371),40px 那一档连四位行号都装不下,
-                    数字会溢出格子压到隔壁列上。 */}
+                    的宽度是外层的 `--gutter`(按这个文件最大行号的位数算),不折行。 */}
                 <table className="w-full table-fixed border-collapse font-mono text-xs leading-5">
                   <colgroup>
                     {/* 窄屏收掉旧行号列:390px 上两列行号占掉四分之一,深缩进的代码一行折五六段。
                         Finding 只锚新侧行号,删除行靠红底与 − 认。 */}
-                    <col className="w-12 max-sm:w-0" />
-                    <col className="w-12" />
+                    <col className="w-[var(--gutter)] max-sm:w-0" />
+                    <col className="w-[var(--gutter)]" />
                     <col />
                   </colgroup>
                   <tbody>
@@ -680,12 +692,12 @@ export function FilePatch({
                         >
                           {/* 底色分两档:行号槽铺满 tint,代码格减半——改动在哪靠槽认,代码本身
                               保持好读。 */}
-                          <td className={`w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none max-sm:w-0 max-sm:px-0 ${GUTTER_TINT[line.kind]}`}>
+                          <td className={`px-1.5 text-right align-top whitespace-nowrap tabular-nums text-text-secondary select-none max-sm:px-0 ${GUTTER_TINT[line.kind]}`}>
                             {/* 列宽收到 0 而不是 display:none:整格拿掉会让后两格各往前挪一列,
                                 代码落进 48px 的行号列里。 */}
                             <span className="max-sm:hidden">{line.oldLine ?? ""}</span>
                           </td>
-                          <td className={`w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none ${GUTTER_TINT[line.kind]}`}>
+                          <td className={`px-1.5 text-right align-top whitespace-nowrap tabular-nums text-text-secondary select-none ${GUTTER_TINT[line.kind]}`}>
                             {line.newLine ?? ""}
                           </td>
                           <td
