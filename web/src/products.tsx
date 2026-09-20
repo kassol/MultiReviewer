@@ -1233,6 +1233,7 @@ function SpecDialog({
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
                           size="1"
+                          className="pointer-coarse:min-h-11"
                           variant="soft"
                           color="gray"
                           disabled={busy}
@@ -1244,7 +1245,7 @@ function SpecDialog({
                         </Button>
                         <DropdownMenu.Root>
                           <DropdownMenu.Trigger>
-                            <Button size="1" variant="soft" color="gray" disabled={busy}>
+                            <Button size="1" variant="soft" color="gray" disabled={busy} className="pointer-coarse:min-h-11">
                               改标签
                               <ChevronDownIcon aria-hidden />
                             </Button>
@@ -1263,6 +1264,7 @@ function SpecDialog({
                         </DropdownMenu.Root>
                         <Button
                           size="1"
+                          className="pointer-coarse:min-h-11"
                           variant="soft"
                           color="gray"
                           disabled={busy}
