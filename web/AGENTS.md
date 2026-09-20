@@ -144,6 +144,7 @@
 
 ## 变更日志
 
+- 2026-09-20: **侧滑里同文件的其它 Finding 收成一行,锚定行标出来,列表卡跳过屏幕外渲染**(纯前端)。`run-diff.tsx` 的 `FindingCells`:点进来的那一条照旧整张摊开(主色边),同文件的其它 Finding 收成 Collapsible 的一行(徽章 + 单行截断的标题,没有标题取问题那一段;已处置的划线),点开是同一张 `FindingRow`(`heading={false}`),处置照旧行内做;`focusFindingId` 没给时全部摊开。点进来那条锚定的那一行,新行号格换成 `bg-accent-track` 加主色半粗数字。细指针上悬停的代码行整行 `bg-accent-tint`(`pointer-fine:` 限定,触屏上不粘)。`stage-summary.tsx` 的 `FindingCard` 加 `content-visibility: auto` 与 320px 预留高度:三百多张卡一次全渲染,屏幕外的由浏览器跳过布局与绘制。
 - 2026-09-20: **阶段页头动作窄屏排成格子,hunk 头分两色**(纯前端)。`stage-detail.tsx` 的 `StageActions` 外包一层 `contents`:`sm` 以下变成两列等宽的 grid(`max-sm:[&>button]:w-full`),「每日增量」那颗在 `range-review-actions.tsx` 上 `max-sm:col-span-2` 占整行——此前五颗按钮按各自文字宽度折成三排参差;`sm` 起这层不参与布局。`run-diff.tsx` 的 hunk 头拆成两截:`@@ … @@` 范围次级色,后面 git 给的所在函数或类走主文字色,上下各一道 `border-overlay-line`。
 - 2026-09-20: **diff 行号槽按位数定宽**(纯前端)。`run-diff.tsx` 的行号列从定宽 48px 改成 `--gutter: calc(<位数>ch + 0.75rem)`,位数取这个文件出现过的最大行号、最少按四位;行号格 `whitespace-nowrap`。两万多行的文件(AI-API 的 `DroneApplicationServiceImpl.java`)五位行号此前在槽里折成两行,每一行代码因此占两行高。
 - 2026-09-20: **Finding 卡第四轮:路径分层、元信息对齐、划线只落标题**(纯前端)。新增 `components/file-path.tsx` 的 `FilePath`:目录次级色、文件名主文字色半粗、行号次级色,整段仍是一个可折行的等宽串;阶段列表卡头与代码差异侧滑的 headline 共用。`run-diff.tsx` 的元信息改成 `MetaRow`(56px 定宽标签 + 值):「报出模型 / 行作者 / 延续 / 处置 / 备注」标签对齐成一列,值走主文字色;「由 N 个模型报出:」的句式随之换成标签。已处置的划线从整段正文挪到标题(列表卡头与 diff 里的卡同律),正文只退成次级色——四五行的段落整段划线读不下去;没有标题可划的(标题为空)仍划问题那一段。`stage-summary.tsx` 卡头首行改成一条 `flex-wrap`:窄屏上路径 `order-3 basis-full` 独占第二行,徽章与入口留在第一行。

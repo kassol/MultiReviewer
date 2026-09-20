@@ -511,7 +511,7 @@ function FindingCells({
   canDispose,
   focusFindingId,
 }: {
-  findings: readonly RunFinding[];
+  findings: readonly (RunFinding & { title?: string })[];
   canDispose: boolean;
   focusFindingId?: number;
 }) {
@@ -523,15 +523,42 @@ function FindingCells({
               否则 Finding 的中文正文会被等宽字体撑开。卡片内嵌成一张独立的卡,读的人
               分得清哪里是代码、哪里是评论。 */}
           <td colSpan={3} className="bg-sunken px-3 py-2 max-sm:px-1.5 font-sans text-base whitespace-normal">
-            <div
-              className={`overflow-hidden rounded-lg border shadow-control [&>div]:border-t-0 ${
-                finding.id === focusFindingId
-                  ? "border-primary bg-accent-tint"
-                  : "border-overlay-line bg-surface"
-              }`}
-            >
-              <FindingRow finding={finding} canDispose={canDispose} />
-            </div>
+            {focusFindingId === undefined || finding.id === focusFindingId ? (
+              <div
+                className={`overflow-hidden rounded-lg border shadow-control [&>div]:border-t-0 ${
+                  finding.id === focusFindingId
+                    ? "border-primary bg-accent-tint"
+                    : "border-overlay-line bg-surface"
+                }`}
+              >
+                <FindingRow finding={finding} canDispose={canDispose} />
+              </div>
+            ) : (
+              // 同文件的其它 Finding 收成一行(徽章 + 标题):侧滑回答的是「点进来的这一条指
+              // 哪几行」,别的几条整张摊开会把代码挤出视野。点开仍是同一张卡,处置照旧行内做。
+              <Collapsible.Root className="group/anchored overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
+                <Collapsible.Trigger
+                  type="button"
+                  className="flex w-full cursor-pointer items-center gap-1.5 px-4 py-2 text-left outline-none pointer-coarse:min-h-11 hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40"
+                >
+                  <FindingBadges finding={finding} />
+                  <span
+                    className={`min-w-0 flex-1 truncate pl-1 text-md font-medium ${
+                      findingDisposed(finding) ? "text-text-secondary line-through" : ""
+                    }`}
+                  >
+                    {hasText(finding.title ?? null) ? finding.title : finding.description}
+                  </span>
+                  <ChevronDownIcon
+                    aria-hidden
+                    className="size-4 shrink-0 text-text-secondary transition-transform group-data-[state=open]/anchored:rotate-180"
+                  />
+                </Collapsible.Trigger>
+                <Collapsible.Content>
+                  <FindingRow finding={finding} canDispose={canDispose} heading={false} />
+                </Collapsible.Content>
+              </Collapsible.Root>
+            )}
           </td>
         </tr>
       ))}
@@ -692,6 +719,8 @@ export function FilePatch({
                           {...(line.newLine !== null && line.newLine === focusLine
                             ? { ref: focusRow }
                             : {})}
+                          // 细指针上悬停的那一行整行提一档:侧滑九百多像素宽,行号与代码隔得远。
+                          className="pointer-fine:hover:[&>td]:bg-accent-tint"
                         >
                           {/* 底色分两档:行号槽铺满 tint,代码格减半——改动在哪靠槽认,代码本身
                               保持好读。 */}
@@ -700,7 +729,14 @@ export function FilePatch({
                                 代码落进 48px 的行号列里。 */}
                             <span className="max-sm:hidden">{line.oldLine ?? ""}</span>
                           </td>
-                          <td className={`px-1.5 text-right align-top whitespace-nowrap tabular-nums text-text-secondary select-none ${GUTTER_TINT[line.kind]}`}>
+                          {/* 点进来的那条 Finding 锚的就是这一行:行号换主色底,卡片指哪一行不用猜。 */}
+                          <td
+                            className={`px-1.5 text-right align-top whitespace-nowrap tabular-nums select-none ${
+                              line.newLine !== null && line.newLine === focusLine
+                                ? "bg-accent-track font-semibold text-primary"
+                                : `text-text-secondary ${GUTTER_TINT[line.kind]}`
+                            }`}
+                          >
                             {line.newLine ?? ""}
                           </td>
                           <td

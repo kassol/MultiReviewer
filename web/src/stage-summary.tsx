@@ -182,7 +182,8 @@ function FindingCard({
   onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
 }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control">
+    // 几百张卡一次全渲染:屏幕外的由浏览器跳过布局与绘制,预留高度渲染过一次后改用实测值。
+    <section className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control [contain-intrinsic-size:auto_320px] [content-visibility:auto]">
       {/*
         点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
         地址上多一个 `finding=`,关掉侧滑就回到这一页本身。
