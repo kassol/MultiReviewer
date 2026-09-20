@@ -629,7 +629,7 @@ function SectionAnchor({ id, title, count }: { id: string; title: string; count:
       onClick={() => document.getElementById(id)?.scrollIntoView({ block: "start" })}
     >
       {title}
-      <span className="font-mono tabular-nums">{count}</span>
+      <span className="font-mono text-text-muted tabular-nums">{count}</span>
     </Button>
   );
 }
@@ -741,7 +741,10 @@ function KnowledgeSection({
       <div className="flex min-w-0 flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-1">
-            <h2 className="text-2xl font-bold tracking-[-0.015em]">产品知识</h2>
+            {/* tab 已经写着「产品知识」,卡头不再把同一个名字用大字再说一遍;标题留给读屏,
+                看得见的这一句说这一页装的是什么。 */}
+            <h2 className="sr-only">产品知识</h2>
+            <span className="text-md text-text-secondary">术语表、仓库关系与产品决策</span>
             <HelpTooltip
               label="产品知识说明"
               content="产品知识是这个产品的术语表、仓库关系段与产品决策记录:这个产品是什么、它的仓库之间怎么协作、为什么这样定。条目由 Agent 会话在你的回答下写成,写下即生效。"
@@ -815,8 +818,8 @@ function KnowledgeSection({
                   <div
                     className={
                       filterable
-                        ? "flex flex-wrap items-center gap-1 sm:ml-auto"
-                        : "flex flex-wrap items-center gap-1"
+                        ? "flex flex-wrap items-center gap-5 px-1 sm:ml-auto"
+                        : "flex flex-wrap items-center gap-5 px-1"
                     }
                   >
                     {anchors.map((section) => (
@@ -1021,7 +1024,8 @@ function TrackerSection({
     <CardShell className="min-w-0 px-5 py-4">
       <div className="flex min-w-0 flex-col gap-3">
         <div className="flex min-w-0 items-center gap-1">
-          <h2 className="text-2xl font-bold tracking-[-0.015em]">产品 tracker</h2>
+          <h2 className="sr-only">产品 tracker</h2>
+          <span className="text-md text-text-secondary">会话写下的 spec 与票</span>
           <HelpTooltip
             label="产品 tracker 说明"
             content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
