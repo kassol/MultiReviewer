@@ -679,8 +679,11 @@ export function FilePatch({
                   </colgroup>
                   <tbody>
                     <tr className="bg-sunken">
-                      <td colSpan={3} className="px-3 py-1 whitespace-pre-wrap break-words text-text-secondary">
-                        {hunk.header}
+                      {/* hunk 头拆成两截:`@@ … @@` 的范围是机器读的,次级色;后面那段是 git 给的
+                          所在函数或类,人靠它认这一段在哪,走主文字色。 */}
+                      <td colSpan={3} className="border-y border-overlay-line px-3 py-1 whitespace-pre-wrap break-words text-text-secondary">
+                        {hunk.header.slice(0, hunk.header.indexOf("@@", 2) + 2)}
+                        <span className="text-text">{hunk.header.slice(hunk.header.indexOf("@@", 2) + 2)}</span>
                       </td>
                     </tr>
                     {hunk.lines.map((line, index) => (

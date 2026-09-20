@@ -417,7 +417,9 @@ function StageActions({
   const frozen = stage.source === "range-review" && rangeReview?.state !== "in-progress";
 
   return (
-    <>
+    // 窄屏上动作排成两列等宽的格子(每日增量占整行):按各自文字宽度折行时是三排参差的
+    // 按钮。`sm` 起这层是 `contents`,按钮照旧是页头那条 flex 的直接子项。
+    <div className="contents max-sm:grid max-sm:w-full max-sm:grid-cols-2 max-sm:gap-2 max-sm:[&>button]:w-full">
       {canDisposeBatch && minReportSeverity !== "P2" ? (
         <DisposeBelowThresholdAction
           stage={stage}
@@ -443,7 +445,7 @@ function StageActions({
           ) : null}
         </>
       )}
-    </>
+    </div>
   );
 }
 
