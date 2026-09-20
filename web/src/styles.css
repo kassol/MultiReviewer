@@ -76,8 +76,14 @@
   --v8-danger: #cf222e;
   --v8-danger-tint: rgba(207, 34, 46, 0.09);
   --v8-neutral-dot: #d2d2d7;
-  /* diff 语法高亮的关键字色:--v8-accent 在新增行的绿底上不到 4.5:1,压深一档。 */
-  --v8-code-keyword: #0058b0;
+  /* diff 语法高亮:GitHub 亮色主题(Primer)的七色,每一种在白底与增删行的半档 tint 上都过 4.5:1。 */
+  --v8-code-keyword: #cf222e;
+  --v8-code-entity: #6639ba;
+  --v8-code-constant: #0550ae;
+  --v8-code-string: #0a3069;
+  --v8-code-builtin: #953800;
+  --v8-code-tag: #116329;
+  --v8-code-comment: #59636e;
 
   /*
    * 材质。层级越高,模糊半径越大、底色越不透明——这是浮层深度的唯一表达方式,
@@ -677,34 +683,51 @@
 
 /*
  * diff 语法高亮(run-diff.tsx)。类名是 highlight.js 产出的,挂不了 utility,只能写在这里。
- * 只用四种颜色,都取自现有令牌:关键字蓝、字符串绿、数字与注解琥珀、注释次级灰;函数与
- * 类名不另起颜色,只加粗。每一种在白底与增删行的半档 tint 上都过 4.5:1。
+ * 分组照 highlight.js 自带的 github 主题,颜色换成 Primer 现行的那一档(旧主题的 #d73a49、
+ * #6a737d 不到 4.5:1)。
  */
 .diff-code .hljs-keyword,
-.diff-code .hljs-built_in,
+.diff-code .hljs-doctag,
 .diff-code .hljs-type,
-.diff-code .hljs-literal,
-.diff-code .hljs-tag,
-.diff-code .hljs-name,
-.diff-code .hljs-attr,
-.diff-code .hljs-selector-tag,
-.diff-code .hljs-selector-class {
+.diff-code .hljs-template-tag,
+.diff-code .hljs-template-variable,
+.diff-code .hljs-variable.language_ {
   color: var(--v8-code-keyword);
 }
-.diff-code .hljs-string,
-.diff-code .hljs-regexp,
-.diff-code .hljs-template-string {
-  color: var(--v8-success);
+.diff-code .hljs-title {
+  color: var(--v8-code-entity);
 }
-.diff-code .hljs-number,
+.diff-code .hljs-attr,
+.diff-code .hljs-attribute,
+.diff-code .hljs-literal,
 .diff-code .hljs-meta,
+.diff-code .hljs-number,
+.diff-code .hljs-operator,
+.diff-code .hljs-variable,
+.diff-code .hljs-selector-attr,
+.diff-code .hljs-selector-class,
+.diff-code .hljs-selector-id {
+  color: var(--v8-code-constant);
+}
+.diff-code .hljs-string,
+.diff-code .hljs-regexp {
+  color: var(--v8-code-string);
+}
+.diff-code .hljs-built_in,
 .diff-code .hljs-symbol {
-  color: var(--v8-warning);
+  color: var(--v8-code-builtin);
+}
+.diff-code .hljs-name,
+.diff-code .hljs-quote,
+.diff-code .hljs-selector-tag,
+.diff-code .hljs-selector-pseudo {
+  color: var(--v8-code-tag);
 }
 .diff-code .hljs-comment,
-.diff-code .hljs-doctag {
-  color: var(--v8-text-secondary);
+.diff-code .hljs-code,
+.diff-code .hljs-formula {
+  color: var(--v8-code-comment);
 }
-.diff-code .hljs-title {
-  font-weight: 600;
+.diff-code .hljs-subst {
+  color: var(--v8-text);
 }
