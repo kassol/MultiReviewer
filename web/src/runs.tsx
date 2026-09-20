@@ -2,7 +2,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
-import { CheckCircledIcon, CrossCircledIcon } from "@radix-ui/react-icons";
+import { CheckCircledIcon, ChevronRightIcon, CrossCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, SegmentedControl, Select, Skeleton } from "@radix-ui/themes";
 
 import { EmptyState } from "@/components/empty-state";
@@ -12,7 +12,6 @@ import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { localClock, localDay } from "@/lib/time";
-import { cn } from "@/lib/utils";
 
 import { fetchJson, send } from "./api.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
@@ -232,21 +231,57 @@ export function StageStatusBadge({ stage }: { stage: StageItem }) {
   );
 }
 
+/** 阶段汇总的三个数,与 `GET /stage-summary` 同一口径;列表的列头与行共用这一份次序。 */
+const COUNT_COLUMNS = [
+  ["pending", "待处置"],
+  ["resolved", "已处置"],
+  ["fixed", "已修复"],
+] as const;
+
+/** 桌面那一行的列轨:名字、三个数、状态、chevron。列头与每一行用同一份,数字因此上下对齐。 */
+const ROW_GRID =
+  "sm:grid-cols-[minmax(0,1fr)_repeat(3,4rem)_5.5rem_1rem] sm:items-center sm:gap-x-3 sm:px-5";
+
 /**
- * 行上的阶段汇总:待处置 / 人工已处置 / 已修复。三个数一起显示,不打开详情就能判断
- * 优先级;为零的也留着位置,否则三个数的位置会随内容前后错开。
+ * 行上的阶段汇总。三个数一起显示,不打开详情就能判断优先级;为零的也留着位置。
+ * 桌面上各占一列、列头说是什么数(读屏读 sr-only 的那份);手机上排成一行带字。
  */
-export function StageCounts({ stage }: { stage: StageItem }) {
+function StageCounts({ stage }: { stage: StageItem }) {
   return (
-    <span className="flex shrink-0 items-center gap-2 text-base tabular-nums text-text-muted">
-      <span className={`whitespace-nowrap ${stage.counts.pending > 0 ? "text-warning" : ""}`}>
-        待处置 {stage.counts.pending}
+    <>
+      {COUNT_COLUMNS.map(([key, label]) => {
+        const value = stage.counts[key];
+        return (
+          <span
+            key={key}
+            className={`text-right text-md tabular-nums max-sm:hidden ${
+              value === 0
+                ? "text-text-disabled"
+                : key === "pending"
+                  ? "font-semibold text-warning"
+                  : "text-text-secondary"
+            }`}
+          >
+            <span className="sr-only">{label} </span>
+            {value}
+          </span>
+        );
+      })}
+      <span className="col-span-full flex items-center gap-2 text-base tabular-nums text-text-muted sm:hidden">
+        {COUNT_COLUMNS.map(([key, label], index) => (
+          <span key={key} className="contents">
+            {index === 0 ? null : <span aria-hidden>·</span>}
+            <span
+              className={`whitespace-nowrap ${
+                key === "pending" && stage.counts.pending > 0 ? "font-semibold text-warning" : ""
+              }`}
+            >
+              {label} {stage.counts[key]}
+            </span>
+          </span>
+        ))}
       </span>
-      <span aria-hidden>·</span>
-      <span className="whitespace-nowrap">已处置 {stage.counts.resolved}</span>
-      <span aria-hidden>·</span>
-      <span className="whitespace-nowrap">已修复 {stage.counts.fixed}</span>
-    </span>
+    </>
   );
 }
 
@@ -291,10 +326,9 @@ export function runStatus(run: RunItem): { tone: StatusTone; label: string } {
     : { tone: "warning", label: "待处置" };
 }
 
-/** 一行的时间:最新一轮什么时候开跑。范围审查刚发起、还没跑过时说清楚是这一档。 */
-function latestRunLabel(stage: StageItem): string {
-  if (stage.latestRunAt === null) return "尚无 Review Run";
-  return `最新一轮 ${localDay(stage.latestRunAt)} ${localClock(stage.latestRunAt)}`;
+/** 行上那行小字的前半:这个阶段是哪个 pull request 或哪次范围审查。容器 PR 的序号不露面。 */
+function stageRef(stage: StageItem): string {
+  return stage.source === "range-review" ? `范围审查 #${stage.rangeReviewId}` : `PR #${stage.pullNumber}`;
 }
 
 /** 筛选控件的一档。 */
@@ -370,12 +404,6 @@ function since(iso: string): string {
   return `${Math.round(hours / 24)} 天前`;
 }
 
-/**
- * 「全部仓库」在窄视口那个 Select 里的取值。不能是空串:Radix 在受控值换档时会用空串
- * 回调一次,那一次要认得出来并且不动地址。取值不带斜杠,也就撞不上任何 `owner/repo`。
- */
-const ALL_REPOS = "all";
-
 type Repository = { owner: string; repo: string };
 
 function repositoryValue(row: Repository): string {
@@ -398,10 +426,10 @@ type RepoAdmin = {
 };
 
 /**
- * 首页左栏:这个账号可见的仓库,首项是「全部仓库」。它是右栏的过滤条件,不是第二份
- * 列表(CONTEXT.md 评审记录),所以选中项只写进地址上的一对 `owner` + `repo`。
+ * 首页左栏:这个账号可见的仓库。它是右栏的过滤条件,不是第二份列表(CONTEXT.md 评审
+ * 记录);总有一个仓库被选中——地址上没有那一对 `owner` + `repo` 时就是第一个。
  *
- * 顶上是「注册仓库」,每行右上角是「…」行操作(issue #195),两处都按 `repo:write` 出现。
+ * 栏头是「注册仓库」,每行右上角是「…」行操作(issue #195),两处都按 `repo:write` 出现。
  */
 function RepoSidebar({
   repos,
@@ -413,7 +441,7 @@ function RepoSidebar({
   repos: readonly RepoRow[];
   isPending: boolean;
   selected: Repository | null;
-  onSelect: (next: Repository | null) => void;
+  onSelect: (next: Repository) => void;
   admin: RepoAdmin;
 }) {
   return (
@@ -422,9 +450,15 @@ function RepoSidebar({
       aria-busy={isPending}
       className="flex w-[264px] shrink-0 flex-col gap-2.5 overflow-y-auto overscroll-y-contain max-lg:hidden"
     >
-      {admin.canWrite ? (
-        <RegisterRepo onRegistered={admin.onRegistered} className="w-full" />
-      ) : null}
+      <div className="flex min-h-8 items-center justify-between gap-2 pl-1">
+        <h2 className="text-md font-semibold text-text-secondary">
+          仓库
+          {isPending ? null : (
+            <span className="ml-1.5 font-normal tabular-nums text-text-muted">{repos.length}</span>
+          )}
+        </h2>
+        {admin.canWrite ? <RegisterRepo onRegistered={admin.onRegistered} /> : null}
+      </div>
       <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
         {isPending ? (
           <div className="flex flex-col gap-2 px-4 py-3" role="status" aria-live="polite">
@@ -433,28 +467,17 @@ function RepoSidebar({
           </div>
         ) : (
           <ul>
-            <li>
-              <MasterListItem
-                selected={selected === null}
-                className="block px-4 py-3 data-[selected=false]:font-medium"
-                onClick={() => onSelect(null)}
-              >
-                <span className="block text-lg">全部仓库</span>
-              </MasterListItem>
-            </li>
             {repos.map((row) => (
               // 「…」压在行上而不是排进行内容:行本身是一个按钮,按钮里套不了按钮。
-              <li key={row.repoId} className="relative border-t border-line">
+              <li key={row.repoId} className="relative border-t border-line first:border-t-0">
                 <MasterListItem
                   selected={selected !== null && selected.owner === row.owner && selected.repo === row.repo}
-                  className={cn(
-                    "block px-4 py-3 data-[selected=false]:font-medium",
-                    admin.canWrite && "pr-12",
-                  )}
+                  className={`block px-4 py-3 data-[selected=false]:font-medium ${admin.canWrite ? "pr-12" : ""}`}
                   onClick={() => onSelect({ owner: row.owner, repo: row.repo })}
                 >
                   <span className="block break-all text-lg">
-                    {row.owner}/{row.repo}
+                    <MasterListItemText className="font-normal">{row.owner}/</MasterListItemText>
+                    {row.repo}
                   </span>
                   <MasterListItemText className="mt-px block text-sm font-normal">
                     {repoActivityLabel(row)}
@@ -491,23 +514,21 @@ function RepoSelect({
 }: {
   repos: readonly RepoRow[];
   selected: Repository | null;
-  onSelect: (next: Repository | null) => void;
+  onSelect: (next: Repository) => void;
 }) {
   return (
     <Select.Root
       size="3"
-      value={selected === null ? ALL_REPOS : repositoryValue(selected)}
+      {...(selected === null ? {} : { value: repositoryValue(selected) })}
       onValueChange={(next) => {
-        if (next === ALL_REPOS) return onSelect(null);
         // 取值是 `owner/repo`,owner 不含斜杠,所以按第一个斜杠切开。认不出的取值一律
         // 不动地址——Radix 在受控值换档时会多回调一次空串。
         const slash = next.indexOf("/");
         if (slash > 0) onSelect({ owner: next.slice(0, slash), repo: next.slice(slash + 1) });
       }}
     >
-      <Select.Trigger aria-label="按仓库过滤" className="min-w-0 flex-1" />
+      <Select.Trigger aria-label="选择仓库" placeholder="选择仓库" className="min-w-0 flex-1" />
       <Select.Content position="popper">
-        <Select.Item value={ALL_REPOS}>全部仓库</Select.Item>
         {repos.map((row) => (
           <Select.Item key={row.repoId} value={repositoryValue(row)}>
             {row.owner}/{row.repo}
@@ -580,7 +601,7 @@ export function RunsPage({
       replace: true,
     });
   };
-  // 左栏与窄视口 Select 写的是同一份地址参数:「全部仓库」即这两个键都不在。
+  // 左栏与窄视口 Select 写的是同一份地址参数;null 即两个键都摘掉,选中项回落到第一个仓库。
   const selectRepository = (next: Repository | null) => {
     void navigate({
       to: "/",
@@ -599,26 +620,50 @@ export function RunsPage({
         ...prev,
         status: undefined,
         source: undefined,
-        owner: undefined,
-        repo: undefined,
       }),
       replace: true,
     });
   };
+  // 左栏读的是 `GET /repos`,它已经按仓库分配收窄、按最近活动倒序(issue #194)。
+  const repos = useQuery({
+    queryKey: ["repos"],
+    queryFn: () => fetchJson<RepoRow[]>("/repos"),
+    enabled: !unassigned,
+    // 还有仓库的工作副本在后台备(issue #184)就每 5 秒续查,全部有结果即停。
+    refetchInterval: (query) =>
+      (query.state.data ?? []).some((row) => row.worktree.state === "preparing")
+        ? 5_000
+        : false,
+  });
+  const rows = repos.data ?? [];
+  /*
+   * 总有一个仓库被选中:地址上那一对认得出就是它,没有或认不出(仓库已移除)就是第一个。
+   * 默认项不写回地址——`/` 本身就是「第一个仓库」。仓库列表还没到时先信地址,阶段列表
+   * 因此不必等它;行操作要的整行字段(模型覆盖、代次、工作副本)由 `selectedRow` 给。
+   */
+  const selectedRow =
+    rows.find(
+      (row) => row.owner === filter.repository?.owner && row.repo === filter.repository?.repo,
+    ) ?? rows[0];
+  const selected: Repository | null =
+    selectedRow === undefined
+      ? repos.isSuccess ? null : filter.repository
+      : { owner: selectedRow.owner, repo: selectedRow.repo };
   // 阶段页的返回要回到这一片列表,所以进去时把当前过滤原样带上(issue #189)。
   const carried: Record<string, string> = {
     ...(filter.status === "all" ? {} : { status: filter.status }),
     ...(filter.source === "all" ? {} : { source: filter.source }),
-    ...(filter.repository === null ? {} : filter.repository),
+    ...(selected ?? {}),
   };
   const stages = useInfiniteQuery({
     queryKey: [
       "stages",
       filter.status,
       filter.source,
-      filter.repository?.owner ?? null,
-      filter.repository?.repo ?? null,
+      selected?.owner ?? null,
+      selected?.repo ?? null,
     ],
+    enabled: selected !== null,
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
       fetchJson<StagesPage>(
@@ -626,7 +671,7 @@ export function RunsPage({
           offset: pageParam,
           status: filter.status,
           source: filter.source,
-          ...(filter.repository ?? {}),
+          ...(selected ?? {}),
         }),
       ),
     getNextPageParam: (last) => last.nextOffset,
@@ -639,17 +684,6 @@ export function RunsPage({
         page.stages.some((stage) => stage.latestRunId !== null && stage.latestRunFinishedAt === null),
       )
         ? 10_000
-        : false,
-  });
-  // 左栏读的是 `GET /repos`,它已经按仓库分配收窄、按最近活动倒序(issue #194)。
-  const repos = useQuery({
-    queryKey: ["repos"],
-    queryFn: () => fetchJson<RepoRow[]>("/repos"),
-    enabled: !unassigned,
-    // 还有仓库的工作副本在后台备(issue #184)就每 5 秒续查,全部有结果即停。
-    refetchInterval: (query) =>
-      (query.state.data ?? []).some((row) => row.worktree.state === "preparing")
-        ? 5_000
         : false,
   });
   // 发起、重跑与行操作的结果都落在页头下面这一条提示里(issue #177、#195)。
@@ -675,15 +709,7 @@ export function RunsPage({
   }, [stages.fetchNextPage, stages.hasNextPage, stages.isFetchingNextPage]);
 
   const flat = stages.data?.pages.flatMap((page) => page.stages) ?? [];
-  const unfiltered =
-    filter.status === "all" && filter.source === "all" && filter.repository === null;
-  const rows = repos.data ?? [];
-  // 行操作要的是这一行的全部字段(模型覆盖、代次、工作副本),地址上只有 owner 与 repo。
-  const selected = filter.repository;
-  const selectedRow =
-    selected === null
-      ? undefined
-      : rows.find((row) => row.owner === selected.owner && row.repo === selected.repo);
+  const unfiltered = filter.status === "all" && filter.source === "all";
   const admin: RepoAdmin = {
     canWrite,
     canReadModels,
@@ -701,30 +727,23 @@ export function RunsPage({
         void router.invalidate();
       }
     },
-    // 移除的正是当前选中的那个仓库时退回「全部仓库」:它的过滤条件已经不存在了。
+    // 移除的正是地址上那个仓库时把那一对键摘掉,选中项回落到第一个。
     onRemoved: (repo) => {
       setFeedback({ text: `已移除 ${repo.owner}/${repo.repo}。`, isError: false });
-      if (
-        filter.repository !== null &&
-        filter.repository.owner === repo.owner &&
-        filter.repository.repo === repo.repo
-      ) {
+      if (filter.repository?.owner === repo.owner && filter.repository.repo === repo.repo) {
         selectRepository(null);
       }
     },
   };
 
+  // 一个仓库都看不到:没分到(issue #194),或者注册表本身是空的。两档都给同一个出口。
+  const noRepos = unassigned || (repos.isSuccess && rows.length === 0);
+  const firstError = (stages.isError ? stages.error : repos.isError ? repos.error : null) as Error | null;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageBody className="min-h-0 flex-1 pb-4 sm:pb-4">
-        <PageHeader
-          title="评审记录"
-          // 读取中不占位说明:计数一到就替换掉,那一行字只会闪一下。
-          {...(stages.isPending
-            ? {}
-            : { description: `已加载 ${flat.length} 个审查阶段` })}
-          actions={<SummaryRate />}
-        />
+        <PageHeader title="评审记录" />
 
         {feedback === null ? null : (
           <Callout.Root
@@ -738,19 +757,23 @@ export function RunsPage({
             <Callout.Text>{feedback.text}</Callout.Text>
           </Callout.Root>
         )}
-        {stages.isError ? (
+        {firstError === null ? null : (
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-            <Callout.Text>{(stages.error as Error).message}</Callout.Text>
+            <Callout.Text>{firstError.message}</Callout.Text>
           </Callout.Root>
-        ) : null}
+        )}
 
-        {unassigned ? (
+        {noRepos ? (
           <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
             <EmptyState
-              title="尚未分配仓库"
+              title={unassigned ? "尚未分配仓库" : "尚未注册仓库"}
               titleAs="h2"
-              description="评审记录的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
+              description={
+                unassigned
+                  ? "评审记录的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
+                  : "注册仓库后，向它提交 pull request 即自动运行审查。"
+              }
               // 注册按钮照 `repo:write` 出现:自己注册的仓库自动分配给自己(issue #192),
               // 一个仓库都没分到的仓库维护者靠它走出这个空态(issue #195)。
               action={
@@ -786,21 +809,24 @@ export function RunsPage({
             </div>
 
             <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-              {/* 右栏头部:左边是两个筛选,右边是这个仓库上的动作。选「全部仓库」时
-                  两个动作都不出现——它们要一个具体的仓库(issue #195)。 */}
-              <div className="flex flex-wrap items-center gap-2">
-                <FilterControl
-                  label="按状态过滤"
-                  value={filter.status}
-                  options={STATUS_OPTIONS}
-                  onChange={(status) => setFilter({ status })}
-                />
-                <FilterControl
-                  label="按来源过滤"
-                  value={filter.source}
-                  options={SOURCE_OPTIONS}
-                  onChange={(source) => setFilter({ source })}
-                />
+              {/* 右栏头部:这是谁的评审记录,以及这个仓库上的动作(issue #195)。仓库名在
+                  窄视口由上面那个选择器显示,这里不重复。 */}
+              <div className="flex min-h-8 flex-wrap items-center gap-x-3 gap-y-2">
+                <h2 className="min-w-0 break-all text-2xl font-[650] tracking-[-0.015em] max-lg:hidden">
+                  {selected === null ? (
+                    <Skeleton className="h-5 w-40" />
+                  ) : (
+                    <>
+                      <span className="font-normal text-text-muted">{selected.owner}/</span>
+                      {selected.repo}
+                    </>
+                  )}
+                </h2>
+                {selectedRow === undefined ? null : (
+                  <span className="text-base text-text-muted max-lg:hidden">
+                    {repoActivityLabel(selectedRow)}
+                  </span>
+                )}
                 {selected !== null && (selectedRow !== undefined || canCreate || canRerun) ? (
                   <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
                     {/* 知识集登录加仓库分配即可看(ADR 0019),按钮不跟着写权限出现;
@@ -819,6 +845,22 @@ export function RunsPage({
                     ) : null}
                   </div>
                 ) : null}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <FilterControl
+                  label="按状态过滤"
+                  value={filter.status}
+                  options={STATUS_OPTIONS}
+                  onChange={(status) => setFilter({ status })}
+                />
+                <FilterControl
+                  label="按来源过滤"
+                  value={filter.source}
+                  options={SOURCE_OPTIONS}
+                  onChange={(source) => setFilter({ source })}
+                />
+                <div className="sm:ml-auto"><SummaryRate /></div>
               </div>
 
               <div
@@ -840,52 +882,84 @@ export function RunsPage({
 
                 {flat.length > 0 ? (
                   <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
-                    {flat.map((stage) => (
-                      // 点一行是进这个阶段自己的地址(issue #175):详情能直接分享,后退键回到列表。
-                      // 当前过滤跟着进去,阶段页那个返回才回得到同一片列表(issue #189)。
-                      <MasterListItem key={stage.stageId} selected={false} asChild>
-                        <Link
-                          to="/stages/$stageId"
-                          params={{ stageId: stage.stageId }}
-                          search={carried}
-                          className="group grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 border-t border-line px-4 py-3 first:border-t-0 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center sm:px-5"
-                        >
-                          <span className="flex min-w-0 flex-col gap-1">
-                            <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-                              <span className="min-w-0 break-all font-mono text-sm text-text-muted">
-                                {stage.owner}/{stage.repo}
+                    {/* 列头只在桌面画:手机上三个数自己带字。读屏读的是行里 sr-only 的那份。 */}
+                    <div
+                      aria-hidden
+                      className={`hidden border-b border-line bg-sunken py-2 text-sm font-medium text-text-muted sm:grid ${ROW_GRID}`}
+                    >
+                      <span>审查阶段</span>
+                      {COUNT_COLUMNS.map(([key, label]) => (
+                        <span key={key} className="text-right">{label}</span>
+                      ))}
+                      <span className="text-right">状态</span>
+                      <span />
+                    </div>
+                    {flat.map((stage, index) => {
+                      const running = stage.latestRunId !== null && stage.latestRunFinishedAt === null;
+                      return (
+                        // 点一行是进这个阶段自己的地址(issue #175):详情能直接分享,后退键回到列表。
+                        // 当前过滤跟着进去,阶段页那个返回才回得到同一片列表(issue #189)。
+                        <MasterListItem key={stage.stageId} selected={false} asChild>
+                          <Link
+                            to="/stages/$stageId"
+                            params={{ stageId: stage.stageId }}
+                            search={carried}
+                            className={`group grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 px-4 py-3 ${index === 0 ? "" : "border-t border-line"} ${ROW_GRID}`}
+                          >
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                              <span className="break-words text-lg font-semibold">
+                                {stageLabel(stage)}
                               </span>
-                              <StageSourceBadge stage={stage} />
+                              <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
+                                <span className="tabular-nums">{stageRef(stage)}</span>
+                                <span aria-hidden>·</span>
+                                {running ? (
+                                  <span className="flex items-center gap-1.5 text-primary">
+                                    <span
+                                      aria-hidden
+                                      className="size-1.5 rounded-full bg-primary motion-safe:animate-pulse"
+                                    />
+                                    Review Run 运行中
+                                  </span>
+                                ) : stage.latestRunAt === null ? (
+                                  <span>尚无 Review Run</span>
+                                ) : (
+                                  <time
+                                    dateTime={stage.latestRunAt}
+                                    title={`${localDay(stage.latestRunAt)} ${localClock(stage.latestRunAt)}`}
+                                  >
+                                    最新一轮 {since(stage.latestRunAt)}
+                                  </time>
+                                )}
+                              </span>
                             </span>
-                            <span className="break-words text-lg font-semibold">
-                              {stageLabel(stage)}
-                            </span>
-                            <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
-                              <span className="tabular-nums">{latestRunLabel(stage)}</span>
-                            </span>
-                            <span className="mt-0.5 sm:hidden"><StageCounts stage={stage} /></span>
-                          </span>
-                          <span className="hidden sm:block"><StageCounts stage={stage} /></span>
-                          <span className="shrink-0"><StageStatusBadge stage={stage} /></span>
-                        </Link>
-                      </MasterListItem>
-                    ))}
+                            <span className="shrink-0 sm:hidden"><StageStatusBadge stage={stage} /></span>
+                            <StageCounts stage={stage} />
+                            <span className="justify-self-end max-sm:hidden"><StageStatusBadge stage={stage} /></span>
+                            <ChevronRightIcon
+                              aria-hidden
+                              className="text-text-faint transition-colors group-hover:text-text-muted max-sm:hidden"
+                            />
+                          </Link>
+                        </MasterListItem>
+                      );
+                    })}
                   </div>
                 ) : null}
 
-                {flat.length === 0 && !stages.isPending && !stages.isError ? (
+                {flat.length === 0 && selected !== null && !stages.isPending && !stages.isError ? (
                   <div className="rounded-lg border border-card-line bg-surface px-5 py-4 shadow-card">
                     <EmptyState
-                      title={unfiltered ? "暂无评审记录" : "没有符合条件的评审记录"}
+                      title={unfiltered ? "该仓库暂无评审记录" : "没有符合条件的评审记录"}
                       titleAs="h2"
                       description={
                         unfiltered ? (
                           <>
-                            向已注册仓库提交 pull request 后，系统会自动运行审查。
-                            {canRerun ? "如需对已有 pull request 重新运行审查，在左栏选中它的仓库后输入 PR 编号。" : null}
+                            向该仓库提交 pull request 后，系统会自动运行审查。
+                            {canRerun ? "如需对已有 pull request 重新运行审查，使用上方的重跑入口并输入 PR 编号。" : null}
                           </>
                         ) : (
-                          "请更改仓库、状态或来源筛选条件。"
+                          "请更改状态或来源筛选条件。"
                         )
                       }
                       action={unfiltered ? undefined : (
@@ -907,9 +981,9 @@ export function RunsPage({
                   {stages.isFetchingNextPage
                     ? "加载更早的评审记录…"
                     : stages.hasNextPage
-                      ? "向下滚动以加载更早的评审记录"
+                      ? `已加载 ${flat.length} 个审查阶段，向下滚动加载更早的`
                       : flat.length > 0
-                        ? "已加载全部评审记录"
+                        ? `已加载全部 ${flat.length} 个审查阶段`
                         : ""}
                 </p>
               </div>
