@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-20T00:00:00Z",
+  "title": "Design System: MultiReviewer 管理面板",
+  "extensions": {
+    "colorMeta": {
+      "bg": { "role": "neutral", "displayName": "页面灰底", "canonical": "oklch(0.9729 0.0029 264.54)", "tonalRamp": ["oklch(15% 0.0029 264.54)", "oklch(27% 0.0029 264.54)", "oklch(39% 0.0029 264.54)", "oklch(50% 0.0029 264.54)", "oklch(62% 0.0029 264.54)", "oklch(73% 0.0029 264.54)", "oklch(84% 0.0029 264.54)", "oklch(95% 0.0029 264.54)"] },
+      "surface": { "role": "neutral", "displayName": "卡面纯白", "canonical": "oklch(1.0000 0.0000 89.88)", "tonalRamp": ["oklch(15% 0 89.88)", "oklch(27% 0 89.88)", "oklch(39% 0 89.88)", "oklch(50% 0 89.88)", "oklch(62% 0 89.88)", "oklch(73% 0 89.88)", "oklch(84% 0 89.88)", "oklch(95% 0 89.88)"] },
+      "surface-sunken": { "role": "neutral", "displayName": "次级面", "canonical": "rgba(118, 118, 128, 0.05)" },
+      "fill": { "role": "neutral", "displayName": "iOS systemFill", "canonical": "rgba(118, 118, 128, 0.12)" },
+      "text": { "role": "neutral", "displayName": "近黑正文", "canonical": "oklch(0.2316 0.0038 286.10)", "tonalRamp": ["oklch(15% 0.0038 286.10)", "oklch(27% 0.0038 286.10)", "oklch(39% 0.0038 286.10)", "oklch(50% 0.0038 286.10)", "oklch(62% 0.0038 286.10)", "oklch(73% 0.0038 286.10)", "oklch(84% 0.0038 286.10)", "oklch(95% 0.0038 286.10)"] },
+      "text-secondary": { "role": "neutral", "displayName": "次文字灰", "canonical": "oklch(0.5399 0.0077 286.14)", "tonalRamp": ["oklch(15% 0.0077 286.14)", "oklch(27% 0.0077 286.14)", "oklch(39% 0.0077 286.14)", "oklch(50% 0.0077 286.14)", "oklch(62% 0.0077 286.14)", "oklch(73% 0.0077 286.14)", "oklch(84% 0.0077 286.14)", "oklch(95% 0.0077 286.14)"] },
+      "text-muted": { "role": "neutral", "displayName": "弱文字灰", "canonical": "oklch(0.6217 0.0074 286.18)", "tonalRamp": ["oklch(15% 0.0074 286.18)", "oklch(27% 0.0074 286.18)", "oklch(39% 0.0074 286.18)", "oklch(50% 0.0074 286.18)", "oklch(62% 0.0074 286.18)", "oklch(73% 0.0074 286.18)", "oklch(84% 0.0074 286.18)", "oklch(95% 0.0074 286.18)"] },
+      "text-disabled": { "role": "neutral", "displayName": "停用灰", "canonical": "oklch(0.7105 0.0072 286.22)", "tonalRamp": ["oklch(15% 0.0072 286.22)", "oklch(27% 0.0072 286.22)", "oklch(39% 0.0072 286.22)", "oklch(50% 0.0072 286.22)", "oklch(62% 0.0072 286.22)", "oklch(73% 0.0072 286.22)", "oklch(84% 0.0072 286.22)", "oklch(95% 0.0072 286.22)"] },
+      "text-faint": { "role": "neutral", "displayName": "极弱灰", "canonical": "oklch(0.8312 0.0069 286.25)", "tonalRamp": ["oklch(15% 0.0069 286.25)", "oklch(27% 0.0069 286.25)", "oklch(39% 0.0069 286.25)", "oklch(50% 0.0069 286.25)", "oklch(62% 0.0069 286.25)", "oklch(73% 0.0069 286.25)", "oklch(84% 0.0069 286.25)", "oklch(95% 0.0069 286.25)"] },
+      "border-card": { "role": "neutral", "displayName": "卡片发丝边", "canonical": "rgba(0, 0, 0, 0.055)" },
+      "border-line": { "role": "neutral", "displayName": "行分隔线", "canonical": "rgba(0, 0, 0, 0.05)" },
+      "border-chrome": { "role": "neutral", "displayName": "顶栏与 Tab 栏边", "canonical": "rgba(0, 0, 0, 0.07)" },
+      "border-overlay": { "role": "neutral", "displayName": "浮层头尾线", "canonical": "rgba(0, 0, 0, 0.06)" },
+      "border-input": { "role": "neutral", "displayName": "输入描边", "canonical": "rgba(0, 0, 0, 0.1)" },
+      "accent": { "role": "primary", "displayName": "Apple 蓝", "canonical": "oklch(0.5629 0.1933 256.16)", "tonalRamp": ["oklch(15% 0.1933 256.16)", "oklch(27% 0.1933 256.16)", "oklch(39% 0.1933 256.16)", "oklch(50% 0.1933 256.16)", "oklch(62% 0.1933 256.16)", "oklch(73% 0.1933 256.16)", "oklch(84% 0.1933 256.16)", "oklch(95% 0.1933 256.16)"] },
+      "accent-hover": { "role": "primary", "displayName": "Apple 蓝 hover", "canonical": "oklch(0.5831 0.1989 255.97)", "tonalRamp": ["oklch(15% 0.1989 255.97)", "oklch(27% 0.1989 255.97)", "oklch(39% 0.1989 255.97)", "oklch(50% 0.1989 255.97)", "oklch(62% 0.1989 255.97)", "oklch(73% 0.1989 255.97)", "oklch(84% 0.1989 255.97)", "oklch(95% 0.1989 255.97)"] },
+      "accent-gradient-from": { "role": "primary", "displayName": "头像渐变起点", "canonical": "oklch(0.6941 0.1350 262.25)", "tonalRamp": ["oklch(15% 0.1350 262.25)", "oklch(27% 0.1350 262.25)", "oklch(39% 0.1350 262.25)", "oklch(50% 0.1350 262.25)", "oklch(62% 0.1350 262.25)", "oklch(73% 0.1350 262.25)", "oklch(84% 0.1350 262.25)", "oklch(95% 0.1350 262.25)"] },
+      "accent-tint": { "role": "primary", "displayName": "选中面蓝 tint", "canonical": "rgba(0, 113, 227, 0.07)" },
+      "accent-tint-strong": { "role": "primary", "displayName": "chip 蓝 tint", "canonical": "rgba(0, 113, 227, 0.09)" },
+      "accent-track": { "role": "primary", "displayName": "KPI 环轨道", "canonical": "rgba(0, 113, 227, 0.14)" },
+      "accent-focus": { "role": "primary", "displayName": "焦点环填充", "canonical": "rgba(0, 113, 227, 0.12)" },
+      "accent-shadow": { "role": "primary", "displayName": "主按钮投影色", "canonical": "rgba(0, 113, 227, 0.35)" },
+      "success-icon": { "role": "secondary", "displayName": "成功绿（图标／实底）", "canonical": "oklch(0.5244 0.1401 148.04)", "tonalRamp": ["oklch(15% 0.1401 148.04)", "oklch(27% 0.1401 148.04)", "oklch(39% 0.1401 148.04)", "oklch(50% 0.1401 148.04)", "oklch(62% 0.1401 148.04)", "oklch(73% 0.1401 148.04)", "oklch(84% 0.1401 148.04)", "oklch(95% 0.1401 148.04)"] },
+      "success": { "role": "secondary", "displayName": "成功绿（文字）", "canonical": "oklch(0.4798 0.1264 148.31)", "tonalRamp": ["oklch(15% 0.1264 148.31)", "oklch(27% 0.1264 148.31)", "oklch(39% 0.1264 148.31)", "oklch(50% 0.1264 148.31)", "oklch(62% 0.1264 148.31)", "oklch(73% 0.1264 148.31)", "oklch(84% 0.1264 148.31)", "oklch(95% 0.1264 148.31)"] },
+      "success-tint": { "role": "secondary", "displayName": "成功绿 tint 底", "canonical": "rgba(26, 127, 55, 0.1)" },
+      "warning-icon": { "role": "tertiary", "displayName": "警告琥珀（图标／实底）", "canonical": "oklch(0.6619 0.1374 79.25)", "tonalRamp": ["oklch(15% 0.1374 79.25)", "oklch(27% 0.1374 79.25)", "oklch(39% 0.1374 79.25)", "oklch(50% 0.1374 79.25)", "oklch(62% 0.1374 79.25)", "oklch(73% 0.1374 79.25)", "oklch(84% 0.1374 79.25)", "oklch(95% 0.1374 79.25)"] },
+      "warning": { "role": "tertiary", "displayName": "警告琥珀（文字）", "canonical": "oklch(0.5263 0.1107 75.60)", "tonalRamp": ["oklch(15% 0.1107 75.60)", "oklch(27% 0.1107 75.60)", "oklch(39% 0.1107 75.60)", "oklch(50% 0.1107 75.60)", "oklch(62% 0.1107 75.60)", "oklch(73% 0.1107 75.60)", "oklch(84% 0.1107 75.60)", "oklch(95% 0.1107 75.60)"] },
+      "warning-tint": { "role": "tertiary", "displayName": "警告琥珀 tint 底", "canonical": "rgba(191, 135, 0, 0.1)" },
+      "danger": { "role": "tertiary", "displayName": "错误红", "canonical": "oklch(0.5517 0.2051 24.53)", "tonalRamp": ["oklch(15% 0.2051 24.53)", "oklch(27% 0.2051 24.53)", "oklch(39% 0.2051 24.53)", "oklch(50% 0.2051 24.53)", "oklch(62% 0.2051 24.53)", "oklch(73% 0.2051 24.53)", "oklch(84% 0.2051 24.53)", "oklch(95% 0.2051 24.53)"] },
+      "danger-tint": { "role": "tertiary", "displayName": "错误红 tint 底", "canonical": "rgba(207, 34, 46, 0.09)" },
+      "neutral-dot": { "role": "neutral", "displayName": "停用状态点", "canonical": "oklch(0.8652 0.0068 286.26)", "tonalRamp": ["oklch(15% 0.0068 286.26)", "oklch(27% 0.0068 286.26)", "oklch(39% 0.0068 286.26)", "oklch(50% 0.0068 286.26)", "oklch(62% 0.0068 286.26)", "oklch(73% 0.0068 286.26)", "oklch(84% 0.0068 286.26)", "oklch(95% 0.0068 286.26)"] },
+      "chrome-bg": { "role": "neutral", "displayName": "顶栏毛玻璃底", "canonical": "rgba(255, 255, 255, 0.72)" },
+      "tabbar-bg": { "role": "neutral", "displayName": "移动 Tab 栏毛玻璃底", "canonical": "rgba(255, 255, 255, 0.78)" },
+      "drawer-bg": { "role": "neutral", "displayName": "详情面板毛玻璃底", "canonical": "rgba(255, 255, 255, 0.94)" },
+      "palette-bg": { "role": "neutral", "displayName": "命令面板毛玻璃底", "canonical": "rgba(255, 255, 255, 0.9)" },
+      "scrim": { "role": "neutral", "displayName": "浮层遮罩", "canonical": "rgba(0, 0, 0, 0.24)" }
+    },
+    "typographyMeta": {
+      "xs": { "displayName": "XS 12px", "purpose": "commit hash chip、快捷键、模型 chip、优先级徽章。" },
+      "sm": { "displayName": "SM 12.5px", "purpose": "计数徽章、表头、日期分组标题、卡片副标题。" },
+      "base": { "displayName": "Base 13px", "purpose": "元数据行、状态徽章、KPI 标签、表格单元格。" },
+      "md": { "displayName": "MD 14px", "purpose": "按钮、搜索入口、链接、Select。" },
+      "lg": { "displayName": "LG 15px", "purpose": "正文基准：根容器与列表行主标题。" },
+      "xl": { "displayName": "XL 16px", "purpose": "面包屑当前页、命令面板结果项、登录表单。" },
+      "2xl": { "displayName": "2XL 17px", "purpose": "卡片区块标题。" },
+      "3xl": { "displayName": "3XL 19px", "purpose": "抽屉与模态标题。" },
+      "4xl": { "displayName": "4XL 22px", "purpose": "登录页品牌标题、命令面板输入行。" },
+      "5xl": { "displayName": "5XL 26px", "purpose": "可见页标题，一页一个；唯一走 Display 字体栈的档位。" },
+      "6xl": { "displayName": "6XL 30px", "purpose": "KPI 主数字，走等宽栈加 tabular-nums。" }
+    },
+    "shadows": [
+      { "name": "shadow-card", "value": "0 1px 6px rgba(0, 0, 0, 0.04)", "purpose": "卡片：发丝边之上的一层漫射阴影，让卡浮在灰底上。" },
+      { "name": "shadow-control", "value": "0 1px 4px rgba(0, 0, 0, 0.05)", "purpose": "描边型控件与详情内嵌卡。" },
+      { "name": "shadow-accent", "value": "0 1px 4px rgba(0, 113, 227, 0.35)", "purpose": "主按钮投影，同色系蓝而不是中性灰。" },
+      { "name": "shadow-accent-strong", "value": "0 1px 4px rgba(0, 113, 227, 0.4)", "purpose": "蓝色实底选中项（命令面板结果项）。" },
+      { "name": "shadow-mark", "value": "0 1px 3px rgba(0, 0, 0, 0.22)", "purpose": "品牌方块。" },
+      { "name": "shadow-overlay", "value": "0 24px 80px rgba(0, 0, 0, 0.3)", "purpose": "运行详情面板。" },
+      { "name": "shadow-modal", "value": "0 30px 90px rgba(0, 0, 0, 0.32)", "purpose": "模态。" },
+      { "name": "shadow-palette", "value": "0 30px 90px rgba(0, 0, 0, 0.35), inset 0 0 0 0.5px rgba(255, 255, 255, 0.6)", "purpose": "命令面板：唯一带 inset 高光边的浮层。" },
+      { "name": "shadow-focus", "value": "0 0 0 3px rgba(0, 113, 227, 0.12)", "purpose": "会话输入框整框的焦点外圈。" }
+    ],
+    "motion": [],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "任务区唯一的主要动作，accent solid，不开 highContrast。",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">发起范围审查</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 32px; padding: 0 12px; border: none; border-radius: 8px; background-color: var(--v8-accent, #0071e3); color: #fff; font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); font-size: 14px; line-height: 1.5; font-weight: 590; box-shadow: var(--v8-shadow-accent, 0 1px 4px rgba(0, 113, 227, 0.35)); cursor: pointer; } .ds-btn-primary:hover { background-color: var(--v8-accent-hover, #0077ed); } .ds-btn-primary:active { background-color: var(--v8-accent-hover, #0077ed); filter: brightness(0.92); } .ds-btn-primary:focus-visible { outline: 2px solid var(--v8-accent, #0071e3); outline-offset: 2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "次要动作：gray soft 加 highContrast，文字落在正文色而不是次文字色。",
+      "html": "<button class=\"ds-btn-secondary\" type=\"button\">取消</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 32px; padding: 0 12px; border: none; border-radius: 8px; background-color: var(--v8-fill, rgba(118, 118, 128, 0.12)); color: var(--v8-text, #1d1d1f); font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); font-size: 14px; line-height: 1.5; font-weight: 590; cursor: pointer; } .ds-btn-secondary:hover { background-color: rgba(118, 118, 128, 0.16); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--v8-accent, #0071e3); outline-offset: -1px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "标准文本输入：白底、描边比行分隔重一档、焦点环画在控件外侧。",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"owner/repo\" aria-label=\"仓库\" />",
+      "css": ".ds-input { box-sizing: border-box; height: 32px; padding: 0 11px; border: 1px solid var(--v8-border-input, rgba(0, 0, 0, 0.1)); border-radius: 8px; background-color: var(--v8-surface, #fff); color: var(--v8-text, #1d1d1f); font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); font-size: 14px; caret-color: var(--v8-accent, #0071e3); } .ds-input::placeholder { color: var(--v8-text-disabled, #a1a1a6); } .ds-input:hover { border-color: rgba(0, 0, 0, 0.16); } .ds-input:focus, .ds-input:focus-visible { outline: 3px solid var(--v8-accent-focus, rgba(0, 113, 227, 0.12)); outline-offset: 0; }"
+    },
+    {
+      "name": "Search Entry",
+      "kind": "input",
+      "refersTo": "button-secondary",
+      "description": "顶栏的 ⌘K 入口：桌面 300px 宽的 fill 底假输入框，右端一枚键帽。",
+      "html": "<button class=\"ds-search\" type=\"button\" aria-label=\"搜索或跳转\" aria-keyshortcuts=\"Meta+K Control+K\"><span class=\"ds-search-label\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 15 15\" fill=\"none\" aria-hidden=\"true\"><path d=\"M10 6.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Zm-.691 3.516a4.5 4.5 0 1 1 .707-.707l2.838 2.837-.708.708-2.837-2.838Z\" fill=\"currentColor\" fill-rule=\"evenodd\" clip-rule=\"evenodd\"/></svg>搜索或跳转…</span><kbd class=\"ds-search-kbd\">⌘K</kbd></button>",
+      "css": ".ds-search { display: flex; width: 300px; align-items: center; justify-content: space-between; gap: 7px; padding: 6px 12px; border: none; border-radius: 9px; background-color: var(--v8-fill, rgba(118, 118, 128, 0.12)); color: var(--v8-text-muted, #86868b); font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); font-size: 14px; cursor: pointer; transition: background-color 0.15s; } .ds-search-label { display: flex; align-items: center; gap: 7px; } .ds-search-kbd { font-family: var(--v8-font-mono, ui-monospace, \"SF Mono\", Menlo, monospace); font-size: 12px; color: var(--v8-text-disabled, #a1a1a6); } .ds-search:hover { background-color: rgba(118, 118, 128, 0.1); } .ds-search:focus-visible { outline: 2px solid rgba(0, 113, 227, 0.4); outline-offset: 0; }"
+    },
+    {
+      "name": "Card Shell",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "卡壳与卡片头：发丝边加漫射阴影浮在灰底上，移动端圆角 14px、640px 起收到 12px。",
+      "html": "<section class=\"ds-card\"><header class=\"ds-card-header\"><h3 class=\"ds-card-title\">模型服务</h3></header><div class=\"ds-card-body\">已验证 · 4 个可运行模型</div></section>",
+      "css": ".ds-card { display: flex; min-width: 0; flex-direction: column; border: 1px solid var(--v8-border-card, rgba(0, 0, 0, 0.055)); border-radius: 14px; background-color: var(--v8-surface, #fff); box-shadow: var(--v8-shadow-card, 0 1px 6px rgba(0, 0, 0, 0.04)); font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); } @media (width >= 40rem) { .ds-card { border-radius: 12px; } } .ds-card-header { padding: 14px 16px 11px; } .ds-card-title { margin: 0; font-size: 17px; line-height: 1.4; font-weight: 650; letter-spacing: -0.015em; color: var(--v8-text, #1d1d1f); } .ds-card-body { padding: 0 16px 14px; font-size: 13px; line-height: 1.5; color: var(--v8-text-muted, #86868b); }"
+    },
+    {
+      "name": "Master List Item",
+      "kind": "nav",
+      "refersTo": "master-list-item",
+      "description": "主从列表行的默认与选中两态。选中是蓝 tint 底加伪元素画的 3px 左条，选中优先于 hover，文字不反白。",
+      "html": "<div class=\"ds-master-list\"><button class=\"ds-master-item\" type=\"button\" aria-pressed=\"false\">zhangxu/review<span class=\"ds-master-sub\">12 分钟前</span></button><button class=\"ds-master-item ds-master-item--selected\" type=\"button\" aria-pressed=\"true\">zhangxu/test<span class=\"ds-master-sub\">3 小时前</span></button></div>",
+      "css": ".ds-master-list { display: flex; flex-direction: column; font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); } .ds-master-item { position: relative; display: flex; width: 100%; flex-direction: column; gap: 2px; padding: 10px 16px; border: none; background: transparent; text-align: left; font-size: 15px; line-height: 1.5; color: var(--v8-text, #1d1d1f); cursor: pointer; transition: background-color 0.15s; } .ds-master-sub { font-size: 13px; color: var(--v8-text-muted, #86868b); } .ds-master-item:hover { background-color: var(--v8-surface-sunken, rgba(118, 118, 128, 0.05)); } .ds-master-item:focus-visible { outline: none; z-index: 10; box-shadow: inset 0 0 0 2px var(--v8-accent, #0071e3); } .ds-master-item--selected, .ds-master-item--selected:hover { background-color: var(--v8-accent-tint, rgba(0, 113, 227, 0.07)); font-weight: 650; } .ds-master-item--selected::before { content: \"\"; position: absolute; inset-block: 0; left: 0; width: 3px; background-color: var(--v8-accent, #0071e3); }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "status-badge-success",
+      "description": "运行状态的唯一出口，五态固定 soft tint 加图标加文字、full 圆角，不开 highContrast。",
+      "html": "<span class=\"ds-status ds-status--success\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 15 15\" fill=\"none\" aria-hidden=\"true\"><path d=\"M7.5 1a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 7.5a7.5 7.5 0 1 1 15 0 7.5 7.5 0 0 1-15 0Zm10.854-1.646a.5.5 0 0 0-.708-.708L6.5 8.793 5.354 7.646a.5.5 0 1 0-.708.708l1.5 1.5a.5.5 0 0 0 .708 0l4-4Z\" fill=\"currentColor\" fill-rule=\"evenodd\" clip-rule=\"evenodd\"/></svg>已完成</span> <span class=\"ds-status ds-status--warning\">需要关注</span> <span class=\"ds-status ds-status--error\">失败</span> <span class=\"ds-status ds-status--running\">进行中</span> <span class=\"ds-status ds-status--neutral\">未知</span>",
+      "css": ".ds-status { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; border-radius: 9999px; font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); font-size: 12.5px; line-height: 1.45; font-weight: 590; white-space: nowrap; } .ds-status--success { background-color: var(--v8-success-tint, rgba(26, 127, 55, 0.1)); color: var(--v8-success, #177031); } .ds-status--warning { background-color: var(--v8-warning-tint, rgba(191, 135, 0, 0.1)); color: var(--v8-warning, #8f6000); } .ds-status--error { background-color: var(--v8-danger-tint, rgba(207, 34, 46, 0.09)); color: var(--v8-danger, #cf222e); } .ds-status--running { background-color: var(--v8-accent-tint, rgba(0, 113, 227, 0.07)); color: var(--v8-accent, #0071e3); } .ds-status--neutral { background-color: var(--v8-fill, rgba(118, 118, 128, 0.12)); color: var(--v8-text-secondary, #6e6e73); }"
+    },
+    {
+      "name": "Top Bar Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "顶栏第二层的 underline 导航。当前项字重 650 加 3px 圆头蓝条，底部 padding 减去指示条高度，切页时文字基线不跳。",
+      "html": "<nav class=\"ds-nav\" aria-label=\"面板导航\"><a class=\"ds-nav-item ds-nav-item--current\" href=\"#\" aria-current=\"page\"><span class=\"ds-nav-label\">评审记录</span><span class=\"ds-nav-bar\" aria-hidden=\"true\"></span></a><a class=\"ds-nav-item\" href=\"#\"><span class=\"ds-nav-label\">产品</span></a><a class=\"ds-nav-item\" href=\"#\"><span class=\"ds-nav-label\">模型服务<span class=\"ds-nav-dot\" role=\"img\" aria-label=\"模型服务需要处理\"></span></span></a></nav>",
+      "css": ".ds-nav { display: flex; align-items: center; gap: 2px; padding: 0 20px; background-color: var(--v8-chrome-bg, rgba(255, 255, 255, 0.72)); backdrop-filter: blur(30px); border-bottom: 1px solid var(--v8-border-chrome, rgba(0, 0, 0, 0.07)); font-family: var(--v8-font-text, -apple-system, \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif); } .ds-nav-item { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-end; text-decoration: none; outline: none; } .ds-nav-label { display: flex; align-items: center; gap: 7px; padding: 7px 12px 12px; white-space: nowrap; font-size: 15px; line-height: 1.5; color: var(--v8-text-secondary, #6e6e73); transition: color 0.15s; } .ds-nav-item:hover .ds-nav-label { color: var(--v8-text, #1d1d1f); } .ds-nav-item:focus-visible { box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.4); } .ds-nav-item--current .ds-nav-label { padding-bottom: 9px; font-weight: 650; color: var(--v8-text, #1d1d1f); } .ds-nav-bar { height: 3px; margin: 0 12px; border-radius: 3px 3px 0 0; background-color: var(--v8-accent, #0071e3); } .ds-nav-dot { width: 7px; height: 7px; border-radius: 9999px; background-color: var(--v8-warning-icon, #bf8700); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "毛玻璃控制台",
+    "overview": "面板是一台常驻的审查控制台：顶部一直告诉你身在哪一页、哪里有异常，下面一直是当前这件事的完整信息。信息架构与工程语义取 GitHub，材质与 finish 取 Apple。\n\n灰底浮白卡：页面底 --v8-bg #f5f6f8，卡面 --v8-surface 纯白，卡靠 1px 发丝边 --v8-border-card rgba(0,0,0,0.055) 加漫射阴影 --v8-shadow-card `0 1px 6px rgba(0,0,0,0.04)` 浮起来。顶栏、移动端 Tab 栏、命令面板与运行详情面板是半透明白 + backdrop-filter 毛玻璃，层级越高模糊半径越大、底色越不透明。Apple 蓝 --v8-accent #0071e3 是唯一主色，动作、选中、链接、图表共用它。绿 --v8-success #177031、琥珀 --v8-warning-icon #bf8700、红 --v8-danger #cf222e 只承载状态，一律以 soft tint 胶囊或 octicon 式图标出现，不用高饱和大色块。",
+    "keyCharacteristics": [
+      "健康状态优先：异常、阻塞与下一步操作应在同一视区内被识别。",
+      "一种语义一种样式：当前页面、当前 Tab、主从当前项、编辑中的选择各用固定表达。",
+      "主色一支笔：动作、选中、链接、图表统一 --v8-accent；红、绿、琥珀只承载错误、成功、警告。",
+      "层级来自材质与排版：卡片靠发丝边加漫射阴影浮起，浮层靠模糊半径分深度，不靠加深阴影或堆叠边框。",
+      "默认状态完整：每个交互组件同时定义 hover、focus、active、selected、disabled、loading 与 invalid。",
+      "内容决定宽度：长标识可截断并查看全文，页面不得产生水平滚动。",
+      "操作就近：主要动作靠近作用对象，破坏性动作需要二次确认。",
+      "响应式保留任务：窄屏调整布局，不删除关键状态或操作。"
+    ],
+    "rules": [],
+    "dos": [
+      "Do 页面使用 Theme props、v8 令牌和共享产品组件；避免页面级视觉变体。",
+      "Do 颜色只有一份事实来源：src/styles.css 的 --v8-*。新增颜色先加令牌，再在组件里引用；页面里不出现字面色值。",
+      "Do 字号只用十一档令牌。",
+      "Do 需要毛玻璃底色这类没有 Tailwind 类的令牌时，写 bg-[color:var(--v8-tabbar-bg)] 而不是复制 rgba。",
+      "Do cascade layer 顺序固定为 theme < base < radix < components < utilities。Radix Themes 样式必须从 styles.css 导入 radix layer。",
+      "Do 弹窗草稿与底层页面状态分开存储。关闭弹窗不得重置底层选择。",
+      "Do URL 可表达的页面状态写入路由；临时编辑状态留在组件内。",
+      "Do 页面组件使用 React.lazy + Suspense 按路由分块；同一页面模块的子路由共用一个动态模块入口。",
+      "Do 新组件必须提供可访问名称、键盘行为、完整状态和响应式验证。",
+      "Do 视觉改动在部署实例使用 ego-browser 完成端到端验收。"
+    ],
+    "donts": [
+      "Don't 写 text-[13px] 这类一次性字号值（移动端底部 Tab 栏的 11px 标签除外）。",
+      "Don't 用 Tailwind 覆盖 Themes 组件内部的 hover、focus、selected、disabled、loading 或 invalid 状态，也不得为同一语义另写一套 utility 外观。",
+      "Don't 让同一布局同时由 Themes 响应式 props 和 Tailwind 断点两套规则控制。",
+      "Don't 深度覆盖 Radix 内部 DOM；共享组件只暴露产品需要的少量 variant 和 size。",
+      "Don't 复制同一语义组件：MasterListItem、StatusBadge、CommandPalette、PageHeader、PageBody、DateRangePicker、EditableModelCombobox、EmptyState 只有一个实现。通用错误直接使用 Themes Callout，不再包装第二套视觉组件。",
+      "Don't 引入工业警示条、拟物仪表或阻断合并的暗示。",
+      "Don't 让状态只由颜色承担含义：状态同时使用文字或图标表达，正文与背景的对比度至少达到 WCAG AA 4.5:1。"
+    ]
+  }
+}

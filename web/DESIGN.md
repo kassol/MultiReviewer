@@ -1,6 +1,198 @@
 ---
 name: MultiReviewer
 description: "以 Radix Themes 落地毛玻璃控制台方向的 MultiReviewer 审查运维面板。"
+colors:
+  bg: "#f5f6f8"
+  surface: "#ffffff"
+  surface-sunken: "rgba(118, 118, 128, 0.05)"
+  fill: "rgba(118, 118, 128, 0.12)"
+  text: "#1d1d1f"
+  text-secondary: "#6e6e73"
+  text-muted: "#86868b"
+  text-disabled: "#a1a1a6"
+  text-faint: "#c7c7cc"
+  border-card: "rgba(0, 0, 0, 0.055)"
+  border-line: "rgba(0, 0, 0, 0.05)"
+  border-chrome: "rgba(0, 0, 0, 0.07)"
+  border-overlay: "rgba(0, 0, 0, 0.06)"
+  border-input: "rgba(0, 0, 0, 0.1)"
+  accent: "#0071e3"
+  accent-hover: "#0077ed"
+  accent-gradient-from: "#6e9bf0"
+  accent-tint: "rgba(0, 113, 227, 0.07)"
+  accent-tint-strong: "rgba(0, 113, 227, 0.09)"
+  accent-track: "rgba(0, 113, 227, 0.14)"
+  accent-focus: "rgba(0, 113, 227, 0.12)"
+  accent-shadow: "rgba(0, 113, 227, 0.35)"
+  success-icon: "#1a7f37"
+  success: "#177031"
+  success-tint: "rgba(26, 127, 55, 0.1)"
+  warning-icon: "#bf8700"
+  warning: "#8f6000"
+  warning-tint: "rgba(191, 135, 0, 0.1)"
+  danger: "#cf222e"
+  danger-tint: "rgba(207, 34, 46, 0.09)"
+  neutral-dot: "#d2d2d7"
+  chrome-bg: "rgba(255, 255, 255, 0.72)"
+  tabbar-bg: "rgba(255, 255, 255, 0.78)"
+  drawer-bg: "rgba(255, 255, 255, 0.94)"
+  palette-bg: "rgba(255, 255, 255, 0.9)"
+  scrim: "rgba(0, 0, 0, 0.24)"
+typography:
+  xs:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "12px"
+    lineHeight: 1.45
+  sm:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "12.5px"
+    lineHeight: 1.45
+  base:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "13px"
+    lineHeight: 1.5
+  md:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "14px"
+    lineHeight: 1.5
+  lg:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "15px"
+    lineHeight: 1.5
+  xl:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "16px"
+    lineHeight: 1.45
+  2xl:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "17px"
+    lineHeight: 1.4
+    fontWeight: 650
+    letterSpacing: "-0.015em"
+  3xl:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "19px"
+    lineHeight: 1.35
+  4xl:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "22px"
+    lineHeight: 1.25
+    letterSpacing: "-0.02em"
+  5xl:
+    fontFamily: "-apple-system, BlinkMacSystemFont, \"SF Pro Display\", \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif"
+    fontSize: "26px"
+    lineHeight: 1.2
+    fontWeight: 700
+    letterSpacing: "-0.022em"
+  6xl:
+    fontFamily: "ui-monospace, SFMono-Regular, \"SF Mono\", Menlo, Consolas, monospace"
+    fontSize: "30px"
+    lineHeight: 1.15
+    fontWeight: 700
+    letterSpacing: "-0.03em"
+rounded:
+  chip: "5px"
+  mark: "8px"
+  control: "9px"
+  card: "12px"
+  card-mobile: "14px"
+  panel: "16px"
+  overlay: "18px"
+  full: "9999px"
+spacing:
+  "1": "4px"
+  "1.5": "6px"
+  "2": "8px"
+  "2.5": "10px"
+  "3": "12px"
+  "3.5": "14px"
+  "4": "16px"
+  "5": "20px"
+  "6": "24px"
+  "7": "28px"
+  page-x: "18px"
+  page-top: "24px"
+  page-bottom: "80px"
+components:
+  button-primary:
+    backgroundColor: "{colors.accent}"
+    textColor: "#ffffff"
+    typography: "{typography.md}"
+    rounded: "{rounded.mark}"
+    padding: "0 12px"
+    height: "32px"
+  button-primary-hover:
+    backgroundColor: "{colors.accent-hover}"
+  button-secondary:
+    backgroundColor: "{colors.fill}"
+    textColor: "{colors.text}"
+    typography: "{typography.md}"
+    rounded: "{rounded.mark}"
+    padding: "0 12px"
+    height: "32px"
+  card:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.card}"
+  card-mobile:
+    backgroundColor: "{colors.surface}"
+    rounded: "{rounded.card-mobile}"
+  card-header:
+    typography: "{typography.2xl}"
+    padding: "14px 16px 11px"
+  input:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.text}"
+    typography: "{typography.md}"
+    rounded: "{rounded.mark}"
+    padding: "0 11px"
+    height: "32px"
+  master-list-item:
+    backgroundColor: "transparent"
+    textColor: "{colors.text}"
+  master-list-item-hover:
+    backgroundColor: "{colors.surface-sunken}"
+  master-list-item-selected:
+    backgroundColor: "{colors.accent-tint}"
+    textColor: "{colors.text}"
+  status-badge-neutral:
+    backgroundColor: "{colors.fill}"
+    textColor: "{colors.text-secondary}"
+    typography: "{typography.sm}"
+    rounded: "{rounded.full}"
+    padding: "2px 6px"
+  status-badge-running:
+    backgroundColor: "{colors.accent-tint}"
+    textColor: "{colors.accent}"
+    typography: "{typography.sm}"
+    rounded: "{rounded.full}"
+    padding: "2px 6px"
+  status-badge-success:
+    backgroundColor: "{colors.success-tint}"
+    textColor: "{colors.success}"
+    typography: "{typography.sm}"
+    rounded: "{rounded.full}"
+    padding: "2px 6px"
+  status-badge-warning:
+    backgroundColor: "{colors.warning-tint}"
+    textColor: "{colors.warning}"
+    typography: "{typography.sm}"
+    rounded: "{rounded.full}"
+    padding: "2px 6px"
+  status-badge-error:
+    backgroundColor: "{colors.danger-tint}"
+    textColor: "{colors.danger}"
+    typography: "{typography.sm}"
+    rounded: "{rounded.full}"
+    padding: "2px 6px"
+  nav-item:
+    textColor: "{colors.text-secondary}"
+    typography: "{typography.lg}"
+    padding: "7px 12px 12px"
+  nav-item-current:
+    textColor: "{colors.text}"
+    typography: "{typography.lg}"
+    padding: "7px 12px 9px"
 ---
 
 # MultiReviewer 管理面板设计系统
@@ -211,7 +403,7 @@ StatusBadge 是运行状态的唯一产品级出口，暴露 `neutral`、`runnin
 三套字体栈，全部在 `styles.css` 里定义一次：
 
 - `--v8-font-text`（Tailwind `font-sans`）：`-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`。根容器与绝大多数文字用它。
-- `--v8-font-display`（`font-display`）：同上但把 `SF Pro Text` 换成 `SF Pro Display`。只用在页标题与 KPI 数字上——SF Pro Display 的字腔在 26px 以上才比 Text 好看，这是唯一区分两套栈的尺寸线。设计稿的 Display 栈漏了 `Microsoft YaHei` 与 `system-ui`，这里补齐。
+- `--v8-font-display`（`font-display`）：同上但把 `SF Pro Text` 换成 `SF Pro Display`。只用在可见页标题上（`PageHeader` 的 `visibleTitle`，另经 Radix `--heading-font-family` 供 Heading 组件）——SF Pro Display 的字腔在 26px 以上才比 Text 好看，这是唯一区分两套栈的尺寸线。KPI 主数字走 `font-mono`。设计稿的 Display 栈漏了 `Microsoft YaHei` 与 `system-ui`，这里补齐。
 - `--v8-font-mono`（`font-mono`）：`ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace`。model id、commit SHA、Key 尾号、快捷键、endpoint 用它。
 
 **等宽字体只包数字，不包中文。** `font-mono` 会把汉字撑成等宽格，「3 轮」因此读成断开的两块；写法是 `<span className="font-mono tabular-nums">{n}</span> 轮`。
@@ -340,7 +532,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - 整条铺满底边的抽屉（Finding 侧滑）自己盖住 Tab 栏，只给内部滚动区补 `pb-[calc(…+env(safe-area-inset-bottom))]`。
 - 横屏刘海那一侧由 `#root` 的 `padding-left/right: env(safe-area-inset-left/right)` 让位，竖屏与桌面上这两个值是 0。
 
-**顶栏第一行**：品牌方块 26px（`--v8-radius-mark`、`--v8-mark-gradient`、`--v8-shadow-mark`，内嵌 `Mark framed={false}` 的白色线条）+ 品牌名 `text-xl` `font-bold` + 面包屑分隔符 `/`（`text-text-faint`，窄屏隐藏）+ 当前页名 `text-xl` `font-semibold`（窄屏隐藏）；右侧是搜索入口与头像菜单。
+**顶栏第一行**：品牌方块 26px（`--v8-radius-mark`、`--v8-mark-gradient`、`--v8-shadow-mark`，内嵌 `Mark` 的白色线条）+ 品牌名 `text-xl` `font-bold` + 面包屑分隔符 `/`（`text-text-faint`，窄屏隐藏）+ 当前页名 `text-xl` `font-semibold`（窄屏隐藏）；右侧是搜索入口与头像菜单。
 
 **搜索入口**：`bg-fill`、`rounded-md`、`text-md`、`text-text-muted`，桌面 300px 宽并在右端显示 `⌘K` 键帽（`font-mono text-xs text-text-disabled`），窄屏收成只剩放大镜图标。`aria-keyshortcuts="Meta+K Control+K"`。
 
@@ -547,10 +739,10 @@ Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`Pa
 
 - 通用图标统一来自 `@radix-ui/react-icons`。
 - 常规尺寸沿用 Radix 的 15×15；顶栏搜索图标 14px，移动端 Tab 图标 21px，列表行状态图标 16px。
-- 产品标记保留自绘 SVG：`Mark` 是三条错位短线，三个模型各看同一段改动，与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。它有两种用法——`framed`（默认，自带 `currentColor` 圆角外框）与 `framed={false}`（只出线条，供顶栏与登录页放进自己的渐变方块里；再带一层外框就是方块套方块，外框和线条同色时整枚标记会消失）。
+- 产品标记保留自绘 SVG：`Mark` 是三条错位短线，三个模型各看同一段改动，与 `index.html` 里内联成 data URI 的 favicon 是同一份图形。它只有无框一种形态：只出线条、线条用 `currentColor`，供顶栏与登录页放进自己的渐变方块里；再带一层外框就是方块套方块，外框和线条同色时整枚标记会消失。
 - 装饰图标设置 `aria-hidden="true"`。
 - 纯图标按钮提供 `aria-label` 与 Tooltip。
-- 状态图标必须与状态文字共同出现。StatusBadge 固定四个图标：`InfoCircledIcon` / `CheckCircledIcon` / `ExclamationTriangleIcon` / `CrossCircledIcon`。
+- 状态图标必须与状态文字共同出现。StatusBadge 固定五个图标：`InfoCircledIcon` / `StopwatchIcon` / `CheckCircledIcon` / `ExclamationTriangleIcon` / `CrossCircledIcon`。
 - 已有文字能完整说明动作时，删除重复图标。
 - 禁止使用 Emoji 和 Unicode 图形充当操作图标。
 - 文本分隔符可保留普通字符；日期范围使用「至」。
