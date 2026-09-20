@@ -791,6 +791,9 @@ function StageTimeline({
                       <span className="flex min-w-0 flex-col gap-0.5">
                         <span className="text-lg font-semibold">
                           第 <span className="font-mono tabular-nums">{roundOf.get(entry.runId) ?? "?"}</span> 轮
+                          <span className="ml-1.5 font-mono text-sm font-normal tabular-nums text-text-secondary">
+                            Run #{entry.runId}
+                          </span>
                         </span>
                         <span className="text-base text-text-muted tabular-nums">
                           {localMinute(entry.startedAt)}
@@ -1118,11 +1121,17 @@ function RoundDrawer({
   );
 }
 
-/** 侧滑头部那一行:这一轮是什么结论、跑的哪个 commit、谁触发的、什么时候跑了多久。 */
+/**
+ * 侧滑头部那一行:这一轮是什么结论、跑的哪个 commit、谁触发的、什么时候跑了多久。开头
+ * 带一枚 `Run #<id>`——日志与 API 都按这个全局 id 索引,口头排障时报的号要在面板上找得到。
+ */
 function RunHeadline({ run }: { run: RunItem }) {
   const duration = runDuration(run);
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-base text-text-secondary">
+      <span className="shrink-0 font-mono text-sm tabular-nums text-text-secondary">
+        Run #{run.id}
+      </span>
       <RunPill run={run} />
       <CommitChip sha={run.headSha} />
       <span className="break-all">{triggerLabel(run)}</span>
