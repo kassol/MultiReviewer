@@ -207,11 +207,13 @@ function FindingCard({
               {finding.file}:{finding.line}
             </span>
           </span>
+          {/* 入口写出名字:光一颗图标看不出点了是开侧滑。窄屏只留图标。 */}
           <span
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-tint-strong text-primary transition-colors group-hover:bg-accent-track"
+            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md bg-accent-tint-strong px-1.5 text-sm font-medium text-primary transition-colors group-hover:bg-accent-track"
             aria-hidden
           >
             <FileTextIcon />
+            <span className="hidden sm:inline">代码差异</span>
           </span>
         </span>
         {finding.title === "" ? null : (

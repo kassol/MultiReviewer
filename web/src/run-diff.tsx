@@ -290,175 +290,183 @@ export function FindingRow({
   });
 
   return (
-    <div className="flex flex-col gap-1.5 border-t border-overlay-line px-4 py-3">
-      {heading ? (
-        <div className="flex flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FindingBadges finding={finding} />
-          </div>
-          {finding.title === undefined || finding.title === "" ? null : (
-            <p className="text-lg font-semibold break-words">{finding.title}</p>
-          )}
-        </div>
-      ) : null}
-
-      {/* 正文是代表段那一份问题 / 影响 / 建议(issue #278):几个模型报同一处时人要读的
-          是一份说清楚的说法,谁报的退到下面那一行。 */}
-      <BodyPart text={finding.description} resolved={resolved} />
-      {hasText(finding.impact) ? (
-        <BodyPart label="影响" text={finding.impact ?? ""} resolved={resolved} />
-      ) : null}
-      {hasText(finding.suggestion) ? (
-        <BodyPart label="建议" text={finding.suggestion ?? ""} resolved={resolved} />
-      ) : null}
-
-      {/* 归属一行(ADR 0015):报出它的模型全列出来,一个都不藏,但不再抢正文。 */}
-      <p className="flex flex-wrap items-center gap-1.5 pt-1 text-sm text-text-secondary">
-        <span>由 {finding.models.length} 个模型报出：</span>
-        {finding.models.map((model) => (
-          <span key={model} className="min-w-0 rounded-chip bg-fill px-1.5 py-0.5 font-mono text-xs break-all">
-            {model}
-          </span>
-        ))}
-      </p>
-
-      <OriginalSaid finding={finding} />
-
-      <LineAuthorLine lineAuthor={finding.lineAuthor} />
-
-      {finding.continuedFrom === null ? null : (
-        <p className="text-sm text-text-secondary">
-          <a
-            href={finding.continuedFrom}
-            target="_blank"
-            rel="noreferrer"
-            className="touch-link text-primary underline underline-offset-4"
-          >
-            延续自上一处评论
-          </a>
-          {" · "}原位置代码已改写；复核判定该 Finding 仍在
-        </p>
-      )}
-
-      {/* 交接未完成(ADR 0025):旧评论还留在 Forge 上待关闭。摆在处置状态旁,读的人知道
-          这条在 Forge 上还有一条打开的旧评论,可以去处置;下一轮收尾会自动重试关闭。 */}
-      {finding.handoffPending ? (
-        <p className="text-sm text-warning">
-          交接未完成 · 旧评论尚未关闭，仍可在 Forge 上处置；下一轮 Review Run 收尾时重试关闭
-        </p>
-      ) : null}
-
-      {autoDisposed ? (
-        <p className="text-sm text-text-secondary">
-          已修复 · 自动处置
-          {finding.disposedAt === null ? null : (
-            <>
-              {" · "}
-              <span className="tabular-nums">
-                {localDay(finding.disposedAt)} {localClock(finding.disposedAt)}
-              </span>
-            </>
-          )}
-        </p>
-      ) : finding.disposedBy === null ? null : (
-        <p className="text-sm text-text-secondary">
-          {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
-          <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
-        </p>
-      )}
-      {finding.note === null ? null : (
-        <p className="rounded-lg bg-fill px-2.5 py-1.5 text-sm break-words text-text-secondary">
-          备注：{finding.note}
-        </p>
-      )}
-
-      {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
-      {finding.commentId === null ? (
-        <p className="text-sm text-text-secondary">
-          该 Finding 仅发布在 pull request review 正文中，未生成可处置的行级评论。
-        </p>
-      ) : (
-        <div className="flex flex-col gap-2 pt-1">
-          {canDispose && composing ? (
-            <TextField.Root
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              maxLength={500}
-              placeholder="只写为什么不用改（可选，只存面板）；代码已改的留给下一轮评审自动处置"
-              aria-label="处置备注"
-            />
+    // 宽卡(阶段列表)正文与元信息左右分栏:正文行宽封在 56rem,右边那半张卡原来是空的,
+    // 归属、行作者与处置挪过去,一张卡矮一截,几百条往下扫得更快。窄卡(侧滑里那张)
+    // 不到 64rem,照旧上下排。按容器宽度分,不按视口:同一个组件两处宽度差一倍。
+    <div className="@container border-t border-overlay-line px-4 py-3">
+      <div className="flex flex-col gap-3 @5xl:grid @5xl:grid-cols-[minmax(0,56rem)_minmax(0,1fr)] @5xl:gap-8">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          {heading ? (
+            <div className="flex flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <FindingBadges finding={finding} />
+              </div>
+              {finding.title === undefined || finding.title === "" ? null : (
+                <p className="text-lg font-semibold break-words">{finding.title}</p>
+              )}
+            </div>
           ) : null}
-          <div className="flex items-center gap-2">
-            {!canDispose ? null : resolved ? (
-              <Button
-                variant="soft"
-                color="gray"
-                size={{ initial: "3", sm: "1" }}
-                highContrast
-                disabled={dispose.isPending}
-                onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
-                aria-label={`撤回 ${finding.file}:${finding.line} 的 Finding 处置`}
-              >
-                撤回处置
-              </Button>
-            ) : composing ? (
-              <>
-                <Button
-                  variant="solid"
-                  size={{ initial: "3", sm: "1" }}
-                  disabled={dispose.isPending}
-                  onClick={() => dispose.mutate({ id: finding.id, disposition: "resolved", note })}
-                  aria-label={`确认处置 ${finding.file}:${finding.line} 的 Finding`}
-                >
-                  {dispose.isPending ? "处置中…" : "确认处置"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  color="gray"
-                  size={{ initial: "3", sm: "1" }}
-                  highContrast
-                  onClick={() => { setComposing(false); setNote(""); }}
-                  aria-label={`取消处置 ${finding.file}:${finding.line} 的 Finding`}
-                >
-                  取消
-                </Button>
-              </>
-            ) : (
-              <Button
-                variant="soft"
-                color="gray"
-                size={{ initial: "3", sm: "1" }}
-                highContrast
-                onClick={() => setComposing(true)}
-                aria-label={`处置 ${finding.file}:${finding.line} 的 Finding`}
-              >
-                处置
-              </Button>
-            )}
-            {/* 原始评论的外链与处置并排:两样都是「对这条 Finding 做点什么」。 */}
-            {finding.commentHtmlUrl === null ? null : (
-              <Tooltip content="在 Forge 查看原始评论">
-                <IconButton size="1" variant="ghost" color="gray" radius="full" className="ml-auto" asChild>
-                  <a
-                    href={finding.commentHtmlUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
-                  >
-                    <ExternalLinkIcon />
-                  </a>
-                </IconButton>
-              </Tooltip>
-            )}
-          </div>
-        </div>
-      )}
 
-      {dispose.isError ? (
-        <p role="alert" className="text-sm break-words text-danger">
-          {(dispose.error as Error).message}
-        </p>
-      ) : null}
+          {/* 正文是代表段那一份问题 / 影响 / 建议(issue #278):几个模型报同一处时人要读的
+              是一份说清楚的说法,谁报的退到下面那一行。 */}
+          <BodyPart text={finding.description} resolved={resolved} />
+          {hasText(finding.impact) ? (
+            <BodyPart label="影响" text={finding.impact ?? ""} resolved={resolved} />
+          ) : null}
+          {hasText(finding.suggestion) ? (
+            <BodyPart label="建议" text={finding.suggestion ?? ""} resolved={resolved} />
+          ) : null}
+
+          <OriginalSaid finding={finding} />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1.5 @5xl:border-l @5xl:border-overlay-line @5xl:pl-6">
+          {/* 归属一行(ADR 0015):报出它的模型全列出来,一个都不藏,但不再抢正文。 */}
+          <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-secondary">
+            <span>由 {finding.models.length} 个模型报出：</span>
+            {finding.models.map((model) => (
+              <span key={model} className="min-w-0 rounded-chip bg-fill px-1.5 py-0.5 font-mono text-xs break-all">
+                {model}
+              </span>
+            ))}
+          </p>
+
+          <LineAuthorLine lineAuthor={finding.lineAuthor} />
+
+          {finding.continuedFrom === null ? null : (
+            <p className="text-sm text-text-secondary">
+              <a
+                href={finding.continuedFrom}
+                target="_blank"
+                rel="noreferrer"
+                className="touch-link text-primary underline underline-offset-4"
+              >
+                延续自上一处评论
+              </a>
+              {" · "}原位置代码已改写；复核判定该 Finding 仍在
+            </p>
+          )}
+
+          {/* 交接未完成(ADR 0025):旧评论还留在 Forge 上待关闭。摆在处置状态旁,读的人知道
+              这条在 Forge 上还有一条打开的旧评论,可以去处置;下一轮收尾会自动重试关闭。 */}
+          {finding.handoffPending ? (
+            <p className="text-sm text-warning">
+              交接未完成 · 旧评论尚未关闭，仍可在 Forge 上处置；下一轮 Review Run 收尾时重试关闭
+            </p>
+          ) : null}
+
+          {autoDisposed ? (
+            <p className="text-sm text-text-secondary">
+              已修复 · 自动处置
+              {finding.disposedAt === null ? null : (
+                <>
+                  {" · "}
+                  <span className="tabular-nums">
+                    {localDay(finding.disposedAt)} {localClock(finding.disposedAt)}
+                  </span>
+                </>
+              )}
+            </p>
+          ) : finding.disposedBy === null ? null : (
+            <p className="text-sm text-text-secondary">
+              {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
+              <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
+            </p>
+          )}
+          {finding.note === null ? null : (
+            <p className="rounded-lg bg-fill px-2.5 py-1.5 text-sm break-words text-text-secondary">
+              备注：{finding.note}
+            </p>
+          )}
+
+          {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
+          {finding.commentId === null ? (
+            <p className="text-sm text-text-secondary">
+              该 Finding 仅发布在 pull request review 正文中，未生成可处置的行级评论。
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2 pt-1">
+              {canDispose && composing ? (
+                <TextField.Root
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  maxLength={500}
+                  placeholder="只写为什么不用改（可选，只存面板）；代码已改的留给下一轮评审自动处置"
+                  aria-label="处置备注"
+                />
+              ) : null}
+              <div className="flex items-center gap-2">
+                {!canDispose ? null : resolved ? (
+                  <Button
+                    variant="soft"
+                    color="gray"
+                    size={{ initial: "3", sm: "1" }}
+                    highContrast
+                    disabled={dispose.isPending}
+                    onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
+                    aria-label={`撤回 ${finding.file}:${finding.line} 的 Finding 处置`}
+                  >
+                    撤回处置
+                  </Button>
+                ) : composing ? (
+                  <>
+                    <Button
+                      variant="solid"
+                      size={{ initial: "3", sm: "1" }}
+                      disabled={dispose.isPending}
+                      onClick={() => dispose.mutate({ id: finding.id, disposition: "resolved", note })}
+                      aria-label={`确认处置 ${finding.file}:${finding.line} 的 Finding`}
+                    >
+                      {dispose.isPending ? "处置中…" : "确认处置"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      color="gray"
+                      size={{ initial: "3", sm: "1" }}
+                      highContrast
+                      onClick={() => { setComposing(false); setNote(""); }}
+                      aria-label={`取消处置 ${finding.file}:${finding.line} 的 Finding`}
+                    >
+                      取消
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="soft"
+                    color="gray"
+                    size={{ initial: "3", sm: "1" }}
+                    highContrast
+                    onClick={() => setComposing(true)}
+                    aria-label={`处置 ${finding.file}:${finding.line} 的 Finding`}
+                  >
+                    处置
+                  </Button>
+                )}
+                {/* 原始评论的外链与处置并排:两样都是「对这条 Finding 做点什么」。 */}
+                {finding.commentHtmlUrl === null ? null : (
+                  <Tooltip content="在 Forge 查看原始评论">
+                    <IconButton size="1" variant="ghost" color="gray" radius="full" className="ml-auto" asChild>
+                      <a
+                        href={finding.commentHtmlUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
+                      >
+                        <ExternalLinkIcon />
+                      </a>
+                    </IconButton>
+                  </Tooltip>
+                )}
+              </div>
+            </div>
+          )}
+
+          {dispose.isError ? (
+            <p role="alert" className="text-sm break-words text-danger">
+              {(dispose.error as Error).message}
+            </p>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -647,8 +655,8 @@ export function FilePatch({
                           <td className="w-12 px-1.5 text-right align-top tabular-nums text-text-secondary select-none">
                             {line.newLine ?? ""}
                           </td>
-                          <td className="px-2 align-top whitespace-pre-wrap break-words text-text">
-                            <span className="select-none text-text-secondary">
+                          <td className="pr-2 pl-[calc(0.5rem+2ch)] -indent-[2ch] align-top whitespace-pre-wrap break-words text-text">
+                            <span className="inline-block w-[2ch] indent-0 select-none text-text-secondary">
                               {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                             </span>
                             {line.text}

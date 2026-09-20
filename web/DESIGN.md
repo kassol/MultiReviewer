@@ -697,7 +697,7 @@ Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`Pa
 
 面板内是文件列表加逐文件 diff：每个文件一张卡，卡头写路径、新增/修改/删除、`+N −M`（增走 `--v8-success`、删走 `--v8-danger`）与这个文件的发现数，点卡头展开或收起。diff 用 `font-mono text-xs` 的三列表格——旧行号、新行号、正文，新增行整行 `--v8-success-tint`、删除行整行 `--v8-danger-tint`，hunk 头走 `--v8-surface-sunken`。Finding 卡片插在它所指的那一行下面：那一格铺 `--v8-surface-sunken`、换回 `font-sans text-base`，卡片是内嵌其上的一张圆角卡（`border-overlay-line` + `shadow-control`，侧滑点进来的那一条描 `border-primary` 加 `bg-accent-tint`）——表格的等宽字体不传进卡片。卡里依次是徽章与标题、正文（主文字色，「影响」「建议」标签次级色，行宽封 56rem，反引号段按行内代码）、归属模型 chip、行作者、处置行（行尾是 Forge 外链）；已处置项划线加绿勾，未处置项带优先级徽章；模型失败原因整段摊在最上面的红色 Callout 里，不折叠。
 
-阶段详情使用同一浮层规格承载单条 Finding 的代码差异与单轮审查轨迹。Finding 列表入口使用 `FileTextIcon` 图标与动态可访问名称,Review Run 入口使用 `ReaderIcon` 加「审查轨迹」;界面不使用「看这处」「看这一轮」等依赖视觉上下文的动作名称。diff 的旧 / 新行号列固定,代码列按可用宽度 soft wrap；续行仍属于同一个逻辑行,不重复行号,缩进与空格保留,侧滑自身不产生横向滚动。移动端关闭、Forge 外链、处置和 Reviewer 展开动作的触控区域至少 44px。该 Primitive Dialog 的 Portal 固定挂到 `PanelTheme` 内的 `#panel-portal`,确保 Themes 组件继承同一套颜色、字号和圆角变量。
+阶段详情使用同一浮层规格承载单条 Finding 的代码差异与单轮审查轨迹。Finding 列表入口使用 `FileTextIcon` 图标加「代码差异」字样(`sm` 以下只留图标)与动态可访问名称,Review Run 入口使用 `ReaderIcon` 加「审查轨迹」;界面不使用「看这处」「看这一轮」等依赖视觉上下文的动作名称。diff 的旧 / 新行号列固定,代码列按可用宽度 soft wrap，续段悬挂缩进、与代码列对齐；续行仍属于同一个逻辑行,不重复行号,缩进与空格保留,侧滑自身不产生横向滚动。移动端关闭、Forge 外链、处置和 Reviewer 展开动作的触控区域至少 44px。该 Primitive Dialog 的 Portal 固定挂到 `PanelTheme` 内的 `#panel-portal`,确保 Themes 组件继承同一套颜色、字号和圆角变量。
 
 ### 10.3 AlertDialog
 
