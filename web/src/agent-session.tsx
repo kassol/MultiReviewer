@@ -1189,19 +1189,20 @@ function WrotePanel({ productId, wrote }: { productId: number; wrote: SessionWro
   return (
     <div className="flex min-w-0 flex-col gap-3">
       <h2 className="text-2xl font-bold tracking-[-0.015em]">本会话写的 spec 与票</h2>
-      <ul className="flex flex-col gap-1.5">
+      {/* 行与行之间一根发丝线,不给每行再套一层带边的盒子:这一栏本身已经是一张卡。 */}
+      <ul className="-mx-2 flex flex-col">
         {rows.map((row) => (
-          <li key={row.key}>
+          <li key={row.key} className="border-t border-line first:border-t-0">
             <Link
               to="/products/$productId"
               params={{ productId: String(productId) }}
               search={row.spec === undefined ? {} : { spec: row.spec }}
-              className="flex min-w-0 items-start gap-2 rounded-lg border border-card-line bg-surface px-3 py-2 transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+              className="flex min-w-0 items-start gap-2 rounded-md px-2 py-2.5 transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
             >
               <Badge color="gray" variant="soft" className="shrink-0">
                 {row.label}
               </Badge>
-              <span className="min-w-0 break-words text-sm">{row.title}</span>
+              <span className="min-w-0 break-words text-base">{row.title}</span>
             </Link>
           </li>
         ))}

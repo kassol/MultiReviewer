@@ -686,7 +686,7 @@ function KnowledgeSection({
                               </span>
                               {entry.avoided.length === 0 ? null : (
                                 <span className="break-words text-sm text-text-muted">
-                                  不说:{entry.avoided.join("、")}
+                                  <span className="font-medium text-text-secondary">不说</span>　{entry.avoided.join("、")}
                                 </span>
                               )}
                               <Annotations entry={entry} />
@@ -760,12 +760,12 @@ function KnowledgeSection({
                         </span>
                         {entry.options === null ? null : (
                           <span className="break-words text-sm text-text-muted">
-                            备选:<Statement text={entry.options} />
+                            <span className="font-medium text-text-secondary">备选</span>　<Statement text={entry.options} />
                           </span>
                         )}
                         {entry.consequences === null ? null : (
                           <span className="break-words text-sm text-text-muted">
-                            后果:<Statement text={entry.consequences} />
+                            <span className="font-medium text-text-secondary">后果</span>　<Statement text={entry.consequences} />
                           </span>
                         )}
                         <Annotations entry={entry} />
@@ -913,7 +913,7 @@ function TrackerSection({
                     {/* 静息态一颗 chevron 加 hover / focus 下划线:ghost 键平时与纯文字无异,
                         没有提示时这条标题看不出点得开。 */}
                     <ChevronRightIcon aria-hidden className="shrink-0 text-text-muted" />
-                    <span className="min-w-0 break-words font-medium group-hover:underline group-focus-visible:underline">
+                    <span className="min-w-0 break-words text-lg font-semibold text-text group-hover:underline group-focus-visible:underline">
                       {spec.title}
                     </span>
                   </Button>
@@ -939,7 +939,8 @@ function TrackerSection({
                     还没有拆出票。
                   </Text>
                 ) : (
-                  <ul className="flex min-w-0 flex-col gap-1">
+                  // 票缩进到 spec 标题的字下面(让开 chevron 那一格):一眼看得出它们挂在这条 spec 下。
+                  <ul className="flex min-w-0 flex-col gap-1.5 sm:pl-6">
                     {spec.tickets.map((ticket) => {
                       const notes = ticketNotes(ticket);
                       return (
@@ -955,14 +956,13 @@ function TrackerSection({
                           <span className="mt-0.5 shrink-0 font-mono text-xs text-text-muted tabular-nums">
                             #{ticket.id}
                           </span>
-                          <Badge
-                            color={LABEL_COLOR[ticket.label]}
-                            variant="soft"
-                            size="1"
-                            className="mt-0.5 shrink-0"
-                          >
-                            {ticket.label}
-                          </Badge>
+                          {/* 标签那一格 `sm` 起定宽(最长的 ready-for-human 放得下):五个标签长短
+                              不一,不定宽时几张票的标题起点参差。 */}
+                          <span className="mt-0.5 flex shrink-0 sm:w-[7.5rem]">
+                            <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
+                              {ticket.label}
+                            </Badge>
+                          </span>
                           <Text
                             as="span"
                             size="2"
@@ -1207,8 +1207,19 @@ function SpecDialog({
               评论点开才展开(issue #366 之后一条 spec 常带十来张票,全摊开要滚半天才找得到
               要动的那一张)。动作贴着标题那一行——收起时也要认领得了、改得了标签。
             */}
+            {detail.data.tickets.length === 0 ? null : (
+              <h3 className="flex items-center gap-1.5 border-t border-line pt-4 text-lg font-semibold">
+                票
+                <span className="font-mono text-xs font-normal text-text-muted tabular-nums">
+                  {detail.data.tickets.length}
+                </span>
+              </h3>
+            )}
             {detail.data.tickets.map((ticket) => (
-              <section key={ticket.id} className="flex min-w-0 flex-col border-t border-line pt-3">
+              <section
+                key={ticket.id}
+                className="flex min-w-0 flex-col border-t border-line pt-3 first-of-type:border-t-0 first-of-type:pt-0"
+              >
                 <Collapsible.Root className="group/ticket flex min-w-0 flex-col gap-1.5">
                   <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                     <Collapsible.Trigger asChild>
@@ -1238,11 +1249,11 @@ function SpecDialog({
                     )}
                     {pickable.has(ticket.id) ? <PickableMark /> : null}
                     {canChat ? (
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-4 pl-1">
                         <Button
                           size="1"
                           className="pointer-coarse:min-h-11"
-                          variant="soft"
+                          variant="ghost"
                           color="gray"
                           disabled={busy}
                           onClick={() =>
@@ -1253,7 +1264,7 @@ function SpecDialog({
                         </Button>
                         <DropdownMenu.Root>
                           <DropdownMenu.Trigger>
-                            <Button size="1" variant="soft" color="gray" disabled={busy} className="pointer-coarse:min-h-11">
+                            <Button size="1" variant="ghost" color="gray" disabled={busy} className="pointer-coarse:min-h-11">
                               改标签
                               <ChevronDownIcon aria-hidden />
                             </Button>
@@ -1273,7 +1284,7 @@ function SpecDialog({
                         <Button
                           size="1"
                           className="pointer-coarse:min-h-11"
-                          variant="soft"
+                          variant="ghost"
                           color="gray"
                           disabled={busy}
                           onClick={(event) =>
