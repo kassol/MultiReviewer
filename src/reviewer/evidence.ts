@@ -354,10 +354,14 @@ export function installEvidenceKit(options: {
 const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false } as const;
 
 /**
- * 取证调用放行的参数(issue #328):派单与超时要用的几项,加上钉死的四项。其余一律打回——
+ * 取证调用放行的参数(issue #328):派单与超时要用的几项,加上钉死的四项。其余一律剥掉——
  * `action`(能新建或改写 agent 定义)、`workflow` / `workflowScript*`(子任务各自带发现范围与
  * cwd,钉不到)这类入口在关掉 `denyExtensions` 之后都能把仓库里的扩展带进 Reviewer 进程。
  * 放行清单比拦截清单短,pi-subagents 加了新参数也默认不放。
+ *
+ * 剥掉而不是整次打回(issue #404):模型看得到 pi-subagents 工具的完整 schema,第一次调用
+ * 常带上几个清单外的键,打回之后它去掉那几项重试一遍就过——一次往返白花。被剥的键到不了
+ * pi-subagents,与打回等价。
  */
 const EVIDENCE_CALL_KEYS = new Set([
   "agent",
@@ -378,98 +382,91 @@ const EVIDENCE_CALL_KEYS = new Set([
  * `tasks[]` / `chain[]` / `parallel` 每一项放行的键(issue #328):派单要用的几项加标签类。
  * 项里的 `output` 是文件路径,绝对路径原样写盘(pi-subagents `single-output.ts`),只读的取证
  * 会话由此往任意位置写;`reads` 把任意路径读进上下文;`model` 换模型;`skill` / `progress`
- * 也读写文件。与顶层同一个做法:清单外整次打回。
+ * 也读写文件。与顶层同一个做法:清单外的键剥掉。
  */
 const EVIDENCE_TASK_KEYS = new Set(["agent", "task", "cwd", "agentScope", "label", "phase", "as", "count"]);
 /** chain 一步在任务项之上多的三项:并行子任务、按上一步产出展开、收集展开结果。 */
 const EVIDENCE_STEP_KEYS = new Set([...EVIDENCE_TASK_KEYS, "parallel", "expand", "collect"]);
 
-function extraKeys(item: object, allowed: ReadonlySet<string>): string[] {
-  return Object.keys(item).filter((key) => !allowed.has(key));
+/** 只留放行清单里的键,剥掉的键名记进 `stripped`。 */
+function keepAllowed(
+  item: object,
+  allowed: ReadonlySet<string>,
+  stripped: string[],
+): Record<string, unknown> {
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (allowed.has(key)) kept[key] = value;
+    else stripped.push(key);
+  }
+  return kept;
 }
 
 /**
- * 给一项钉上工作副本,清单外的键打回。不是对象的原样留着,形状错由 pi-subagents 自己报。
+ * 给一项钉上工作副本,清单外的键剥掉。不是对象的原样留着,形状错由 pi-subagents 自己报。
  */
 function pinItem(
   item: unknown,
   allowed: ReadonlySet<string>,
   worktreePath: string,
-): { item: unknown } | { rejected: string } {
-  if (item === null || typeof item !== "object" || Array.isArray(item)) return { item };
-  const extra = extraKeys(item, allowed);
-  if (extra.length > 0) {
-    return { rejected: `subagent tasks do not accept ${extra.join(", ")}; use agent, task and cwd only` };
-  }
-  return { item: { ...item, cwd: worktreePath } };
+  stripped: string[],
+): unknown {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
+  return { ...keepAllowed(item, allowed, stripped), cwd: worktreePath };
 }
 
 /**
- * 一次取证调用钉成契约形状(issue #262、#328)。纯函数:给出钉好的参数,或给出打回原因。
+ * 一次取证调用钉成契约形状(issue #262、#328、#404)。纯函数:给出钉好的参数,与被剥掉的
+ * 那些键名。
  *
  * 钉四项:`intercomBridge` 与 `async` 见上;`agentScope` 钉 `user`,发现只读 agentDir——
  * 默认 `both` 时仓库 `.pi/agents` 里同名的 `evidence.md` 优先,带上 `extensions` 就是在
  * Reviewer 进程里跑仓库的代码;`cwd` 钉工作副本,顶层、`tasks[]` 每项、`chain[]` 每项及其
  * `parallel`(任务数组或单个模板)都钉——cwd 决定项目发现从哪读,也是子会话的工作目录。
- * 顶层与每一项各有放行清单,清单外的键整次打回。
+ * 顶层与每一项各有放行清单,清单外的键剥掉:调用照常派出,那几项到不了 pi-subagents。
  */
 export function pinSubagentCall(
   params: Readonly<Record<string, unknown>>,
   worktreePath: string,
-): { params: Record<string, unknown> } | { rejected: string } {
-  const extra = extraKeys(params, EVIDENCE_CALL_KEYS);
-  if (extra.length > 0) {
-    return {
-      rejected: `subagent calls do not accept ${extra.join(", ")}; use agent and task (or tasks / chain) only`,
-    };
-  }
+): { params: Record<string, unknown>; stripped: string[] } {
+  const stripped: string[] = [];
   const pinned: Record<string, unknown> = {
-    ...params,
+    ...keepAllowed(params, EVIDENCE_CALL_KEYS, stripped),
     ...EVIDENCE_PINNED_PARAMS,
     agentScope: "user",
     cwd: worktreePath,
   };
   if (Array.isArray(params["tasks"])) {
-    const tasks: unknown[] = [];
-    for (const task of params["tasks"]) {
-      const result = pinItem(task, EVIDENCE_TASK_KEYS, worktreePath);
-      if ("rejected" in result) return result;
-      tasks.push(result.item);
-    }
-    pinned["tasks"] = tasks;
+    pinned["tasks"] = params["tasks"].map((task) =>
+      pinItem(task, EVIDENCE_TASK_KEYS, worktreePath, stripped),
+    );
   }
   if (Array.isArray(params["chain"])) {
-    const chain: unknown[] = [];
-    for (const step of params["chain"]) {
-      const result = pinItem(step, EVIDENCE_STEP_KEYS, worktreePath);
-      if ("rejected" in result) return result;
+    pinned["chain"] = params["chain"].map((step) => {
+      const pinnedStep = pinItem(step, EVIDENCE_STEP_KEYS, worktreePath, stripped);
       const parallel = (step as { parallel?: unknown } | null)?.parallel;
-      if (parallel === undefined || result.item === step) {
-        chain.push(result.item);
-        continue;
-      }
-      const items: unknown[] = [];
-      for (const task of Array.isArray(parallel) ? parallel : [parallel]) {
-        const pinnedTask = pinItem(task, EVIDENCE_TASK_KEYS, worktreePath);
-        if ("rejected" in pinnedTask) return pinnedTask;
-        items.push(pinnedTask.item);
-      }
-      chain.push({
-        ...(result.item as object),
+      // 不是对象的那一步原样留着,没有 parallel 的那一步已经钉完。
+      if (parallel === undefined || pinnedStep === step) return pinnedStep;
+      const items = (Array.isArray(parallel) ? parallel : [parallel]).map((task) =>
+        pinItem(task, EVIDENCE_TASK_KEYS, worktreePath, stripped),
+      );
+      return {
+        ...(pinnedStep as object),
         parallel: Array.isArray(parallel) ? items : items[0],
-      });
-    }
-    pinned["chain"] = chain;
+      };
+    });
   }
-  return { params: pinned };
+  return { params: pinned, stripped };
 }
 
 /**
  * 子代理契约在工具边界的那一道(issue #262、#328、#358):与 pi-subagents 一起装进父会话的
  * 进程内扩展,在 `subagent` 工具执行之前做两件事——把能力天花板登记到这个会话名下,把调用
- * 参数按 `pinSubagentCall` 钉成契约形状。钉得住的改参数而不拒调用:模型要的是证据,给它
- * 证据,只是不按它写的方式派;放行清单外的参数才打回。Pi 的 `tool_call` 钩子对扩展注册的工具同样生效,
- * `event.input` 就地改写后进入执行,这一层不再校验。
+ * 参数按 `pinSubagentCall` 钉成契约形状。一律改参数而不拒调用(issue #404):模型要的是
+ * 证据,给它证据,只是不按它写的方式派;放行清单外的参数剥掉就好,到不了 pi-subagents。
+ * Pi 的 `tool_call` 钩子对扩展注册的工具同样生效,`event.input` 就地改写后进入执行,
+ * 这一层不再校验。被剥的键在审查轨迹上照样看得见:轨迹记的 `args` 取自
+ * `tool_execution_start`,而那一帧带的是模型写下的原始参数,在这道钩子之前就发出去了。
  *
  * 天花板挂在这里而不是会话启动时:pi-subagents 派出前按「当前会话 id」查表,而这个 id
  * 在 `tool_call` 的 ctx 里就是它查表用的那一个(有会话文件用文件路径,内存会话用 id),
@@ -487,7 +484,6 @@ export function subagentContractExtension(
         if (event.toolName !== SUBAGENT_TOOL) return undefined;
         const input = event.input as Record<string, unknown>;
         const pinned = pinSubagentCall(input, worktreePath);
-        if ("rejected" in pinned) return { block: true, reason: pinned.rejected };
         registerSubagentCeiling(
           ctx.sessionManager.getSessionFile() ?? ctx.sessionManager.getSessionId(),
           agent,

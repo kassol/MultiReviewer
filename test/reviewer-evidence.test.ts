@@ -229,12 +229,22 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
   hook(read, ctx);
   assert.deepEqual(read.input, { path: "a.ts", async: true });
 
-  // 放行清单外的参数整次打回,参数与登记表都不动(issue #328)。
-  const management = { toolName: SUBAGENT_TOOL, input: { action: "create", config: { name: EVIDENCE_AGENT } } };
-  const blocked = hook(management, { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-blocked" } });
-  assert.deepEqual(blocked, { block: true, reason: "subagent calls do not accept action, config; use agent and task (or tasks / chain) only" });
-  assert.deepEqual(management.input, { action: "create", config: { name: EVIDENCE_AGENT } });
-  assert.deepEqual(ceilingRegistrations("session-blocked"), []);
+  // 放行清单外的参数剥掉,调用照常派出(issue #404):打回只会让模型去掉那几项重试一遍。
+  const management = {
+    toolName: SUBAGENT_TOOL,
+    input: { agent: EVIDENCE_AGENT, task: "查", action: "create", config: { name: EVIDENCE_AGENT } },
+  };
+  const stripped = hook(management, { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-stripped" } });
+  assert.equal(stripped, undefined, "不拒调用,只剥参数");
+  assert.deepEqual(management.input, {
+    agent: EVIDENCE_AGENT,
+    task: "查",
+    intercomBridge: { mode: "off" },
+    async: false,
+    agentScope: "user",
+    cwd: WORKTREE,
+  });
+  assert.equal(ceilingRegistrations("session-stripped").length, 1);
 });
 
 test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue #328)", () => {
@@ -243,7 +253,7 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
   // 单任务:模型要 project 范围、换目录,一律改回。
   assert.deepEqual(
     pinSubagentCall({ agent: EVIDENCE_AGENT, task: "查", agentScope: "project", cwd: "/etc" }, WORKTREE),
-    { params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop } },
+    { params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop }, stripped: [] },
   );
 
   // tasks[]:每一项的 cwd 都钉,没写的也补上。
@@ -260,6 +270,7 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
         ],
         ...pinnedTop,
       },
+      stripped: [],
     },
   );
 
@@ -284,20 +295,24 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
         ],
         ...pinnedTop,
       },
+      stripped: [],
     },
   );
 
-  // 管理动作与 workflow 脚本钉不住发现范围,整次打回;入参不被改写。
+  // 管理动作与 workflow 脚本钉不住发现范围,那几项剥掉、调用照常派出(issue #404);
+  // 入参不被改写,钉好的那一份里一个都不剩。
   for (const key of ["action", "workflow", "workflowScript", "workflowScriptPath", "config"]) {
     const params = { agent: EVIDENCE_AGENT, task: "查", [key]: "x" };
     const result = pinSubagentCall(params, WORKTREE);
-    assert.ok("rejected" in result, `${key} 被放行`);
-    assert.match(result.rejected, new RegExp(`accept ${key};`));
+    assert.deepEqual(result, {
+      params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop },
+      stripped: [key],
+    });
     assert.deepEqual(params, { agent: EVIDENCE_AGENT, task: "查", [key]: "x" });
   }
 });
 
-test("取证任务项里的 output / reads / model 一类键整次打回:项也有放行清单(issue #328)", () => {
+test("取证任务项里的 output / reads / model 一类键剥掉:项也有放行清单(issue #328、#404)", () => {
   // output 是文件路径,绝对路径原样写盘;reads 把任意路径读进上下文;model 换模型。
   for (const key of ["output", "reads", "model", "skill", "progress", "outputMode"]) {
     const item = { agent: EVIDENCE_AGENT, task: "a", [key]: "/etc/x" };
@@ -307,20 +322,24 @@ test("取证任务项里的 output / reads / model 一类键整次打回:项也�
       { chain: [{ parallel: [item] }] },
       { chain: [{ parallel: item }] },
     ]) {
+      const where = JSON.stringify(params);
       const result = pinSubagentCall(params, WORKTREE);
-      assert.ok("rejected" in result, `${key} 在 ${JSON.stringify(params)} 里被放行`);
-      assert.match(result.rejected, new RegExp(`tasks do not accept ${key};`));
+      assert.deepEqual(result.stripped, [key], `${key} 在 ${where} 里没被剥掉`);
+      // 派出去的那一份里这个键一个都不剩,它因此到不了 pi-subagents。
+      assert.ok(!JSON.stringify(result.params).includes(key), `${key} 在 ${where} 里漏进了钉好的参数`);
     }
   }
   // 标签类与 chain 自己的三项照常放行。
-  const ok = pinSubagentCall(
-    {
-      tasks: [{ agent: EVIDENCE_AGENT, task: "a", label: "一", phase: "p", as: "one", count: 2 }],
-      chain: [{ agent: EVIDENCE_AGENT, expand: { from: { output: "one", path: "/items" } }, collect: { as: "all" } }],
-    },
-    WORKTREE,
+  assert.deepEqual(
+    pinSubagentCall(
+      {
+        tasks: [{ agent: EVIDENCE_AGENT, task: "a", label: "一", phase: "p", as: "one", count: 2 }],
+        chain: [{ agent: EVIDENCE_AGENT, expand: { from: { output: "one", path: "/items" } }, collect: { as: "all" } }],
+      },
+      WORKTREE,
+    ).stripped,
+    [],
   );
-  assert.ok("params" in ok);
 });
 
 test("取证 agent 经扩展装上 Reviewer 那一份四件套,工作副本根写死(issue #328)", () => {

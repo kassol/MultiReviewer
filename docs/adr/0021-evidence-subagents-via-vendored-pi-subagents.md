@@ -69,3 +69,12 @@ Pi 升到 0.85.0、pi-subagents 升到 0.65.1。pi-subagents 0.65 起前台子�
 - **`hostAvailableBuiltins` 整层删除。**0.67 那类「宿主同名工具让子会话的 `read` 被静默剪掉」的成因结构性消失,上一条修订里跳过 0.67.0 的理由不再适用于之后的版本。
 - **未变。**只读四件套的扩展注入、`denyExtensions: false` 加工具边界补回的那一道、两道 spawn 预算、`intercomBridge` 校验、`disableBuiltins`、`asyncByDefault`、`transcriptPath` 与 `acceptance: none` 在 0.70 下逐项同形。
 
+
+## 修订(2026-09-20,issue #404)
+
+**放行清单外的参数改为剥掉后放行,不再整次打回。**
+
+- **起因。**模型看得到 pi-subagents 工具的完整 schema,第一次调用常带 `action` / `capabilities` 之类清单外的键;打回之后它去掉那几项重试一遍就过,每次取证白花一趟往返。
+- **做法。**`pinSubagentCall` / `pinItem` 在顶层、`tasks[]` 每项、`chain[]` 每步及其 `parallel` 上只留放行清单里的键,其余丢弃,再钉上那四项,调用照常派出;被剥的键名随钉好的参数一起回出来。
+- **安全性等价。**被剥的键到不了 pi-subagents,这与打回拦下的是同一批入口;钉死的 `intercomBridge` / `async` / `agentScope` / `cwd` 与各层 cwd 的钉法一格未动,能力天花板也未动。
+- **可见性。**审查轨迹记的 `args` 取自 `tool_execution_start`,那一帧带的是模型写下的原始参数、在工具边界的钩子之前就发出去了,被剥的键因此照样看得见。
