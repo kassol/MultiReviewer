@@ -2306,10 +2306,16 @@ export async function runReview(
         // 就是全部文件,「批外」这件事本身不成立,那条路径逐字不变。
         const batched = batches.length > 1;
         const inBatch = new Set(files);
+        // 这一批该拿到几条结论(issue #408):注入的历史里未处置的那些,判据与
+        // `verdictRecords` 落库时同一个。已处置的只作背景,不要结论。
+        const wanted = new Set(openHistory(batchHistory).map((entry) => entry.id));
         trace.run("batch_started", batch);
         const timedOutcomes = await Promise.all(
           deps.reviewers.map(async (reviewer) => {
             const startedAt = Date.now();
+            // 工具调用数从事件流里数(issue #408):每次 `tool_execution_end` 恰好一条
+            // 事件,不像 assistant 消息那样会因为文本为空而整条不发。
+            let toolCalls = 0;
             // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
             // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
             const outcome = await reviewer.review({
@@ -2340,6 +2346,7 @@ export async function runReview(
               ...(productKnowledge === undefined ? {} : { productKnowledge, queryKnowledge }),
               onEvent: (event) => {
                 const { kind, ...payload } = event;
+                if (kind === "tool_call") toolCalls += 1;
                 // 事件带上批次序号(issue #232):批次并行之后同一个模型几批的事件在
                 // 轨迹里交错到达,不标批次就读不出哪条属于哪一批。
                 trace.reviewer(reviewer.model, kind, { ...payload, batch: batch.index });
@@ -2368,12 +2375,32 @@ export async function runReview(
               }
               findings = kept;
             }
+            const durationMs = Date.now() - startedAt;
+            // 这个模型这一批的收尾(issue #408):在这一刻落,不等整轮跑完——一个模型在
+            // 某几批上无声收工时,轮次级那条收尾只汇总得出总数,说不出是哪一批。
+            // 失败与正常同一档,由 `failed` 分;「给出 / 应给」指的就是复核结论。
+            trace.reviewer(reviewer.model, "reviewer_batch_finished", {
+              batch: batch.index,
+              failed: outcome.failure !== undefined,
+              failure: outcome.failure ?? null,
+              exitCode: outcome.exitCode ?? null,
+              stopReason: outcome.stopReason ?? null,
+              turns: outcome.turns ?? null,
+              toolCalls,
+              findings: findings.length,
+              rejectedToolCalls: outcome.rejectedToolCalls,
+              anchorRejections: outcome.anchorRejections,
+              verdictsGiven: (outcome.verdicts ?? []).filter((v) => wanted.has(v.findingId)).length,
+              verdictsExpected: wanted.size,
+              usage: outcome.usage ?? null,
+              durationMs,
+            });
             return {
               // 一条都没丢时原样返回:批外报出是少数,多数批次的结论对象不必重建。
               outcome:
                 findings.length === outcome.findings.length ? outcome : { ...outcome, findings },
               startedAt,
-              durationMs: Date.now() - startedAt,
+              durationMs,
             };
           }),
         );

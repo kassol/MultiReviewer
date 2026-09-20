@@ -15,10 +15,17 @@ import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store.ts
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
 export type TraceScope = "run" | "reviewer";
 
-/** Reviewer 级的事件类型。前两档由子进程转发,后两档由编排层在该模型跑完时补。 */
+/**
+ * Reviewer 级的事件类型。前两档由子进程转发,后三档由编排层补。
+ *
+ * `reviewer_batch_finished` 在这个模型这一批跑完的那一刻落(issue #408),与整轮跑完才记
+ * 一条的 `reviewer_finished` 并列:一个模型在某几批上无声收工、把整批历史漏成没复核时,
+ * 轮次级那一条只汇总得出总数,说不出是哪一批。失败与正常同一档,由载荷里的 `failed` 分。
+ */
 export type ReviewerTraceKind =
   | "assistant_message"
   | "tool_call"
+  | "reviewer_batch_finished"
   | "reviewer_failed"
   | "reviewer_finished";
 

@@ -706,12 +706,15 @@ async function run(request: ReviewerRequest): Promise<void> {
         rejectedToolCalls += 1;
       }
     },
-    done: ({ usage, failure }) =>
+    done: ({ usage, failure, stopReason, turns }) =>
       send({
         kind: "done",
         rejectedToolCalls,
         anchorRejections: anchorRejectedCalls.size,
         usage,
+        // 批次收尾事件靠这两格答出「这一批是怎么收工的」(issue #408)。
+        turns,
+        ...(stopReason === undefined ? {} : { stopReason }),
         ...(failure === undefined ? {} : { failure }),
       }),
   });
