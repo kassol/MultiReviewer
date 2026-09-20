@@ -256,6 +256,7 @@ export function ProductsPage({
 
   return (
     <PageBody>
+      <h1 className="sr-only">产品</h1>
       {feedback === null ? null : (
         <Callout.Root
           role={feedback.error ? "alert" : "status"}

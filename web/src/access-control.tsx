@@ -257,7 +257,7 @@ export function AccessControlPage() {
 
   return (
     <>
-      <PageBody width="form" className="gap-4 pb-5 sm:pb-5">
+      <PageBody className="gap-4 pb-5 sm:pb-5">
         <PageHeader
           title="访问控制"
         />

@@ -224,11 +224,12 @@ export function StatsPage() {
 
   return (
     <>
-      <PageBody width="form" className="gap-4 pb-5 sm:pb-5">
+      <PageBody className="gap-4 pb-5 sm:pb-5">
         <PageHeader
-          title={
+          title="处置率"
+          description={
             <span className="inline-flex items-center gap-2">
-              处置率
+              按仓库与分类统计
               <HelpTooltip
                 label="处置率计算方式"
                 content="处置率 = 已处置 Finding ÷ 可处置 Finding，按仓库与分类分列。已处置分人工与自动两列：人工是人点的 resolve，自动是系统判定已修复时处置的。同一处 Finding 只统计一次，不论几个模型报出；无法关联到行级评论的 Finding 与已延续的都不计入。"

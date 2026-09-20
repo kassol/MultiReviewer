@@ -164,7 +164,7 @@ export function SettingsPage({ canWrite }: { canWrite: boolean }) {
 
   return (
     <>
-      <PageBody width="form">
+      <PageBody>
         <PageHeader title="审查策略" />
         {settings.isError ? (
           <Callout.Root role="alert" color="red" size="1">

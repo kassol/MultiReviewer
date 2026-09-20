@@ -82,7 +82,7 @@ MultiReviewer 管理面板服务两类用户：
 | --- | --- | --- |
 | 搜索框图标 6 页缺 1 页有 | 一律带图标 | 无图标的搜索框在毛玻璃底上认不出是可点的 |
 | 通知铃铛只有总览页有 | 不做 | 没有通知后端，做出来是死按钮 |
-| 内容区 1240 / 1080 两派 | 复用 `PageBody` 的 `wide` / `form` 两档 | 列表页宽、表单页窄本来就是两类页面 |
+| 内容区 1240 / 1080 两派 | 都不用:`PageBody` 一条全宽流式内容轨(2026-09-20 改) | 两档上限在宽屏上两侧各空出约 400px;要读的长文自己限行宽 |
 | 内容区上边距 26/24、区块 gap 18/16 | 统一 24 + 16 | 多数派 |
 | 遮罩 0.20 / 0.24 | `--v8-scrim` rgba(0,0,0,0.24) | 同一语义 |
 | 选中行 3px 左条的位移补偿只做了 3/4 页 | 左条改 `before` 伪元素，一律不占盒模型 | 补偿漏一处就错位；伪元素让调用方无从漏 |
@@ -352,9 +352,9 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 页面固定采用 `App Shell > TopBar/MobileTabBar + Page > PageHeader + PageBody > SetupChecklist + Task regions`。
 
-`PageHeader` 左边是这一页叫什么、干什么，右边是这一页当下需要的那一个动作。标题走 Display 栈 `text-5xl` `font-extrabold` `tracking-[-0.022em]`；说明文字 `text-base` `text-text-muted` 并压在 `max-w-[68ch]` 以内，再宽读者的眼睛要横跨整屏才回到行首。
+页名只由顶栏面包屑显示:`PageHeader` 的标题默认是视觉隐藏的 h1,屏幕上只画说明(左)与这一页当下需要的那一个动作(右),两样都没有时整行不画;产品页与会话页同律,没有大标题。只有标题本身是内容的页面传 `visibleTitle`(阶段详情的阶段名不在面包屑里)。可见标题走 Display 栈 `text-5xl` `font-extrabold` `tracking-[-0.022em]`；说明文字 `text-base` `text-text-muted` 并压在 `max-w-[68ch]` 以内，再宽读者的眼睛要横跨整屏才回到行首。
 
-`PageBody` 只有 `wide`（`max-w-[1240px]`，列表与看板页）与 `form`（`max-w-[1080px]`，表单与矩阵页）两档。两类页面的正文列宽本来就不同，窄一档能让长表单的标签和输入不至于横跨整屏。
+`PageBody` 是全部页面共用的一条内容轨:不设宽度上限,只留左右边距(`px-[18px]`,`sm` 起 28px),任何屏宽都铺满;首次配置检查条与页面加载骨架占同一条轨。要读的长文自己限行宽(页头说明 68ch、文章 120ch、会话对话列 920px),轨道不替它们收。
 
 卡片外壳统一：`rounded-xl sm:rounded-lg border border-card-line bg-surface shadow-card`。卡片头 `px-4 pt-3.5 pb-[11px] sm:px-5`，区块标题 `text-2xl font-bold tracking-[-0.015em]`。
 
@@ -387,7 +387,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 
 Agent 会话页的中栏是一块占满视口的聊天工作台,整页不滚:`PageBody` 加 `h-full`,壳只在这条路由上给 `main` 加 `min-h-0`(其余页面 main 随内容长高、整体在 `#panel-main-scroll` 里滚,加了会让 sticky 的移动端 Tab 栏跟着滚走),高度沿 flex 链给下来,不写视口常量。头部一行细标题(起始一颗回产品的箭头键、用途 `text-3xl` 标题、在跑徽章、一行会话 id / 时刻 / 建立人 / 用量、每仓库一行的基点),元信息行开头是一枚小号等宽的 `会话 #<id>`(`font-mono tabular-nums`,全局 id,排障口径与日志、API 一致),对话流自己滚,输入框钉在底部。产品名不在左栏里再重复一张小卡:左栏的产品列表已经把当前产品高亮出来了。**`sm` 以下头部收成一行**:箭头键只剩图标(`sm` 起键上带产品名),标题单行截断(全文在 `title=`,`sm` 起两行封顶),标题行不许折行,时刻 / 建立人 / 用量与基点收进标题右侧那颗 disclosure,摊开才看——这三行元信息在 390px 上把对话流压到 57% 的屏。折叠态整块 53px:一行 ghost 键的 44px 加 `pb-2` 与分隔线。写下过 spec 与票的会话在这一档多一行:「对话 / spec 与票」分段控件让开标题行,整行铺在标题下面(`max-sm:order-last max-sm:w-full`,包着它与「更多操作」的那层壳同档换成 `contents`,两颗控件因此升成头部那层 flex 的直接子项),折叠态因此 105px——返回键、标题、162px 的分段控件与「更多操作」挤一行时标题只剩 27px(issue #388)。这一档页头留白也收到 16px、缺损横幅与头部之间收到 8px,省下的高度全给对话流;`sm` 起两处照常 24 / 12px。新条目来时人在底部(距底 ≤ 80px)就跟着滚,翻上去看旧消息时不打扰,右下角浮一颗 44px 高的「最新」胶囊送回底部;胶囊现身时对话流末尾多留一段,它因此不压最后一条消息。
 
-- 对话流与输入区套在一个居中、最宽 760px 的列里:有右栏时中栏本来不到这个宽度,没有右栏时正文不靠左摊满整张卡。没有输入框的会话在底部留一行说明(谁能续写、它写下的产品知识去哪读)。
+- 对话流与输入区套在一个居中、最宽 920px 的列里(`CHAT_TRACK`);限宽加在滚动容器里面的内容上,滚动容器本身与中栏卡片同宽,滚动条因此落在卡片边上、不贴着消息卡片:有右栏时中栏本来不到这个宽度,没有右栏时正文不靠左摊满整张卡。没有输入框的会话在底部留一行说明(谁能续写、它写下的产品知识去哪读)。
 - 消息两种形态:人的消息是右对齐的 `bg-accent-tint` 气泡(`rounded-2xl rounded-br-md`,`max-w-[80%]`),agent 的一条完整回复是一张占满列宽的内嵌卡(`border-overlay-line` + `shadow-control`,与详情内嵌卡同一材质),卡底一行 footer 放时刻与「展开 / 收起」「阅读」「复制 Markdown」(折叠态的「展开」常显,其余 `md` 起指到才显;`sm` 以下这几颗只剩图标、文字留给读屏——带文字要 234px,卡里只有 226px,末一颗会被切掉;卡不带阴影,发丝边在灰底上足够);超过 800 字或 12 个换行的长回复默认收到 320px 高、底部渐隐,「阅读」开 1200px 宽的阅读视图(`Markdown` 的 `article` 档:正文 14px / 1.7、限宽 120ch)。时刻在 footer 左侧,`md` 以下常显、`md` 起指到才显(改 opacity,布局不动)。
 - 连续的工具调用折成一组(Collapsible):组头一行是按动词的计数(「读取 5 个文件、git 3 次」),有失败的挂红色「N 次失败」;展开是左侧一道 `--v8-border-line` 竖线下的逐步明细——类别图标(读取 FileText、搜索 MagnifyingGlass、列目录 ListBullet、git Commit、历史 Finding CounterClockwiseClock、产品知识 Reader、派子代理 Person、产品 tracker 与提交产出 PaperPlane、提问轮次 QuestionMarkCircled)+ 动词(`text-text-secondary`)+ 等宽对象(`text-sm`,截断给 `title`),失败的那一步下面一行 `text-danger` 原因。在跑的最后一组默认摊开,正在跑的那一个带 Spinner 挂在末尾。组头那一行在粗指针上撑到 44px——它是原生 `button`,`styles.css` 的 coarse 块只发给 Radix 类名,够不着它。系统消息居中一行小字。
 - 会话子代理是对话流里的嵌套卡片,一趟一张:卡壳与图卡同一套令牌(`rounded-lg` + `border-card-line` + `bg-surface`,不带阴影——它嵌在对话里,不是浮层)。卡头一行是展开箭头(在跑时换成 Spinner)、Person 图标、任务(截断给 `title`)与右端的「在跑 · N 步」/「失败 · N 步」/「N 步」;展开是同一道 `--v8-border-line` 竖线下的工具调用行,与父会话共用 `ToolRow`,失败的那一步下面一行 `text-danger` 原因。结论在卡底,与卡头之间一道 `border-card-line` 分隔,`Markdown` 渲染;失败那一趟的结论整段 `text-danger`。跑完的卡片默认收着,看得见的就是结论一句——过程要看才展开。并行派出的几趟并排:`sm` 起两列网格,`sm` 以下竖排。派单那一次工具调用仍在它上面的工具组里(动词「派子代理」+ 派出去的那几句任务),回合结束后那一组收成一行,卡片是留下来的那一样。

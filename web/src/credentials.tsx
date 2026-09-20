@@ -2956,7 +2956,7 @@ export function ModelServicesPage({
   return (
     // 整页跟着壳里的 main 一起滚:列表与详情不再各自开滚动区,回到这一页时要恢复的
     // 位置也只剩 panel-main-scroll 一个,`restoreScroll` 的回落分支正是为此留的。
-    <PageBody width="wide" className="gap-4 sm:gap-[18px]">
+    <PageBody className="gap-4 sm:gap-[18px]">
       <PageHeader
         title="模型服务"
         actions={canWriteCredential ? (

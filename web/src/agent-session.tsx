@@ -215,6 +215,12 @@ type LiveStream = { text: string; tool?: string; subagent?: SubagentRun[] };
 const FOLLOW_THRESHOLD = 80;
 
 /**
+ * 对话流与输入区共用的居中限宽列。限宽加在滚动容器**里面**的内容上、不加在滚动容器上:
+ * 滚动条因此落在中栏卡片的边上,不贴着消息卡片。
+ */
+const CHAT_TRACK = "mx-auto w-full max-w-[920px]";
+
+/**
  * 中栏的对话流(issue #333、#334)。记录打开时一次取全,之后经 SSE 追加——两条来源写同一份
  * 查询缓存,与审查轨迹同一套路(`useTrace`)。记录行是 Pi 的条目原样 JSON,投影成对话的那
  * 一步在 `lib/agent-session-records.ts`,连续的工具调用再折成一组。
@@ -319,12 +325,13 @@ function Conversation({
         // (issue #384)。留白加在内容末尾、人此刻看的那一段之下,`scrollTop` 不动,视野不跳。
         // 留多少:浮标在离底 `FOLLOW_THRESHOLD`(80px)时就现身,自己占底部 56px(12px 边距 +
         // 44px 高),最后一条消息要躲开它,末尾至少要留 80 + 56 = 136px,取 `pb-36`(144px)。
-        className={`relative flex h-full flex-col gap-3 overflow-y-auto overscroll-contain pt-3 ${away ? "pb-36" : "pb-3"}`}
+        className={`relative h-full overflow-y-auto overscroll-contain pt-3 ${away ? "pb-36" : "pb-3"}`}
         onScroll={(event) => {
           const el = event.currentTarget;
           setAway(el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD);
         }}
       >
+        <div className={`flex min-h-full flex-col gap-3 ${CHAT_TRACK}`}>
         {query.isError ? (
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon>
@@ -425,12 +432,13 @@ function Conversation({
             <StreamStatus stream={stream} />
           </div>
         ) : null}
+        </div>
       </div>
       {away ? (
         <button
           type="button"
           onClick={toBottom}
-          className="absolute right-3 bottom-3 flex min-h-11 items-center gap-1 rounded-full border border-card-line bg-surface px-4 text-md font-medium text-text-secondary shadow-card transition-colors hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+          className="absolute right-5 bottom-3 flex min-h-11 items-center gap-1 rounded-full border border-card-line bg-surface px-4 text-md font-medium text-text-secondary shadow-card transition-colors hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
         >
           <ArrowDownIcon aria-hidden />
           最新
@@ -1865,9 +1873,8 @@ export function AgentSessionPage({
             <div className="min-h-0 flex-1 overflow-y-auto py-3 xl:hidden">{wrotePanel}</div>
           ) : null}
           {session === undefined ? null : (
-            // 对话流与输入区共一个居中限宽的列:1440 下中栏那张卡约 860px,列取 760px 让正文、
-            // 表格、代码块与输入框同宽——原先正文卡在 72ch、输入框却铺满,右侧一片空。
-            <div className="mx-auto flex min-h-0 w-full max-w-[760px] flex-1 flex-col">
+            // 对话流与输入区同宽(`CHAT_TRACK`):正文、表格、代码块与输入框对齐在同一列上。
+            <div className="flex min-h-0 flex-1 flex-col">
               <div
                 className={
                   pane === "wrote" && hasWrote
@@ -1885,7 +1892,7 @@ export function AgentSessionPage({
               </div>
               {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}
               {session.createdBy === username ? (
-                <>
+                <div className={`shrink-0 ${CHAT_TRACK}`}>
                   {queue.length === 0 ? null : (
                     <div className="shrink-0 pt-3">
                       <QueueBlock
@@ -1914,7 +1921,7 @@ export function AgentSessionPage({
                       setImages((current) => current.filter((id) => id !== imageId))
                     }
                   />
-                </>
+                </div>
               ) : (
                 /* 没有输入框时说一句,不让人对着空白猜自己能不能写。 */
                 <p className="shrink-0 border-t border-line pt-3 text-center text-sm text-text-muted">

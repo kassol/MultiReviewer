@@ -1,25 +1,15 @@
 import { cn } from "@/lib/utils";
 
 /**
- * 内容区宽度。列表与看板页用 wide,表单与矩阵页用 form——设计稿里两类页面的正文
- * 列宽本来就不同,窄一档能让长表单的标签和输入不至于横跨整屏。
+ * 内容轨。全部页面共用一条:不设宽度上限,只留左右边距,任何屏宽都铺满。
+ * 要读的长文自己限行宽(说明文字 68ch、文章 120ch),轨道不替它们收。
  */
-const WIDTH = {
-  wide: "max-w-[1240px]",
-  form: "max-w-[1080px]",
-} as const;
-
-export function PageBody({
-  width = "wide",
-  className,
-  ...props
-}: React.ComponentProps<"div"> & { width?: keyof typeof WIDTH }) {
+export function PageBody({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       className={cn(
         // 底部留白比顶部厚:滚到底时最后一张卡不该贴着窗沿。
-        "mx-auto flex w-full min-w-0 flex-col gap-4 px-[18px] pt-6 pb-20 sm:px-7",
-        WIDTH[width],
+        "flex w-full min-w-0 flex-col gap-4 px-[18px] pt-6 pb-20 sm:px-7",
         className,
       )}
       {...props}

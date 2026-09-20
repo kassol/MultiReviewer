@@ -27,11 +27,11 @@ export function useSetupStatus() {
 }
 
 /**
- * 检查条与业务页正文共用同一条内容轨:宽度和左右内边距都跟 `PageBody` 对齐。它比
+ * 检查条与业务页正文共用同一条内容轨:左右内边距跟 `PageBody` 对齐。它比
  * 正文宽出一截的话,页面顶上就多了一道对不齐的边,而这块本来就是正文的一部分。
  */
 function ChecklistShell({ children }: { children: ReactNode }) {
-  return <div className="mx-auto w-full max-w-[1240px] px-[18px] pt-6 sm:px-7">{children}</div>;
+  return <div className="w-full px-[18px] pt-6 sm:px-7">{children}</div>;
 }
 
 export function SetupChecklist({ session }: { session: PanelSession }) {

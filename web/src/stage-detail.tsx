@@ -271,7 +271,7 @@ export function StageDetailPage({
 
   const body = detail.data;
   return (
-    <PageBody width="wide">
+    <PageBody>
       <div>
         <Link
           to="/"
@@ -299,6 +299,7 @@ export function StageDetailPage({
       {body === undefined ? null : (
         <>
           <PageHeader
+            visibleTitle
             title={stageLabel(body.stage)}
             description={`${body.stage.owner}/${body.stage.repo}`}
             actions={
