@@ -41,20 +41,37 @@ function collector(
   };
 }
 
+/** 一条最朴素的助手消息:一段文本,正常结束,用量为零。 */
 function assistantMessage(text: string): { type: string; message: unknown } {
   return {
     type: "message_end",
-    message: { role: "assistant", content: [{ type: "text", text }] },
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      stopReason: "stop",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
   };
 }
 
-test("message_end 转成一条 assistant_message,记整条文本", () => {
+/** 事件里那几格观测字段(issue #407)。断言只看它们,免得把整条事件抄一遍。 */
+function turn(event: ReviewerEvent | undefined): Record<string, unknown> {
+  assert.ok(event?.kind === "assistant_message");
+  if (event.kind !== "assistant_message") throw new Error("unreachable");
+  return { ...event };
+}
+
+test("message_end 转成一条 assistant_message,记整条文本与这一回合的观测字段", () => {
   const { events, observe } = collector();
   observe(assistantMessage("我先读 src/db.js 看看查询是怎么拼的"));
 
-  assert.deepEqual(events, [
-    { kind: "assistant_message", text: "我先读 src/db.js 看看查询是怎么拼的" },
-  ]);
+  assert.deepEqual(turn(events[0]), {
+    kind: "assistant_message",
+    text: "我先读 src/db.js 看看查询是怎么拼的",
+    stopReason: "stop",
+    content: { text: 1, thinking: 0, toolCalls: 0, thinkingChars: 0 },
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  });
 });
 
 test("流式增量与用户消息不进轨迹", () => {
@@ -62,16 +79,110 @@ test("流式增量与用户消息不进轨迹", () => {
   observe({ type: "message_update", message: { role: "assistant", content: [] } } as never);
   observe({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "去审" }] } });
   observe({ type: "agent_end" } as never);
-  // 只有工具调用块、没有文本的那条 assistant 消息同样不发:它没有话可记。
   observe({
     type: "message_end",
-    message: { role: "assistant", content: [{ type: "toolCall", name: "read" }] },
+    message: { role: "toolResult", content: [{ type: "text", text: "1: const a = 1;" }] },
   });
-  // 模型只调工具时常附一个空文本块,面板上会渲染成「(空文本)」——同样不发。
-  observe(assistantMessage(""));
-  observe(assistantMessage("  \n"));
 
   assert.deepEqual(events, []);
+});
+
+test("只有工具调用的回合照样落一条事件,文本是空串(issue #407)", () => {
+  const { events, observe } = collector();
+  observe({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      // 模型只调工具时常附一个空文本块。
+      content: [{ type: "text", text: "" }, { type: "toolCall", name: "read" }],
+      stopReason: "toolUse",
+      usage: { input: 120, output: 30, cacheRead: 8, cacheWrite: 4 },
+    },
+  });
+
+  assert.deepEqual(turn(events[0]), {
+    kind: "assistant_message",
+    text: "",
+    stopReason: "toolUse",
+    content: { text: 1, thinking: 0, toolCalls: 1, thinkingChars: 0 },
+    usage: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 8, cacheWriteTokens: 4 },
+  });
+});
+
+test("完全空的回合也落一条事件——它正是「会话在这里无声结束」的唯一记录", () => {
+  const { events, observe } = collector();
+  observe({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      stopReason: "stop",
+      usage: { input: 9, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+
+  assert.deepEqual(turn(events[0]), {
+    kind: "assistant_message",
+    text: "",
+    stopReason: "stop",
+    content: { text: 0, thinking: 0, toolCalls: 0, thinkingChars: 0 },
+    usage: { inputTokens: 9, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  });
+});
+
+test("思考正文不入库,只记块数与字数(ADR 0017)", () => {
+  const secret = "这一段推理有 18 个字";
+  const { events, observe } = collector();
+  observe({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: secret },
+        { type: "thinking", thinking: "再想一句" },
+      ],
+      stopReason: "stop",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+
+  const event = turn(events[0]);
+  assert.deepEqual(event["content"], {
+    text: 0,
+    thinking: 2,
+    toolCalls: 0,
+    thinkingChars: secret.length + "再想一句".length,
+  });
+  assert.equal(JSON.stringify(events).includes(secret), false, "思考正文不该出现在事件里");
+});
+
+test("出错的回合带错误原文,凭据抹掉", () => {
+  const { events, observe } = collector();
+  observe({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      stopReason: "error",
+      errorMessage: `502 from gateway, key ${CREDENTIAL}`,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+  });
+
+  const event = turn(events[0]);
+  assert.equal(event["stopReason"], "error");
+  assert.equal(event["error"], "502 from gateway, key [REDACTED]");
+});
+
+test("升级前的形状照样转得出来:没有停止原因与用量时那几格缺席", () => {
+  const { events, observe } = collector();
+  observe({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "好" }] } });
+
+  assert.deepEqual(turn(events[0]), {
+    kind: "assistant_message",
+    text: "好",
+    content: { text: 1, thinking: 0, toolCalls: 0, thinkingChars: 0 },
+  });
 });
 
 test("tool_execution_end 转成一条 tool_call:工具名、参数、耗时与返回长度", () => {

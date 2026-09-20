@@ -150,6 +150,77 @@ export function EventTime({ at }: { at: string }) {
   );
 }
 
+/** Pi 归一后的停止原因(issue #407)。认不出的按原值显示。 */
+const STOP_REASON_LABEL: Record<string, string> = {
+  stop: "正常结束",
+  toolUse: "调用工具",
+  length: "输出达上限",
+  error: "出错",
+  aborted: "被中止",
+};
+
+/** 这两档是常态,不挂徽章;其余几档正是来查这一页的理由。 */
+const ROUTINE_STOP = new Set(["stop", "toolUse"]);
+
+/**
+ * 一个回合的内容构成读成一句话(issue #407)。思考只有块数与字数——正文不入库
+ * (ADR 0017)。一块内容都没有时回「没有内容」:那正是线上那几批停住的样子。
+ */
+function contentSummary(content: Record<string, unknown> | null): string | null {
+  if (content === null) return null;
+  const text = num(content, "text") ?? 0;
+  const thinking = num(content, "thinking") ?? 0;
+  const toolCalls = num(content, "toolCalls") ?? 0;
+  const thinkingChars = num(content, "thinkingChars") ?? 0;
+  const parts = [
+    thinking === 0 ? null : `思考 ${thinking} 段 ${thinkingChars} 字`,
+    toolCalls === 0 ? null : `调用工具 ${toolCalls} 次`,
+    text === 0 ? null : `文本 ${text} 块`,
+  ].filter((part): part is string => part !== null);
+  return parts.length === 0 ? "没有内容" : parts.join(" · ");
+}
+
+/**
+ * 一个模型回合(issue #407)。说了话的回合与这一票之前一样把整条文本摊开;一个字都没说的
+ * 回合同样占一行,写明它以什么原因结束、产出了什么——会话在哪个回合无声停下,此前只能靠
+ * 「最后一个事件是什么」反推。停止原因不是正常结束或调用工具时挂一枚徽章。
+ */
+export function AssistantTurn({ payload }: { payload: Record<string, unknown> }) {
+  const text = str(payload, "text");
+  const stopReason = str(payload, "stopReason");
+  const error = str(payload, "error");
+  const summary = contentSummary(record(payload, "content"));
+  const said = text !== null && text.trim() !== "";
+  const badge =
+    stopReason === null || ROUTINE_STOP.has(stopReason)
+      ? null
+      : (STOP_REASON_LABEL[stopReason] ?? stopReason);
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      {said ? (
+        // 整条文本摊开,不截断:这就是「它当时在想什么」的唯一记录。
+        <p className="min-w-0 text-base leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
+          {text.trim()}
+        </p>
+      ) : (
+        <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text-secondary">
+          <span>本回合没有说话</span>
+          {summary === null ? null : <span className="text-sm">{summary}</span>}
+        </span>
+      )}
+      {badge === null ? null : (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <Badge color="amber" variant="soft" radius="full">{badge}</Badge>
+          {error === null ? null : (
+            <span className="min-w-0 text-sm break-words text-danger">{error}</span>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** 认不出的事件按原样摊开:轨迹的用途是追溯,藏起来等于把一条真实事件抹掉。 */
 export function UnknownEvent({ event }: { event: { kind: string; payload: Record<string, unknown> } }) {
   return (
@@ -520,13 +591,7 @@ function nestedEvents(payload: Record<string, unknown>): Record<string, unknown>
 /** 嵌套进来的一条子会话事件。只有说话与工具调用两档,认不出的按原样摊开。 */
 function NestedEvent({ event }: { event: Record<string, unknown> }) {
   const kind = str(event, "kind");
-  if (kind === "assistant_message") {
-    return (
-      <p className="min-w-0 text-sm leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
-        {str(event, "text") ?? "(空文本)"}
-      </p>
-    );
-  }
+  if (kind === "assistant_message") return <AssistantTurn payload={event} />;
   if (kind === "tool_call") return <ToolCall event={{ payload: event }} />;
   return <UnknownEvent event={{ kind: kind ?? "(未命名事件)", payload: event }} />;
 }
@@ -612,12 +677,7 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
   const body = (): React.ReactNode => {
     switch (event.kind) {
       case "assistant_message":
-        // 整条文本摊开,不截断:这就是「它当时在想什么」的唯一记录。
-        return (
-          <p className="min-w-0 text-base leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
-            {str(payload, "text") ?? "(空文本)"}
-          </p>
-        );
+        return <AssistantTurn payload={payload} />;
       case "tool_call":
         return <ToolCall event={event} />;
       case "reviewer_failed": {

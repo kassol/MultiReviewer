@@ -6,7 +6,7 @@
  *
  * 所有进轨迹的文本先过 `redactModelCredential`:失败原文与工具参数都可能回显请求头。
  */
-import type { ReviewerEvent } from "../review/finding.ts";
+import type { ReviewerEvent, TurnContent, TurnUsage } from "../review/finding.ts";
 import { redactModelCredential } from "./env.ts";
 
 /** 只认这里用到的那几个字段。其余事件类型一律不转。 */
@@ -26,15 +26,41 @@ function textBlocks(content: unknown): string[] {
   );
 }
 
-/** 一条 assistant 消息里说的话。thinking 与 toolCall 块不在其中(当前 thinking 关着)。 */
-function assistantText(message: unknown): string | undefined {
-  const record = message as { role?: unknown; content?: unknown } | null;
-  if (record?.role !== "assistant") return undefined;
-  const parts = textBlocks(record.content);
-  // 只带工具调用的消息常有一个空文本块;它不是「说了话」,不进轨迹。
-  const text = parts.join("\n");
-  if (text.trim() === "") return undefined;
-  return text;
+/**
+ * 一条 assistant 消息的内容构成(issue #407)。思考只数块数与字数,正文不带出去
+ * (ADR 0017)。认不出的块型既不是文本也不是思考也不是工具调用,不计。
+ */
+export function turnContent(content: unknown): TurnContent {
+  const blocks = Array.isArray(content) ? (content as { type?: unknown; thinking?: unknown }[]) : [];
+  const tally: TurnContent = { text: 0, thinking: 0, toolCalls: 0, thinkingChars: 0 };
+  for (const block of blocks) {
+    if (block?.type === "text") tally.text += 1;
+    else if (block?.type === "toolCall") tally.toolCalls += 1;
+    else if (block?.type === "thinking") {
+      tally.thinking += 1;
+      if (typeof block.thinking === "string") tally.thinkingChars += block.thinking.length;
+    }
+  }
+  return tally;
+}
+
+/** Pi 的 `Usage` 转成轨迹里那四格。缺席即这条消息没带用量。 */
+export function turnUsage(usage: unknown): TurnUsage | undefined {
+  const record = usage as Record<string, unknown> | null;
+  if (typeof record !== "object" || record === null) return undefined;
+  const value = (key: string): number =>
+    typeof record[key] === "number" ? (record[key] as number) : 0;
+  return {
+    inputTokens: value("input"),
+    outputTokens: value("output"),
+    cacheReadTokens: value("cacheRead"),
+    cacheWriteTokens: value("cacheWrite"),
+  };
+}
+
+/** 一条 assistant 消息里说的话。thinking 与 toolCall 块不在其中。 */
+function assistantText(content: unknown): string {
+  return textBlocks(content).join("\n");
 }
 
 /** JSON 化再脱敏。模型给的工具参数一定是 JSON,不会有环。 */
@@ -74,9 +100,27 @@ export function reviewerEventStream(
 
   return (event) => {
     if (event.type === "message_end") {
-      const text = assistantText((event as { message: unknown }).message);
-      if (text === undefined) return;
-      emit({ kind: "assistant_message", text: redactModelCredential(text, credential) });
+      // 每个回合都落一条,空回合也落(issue #407):一批读完工具结果就无声结束的会话,
+      // 轨迹里此前一条痕迹都没有。用户消息与工具返回走的是同一个事件,按 role 挡掉。
+      const message = (event as { message: unknown }).message as {
+        role?: unknown;
+        content?: unknown;
+        stopReason?: unknown;
+        errorMessage?: unknown;
+        usage?: unknown;
+      } | null;
+      if (message?.role !== "assistant") return;
+      const usage = turnUsage(message.usage);
+      emit({
+        kind: "assistant_message",
+        text: redactModelCredential(assistantText(message.content), credential),
+        ...(typeof message.stopReason === "string" ? { stopReason: message.stopReason } : {}),
+        ...(typeof message.errorMessage === "string" && message.errorMessage !== ""
+          ? { error: redactModelCredential(message.errorMessage, credential) }
+          : {}),
+        content: turnContent(message.content),
+        ...(usage === undefined ? {} : { usage }),
+      });
       return;
     }
 

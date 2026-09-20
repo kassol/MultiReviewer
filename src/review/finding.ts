@@ -329,9 +329,46 @@ export type ReviewerOutcome = {
  *
  * 事件正文不设长度上限;工具返回的内容只记长度,不记正文(ADR 0017)。
  */
+/**
+ * 一个模型回合的内容构成(issue #407)。思考正文不入库(ADR 0017),只记块数与总字数——
+ * 「这一回合到底产出了什么」不必读正文就答得出,而正文进库等于把推理全文复制进面板。
+ */
+export type TurnContent = {
+  text: number;
+  thinking: number;
+  toolCalls: number;
+  thinkingChars: number;
+};
+
+/** 一个模型回合的 token 用量(issue #407)。四格与 `ReviewerUsage` 同名,面板共用一套读法。 */
+export type TurnUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
 export type ReviewerEvent =
-  /** 模型说完的一整段话。按 Pi 的 `message_end` 记,不记流式增量。 */
-  | { kind: "assistant_message"; text: string }
+  /**
+   * 模型说完的一整段话。按 Pi 的 `message_end` 记,不记流式增量。
+   *
+   * **每个回合都落一条,一个字都没说的回合也落**(issue #407):线上排障卡在这里——一批
+   * 读完工具结果就无声结束的会话在轨迹里一条痕迹都没有,只能从「最后一个事件是什么」
+   * 反推。空回合的 `text` 是空串。
+   */
+  | {
+      kind: "assistant_message";
+      text: string;
+      /**
+       * Pi 归一后的停止原因(`stop` / `toolUse` / `length` / `error` / `aborted` 等)。
+       * 升级前的轨迹没有这一格。
+       */
+      stopReason?: string;
+      /** 停止原因是出错时的错误原文,与别的事件同一道凭据脱敏。 */
+      error?: string;
+      content?: TurnContent;
+      usage?: TurnUsage;
+    }
   /** 一次工具调用跑完。按 Pi 的 `tool_execution_end` 记一条。 */
   | {
       kind: "tool_call";

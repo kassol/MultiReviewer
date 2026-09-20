@@ -452,15 +452,23 @@ function toolResult(...transcriptPaths: string[]): unknown {
 test("子会话的话与工具调用转成与外层同形的事件", () => {
   const path = writeTranscript([
     { version: 1, recordType: "message", sourceEventType: "initial_prompt", role: "user", text: "谁调用 findOrdersByCustomer", ts: 100 },
-    { version: 1, recordType: "message", sourceEventType: "message_end", role: "assistant", text: "先 grep 一遍调用方", ts: 110 },
+    // 子会话的回合同样带停止原因、内容构成与用量(issue #407):transcript 取得到多少记多少。
+    { version: 1, recordType: "message", sourceEventType: "message_end", role: "assistant", text: "先 grep 一遍调用方", stopReason: "toolUse", usage: { input: 40, output: 9, cacheRead: 0, cacheWrite: 0 }, message: { role: "assistant", content: [{ type: "text", text: "先 grep 一遍调用方" }, { type: "toolCall", name: "grep" }] }, ts: 110 },
     { version: 1, recordType: "tool_start", sourceEventType: "tool_execution_start", toolCallId: "k1", toolName: "grep", argsPayload: JSON.stringify({ pattern: "findOrdersByCustomer" }), ts: 120 },
     { version: 1, recordType: "tool_end", sourceEventType: "tool_execution_end", toolCallId: "k1", toolName: "grep", isError: false, ts: 155 },
     { version: 1, recordType: "message", sourceEventType: "tool_result_end", role: "toolResult", toolCallId: "k1", toolName: "grep", isError: false, text: "src/orders-api.js:8", ts: 156 },
-    { version: 1, recordType: "message", sourceEventType: "message_end", role: "assistant", text: "src/orders-api.js:8 直接把 req.query.customerId 交了过去", ts: 200 },
+    // 读完工具结果就无声结束的那一档:pi-subagents 连 `text` 都不写,事件仍要落一条。
+    { version: 1, recordType: "message", sourceEventType: "message_end", role: "assistant", stopReason: "stop", usage: { input: 51, output: 0, cacheRead: 0, cacheWrite: 0 }, message: { role: "assistant", content: [] }, ts: 200 },
   ]);
 
   assert.deepEqual(evidenceTranscriptEvents(toolResult(path)), [
-    { kind: "assistant_message", text: "先 grep 一遍调用方" },
+    {
+      kind: "assistant_message",
+      text: "先 grep 一遍调用方",
+      stopReason: "toolUse",
+      content: { text: 1, thinking: 0, toolCalls: 1, thinkingChars: 0 },
+      usage: { inputTokens: 40, outputTokens: 9, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    },
     {
       kind: "tool_call",
       tool: "grep",
@@ -471,7 +479,13 @@ test("子会话的话与工具调用转成与外层同形的事件", () => {
       // 工具返回的正文照旧不进轨迹,只记长度(ADR 0017)。
       resultLength: "src/orders-api.js:8".length,
     },
-    { kind: "assistant_message", text: "src/orders-api.js:8 直接把 req.query.customerId 交了过去" },
+    {
+      kind: "assistant_message",
+      text: "",
+      stopReason: "stop",
+      content: { text: 0, thinking: 0, toolCalls: 0, thinkingChars: 0 },
+      usage: { inputTokens: 51, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    },
   ]);
 });
 
@@ -501,7 +515,11 @@ test("transcript 读不到或形状认不出时回空,取证本身照常", () =>
     `{"recordType":"message","role":"assistant","text":"读到一半就断了"}\n{"recordType":\n`,
   );
   assert.deepEqual(evidenceTranscriptEvents(toolResult(path)), [
-    { kind: "assistant_message", text: "读到一半就断了" },
+    {
+      kind: "assistant_message",
+      text: "读到一半就断了",
+      content: { text: 0, thinking: 0, toolCalls: 0, thinkingChars: 0 },
+    },
   ]);
 });
 
