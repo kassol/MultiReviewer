@@ -318,7 +318,7 @@ function NavLink({ item }: { item: NavigationItem }) {
   return (
     <Link
       to={item.to}
-      activeOptions={{ exact: item.to === "/" }}
+      activeOptions={{ exact: item.to === "/", includeSearch: false }}
       aria-current={stageUnderRecords ? "page" : undefined}
       className="flex shrink-0 flex-col items-stretch justify-end outline-none pointer-coarse:min-h-11 focus-visible:ring-2 focus-visible:ring-ring/40"
     >
@@ -418,7 +418,7 @@ function MobileTabBar({
           <Link
             key={item.to}
             to={item.to}
-            activeOptions={{ exact: item.to === "/" }}
+            activeOptions={{ exact: item.to === "/", includeSearch: false }}
             aria-current={stageUnderRecords ? "page" : undefined}
             className="flex min-h-11 flex-1 flex-col items-center justify-center gap-[3px] py-[5px] outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           >
