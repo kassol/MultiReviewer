@@ -760,7 +760,10 @@ function AssistantReply({
   return (
     <div
       ref={cardRef}
-      className="group relative flex flex-col rounded-lg border border-overlay-line bg-surface px-4 py-3"
+      // 回复正文直接落在对话列上,不套卡:一场会话几十条回复,每条一张白卡就是一面卡片墙,
+      // 而真正需要容器的是人的气泡、工具行与提问卡。流式那一版本来就没有卡,落库后也不再跳一下。
+      // 折叠、展开与阅读视图的逻辑不变。
+      className="group relative flex flex-col px-1 py-1"
     >
       <span className="sr-only">agent</span>
       {copyError === null ? null : (
@@ -776,7 +779,7 @@ function AssistantReply({
           <Markdown text={item.text} />
           <div
             aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-surface to-transparent"
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-background to-transparent"
           />
         </div>
       ) : (
@@ -789,7 +792,7 @@ function AssistantReply({
         className={
           long && !expanded
             ? "mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted"
-            : "mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted md:absolute md:-top-3.5 md:right-3 md:mt-0 md:gap-4 md:rounded-md md:border md:border-overlay-line md:bg-surface md:px-3 md:opacity-0 md:shadow-control md:transition-opacity md:group-focus-within:opacity-100 md:group-hover:opacity-100"
+            : "mt-1 flex min-h-6 items-center justify-between gap-2 text-sm text-text-muted md:absolute md:-top-3 md:right-0 md:mt-0 md:gap-4 md:rounded-md md:border md:border-overlay-line md:bg-surface md:px-3 md:opacity-0 md:shadow-control md:transition-opacity md:group-focus-within:opacity-100 md:group-hover:opacity-100"
         }
       >
         <MessageTime at={item.at} />

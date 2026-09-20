@@ -7,6 +7,7 @@ import {
   Cross2Icon,
   CrossCircledIcon,
   DotsHorizontalIcon,
+  MagnifyingGlassIcon,
   Pencil1Icon,
   TrashIcon,
 } from "@radix-ui/react-icons";
@@ -18,8 +19,10 @@ import {
   Flex,
   IconButton,
   Skeleton,
+  Tabs,
   Text,
   TextArea,
+  TextField,
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
@@ -38,12 +41,14 @@ import {
   type SessionBaseline,
 } from "@/components/repo-baseline-rows";
 import { Statement } from "@/components/statement";
+import { TAB_TRIGGER } from "@/components/tab-trigger";
 import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
 import type { CommitSelection } from "@/commit-picker";
 import { sessionsQueryKey, type AgentSession } from "@/lib/agent-sessions";
 import {
   currentProduct,
+  filterKnowledge,
   groupedTerms,
   pickableTickets,
   PRODUCTS_QUERY_KEY,
@@ -65,10 +70,14 @@ import { localMinute } from "@/lib/time";
 import { apiUrl, fetchJson, send } from "./api.ts";
 import { NameDialog, ProductRail, useProductDetail, useProductSessions } from "./product-rail.tsx";
 
+/** 主区停在哪一页。缺省是产品知识——读它的人比动 tracker 的人多。 */
+type ProductTab = "knowledge" | "tracker";
+
 /**
  * 产品页(CONTEXT.md 产品,issue #331)。左栏是产品页与会话页共用的那一份(`ProductRail`:
- * 产品列表、当前产品的仓库、会话),右栏是当前产品的概览、产品知识与产品 tracker(issue
- * #361)。当前产品写在地址上(`/products/$productId`),从会话页回来选的还是同一个产品。
+ * 产品列表、当前产品的仓库、会话),右栏是当前产品的概览,与分两页的产品知识、产品
+ * tracker(issue #361)。当前产品写在地址上(`/products/$productId`),从会话页回来选的还是
+ * 同一个产品。
  *
  * 可见的产品由服务端按仓库分配给出(ADR 0018),前端不自己判:一个仓库都没分到的人
  * 拿到的是空列表,落在「还没有产品」那一档空态上。
@@ -91,23 +100,26 @@ export function ProductsPage({
   const [dialog, setDialog] = useState<"rename" | "survey" | null>(null);
   const [confirming, setConfirming] = useState(false);
   /*
-   * 打开的是哪一条 spec 记在地址上(`?spec=`),与阶段详情的 `?finding=` 同一写法:会话页右栏
-   * 那几行链过来时带的就是它,刷新与分享链接打开的也是同一条。开关都走 replace——它是这一页
-   * 里的一次下钻,不该往浏览器历史里塞一条。
+   * 主区停在哪一页、打开的是哪一条 spec,都记在地址上(`?tab=` 与 `?spec=`),与阶段详情
+   * 那两个参数同一写法:会话页右栏那几行链过来时带的就是 `?spec=`,刷新与分享链接打开的
+   * 也是同一条。开关与切 tab 都走 replace——它们是这一页里的一次下钻与一次翻页,不该往
+   * 浏览器历史里塞一条。
    */
-  const openSpecId = useRouterState({
+  const location = useRouterState({
     select: (state) => {
-      const raw = (state.location.search as Record<string, unknown>).spec;
+      const search = state.location.search as Record<string, unknown>;
+      const raw = search.spec;
       const id = typeof raw === "number" ? raw : Number(raw);
-      return Number.isSafeInteger(id) && id > 0 ? id : null;
+      const spec = Number.isSafeInteger(id) && id > 0 ? id : null;
+      // 带着 `?spec=` 进来的那一次不必另写 `tab=tracker`:那条 spec 就在 tracker 里。
+      const tab: ProductTab = spec !== null || search.tab === "tracker" ? "tracker" : "knowledge";
+      return { spec, tab };
     },
   });
-  const openSpec = (specId: number | null): void => {
-    // 地址带不带产品那一段要原样留着:`/products` 与 `/products/$productId` 是两条路由。
-    const search = (prev: Record<string, unknown>): Record<string, unknown> => ({
-      ...prev,
-      spec: specId ?? undefined,
-    });
+  // 地址带不带产品那一段要原样留着:`/products` 与 `/products/$productId` 是两条路由。
+  const replaceSearch = (
+    search: (prev: Record<string, unknown>) => Record<string, unknown>,
+  ): void => {
     void navigate(
       productId === undefined
         ? { to: "/products", search, replace: true }
@@ -119,6 +131,18 @@ export function ProductsPage({
           },
     );
   };
+  const openSpec = (specId: number | null): void => {
+    replaceSearch((prev) => ({
+      ...prev,
+      spec: specId ?? undefined,
+      // 裸 `?spec=` 深链接进来时 tab 只由那条 spec 兜底判出;清掉它之前把 tracker 写实,
+      // 否则关掉弹窗主区就翻回产品知识。
+      tab: prev.tab ?? "tracker",
+    }));
+  };
+  // 缺省的产品知识页不写进地址。
+  const selectTab = (next: ProductTab): void =>
+    replaceSearch((prev) => ({ ...prev, tab: next === "knowledge" ? undefined : next }));
 
   const productsQuery = useQuery({
     queryKey: PRODUCTS_QUERY_KEY,
@@ -215,10 +239,16 @@ export function ProductsPage({
     setDialog(next);
   }
 
-  /* 右栏:概览卡与产品知识。 */
-  const rightColumn = (
-    <>
-      {selected === undefined ? null : (
+  const specs = knowledgeQuery.data?.tracker.specs ?? [];
+
+  /*
+   * 右栏:概览那一行,与分两页的产品知识、产品 tracker。概览留在 tab 之外——产品名与
+   * 「…」菜单在哪一页都要够得着;tracker 是个操作面,与知识并排之后不必先滚过几千像素的
+   * 术语表才点得到一张票。
+   */
+  const rightColumn =
+    selected === undefined ? null : (
+      <>
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             {/* `lg` 以下这一份让位给页顶那一行:主区排在左栏三张卡之后,名字摆在这里要滚过
@@ -262,31 +292,65 @@ export function ProductsPage({
           {/* 仓库数、知识数、会话数左栏都有,这里不重复。 */}
           <p className="text-base text-text-muted">建于 {localMinute(selected.createdAt)}</p>
         </div>
-      )}
-      {selected === undefined ? null : (
-        <KnowledgeSection
-          key={`knowledge-${selected.id}`}
-          product={selected}
-          knowledge={knowledge}
-          pending={knowledgeQuery.isPending}
-          canWrite={canWriteKnowledge}
-          busy={busy}
-          onSurvey={() => openDialog("survey")}
-        />
-      )}
-      {selected === undefined ? null : (
-        <TrackerSection
-          key={`tracker-${selected.id}`}
-          product={selected}
-          specs={knowledgeQuery.data?.tracker.specs ?? []}
-          pending={knowledgeQuery.isPending}
-          canChat={canChat}
-          openSpecId={openSpecId}
-          onOpenSpec={openSpec}
-        />
-      )}
-    </>
-  );
+
+        <Tabs.Root value={location.tab} onValueChange={(next) => selectTab(next as ProductTab)}>
+          {/* 与阶段详情、知识集弹窗同一套 tab 语法:3px 圆头指示条,底线通栏。 */}
+          <Tabs.List size="2" className="shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
+            <Tabs.Trigger value="knowledge" className={TAB_TRIGGER}>
+              产品知识
+              {knowledge.length === 0 ? null : (
+                <Badge
+                  color={location.tab === "knowledge" ? "blue" : "gray"}
+                  variant="soft"
+                  radius="full"
+                  size="1"
+                  className="ml-1.5 tabular-nums"
+                >
+                  {knowledge.length}
+                </Badge>
+              )}
+            </Tabs.Trigger>
+            <Tabs.Trigger value="tracker" className={TAB_TRIGGER}>
+              产品 tracker
+              {specs.length === 0 ? null : (
+                <Badge
+                  color={location.tab === "tracker" ? "blue" : "gray"}
+                  variant="soft"
+                  radius="full"
+                  size="1"
+                  className="ml-1.5 tabular-nums"
+                >
+                  {specs.length}
+                </Badge>
+              )}
+            </Tabs.Trigger>
+          </Tabs.List>
+
+          <Tabs.Content value="knowledge" className="pt-3">
+            <KnowledgeSection
+              key={`knowledge-${selected.id}`}
+              product={selected}
+              knowledge={knowledge}
+              pending={knowledgeQuery.isPending}
+              canWrite={canWriteKnowledge}
+              busy={busy}
+              onSurvey={() => openDialog("survey")}
+            />
+          </Tabs.Content>
+          <Tabs.Content value="tracker" className="pt-3">
+            <TrackerSection
+              key={`tracker-${selected.id}`}
+              product={selected}
+              specs={specs}
+              pending={knowledgeQuery.isPending}
+              canChat={canChat}
+              openSpecId={location.spec}
+              onOpenSpec={openSpec}
+            />
+          </Tabs.Content>
+        </Tabs.Root>
+      </>
+    );
 
   return (
     <PageBody>
@@ -531,13 +595,42 @@ function Annotations({ entry }: { entry: ProductKnowledge }) {
   );
 }
 
-/** 区块小标题:标题加条数,三段共用一份。 */
+/**
+ * 区块小标题:标题加条数,三段共用一份。段内锚点跳的就是它,顶栏是 sticky 的两行毛玻璃,
+ * `block: "start"` 会把它贴到视口 y=0 钻进底下,因此让开 88px。
+ */
 function SectionHeading({ id, title, count }: { id: string; title: string; count: number }) {
   return (
-    <h3 id={id} className="flex items-center gap-1.5 text-lg font-semibold">
+    <h3 id={id} className="flex scroll-mt-[88px] items-center gap-1.5 text-lg font-semibold">
       {title}
       <span className="font-mono text-xs font-normal text-text-muted tabular-nums">{count}</span>
     </h3>
+  );
+}
+
+/** 锚点这一排的段名与它要跳到的那个标题 id(下面三段各自的 `SectionHeading` 挂着它)。 */
+const KNOWLEDGE_SECTIONS = [
+  { id: "product-terms-title", title: "术语表" },
+  { id: "product-relationships-title", title: "仓库关系" },
+  { id: "product-decisions-title", title: "产品决策" },
+] as const;
+
+/**
+ * 段内锚点:点了滚到那一段。不改地址——它是这一卡里的一次跳读,不是一处可以分享的位置,
+ * 写进地址只会让返回键堵在几次滚动上。
+ */
+function SectionAnchor({ id, title, count }: { id: string; title: string; count: number }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      color="gray"
+      size="1"
+      onClick={() => document.getElementById(id)?.scrollIntoView({ block: "start" })}
+    >
+      {title}
+      <span className="font-mono tabular-nums">{count}</span>
+    </Button>
   );
 }
 
@@ -596,10 +689,26 @@ function KnowledgeSection({
   busy: boolean;
   onSurvey: () => void;
 }) {
-  const groups = groupedTerms(knowledge);
+  /*
+   * 筛选只留在这一卡里,不写进地址:它是读的时候临时收窄一下,换个产品就该没了(卡按产品
+   * id 重挂,状态跟着回到空)。
+   */
+  const [filter, setFilter] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+  const shown = filterKnowledge(knowledge, filter);
+
+  const groups = groupedTerms(shown);
   const terms = groups.reduce((count, group) => count + group.terms.length, 0);
-  const relationships = knowledge.filter((entry) => entry.kind === "relationship");
-  const decisions = knowledge.filter((entry) => entry.kind === "decision");
+  const relationships = shown.filter((entry) => entry.kind === "relationship");
+  const decisions = shown.filter((entry) => entry.kind === "decision");
+  const counts = [terms, relationships.length, decisions.length];
+  // 为 0 的那段不画锚点;只剩一段时整排都不画——没有第二段可跳。
+  const anchors = KNOWLEDGE_SECTIONS.map((section, index) => ({
+    ...section,
+    count: counts[index] ?? 0,
+  })).filter((section) => section.count > 0);
+  // 五条以内扫一眼就完了,不必先读一个输入框。
+  const filterable = knowledge.length > 5;
 
   const surveyButton = (
     <Button
@@ -665,6 +774,63 @@ function KnowledgeSection({
           />
         ) : (
           <>
+            {/* 筛选框在左、段内锚点在右;窄屏上输入框独占一行,锚点折到下一行。 */}
+            {!filterable && anchors.length < 2 ? null : (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                {filterable ? (
+                  <TextField.Root
+                    ref={input}
+                    size={{ initial: "3", sm: "2" }}
+                    className="min-w-[12rem] grow basis-full sm:max-w-[20rem] sm:basis-0"
+                    aria-label="筛选产品知识"
+                    placeholder="筛选术语、关系与决策"
+                    value={filter}
+                    onChange={(event) => setFilter(event.target.value)}
+                  >
+                    <TextField.Slot side="left">
+                      <MagnifyingGlassIcon aria-hidden />
+                    </TextField.Slot>
+                    {filter === "" ? null : (
+                      <TextField.Slot side="right">
+                        <IconButton
+                          type="button"
+                          size="1"
+                          variant="ghost"
+                          color="gray"
+                          aria-label="清空筛选"
+                          // 清完焦点回输入框:人是要重打一个词,不是要离开这一格。
+                          onClick={() => {
+                            setFilter("");
+                            input.current?.focus();
+                          }}
+                        >
+                          <Cross2Icon aria-hidden />
+                        </IconButton>
+                      </TextField.Slot>
+                    )}
+                  </TextField.Root>
+                ) : null}
+                {anchors.length < 2 ? null : (
+                  // 有筛选框时靠右,单独一排时跟着标题靠左。
+                  <div
+                    className={
+                      filterable
+                        ? "flex flex-wrap items-center gap-1 sm:ml-auto"
+                        : "flex flex-wrap items-center gap-1"
+                    }
+                  >
+                    {anchors.map((section) => (
+                      <SectionAnchor key={section.id} {...section} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {shown.length === 0 ? (
+              <EmptyState title="没有匹配的条目。" description="换个词,或清空筛选。" />
+            ) : null}
+
             {terms === 0 ? null : (
               <section aria-labelledby="product-terms-title" className={sectionClass(true)}>
                 <SectionHeading id="product-terms-title" title="术语表" count={terms} />
@@ -849,21 +1015,10 @@ function TrackerSection({
   ));
   const ticketCount = specs.reduce((total, spec) => total + spec.tickets.length, 0);
   const pickable = pickableTickets(specs);
-  /**
-   * 带着 `?spec=` 进来时滚到 tracker 区:弹窗关掉之后人落在那条 spec 所在的列表上,而不是
-   * 页顶。只在落地那一次滚——点开一条本来就在视野里的 spec 时再滚一次只会让页面无端跳走。
-   */
-  const section = useRef<HTMLElement>(null);
-  const landed = useRef(false);
-  useEffect(() => {
-    if (landed.current || pending || openSpecId === null) return;
-    landed.current = true;
-    section.current?.scrollIntoView({ block: "start" });
-  }, [pending, openSpecId]);
 
   return (
-    // 顶栏是 sticky 的两行毛玻璃,`block: "start"` 会把卡头贴到视口 y=0 钻进它底下。
-    <CardShell ref={section} className="min-w-0 scroll-mt-[88px] px-5 py-4">
+    // 带着 `?spec=` 进来的那一次不必滚:tracker 自己就是主区的一页,它已经在视野里。
+    <CardShell className="min-w-0 px-5 py-4">
       <div className="flex min-w-0 flex-col gap-3">
         <div className="flex min-w-0 items-center gap-1">
           <h2 className="text-2xl font-bold tracking-[-0.015em]">产品 tracker</h2>

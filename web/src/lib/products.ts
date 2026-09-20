@@ -119,6 +119,26 @@ export function groupedTerms(
   return ungrouped === undefined ? ordered : [...ordered, { topic: null, terms: ungrouped }];
 }
 
+/**
+ * 按一句话筛产品知识(CONTEXT.md 产品知识)。一个产品谈久了三段加起来上百条,要找的那一条
+ * 只能靠眼睛扫。匹配名字、正文、不说、备选与后果这几格,不分大小写;去掉首尾空白后为空即
+ * 不筛,原样回全部。
+ *
+ * 出处附注不进匹配:它记的是代码里的位置,按文件路径搜出来的那几条与人正在找的那句话无关。
+ */
+export function filterKnowledge(
+  knowledge: readonly ProductKnowledge[],
+  query: string,
+): ProductKnowledge[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return [...knowledge];
+  return knowledge.filter((entry) =>
+    [entry.name, entry.body, entry.options ?? "", entry.consequences ?? "", ...entry.avoided].some(
+      (text) => text.toLowerCase().includes(needle),
+    ),
+  );
+}
+
 /** `GET /products` 那一份读缓存的键。 */
 export const PRODUCTS_QUERY_KEY = ["products"] as const;
 

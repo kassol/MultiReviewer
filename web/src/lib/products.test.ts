@@ -9,6 +9,7 @@ import { test } from "node:test";
 
 import {
   currentProduct,
+  filterKnowledge,
   groupedTerms,
   pickableTickets,
   statementParts,
@@ -71,6 +72,47 @@ test("术语表按主题分组:主题按首次出现排,没分组的排在最后
   );
   // 一条术语都没有时没有分组:关系与决策不进这一份。
   assert.deepEqual(groupedTerms([relationship]), []);
+});
+
+test("筛产品知识:名字、正文、不说、备选与后果都匹配,不分大小写", () => {
+  const entry = (id: number, over: Partial<ProductKnowledge> = {}): ProductKnowledge => ({
+    id,
+    kind: "term",
+    name: "",
+    body: "",
+    topic: null,
+    avoided: [],
+    options: null,
+    consequences: null,
+    supersededBy: null,
+    annotations: [{ location: "src/order.ts:12", reason: "退款走的是这里" }],
+    writtenAt: "2026-09-20T00:00:00.000Z",
+    ...over,
+  });
+  const knowledge = [
+    entry(1, { name: "订单" }),
+    entry(2, { body: "退款只走这一条路" }),
+    entry(3, { avoided: ["撤单"] }),
+    entry(4, { kind: "decision", options: "用 Kafka" }),
+    entry(5, { kind: "decision", consequences: "库要重建" }),
+    entry(6, { name: "口令" }),
+  ];
+  const ids = (query: string): number[] =>
+    filterKnowledge(knowledge, query).map((row) => row.id);
+
+  assert.deepEqual(ids("订单"), [1]);
+  assert.deepEqual(ids("退款"), [2]);
+  assert.deepEqual(ids("撤单"), [3]);
+  assert.deepEqual(ids("kafka"), [4]);
+  assert.deepEqual(ids("重建"), [5]);
+  // 空串与只有空白都不筛:人清空输入框之后看到的是全部。
+  assert.deepEqual(ids(""), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(ids("   "), [1, 2, 3, 4, 5, 6]);
+  // 首尾空白不参与匹配。
+  assert.deepEqual(ids("  订单 "), [1]);
+  // 出处附注不进匹配:按文件路径搜出来的条目与人要找的那句话无关。
+  assert.deepEqual(ids("src/order.ts"), []);
+  assert.deepEqual(ids("没有这句话"), []);
 });
 
 test("可开工的票:开着、无未关阻塞、无人认领", () => {
