@@ -457,7 +457,7 @@ function RepoSidebar({
             <span className="ml-1.5 font-normal tabular-nums text-text-muted">{repos.length}</span>
           )}
         </h2>
-        {admin.canWrite ? <RegisterRepo onRegistered={admin.onRegistered} /> : null}
+        {admin.canWrite ? <RegisterRepo onRegistered={admin.onRegistered} quiet /> : null}
       </div>
       <div className="overflow-hidden rounded-lg border border-card-line bg-surface shadow-card">
         {isPending ? (
@@ -796,7 +796,7 @@ export function RunsPage({
             <div className="flex items-center gap-2 lg:hidden">
               <RepoSelect repos={rows} selected={selected} onSelect={selectRepository} />
               {canWrite ? (
-                <RegisterRepo onRegistered={admin.onRegistered} className="shrink-0" />
+                <RegisterRepo onRegistered={admin.onRegistered} className="shrink-0" quiet />
               ) : null}
               {canWrite && selectedRow !== undefined ? (
                 <RepoRowMenu

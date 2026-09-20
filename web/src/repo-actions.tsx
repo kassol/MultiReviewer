@@ -226,9 +226,12 @@ function SegmentButton({
 export function RegisterRepo({
   onRegistered,
   className,
+  quiet = false,
 }: {
   onRegistered: (repo: { owner: string; repo: string }) => void;
   className?: string;
+  /** 评审记录页上它是次要动作:那一页的主按钮是「发起范围审查」,一屏不放两颗实心蓝。 */
+  quiet?: boolean;
 }) {
   const queryClient = useQueryClient();
   const setup = useSetupStatus();
@@ -240,10 +243,11 @@ export function RegisterRepo({
       <Dialog.Trigger>
         <Button
           data-register-repo-trigger
-          variant="solid"
+          variant={quiet ? "soft" : "solid"}
+          {...(quiet ? { color: "gray" as const } : {})}
           size={{ initial: "4", sm: "2" }}
           disabled={!registrationReady}
-          className={cn("shadow-accent", className)}
+          className={cn(!quiet && "shadow-accent", className)}
         >
           注册仓库
         </Button>
