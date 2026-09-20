@@ -1227,7 +1227,7 @@ function SpecDialog({
                           Radix 类名。 */}
                       <button
                         type="button"
-                        className="flex min-w-[12rem] grow basis-full items-center gap-2 rounded-md py-1 text-left transition-colors pointer-coarse:min-h-11 hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:basis-0"
+                        className="flex min-w-[12rem] grow basis-full items-center gap-2 rounded-md py-1 text-left max-sm:flex-wrap transition-colors pointer-coarse:min-h-11 hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:basis-0"
                       >
                         <ChevronRightIcon
                           aria-hidden
@@ -1239,7 +1239,13 @@ function SpecDialog({
                         <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
                           {ticket.label}
                         </Badge>
-                        <Text as="span" size="3" weight="medium" className="min-w-0 break-words">
+                        {/* `sm` 以下标题独占一行:挤在标签右边只剩半屏宽,一个标题折成三四行。 */}
+                        <Text
+                          as="span"
+                          size="3"
+                          weight="medium"
+                          className="min-w-0 break-words max-sm:basis-full max-sm:pl-6"
+                        >
                           {ticket.title}
                         </Text>
                       </button>
