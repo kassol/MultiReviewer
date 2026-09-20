@@ -15,10 +15,15 @@ import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store.ts
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
 export type TraceScope = "run" | "reviewer";
 
-/** Reviewer 级的事件类型。前两档由子进程转发,后两档由编排层在该模型跑完时补。 */
+/**
+ * Reviewer 级的事件类型。前四档由子进程转发(后两档是 Pi 的自动重试与上下文压缩,
+ * issue #409),最后两档由编排层在该模型跑完时补。
+ */
 export type ReviewerTraceKind =
   | "assistant_message"
   | "tool_call"
+  | "model_retry"
+  | "context_compacted"
   | "reviewer_failed"
   | "reviewer_finished";
 
@@ -90,7 +95,7 @@ export type RunTraceKind =
 export type TraceKind = ReviewerTraceKind | RunTraceKind;
 
 /**
- * 知识轨迹的事件类型(CONTEXT.md 知识轨迹,issue #214)。前三档与 Reviewer 那侧同形,
+ * 知识轨迹的事件类型(CONTEXT.md 知识轨迹,issue #214)。会话那四档与 Reviewer 那侧同形,
  * 因为它们来自同一个转换(`reviewer/trace-events.ts`);其余几档由编排层在这次任务开始、
  * 提出条目、整理队列与收尾时补。`rule_consolidated` 是知识整理对队列的一次直改
  * (合并或改写,issue #284)。
@@ -99,6 +104,8 @@ export type RuleTraceKind =
   | "rule_agent_started"
   | "assistant_message"
   | "tool_call"
+  | "model_retry"
+  | "context_compacted"
   | "rule_proposed"
   | "rule_consolidated"
   /** 一条并入落不下去,那一条被丢掉(issue #283)。payload 说清是哪条提案、为什么。 */

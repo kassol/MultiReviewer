@@ -6,7 +6,7 @@
  *
  * 所有进轨迹的文本先过 `redactModelCredential`:失败原文与工具参数都可能回显请求头。
  */
-import type { ReviewerEvent } from "../review/finding.ts";
+import type { ReviewerEvent, TurnContent, TurnUsage } from "../review/finding.ts";
 import { redactModelCredential } from "./env.ts";
 
 /** 只认这里用到的那几个字段。其余事件类型一律不转。 */
@@ -14,6 +14,9 @@ type PiSessionEvent =
   | { type: "message_end"; message: unknown }
   | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
+  | { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+  | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+  | { type: "compaction_end"; reason: string; result: unknown; aborted: boolean; errorMessage?: string }
   | { type: string };
 
 /** Pi 的文本内容块。工具返回与 assistant 消息用的是同一种。 */
@@ -26,15 +29,41 @@ function textBlocks(content: unknown): string[] {
   );
 }
 
-/** 一条 assistant 消息里说的话。thinking 与 toolCall 块不在其中(当前 thinking 关着)。 */
-function assistantText(message: unknown): string | undefined {
-  const record = message as { role?: unknown; content?: unknown } | null;
-  if (record?.role !== "assistant") return undefined;
-  const parts = textBlocks(record.content);
-  // 只带工具调用的消息常有一个空文本块;它不是「说了话」,不进轨迹。
-  const text = parts.join("\n");
-  if (text.trim() === "") return undefined;
-  return text;
+/**
+ * 一条 assistant 消息的内容构成(issue #407)。思考只数块数与字数,正文不带出去
+ * (ADR 0017)。认不出的块型既不是文本也不是思考也不是工具调用,不计。
+ */
+export function turnContent(content: unknown): TurnContent {
+  const blocks = Array.isArray(content) ? (content as { type?: unknown; thinking?: unknown }[]) : [];
+  const tally: TurnContent = { text: 0, thinking: 0, toolCalls: 0, thinkingChars: 0 };
+  for (const block of blocks) {
+    if (block?.type === "text") tally.text += 1;
+    else if (block?.type === "toolCall") tally.toolCalls += 1;
+    else if (block?.type === "thinking") {
+      tally.thinking += 1;
+      if (typeof block.thinking === "string") tally.thinkingChars += block.thinking.length;
+    }
+  }
+  return tally;
+}
+
+/** Pi 的 `Usage` 转成轨迹里那四格。缺席即这条消息没带用量。 */
+export function turnUsage(usage: unknown): TurnUsage | undefined {
+  const record = usage as Record<string, unknown> | null;
+  if (typeof record !== "object" || record === null) return undefined;
+  const value = (key: string): number =>
+    typeof record[key] === "number" ? (record[key] as number) : 0;
+  return {
+    inputTokens: value("input"),
+    outputTokens: value("output"),
+    cacheReadTokens: value("cacheRead"),
+    cacheWriteTokens: value("cacheWrite"),
+  };
+}
+
+/** 一条 assistant 消息里说的话。thinking 与 toolCall 块不在其中。 */
+function assistantText(content: unknown): string {
+  return textBlocks(content).join("\n");
 }
 
 /** JSON 化再脱敏。模型给的工具参数一定是 JSON,不会有环。 */
@@ -74,9 +103,84 @@ export function reviewerEventStream(
 
   return (event) => {
     if (event.type === "message_end") {
-      const text = assistantText((event as { message: unknown }).message);
-      if (text === undefined) return;
-      emit({ kind: "assistant_message", text: redactModelCredential(text, credential) });
+      // 每个回合都落一条,空回合也落(issue #407):一批读完工具结果就无声结束的会话,
+      // 轨迹里此前一条痕迹都没有。用户消息与工具返回走的是同一个事件,按 role 挡掉。
+      const message = (event as { message: unknown }).message as {
+        role?: unknown;
+        content?: unknown;
+        stopReason?: unknown;
+        errorMessage?: unknown;
+        usage?: unknown;
+      } | null;
+      if (message?.role !== "assistant") return;
+      const usage = turnUsage(message.usage);
+      emit({
+        kind: "assistant_message",
+        text: redactModelCredential(assistantText(message.content), credential),
+        ...(typeof message.stopReason === "string" ? { stopReason: message.stopReason } : {}),
+        ...(typeof message.errorMessage === "string" && message.errorMessage !== ""
+          ? { error: redactModelCredential(message.errorMessage, credential) }
+          : {}),
+        content: turnContent(message.content),
+        ...(usage === undefined ? {} : { usage }),
+      });
+      return;
+    }
+
+    // Pi 的自动重试(issue #409)。排上与落定各一条:攒到落定再一起发的话,进程在等待
+    // 那几秒里死掉就连触发它的错误都看不到,而那正是要查的东西。
+    if (event.type === "auto_retry_start") {
+      const started = event as { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string };
+      emit({
+        kind: "model_retry",
+        outcome: "waiting",
+        attempt: started.attempt,
+        maxAttempts: started.maxAttempts,
+        delayMs: started.delayMs,
+        error: redactModelCredential(started.errorMessage, credential),
+      });
+      return;
+    }
+
+    if (event.type === "auto_retry_end") {
+      const ended = event as { success: boolean; attempt: number; finalError?: string };
+      emit({
+        kind: "model_retry",
+        outcome: ended.success ? "succeeded" : "gave_up",
+        attempt: ended.attempt,
+        error:
+          typeof ended.finalError === "string" && ended.finalError !== ""
+            ? redactModelCredential(ended.finalError, credential)
+            : null,
+      });
+      return;
+    }
+
+    // Pi 的一次上下文压缩(issue #409)。没成时前后 token 数取不到,只剩那句原因。
+    if (event.type === "compaction_end") {
+      const compacted = event as {
+        reason: string;
+        result: unknown;
+        aborted: boolean;
+        errorMessage?: string;
+      };
+      const result = compacted.result as
+        | { tokensBefore?: unknown; estimatedTokensAfter?: unknown }
+        | undefined;
+      const tokens = (value: unknown): number | null =>
+        typeof value === "number" ? value : null;
+      emit({
+        kind: "context_compacted",
+        reason: compacted.reason,
+        tokensBefore: tokens(result?.tokensBefore),
+        tokensAfter: tokens(result?.estimatedTokensAfter),
+        error:
+          typeof compacted.errorMessage === "string" && compacted.errorMessage !== ""
+            ? redactModelCredential(compacted.errorMessage, credential)
+            : compacted.aborted
+              ? "压缩被中止"
+              : null,
+      });
       return;
     }
 

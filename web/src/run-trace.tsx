@@ -150,6 +150,178 @@ export function EventTime({ at }: { at: string }) {
   );
 }
 
+/** Pi 归一后的停止原因(issue #407)。认不出的按原值显示。 */
+const STOP_REASON_LABEL: Record<string, string> = {
+  stop: "正常结束",
+  toolUse: "调用工具",
+  length: "输出达上限",
+  error: "出错",
+  aborted: "被中止",
+};
+
+/** 这两档是常态,不挂徽章;其余几档正是来查这一页的理由。 */
+const ROUTINE_STOP = new Set(["stop", "toolUse"]);
+
+/**
+ * 一个回合的内容构成读成一句话(issue #407)。思考只有块数与字数——正文不入库
+ * (ADR 0017)。一块内容都没有时回「没有内容」:那正是线上那几批停住的样子。
+ */
+function contentSummary(content: Record<string, unknown> | null): string | null {
+  if (content === null) return null;
+  const text = num(content, "text") ?? 0;
+  const thinking = num(content, "thinking") ?? 0;
+  const toolCalls = num(content, "toolCalls") ?? 0;
+  const thinkingChars = num(content, "thinkingChars") ?? 0;
+  const parts = [
+    thinking === 0 ? null : `思考 ${thinking} 段 ${thinkingChars} 字`,
+    toolCalls === 0 ? null : `调用工具 ${toolCalls} 次`,
+    text === 0 ? null : `文本 ${text} 块`,
+  ].filter((part): part is string => part !== null);
+  return parts.length === 0 ? "没有内容" : parts.join(" · ");
+}
+
+/**
+ * 一个模型回合(issue #407)。说了话的回合与这一票之前一样把整条文本摊开;一个字都没说的
+ * 回合同样占一行,写明它以什么原因结束、产出了什么——会话在哪个回合无声停下,此前只能靠
+ * 「最后一个事件是什么」反推。停止原因不是正常结束或调用工具时挂一枚徽章。
+ */
+function AssistantTurn({ payload }: { payload: Record<string, unknown> }) {
+  const text = str(payload, "text");
+  const stopReason = str(payload, "stopReason");
+  const error = str(payload, "error");
+  const summary = contentSummary(record(payload, "content"));
+  const said = text !== null && text.trim() !== "";
+  const badge =
+    stopReason === null || ROUTINE_STOP.has(stopReason)
+      ? null
+      : (STOP_REASON_LABEL[stopReason] ?? stopReason);
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      {said ? (
+        // 整条文本摊开,不截断:这就是「它当时在想什么」的唯一记录。
+        <p className="min-w-0 text-base leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
+          {text.trim()}
+        </p>
+      ) : (
+        <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text-secondary">
+          <span>本回合没有说话</span>
+          {summary === null ? null : <span className="text-sm">{summary}</span>}
+        </span>
+      )}
+      {badge === null ? null : (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <Badge color="amber" variant="soft" radius="full">{badge}</Badge>
+          {error === null ? null : (
+            <span className="min-w-0 text-sm break-words text-danger">{error}</span>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** 一次自动重试落定时的两种结局(issue #409)。`waiting` 是它刚排上、正在等。 */
+const RETRY_OUTCOME_LABEL: Record<string, string> = {
+  succeeded: "重试成功",
+  gave_up: "重试放弃",
+};
+
+/** 一次压缩是谁触发的(issue #409)。 */
+const COMPACTION_REASON_LABEL: Record<string, string> = {
+  manual: "手动",
+  threshold: "到阈值",
+  overflow: "上下文溢出",
+};
+
+/**
+ * Pi 的自动重试(issue #409)。排上与落定各一行:瞬时的模型服务错误被重试吞掉之后此前
+ * 不留痕,排障时分不出「模型自己停了」与「错误重试之后才停」。
+ */
+function ModelRetry({ payload }: { payload: Record<string, unknown> }) {
+  const outcome = str(payload, "outcome");
+  const attempt = num(payload, "attempt");
+  const delayMs = num(payload, "delayMs");
+  const maxAttempts = num(payload, "maxAttempts");
+  const error = str(payload, "error");
+  const settled = outcome !== null && outcome !== "waiting";
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span className="flex flex-wrap items-center gap-1.5">
+        <Badge color={outcome === "gave_up" ? "red" : "amber"} variant="soft" radius="full">
+          {settled ? (RETRY_OUTCOME_LABEL[outcome] ?? outcome) : "自动重试"}
+        </Badge>
+        <span className="text-base text-text">
+          第 <span className="font-mono tabular-nums">{attempt ?? "?"}</span>
+          {maxAttempts === null ? null : (
+            <>
+              /<span className="font-mono tabular-nums">{maxAttempts}</span>
+            </>
+          )}{" "}
+          次
+        </span>
+        {settled || delayMs === null ? null : (
+          <span className="text-sm text-text-secondary">
+            等 <span className="font-mono tabular-nums">{delayMs}</span>ms 再发
+          </span>
+        )}
+      </span>
+      {error === null ? null : (
+        <p className="min-w-0 text-sm break-words text-text-secondary">{error}</p>
+      )}
+    </div>
+  );
+}
+
+/** Pi 的一次上下文压缩(issue #409)。压缩改变会话走向,轨迹里此前看不到它发生过。 */
+function ContextCompacted({ payload }: { payload: Record<string, unknown> }) {
+  const reason = str(payload, "reason");
+  const before = num(payload, "tokensBefore");
+  const after = num(payload, "tokensAfter");
+  const error = str(payload, "error");
+
+  return (
+    <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
+      <span className={error === null ? undefined : "text-warning"}>
+        {error === null ? "上下文已压缩" : "上下文压缩没成"}
+      </span>
+      {reason === null ? null : (
+        <span className="text-sm text-text-secondary">
+          {COMPACTION_REASON_LABEL[reason] ?? reason}
+        </span>
+      )}
+      {before === null && after === null ? null : (
+        <span className="text-sm text-text-secondary">
+          <span className="font-mono tabular-nums">{before ?? "?"}</span> →{" "}
+          <span className="font-mono tabular-nums">{after ?? "?"}</span> tokens
+        </span>
+      )}
+      {error === null ? null : (
+        <span className="min-w-0 text-sm break-words text-text-secondary">{error}</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * 两条轨迹共用的那几档会话事件(issue #407、#409):它们来自同一个转换
+ * (`reviewer/trace-events.ts`),呈现因此只有这一份。
+ */
+export const SESSION_EVENT_KINDS = new Set(["assistant_message", "model_retry", "context_compacted"]);
+
+export function SessionEvent({
+  kind,
+  payload,
+}: {
+  kind: string;
+  payload: Record<string, unknown>;
+}) {
+  if (kind === "model_retry") return <ModelRetry payload={payload} />;
+  if (kind === "context_compacted") return <ContextCompacted payload={payload} />;
+  return <AssistantTurn payload={payload} />;
+}
+
 /** 认不出的事件按原样摊开:轨迹的用途是追溯,藏起来等于把一条真实事件抹掉。 */
 export function UnknownEvent({ event }: { event: { kind: string; payload: Record<string, unknown> } }) {
   return (
@@ -520,12 +692,8 @@ function nestedEvents(payload: Record<string, unknown>): Record<string, unknown>
 /** 嵌套进来的一条子会话事件。只有说话与工具调用两档,认不出的按原样摊开。 */
 function NestedEvent({ event }: { event: Record<string, unknown> }) {
   const kind = str(event, "kind");
-  if (kind === "assistant_message") {
-    return (
-      <p className="min-w-0 text-sm leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
-        {str(event, "text") ?? "(空文本)"}
-      </p>
-    );
+  if (kind !== null && SESSION_EVENT_KINDS.has(kind)) {
+    return <SessionEvent kind={kind} payload={event} />;
   }
   if (kind === "tool_call") return <ToolCall event={{ payload: event }} />;
   return <UnknownEvent event={{ kind: kind ?? "(未命名事件)", payload: event }} />;
@@ -612,12 +780,9 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
   const body = (): React.ReactNode => {
     switch (event.kind) {
       case "assistant_message":
-        // 整条文本摊开,不截断:这就是「它当时在想什么」的唯一记录。
-        return (
-          <p className="min-w-0 text-base leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
-            {str(payload, "text") ?? "(空文本)"}
-          </p>
-        );
+      case "model_retry":
+      case "context_compacted":
+        return <SessionEvent kind={event.kind} payload={payload} />;
       case "tool_call":
         return <ToolCall event={event} />;
       case "reviewer_failed": {

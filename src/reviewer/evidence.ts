@@ -57,6 +57,7 @@ import type { ProjectFact, ReviewerEvent, ReviewRule } from "../review/finding.t
 import { MODEL_API_KEY_ENV } from "./env.ts";
 import { ZERO_MODEL_COST } from "./model-runtime.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
+import { turnContent, turnUsage } from "./trace-events.ts";
 import { factBullet, READ_ONLY_TOOLS, ruleBullet } from "./worker-tools.ts";
 
 /** 子代理工具在会话里的名字,由 pi-subagents 注册。取证与会话子代理是同一个工具。 */
@@ -531,11 +532,13 @@ type TranscriptRecord = {
   toolName?: unknown;
   argsPayload?: unknown;
   isError?: unknown;
+  /** 这一回合的停止原因、错误原文与用量(issue #407)。pi-subagents 取得到才写。 */
+  stopReason?: unknown;
+  errorMessage?: unknown;
+  usage?: unknown;
+  /** 这条消息原样那一份。内容构成从它的 `content` 数。 */
+  message?: unknown;
 };
-
-function text(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
-}
 
 /**
  * 一份子会话 transcript 转成 Reviewer 事件序列。
@@ -568,8 +571,20 @@ function transcriptEvents(lines: readonly string[]): ReviewerEvent[] {
 
     if (record.recordType === "message") {
       if (record.role === "assistant") {
-        const said = text(record.text);
-        if (said !== undefined) events.push({ kind: "assistant_message", text: said });
+        // 与外层同律,每个回合都落一条(issue #407):子会话同样会读完工具结果就无声
+        // 结束。transcript 取得到多少记多少——`text` 空着时 pi-subagents 不写那一格。
+        const usage = turnUsage(record.usage);
+        const content = (record.message as { content?: unknown } | null)?.content;
+        events.push({
+          kind: "assistant_message",
+          text: typeof record.text === "string" ? record.text : "",
+          ...(typeof record.stopReason === "string" ? { stopReason: record.stopReason } : {}),
+          ...(typeof record.errorMessage === "string" && record.errorMessage !== ""
+            ? { error: record.errorMessage }
+            : {}),
+          content: turnContent(content),
+          ...(usage === undefined ? {} : { usage }),
+        });
         continue;
       }
       if (record.role === "toolResult" && callId !== undefined) {

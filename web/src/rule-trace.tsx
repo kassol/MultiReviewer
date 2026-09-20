@@ -8,7 +8,14 @@ import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/theme-button";
 import { num, str } from "@/lib/payload";
 
-import { EventTime, StreamStatus, ToolCall, UnknownEvent, useTrace } from "./run-trace.tsx";
+import {
+  EventTime,
+  SessionEvent,
+  StreamStatus,
+  ToolCall,
+  UnknownEvent,
+  useTrace,
+} from "./run-trace.tsx";
 
 /**
  * 知识轨迹里的一条事件(CONTEXT.md 知识轨迹,issue #214)。与审查轨迹同源,少了轮次与
@@ -80,12 +87,9 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
       );
     }
     case "assistant_message":
-      // 整条文本摊开,不截断:这就是「它当时在想什么」的唯一记录。
-      return (
-        <p className="min-w-0 text-base leading-relaxed break-words whitespace-pre-wrap text-text-secondary">
-          {(str(payload, "text") ?? "(空文本)").trim()}
-        </p>
-      );
+    case "model_retry":
+    case "context_compacted":
+      return <SessionEvent kind={event.kind} payload={payload} />;
     case "tool_call":
       return <ToolCall event={event} />;
     case "rule_proposed": {

@@ -329,9 +329,46 @@ export type ReviewerOutcome = {
  *
  * 事件正文不设长度上限;工具返回的内容只记长度,不记正文(ADR 0017)。
  */
+/**
+ * 一个模型回合的内容构成(issue #407)。思考正文不入库(ADR 0017),只记块数与总字数——
+ * 「这一回合到底产出了什么」不必读正文就答得出,而正文进库等于把推理全文复制进面板。
+ */
+export type TurnContent = {
+  text: number;
+  thinking: number;
+  toolCalls: number;
+  thinkingChars: number;
+};
+
+/** 一个模型回合的 token 用量(issue #407)。四格与 `ReviewerUsage` 同名,面板共用一套读法。 */
+export type TurnUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+};
+
 export type ReviewerEvent =
-  /** 模型说完的一整段话。按 Pi 的 `message_end` 记,不记流式增量。 */
-  | { kind: "assistant_message"; text: string }
+  /**
+   * 模型说完的一整段话。按 Pi 的 `message_end` 记,不记流式增量。
+   *
+   * **每个回合都落一条,一个字都没说的回合也落**(issue #407):线上排障卡在这里——一批
+   * 读完工具结果就无声结束的会话在轨迹里一条痕迹都没有,只能从「最后一个事件是什么」
+   * 反推。空回合的 `text` 是空串。
+   */
+  | {
+      kind: "assistant_message";
+      text: string;
+      /**
+       * Pi 归一后的停止原因(`stop` / `toolUse` / `length` / `error` / `aborted` 等)。
+       * 升级前的轨迹没有这一格。
+       */
+      stopReason?: string;
+      /** 停止原因是出错时的错误原文,与别的事件同一道凭据脱敏。 */
+      error?: string;
+      content?: TurnContent;
+      usage?: TurnUsage;
+    }
   /** 一次工具调用跑完。按 Pi 的 `tool_execution_end` 记一条。 */
   | {
       kind: "tool_call";
@@ -350,6 +387,37 @@ export type ReviewerEvent =
        * 从这里嵌进来才进得了审查轨迹。事件形状与外层同一套,面板因此用同一个渲染器。
        */
       nested?: readonly ReviewerEvent[];
+    }
+  /**
+   * Pi 的一次自动重试(issue #409)。瞬时的模型服务错误被重试吞掉之后此前不留痕,排障时
+   * 分不出「模型自己停了」与「错误重试之后才停」。
+   *
+   * 排上与落定各一条,不攒到落定再一起发:攒起来的话进程在等待那几秒里死掉就连触发它的
+   * 错误都看不到,而那正是要查的东西。`waiting` 是排上那一条,带最多重试几次与等多久;
+   * 另两档是这一串重试的结局,Pi 只在这时才知道成没成。
+   */
+  | {
+      kind: "model_retry";
+      outcome: "waiting" | "succeeded" | "gave_up";
+      /** 这次重试排第几次。 */
+      attempt: number;
+      maxAttempts?: number;
+      delayMs?: number;
+      /** 触发它的错误原文,或最终放弃时那一句。已脱敏;成功那一条没有。 */
+      error: string | null;
+    }
+  /**
+   * Pi 的一次上下文压缩(issue #409)。压缩改变会话走向,而轨迹里此前完全看不到它发生过。
+   * 压缩没成时前后 token 数取不到,`error` 说得出是中止还是出错。
+   */
+  | {
+      kind: "context_compacted";
+      /** 手动、到阈值还是上下文溢出。 */
+      reason: string;
+      tokensBefore: number | null;
+      /** Pi 给的是估算值(`estimatedTokensAfter`)。 */
+      tokensAfter: number | null;
+      error: string | null;
     };
 
 /**
