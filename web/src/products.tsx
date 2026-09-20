@@ -516,7 +516,7 @@ function Annotations({ entry }: { entry: ProductKnowledge }) {
         </button>
       </Collapsible.Trigger>
       <Collapsible.Content>
-        <ul className="flex max-w-[46em] flex-col gap-1.5 border-l border-line pb-1 pl-3">
+        <ul className="flex flex-col gap-1.5 border-l border-line pb-1 pl-3">
           {entry.annotations.map((note, index) => (
             <li key={index} className="flex min-w-0 flex-col">
               <span className="break-all font-mono text-xs text-text-secondary">
@@ -624,7 +624,8 @@ function KnowledgeSection({
   const rowClass =
     "flex min-w-0 flex-col gap-1 border-t border-line py-3 first:border-t-0 first:pt-0 lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-x-8";
   const nameClass = "min-w-0 break-words text-lg font-semibold";
-  const bodyClass = "flex min-w-0 flex-col gap-1";
+  // 行宽封在正文那一格上(46em × 15px):小字的「不说 / 备选 / 后果」与出处按自己的 em 算会比正文窄一截。
+  const bodyClass = "flex min-w-0 max-w-[690px] flex-col gap-1";
 
   return (
     <CardShell className="min-w-0 px-5 py-4">
@@ -758,12 +759,12 @@ function KnowledgeSection({
                           <Statement text={entry.body} />
                         </span>
                         {entry.options === null ? null : (
-                          <span className="max-w-[46em] break-words text-sm text-text-muted">
+                          <span className="break-words text-sm text-text-muted">
                             备选:<Statement text={entry.options} />
                           </span>
                         )}
                         {entry.consequences === null ? null : (
-                          <span className="max-w-[46em] break-words text-sm text-text-muted">
+                          <span className="break-words text-sm text-text-muted">
                             后果:<Statement text={entry.consequences} />
                           </span>
                         )}
