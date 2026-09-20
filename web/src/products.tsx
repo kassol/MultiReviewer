@@ -161,6 +161,29 @@ export function ProductsPage({
   const knowledgeQuery = useProductDetail(selected?.id);
   const knowledge = knowledgeQuery.data?.knowledge ?? [];
 
+  const overviewFacts = ((): string[] => {
+    if (selected === undefined) return [];
+    const tickets = (knowledgeQuery.data?.tracker.specs ?? []).flatMap((spec) => spec.tickets);
+    const open = tickets.filter((ticket) => ticket.state === "open").length;
+    const pickable = pickableTickets(knowledgeQuery.data?.tracker.specs ?? []).size;
+    const lastSurvey = sessions
+      .filter((row) => row.purpose === "product-survey" && row.completedAt !== null)
+      .map((row) => row.completedAt!)
+      .sort()
+      .at(-1);
+    return [
+      `${selected.repos.length} 个仓库`,
+      ...(knowledgeQuery.data === undefined
+        ? []
+        : [
+            `${knowledge.length} 条产品知识`,
+            open === 0 ? "没有开着的票" : `${open} 张票开着,${pickable} 张可开工`,
+          ]),
+      ...(lastSurvey === undefined ? [] : [`上一场梳理 ${localMinute(lastSurvey)} 谈完`]),
+      `建于 ${localMinute(selected.createdAt)}`,
+    ];
+  })();
+
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: PRODUCTS_QUERY_KEY });
   const refreshKnowledge = (): Promise<void> =>
@@ -289,8 +312,17 @@ export function ProductsPage({
               </DropdownMenu.Root>
             ) : null}
           </div>
-          {/* 仓库数、知识数、会话数左栏都有,这里不重复。 */}
-          <p className="text-base text-text-muted">建于 {localMinute(selected.createdAt)}</p>
+          {/* 这个产品此刻的几件事实,一行读完:知识写了多少、tracker 上还开着几张票、其中几张
+              现在就能接、上一场梳理什么时候谈完。数都来自已经读到的那两份(产品详情与会话列表),
+              还没读到的那一截先不画。 */}
+          <p className="flex flex-wrap gap-x-2 text-base text-text-muted">
+            {overviewFacts.map((fact, index) => (
+              <span key={fact} className="whitespace-nowrap">
+                {index === 0 ? null : <span aria-hidden className="mr-2 text-text-faint">·</span>}
+                {fact}
+              </span>
+            ))}
+          </p>
         </div>
 
         <Tabs.Root value={location.tab} onValueChange={(next) => selectTab(next as ProductTab)}>
@@ -579,7 +611,7 @@ function Annotations({ entry }: { entry: ProductKnowledge }) {
           />
         </button>
       </Collapsible.Trigger>
-      <Collapsible.Content>
+      <Collapsible.Content className="collapsible-motion">
         <ul className="flex flex-col gap-1.5 border-l border-line pb-1 pl-3">
           {entry.annotations.map((note, index) => (
             <li key={index} className="flex min-w-0 flex-col">
@@ -662,7 +694,7 @@ function TermGroup({ topic, children, count }: { topic: string | null; children:
           <span className="font-mono text-xs font-normal tabular-nums">{count}</span>
         </button>
       </Collapsible.Trigger>
-      <Collapsible.Content>{children}</Collapsible.Content>
+      <Collapsible.Content className="collapsible-motion">{children}</Collapsible.Content>
     </Collapsible.Root>
   );
 }
@@ -1328,7 +1360,9 @@ function SpecDialog({
             {(detail.error as Error).message}
           </Text>
         ) : (
-          <div className="flex max-h-[min(70vh,720px)] min-w-0 flex-col gap-4 overflow-y-auto">
+          // `relative`:里面任何绝对定位的东西都按这一格定位,不漏到弹窗外层去撑它的滚动高度。
+          // 横向不滚:ghost 键的负外边距会多出几像素,`-mx-1 px-1` 给焦点环留位置。
+          <div className="relative -mx-1 flex max-h-[min(70vh,720px)] min-w-0 flex-col gap-4 overflow-x-hidden overflow-y-auto px-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               {detail.data.spec.state === "closed" ? (
                 <Badge color="gray" variant="soft" size="1">
@@ -1463,7 +1497,7 @@ function SpecDialog({
                       </div>
                     ) : null}
                   </div>
-                  <Collapsible.Content>
+                  <Collapsible.Content className="collapsible-motion">
                     <div className="flex min-w-0 flex-col gap-1.5">
                       <Markdown text={ticket.body} />
                       {/* 评论整段显示,不折叠:一张票上的来龙去脉就这几条。 */}

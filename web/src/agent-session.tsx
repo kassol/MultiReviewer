@@ -915,7 +915,7 @@ function SubagentCard({ run }: { run: SubagentRun }) {
           </span>
         </button>
       </Collapsible.Trigger>
-      <Collapsible.Content>
+      <Collapsible.Content className="collapsible-motion">
         <ol
           className="mx-4 mb-1 flex min-w-0 flex-col border-l border-line pl-3"
           aria-label="子代理的工具调用"
@@ -1036,7 +1036,7 @@ function ToolGroup({
           )}
         </button>
       </Collapsible.Trigger>
-      <Collapsible.Content>
+      <Collapsible.Content className="collapsible-motion">
         <ol className="mt-1 ml-2 flex min-w-0 flex-col border-l border-line pl-3" aria-label="工具调用">
           {calls.map((call, index) => (
             <ToolRow key={`${call.seq}-${index}`} step={call.step} error={call.error} />

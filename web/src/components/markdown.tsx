@@ -108,16 +108,17 @@ function markdownComponents(size: "chat" | "article"): Components {
       if (type !== "checkbox") return <input {...props} type={type} checked={checked} />;
       const Icon = checked === true ? CheckCircledIcon : CircleIcon;
       return (
-        <>
-          <Icon
-            aria-hidden
-            className={cn(
+        // 状态挂在图标自己的 `aria-label` 上,不另放一个 `sr-only` 的 span:它是绝对定位的,
+        // 夹在带滚动的弹窗里会按弹窗外层定位、落在几千像素之下,把外层也撑出一条滚动条
+        // (spec 弹窗因此双层滚动、标题被滚走)。
+        <Icon
+          role="img"
+          aria-label={checked === true ? "已完成" : "未完成"}
+          className={cn(
               "mr-1.5 inline-block align-[-0.125em]",
               checked === true ? "text-success-icon" : "text-text-faint",
             )}
-          />
-          <span className="sr-only">{checked === true ? "已完成" : "未完成"}</span>
-        </>
+        />
       );
     },
     strong: ({ node: _node, className, ...props }) => (
