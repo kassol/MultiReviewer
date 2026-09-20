@@ -287,12 +287,19 @@ async function piModelsForCustomCatalog(
  * 自定义服务能用的那部分 compat(issue #262 验收)。Pi 0.85.0 的目录给 Claude 新型号打上
  * `supportsMidConvoEffort`,`anthropic-messages` 据此往 messages 里插 `output_config` 并加
  * beta 头——这一位只对官方 Anthropic 地址成立,自定义地址后面的兼容网关不认它,整轮请求
- * 400。目录里其余 compat(adaptive thinking 等)照抄;剥完一项不剩就当没有。
+ * 400。Pi 0.86.0 的 `supportsMidConvoSystemMessages` 同律(issue #403):提示在会话途中变了
+ * (Agent 会话重建)时 Pi 据它发原生的会话途中 system 消息,剥掉即退回整段替换开头那份提示,
+ * 哪家网关都认。目录里其余 compat(adaptive thinking 等)照抄;剥完一项不剩就当没有。
  */
 function gatewayCompat(compat: RuntimeModelCompat | undefined): RuntimeModelCompat | undefined {
   if (compat === undefined) return undefined;
-  const { supportsMidConvoEffort: _dropped, ...rest } = compat as RuntimeModelCompat & {
+  const {
+    supportsMidConvoEffort: _effort,
+    supportsMidConvoSystemMessages: _system,
+    ...rest
+  } = compat as RuntimeModelCompat & {
     supportsMidConvoEffort?: boolean;
+    supportsMidConvoSystemMessages?: boolean;
   };
   return Object.keys(rest).length === 0 ? undefined : (rest as RuntimeModelCompat);
 }
