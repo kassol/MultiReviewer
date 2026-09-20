@@ -327,7 +327,7 @@ function Conversation({
         // (issue #384)。留白加在内容末尾、人此刻看的那一段之下,`scrollTop` 不动,视野不跳。
         // 留多少:浮标在离底 `FOLLOW_THRESHOLD`(80px)时就现身,自己占底部 56px(12px 边距 +
         // 44px 高),最后一条消息要躲开它,末尾至少要留 80 + 56 = 136px,取 `pb-36`(144px)。
-        className={`relative h-full overflow-y-auto overscroll-contain pt-3 ${away ? "pb-36" : "pb-3"}`}
+        className={`relative h-full overflow-x-hidden overflow-y-auto overscroll-contain pt-3 ${away ? "pb-36" : "pb-3"}`}
         onScroll={(event) => {
           const el = event.currentTarget;
           setAway(el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD);

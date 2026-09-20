@@ -95,7 +95,10 @@ function markdownComponents(size: "chat" | "article"): Components {
         className={cn(
           "break-words",
           article ? "my-1 text-xl leading-[1.7]" : "my-0.5 text-lg",
-          typeof className === "string" && className.includes("task-list-item") ? "list-none" : "",
+          // 任务清单项悬挂缩进:图标挂在左边那一格,文字折行后与第一行对齐,不钻到图标下面。
+          typeof className === "string" && className.includes("task-list-item")
+            ? "relative -ml-5 list-none pl-6"
+            : "",
           className,
         )}
       />
@@ -115,8 +118,8 @@ function markdownComponents(size: "chat" | "article"): Components {
           role="img"
           aria-label={checked === true ? "已完成" : "未完成"}
           className={cn(
-              "mr-1.5 inline-block align-[-0.125em]",
-              checked === true ? "text-success-icon" : "text-text-faint",
+              "absolute top-[0.3em] left-0",
+              checked === true ? "text-success-icon" : "text-text-disabled",
             )}
         />
       );

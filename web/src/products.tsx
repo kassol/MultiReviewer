@@ -1362,7 +1362,7 @@ function SpecDialog({
         ) : (
           // `relative`:里面任何绝对定位的东西都按这一格定位,不漏到弹窗外层去撑它的滚动高度。
           // 横向不滚:ghost 键的负外边距会多出几像素,`-mx-1 px-1` 给焦点环留位置。
-          <div className="relative -mx-1 flex max-h-[min(70vh,720px)] min-w-0 flex-col gap-4 overflow-x-hidden overflow-y-auto px-1">
+          <div className="relative -mx-1 flex max-h-[min(70vh,720px)] min-w-0 max-sm:max-h-[58dvh] flex-col gap-4 overflow-x-hidden overflow-y-auto px-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               {detail.data.spec.state === "closed" ? (
                 <Badge color="gray" variant="soft" size="1">
