@@ -44,3 +44,15 @@ export function splitHighlightedLines(html: string): string[] {
   lines.push(current + html.slice(last));
   return lines;
 }
+
+/**
+ * 一行拆成「行首缩进」与「其余」。高亮过的 HTML 里缩进可能包在开头的 span 里(跨行注释的
+ * 续行),那几个开标签留给后半段。窄屏把缩进按半宽画:三十多格的续行对齐在 390px 上会把
+ * 代码顶到右缘、每行只剩几个字符。
+ */
+export function splitIndent(htmlOrText: string): [indent: string, rest: string] {
+  const match = /^((?:<span[^>]*>)*)([ \t]+)/.exec(htmlOrText);
+  return match === null
+    ? ["", htmlOrText]
+    : [match[2] ?? "", (match[1] ?? "") + htmlOrText.slice(match[0].length)];
+}

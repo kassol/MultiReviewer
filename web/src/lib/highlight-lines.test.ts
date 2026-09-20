@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { languageOf, splitHighlightedLines } from "./highlight-lines.ts";
+import { languageOf, splitHighlightedLines, splitIndent } from "./highlight-lines.ts";
 
 test("跨行的 span 在行尾闭合、下一行重开", () => {
   assert.deepEqual(
@@ -27,4 +27,10 @@ test("按扩展名认语言,认不出的不高亮", () => {
   assert.equal(languageOf("Makefile"), "makefile");
   assert.equal(languageOf("LICENSE"), undefined);
   assert.equal(languageOf("data.bin"), undefined);
+});
+
+test("行首缩进拆出来,开头的 span 留给后半段", () => {
+  assert.deepEqual(splitIndent("    if (x)"), ["    ", "if (x)"]);
+  assert.deepEqual(splitIndent('<span class="c">   * y</span>'), ["   ", '<span class="c">* y</span>']);
+  assert.deepEqual(splitIndent("x  y"), ["", "x  y"]);
 });

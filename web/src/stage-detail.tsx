@@ -900,6 +900,12 @@ function StageDrawer({
         <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim" />
         <Dialog.Content
           aria-describedby={undefined}
+          // 打开时焦点落在浮层本身:默认落到第一个可聚焦元素(「下一条 Finding」),每次开
+          // 侧滑都会把它的 Tooltip 顶出来、键上挂一圈焦点环。
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            (event.currentTarget as HTMLElement).focus();
+          }}
           onCloseAutoFocus={onCloseAutoFocus}
           style={{ backdropFilter: "var(--v8-drawer-blur)" }}
           className="fixed inset-x-0 bottom-0 z-50 flex h-[86dvh] w-full flex-col overflow-hidden rounded-t-3xl bg-[color:var(--v8-drawer-bg)] shadow-overlay outline-none md:inset-y-3.5 md:right-3.5 md:left-auto md:h-auto md:w-[min(920px,calc(100vw-28px))] md:rounded-3xl"

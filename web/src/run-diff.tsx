@@ -10,7 +10,7 @@ import { CommitChip } from "@/components/commit-chip";
 import { Statement } from "@/components/statement";
 import { Button } from "@/components/theme-button";
 import { isAnchorable } from "@/lib/finding-position";
-import { languageOf, splitHighlightedLines } from "@/lib/highlight-lines";
+import { languageOf, splitHighlightedLines, splitIndent } from "@/lib/highlight-lines";
 import { localClock, localDay } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -505,6 +505,24 @@ export function FindingRow({
 }
 
 /**
+ * 一行代码的正文。行首缩进单独一截:窄屏按半宽画(见 `splitIndent`),桌面照原样。
+ */
+function CodeText({ text, html }: { text: string; html: string | undefined }) {
+  const [indent, rest] = splitIndent(html ?? text);
+  return (
+    <>
+      <span className="max-sm:text-[0.5em]">{indent}</span>
+      {html === undefined ? (
+        rest
+      ) : (
+        // highlight.js 的产出:源码里的 < > & 已由它转义,标签只有它自己加的 span。
+        <span className="diff-code" dangerouslySetInnerHTML={{ __html: rest }} />
+      )}
+    </>
+  );
+}
+
+/**
  * 挂在某一行下面的 Finding 卡片。焦点那一条(打开侧滑时点的那条)加一层浅蓝底,
  * 人一眼看得出滚到的是哪一条。
  */
@@ -785,15 +803,10 @@ export function FilePatch({
                             <span className="inline-block w-[2ch] indent-0 select-none text-text-secondary">
                               {line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
                             </span>
-                            {highlighted?.[hunkIndex]?.[index] === undefined ? (
-                              line.text
-                            ) : (
-                              // highlight.js 的产出:源码里的 < > & 已由它转义,标签只有它自己加的 span。
-                              <span
-                                className="diff-code"
-                                dangerouslySetInnerHTML={{ __html: highlighted[hunkIndex][index] }}
-                              />
-                            )}
+                            <CodeText
+                              text={line.text}
+                              html={highlighted?.[hunkIndex]?.[index]}
+                            />
                           </td>
                         </tr>
                         {line.newLine === null ? null : (
