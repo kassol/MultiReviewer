@@ -63,14 +63,32 @@ test("空闲满门槛即回收:再发消息从记录重建,此前全部消息都
     // 重建那一刻的系统提示是新的一份,这就是「子进程换过一个」的证据:提示在建会话时定下,
     // 活着的那一个拿不到回收之后才录的规则。
     //
-    // 喂回去的那一段不再镜像一遍:记录仍是起头两条加四条消息。Pi 不重复落「这次用哪个模型」
-    // ——重建时喂回去的条目里已经写着同一个模型,它只在模型真的换了时才追加那一条。
+    // 喂回去的那一段不再镜像一遍:记录仍是起头两条加各回合的消息。Pi 不重复落「这次用哪个
+    // 模型」——重建时喂回去的条目里已经写着同一个模型,它只在模型真的换了时才追加那一条。
+    // 系统提示那一条各回合各一份(Pi 0.86 起按段记进会话):这一次重建的提示比上一次多一条
+    // 规则,提示变了才记第二条,没变的重建不记。
     const landed = await records(h, cookie, sessionId);
     assert.deepEqual(
       landed.map((record) => record.type),
-      ["model_change", "thinking_level_change", "message", "message", "message", "message"],
+      [
+        "model_change",
+        "thinking_level_change",
+        "message",
+        "message",
+        "message",
+        "message",
+        "message",
+        "message",
+      ],
     );
-    assert.deepEqual(messageRoles(landed), ["user", "assistant", "user", "assistant"]);
+    assert.deepEqual(messageRoles(landed), [
+      "system",
+      "user",
+      "assistant",
+      "system",
+      "user",
+      "assistant",
+    ]);
     // 记录完整,会话上那个数是 0。
     assert.equal(await droppedFromContext(h, cookie, sessionId), 0);
 

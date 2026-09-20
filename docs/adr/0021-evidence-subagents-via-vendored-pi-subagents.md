@@ -59,3 +59,13 @@ Pi 升到 0.85.0、pi-subagents 升到 0.65.1。pi-subagents 0.65 起前台子�
 - **不再捆绑 `pi-server`。**Pi 0.85.1 的根入口不引用它,0.68 也不再带,它与 `pi-protocol` 退出依赖树;只有后台子会话用得到,本项目一律前台。
 - **未变。**spawn 预算两个环境变量、能力天花板登记表键、`intercomBridge` 校验、`disableBuiltins`、`asyncByDefault` 在 0.68 源码里全部仍在;包发布的仍是未编译的 `.ts`(changelog 声称改发编译产物,tarball 里没有),本进程不能直接 import 的约束不变。
 
+## 修订(2026-09-20,pi-subagents 0.70.0)
+
+**包改发编译产物,能力天花板换成上游的官方接口。**
+
+- **包形态。**0.70.0 的 npm 包只有 `.js` + `.d.ts` + `.map`,`pi.extensions` 入口从 `./index.ts` 变 `./index.js`。`vendoredSubagentsPath()` 仍解析到包根,Pi 的资源加载器照常吃得下,真实 SDK 回归全部通过;Pi 不再经 jiti 转译扩展,每个 Reviewer 子进程与会话子进程各省一次入口加载。
+- **天花板改走官方接口。**上一条修订里「入口是 `node_modules` 里的 `.ts`,本进程导入不了,只能直接写 `globalThis` 那张表」随之作废:`evidence.ts` 改 import `pi-subagents/capability-ceiling` 的 `registerSubagentCapabilityCeiling`,登记项与手写那份逐字同形。官方接口每次调用发一枚新令牌(手写那份用 `Symbol.for` 复用同一枚),而登记发生在 `subagent` 的每一次调用上,因此按会话 id 记住句柄、只登记一次。
+- **句柄的 `dispose()` 不接。**两条链路的会话都住在只服务它一个会话的子进程里,会话收尾的下一步就是 `process.exit(0)`,登记表随进程一起没;`AgentSession.dispose()` 不发 `session_shutdown`,扩展里也钩不到会话结束。为它另铺一条生命周期没有收益。
+- **`hostAvailableBuiltins` 整层删除。**0.67 那类「宿主同名工具让子会话的 `read` 被静默剪掉」的成因结构性消失,上一条修订里跳过 0.67.0 的理由不再适用于之后的版本。
+- **未变。**只读四件套的扩展注入、`denyExtensions: false` 加工具边界补回的那一道、两道 spawn 预算、`intercomBridge` 校验、`disableBuiltins`、`asyncByDefault`、`transcriptPath` 与 `acceptance: none` 在 0.70 下逐项同形。
+

@@ -47,6 +47,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import {
+  registerSubagentCapabilityCeiling,
+  type SubagentCapabilityCeilingHandle,
+} from "pi-subagents/capability-ceiling";
 
 import type { ThinkingLevel } from "../config.ts";
 import type { ProjectFact, ReviewerEvent, ReviewRule } from "../review/finding.ts";
@@ -86,29 +90,6 @@ function toolsExtensionFile(agent: string): string {
 const CEILING_SOURCE = "multireviewer";
 
 /**
- * pi-subagents 能力天花板的进程内登记表(`src/runs/shared/capability-ceiling.ts`):挂在
- * `globalThis[Symbol.for(key)]` 上的 `Map<会话 id, Map<symbol, { source, ceiling }>>`,
- * 键名里带版本号。它设计成全局符号表,就是为了让不同模块实例共用一份——pi-subagents 由
- * Pi 经 jiti 加载,本项目的代码由 Node 原生加载,两边各有一份模块,而 Node 不给
- * node_modules 里的 `.ts` 剥类型,`pi-subagents/capability-ceiling` 这个入口在本进程里
- * 导入不了,只能直接写这张表。0.65 之前走 `PI_SUBAGENT_CAPABILITY_CEILING_V1` 环境变量,
- * 0.65.1 已不读它(issue #262)。
- */
-const CEILING_REGISTRY_KEY = "pi-subagents.capability-ceiling.v1";
-
-/** 登记表里的一条:与 pi-subagents `registerSubagentCapabilityCeiling` 写下的逐字同形。 */
-type CeilingRegistration = {
-  source: string;
-  ceiling: {
-    version: 1;
-    allowedTools: string[];
-    allowedAgents: string[];
-    denyExtensions: boolean;
-    sources: string[];
-  };
-};
-
-/**
  * 子会话的能力天花板。**白名单写死在这里,不从会话的工具面透传**:透传意味着「父会话
  * 现在有哪些工具」变成子代理有哪些工具的判据,而 `report_finding` 与子代理工具本身都在
  * 父会话那一面上——报不报由 Reviewer 裁决,取证只交证据;子代理工具不进子代理的工具面,
@@ -133,22 +114,30 @@ export function subagentCeiling(agent: string): {
 }
 
 /**
+ * 已经登记过天花板的父会话。pi-subagents 的登记接口每次调用发一枚新令牌,而登记发生在
+ * `subagent` 的每一次调用上(见 `subagentContractExtension`),不记住句柄就会在同一个会话
+ * 名下叠出一串同样的条目——判定取的是交集,结果不变,表却越长越大。
+ *
+ * 句柄的 `dispose()` 没有调用点:两条链路的会话都住在一个只服务它一个会话的子进程里,
+ * 会话收尾的下一步就是 `process.exit(0)`,登记表随进程一起消失;`AgentSession.dispose()`
+ * 不发 `session_shutdown`,扩展里也钩不到会话结束。为它另铺一条生命周期没有收益。
+ */
+const ceilingHandles = new Map<string, SubagentCapabilityCeilingHandle>();
+
+/**
  * 把天花板登记到这个父会话名下。pi-subagents 派出之前按会话 id 查表,把查到的各条
- * 取交集;同一个来源只留一条,重复调用不会叠出第二份。
+ * 取交集;同一个会话只登记一次,重复调用不会叠出第二份。
  */
 export function registerSubagentCeiling(sessionId: string, agent: string): void {
-  const key = Symbol.for(CEILING_REGISTRY_KEY);
-  const store = globalThis as typeof globalThis & { [key: symbol]: unknown };
-  const existing = store[key];
-  const registry: Map<string, Map<symbol, CeilingRegistration>> =
-    existing instanceof Map ? existing : new Map();
-  if (!(existing instanceof Map)) store[key] = registry;
-  const session = registry.get(sessionId) ?? new Map<symbol, CeilingRegistration>();
-  registry.set(sessionId, session);
-  session.set(Symbol.for(CEILING_SOURCE), {
-    source: CEILING_SOURCE,
-    ceiling: { version: 1, ...subagentCeiling(agent), sources: [CEILING_SOURCE] },
-  });
+  if (ceilingHandles.has(sessionId)) return;
+  ceilingHandles.set(
+    sessionId,
+    registerSubagentCapabilityCeiling({
+      sessionId,
+      source: CEILING_SOURCE,
+      ceiling: subagentCeiling(agent),
+    }),
+  );
 }
 
 /** vendor 进镜像的 pi-subagents 包根目录。它是一个 pi 包,整个目录交给资源加载器。 */

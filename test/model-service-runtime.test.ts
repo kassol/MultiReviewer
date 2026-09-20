@@ -132,6 +132,7 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
           supportsToolSearch: true,
           supportsExplicitPromptCacheMode: true,
           supportsAdditionalTools: true,
+          supportsMidConvoSystemMessages: true,
         },
       },
       fieldSources: {
@@ -205,6 +206,7 @@ test("Pi 0.85.1 目录收录 gpt-6-astra:自定义服务取到 272k 上下文与
           supportsAdditionalTools: true,
           supportsToolSearch: true,
           supportsExplicitPromptCacheMode: true,
+          supportsMidConvoSystemMessages: true,
         },
       },
       fieldSources: {

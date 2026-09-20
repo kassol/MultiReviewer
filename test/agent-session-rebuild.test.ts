@@ -153,8 +153,8 @@ test("记录缺了中间一条:重建按截断续得下去,会话上报得出前
     );
     db.close();
 
-    // 剩下三条:末条顺 parentId 上行一步就指空,它之前的两条因此不在上下文里。
-    assert.equal(await droppedFromContext(h, cookie, sessionId), 2);
+    // 剩下四条:末条顺 parentId 上行一步就指空,它之前的三条因此不在上下文里。
+    assert.equal(await droppedFromContext(h, cookie, sessionId), 3);
 
     // 不拒绝续谈:照 Pi 的截断重建,新的一轮照样跑得完。
     assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
@@ -164,7 +164,7 @@ test("记录缺了中间一条:重建按截断续得下去,会话上报得出前
     assert.match(second, /接着说/);
     assert.ok(!second.includes(MESSAGE), "被截掉的那条还是进了上下文");
     // 缺损不会自己补回来:重建之后读接口仍报同一个数。
-    assert.equal(await droppedFromContext(h, cookie, sessionId), 2);
+    assert.equal(await droppedFromContext(h, cookie, sessionId), 3);
   } finally {
     await disposeAgentSessions();
     await close();

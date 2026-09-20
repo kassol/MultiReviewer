@@ -116,8 +116,10 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       "write_knowledge",
     ]);
 
-    // 记录:会话起头的两条(这一次用哪个模型、哪个思考档位)原样落下来,随后是用户消息、
-    // 带工具调用的助手消息、工具结果与收尾的助手消息,各自是原样的 Pi 条目。
+    // 记录:会话起头的两条(这一次用哪个模型、哪个思考档位)原样落下来,随后是系统提示那一条
+    // (Pi 0.86 起把提示按段记进会话,提示改了才再记一条;面板的对话流只认用户、助手与工具
+    // 结果三种角色,它照常不显示)、用户消息、带工具调用的助手消息、工具结果与收尾的助手
+    // 消息,各自是原样的 Pi 条目。
     const landed = await records(h, cookie, sessionId);
     assert.deepEqual(
       landed.map((record) => record.type),
@@ -128,18 +130,25 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
         "message",
         "message",
         "message",
+        "message",
       ],
     );
-    assert.deepEqual(messageRoles(landed), ["user", "assistant", "toolResult", "assistant"]);
+    assert.deepEqual(messageRoles(landed), [
+      "system",
+      "user",
+      "assistant",
+      "toolResult",
+      "assistant",
+    ]);
     assert.deepEqual(
       landed.map((record) => record.seq),
-      [1, 2, 3, 4, 5, 6],
+      [1, 2, 3, 4, 5, 6, 7],
     );
     // 工具调用在助手条目里,读到的是会话根下那个仓库的文件。
-    const toolCall = JSON.stringify(landed[3]!.entry);
+    const toolCall = JSON.stringify(landed[4]!.entry);
     assert.match(toolCall, /"toolCall"/);
     assert.match(toolCall, /acme\/widgets\/src\/answer\.ts/);
-    assert.match(JSON.stringify(landed[4]!.entry), /export const answer/);
+    assert.match(JSON.stringify(landed[5]!.entry), /export const answer/);
 
     // 用量按条目累加,与 Pi 的会话统计同口径(两次响应的四项之和)。
     const session = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}`, {
@@ -154,14 +163,14 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
       totalTokens: 254,
     });
 
-    // SSE:这一轮的六条记录都到了,帧 id 就是 seq。不带 id 的是流式帧(issue #334),
+    // SSE:这一轮的七条记录都到了,帧 id 就是 seq。不带 id 的是流式帧(issue #334),
     // 它与落库条目共用这个频道,数记录时跳过。
     const ids: string[] = [];
-    while (ids.length < 6) {
+    while (ids.length < 7) {
       const frame = await reader.next();
       if (frame.id !== undefined) ids.push(frame.id);
     }
-    assert.deepEqual(ids, ["1", "2", "3", "4", "5", "6"]);
+    assert.deepEqual(ids, ["1", "2", "3", "4", "5", "6", "7"]);
     await reader.cancel();
   } finally {
     // 登记表是进程内的一张表,下一个用例会拿同一个会话 id 开新会话。
@@ -192,7 +201,9 @@ test("子进程跑完一个回合留着:第二条消息在同一个会话里接�
     assert.match(second, /第一轮/);
     assert.match(second, /再补一句/);
 
+    // 系统提示那一条只在头一回合记下(Pi 0.86 起),第二回合的提示没变,不再记第二条。
     assert.deepEqual(messageRoles(await records(h, cookie, sessionId)), [
+      "system",
       "user",
       "assistant",
       "user",

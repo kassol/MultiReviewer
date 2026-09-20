@@ -597,8 +597,9 @@ test("仓库自带同名 evidence 定义、模型要 project 范围并换 cwd:�
     const prompt = child.messages.map((m) => m.content).join("\n");
     assert.ok(prompt.includes("You check one claim about this repository"), "派出的不是我们那份 evidence");
     assert.ok(!prompt.includes("REPO-EVIDENCE-PROMPT"));
-    // Pi 把子会话的工作目录写进系统提示末尾:模型给的 cwd 没生效。
-    assert.ok(prompt.includes(`Current working directory: ${dir}\n`), "子会话的 cwd 不是工作副本");
+    // Pi 把子会话的工作目录写进系统提示末尾的 `<cwd>` 段(0.86 起各段一律带标签):
+    // 模型给的 cwd 没生效。
+    assert.ok(prompt.includes(`<cwd>\n${dir}\n</cwd>`), "子会话的 cwd 不是工作副本");
     assert.ok(!prompt.includes(elsewhere));
   } finally {
     await stub.close();
