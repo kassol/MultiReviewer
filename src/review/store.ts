@@ -104,8 +104,8 @@ CREATE TABLE IF NOT EXISTS review_run (
   -- 不做自动处置),发布 review 失败那一类 Reviewer 结果有效的轮次只写这一列。
   failure TEXT,
   -- 开跑时冻结的完整批次计划(issue #253):全部批次的文件清单,JSON 数组套数组,按批次
-  -- 序号排。开跑时写一次、之后不改——它与 review_run_batch 分工:计划说这一轮要切成
-  -- 哪几批,中间态表说哪几批已经有结果。续跑核对重新切批的每一批都与它相符,未完成
+  -- 序号排。开跑时写一次、之后不改——它与 review_run_batch_outcome 分工:计划说这一轮要
+  -- 切成哪几批,中间态表说哪一批的哪个模型已经有结果。续跑核对重新切批的每一批都与它相符,未完成
   -- 的批次因此也核对得到;NULL 即「没有计划」,续跑不成立,退回改判失败。
   batch_plan_json TEXT,
   -- 开跑时生效的最低报告等级(CONTEXT.md 最低报告等级,issue #271)。NULL 读作 P2。
@@ -133,21 +133,22 @@ CREATE TABLE IF NOT EXISTS review_run_reviewer_pin (
   UNIQUE (run_id, identity)
 );
 
--- 一批跑完就落一行(issue #248)。服务重启会让内存里的各批结果一并消失,已经花掉的
--- token 保不住;这张表是恢复粒度的落点——续跑按它知道哪些批次已经有结果。
+-- 一个 Reviewer 在一批上跑完就落一行(issue #410,ADR 0024 的 2026-09-21 修订)。服务
+-- 重启会让内存里的结果一并消失,已经花掉的 token 保不住;这张表是恢复粒度的落点——
+-- 续跑按它知道哪一批的哪个模型已经有结果,同批其他模型不必陪它一起重跑。
 --
 -- 中间态刻意与 reviewer_outcome / finding 分表:事后统计只认已结束的轮次,这里的行不
 -- 进任何分母。收尾仍走 finishRun 那一个事务,一轮只发一次 review 不变。
 --
--- files_json 是这一批的文件清单。续跑要重新切批,切出来的结果与已落库的对不上就说明
--- 冻结的前提已经不成立(diff 变了、分批上限改了),那时退回改判失败而不是接着跑。
--- outcomes_json 是这一批各 Reviewer 的结果、开始时刻与耗时,按 Reviewer 配置序。
-CREATE TABLE IF NOT EXISTS review_run_batch (
+-- outcome_json 是一个 TimedOutcome:这个模型这一批的结果、开始时刻与耗时。这一批的文件
+-- 清单不在这里——开跑时冻结的 review_run.batch_plan_json 已经逐批写着它,而续跑没有计划
+-- 就根本不成立,两处存一份即够。
+CREATE TABLE IF NOT EXISTS review_run_batch_outcome (
   run_id INTEGER NOT NULL REFERENCES review_run(id),
   batch_index INTEGER NOT NULL,
-  files_json TEXT NOT NULL,
-  outcomes_json TEXT NOT NULL,
-  PRIMARY KEY (run_id, batch_index)
+  model TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  PRIMARY KEY (run_id, batch_index, model)
 );
 
 CREATE TABLE IF NOT EXISTS reviewer_outcome (
@@ -1409,17 +1410,9 @@ export type InterruptedRunDetail = InterruptedRun & {
   auxiliaryModel: ReviewerSpec | null;
 };
 
-/** 一批跑完落库的一个 Reviewer 结果(issue #248)。与 `batch.ts` 的 `TimedOutcome` 同形。 */
-export type BatchOutcomes = {
-  /** 这一批的文件清单,按切批时的顺序。 */
-  files: string[];
-  /** 各 Reviewer 的结果,按 Reviewer 配置序。 */
-  outcomes: TimedOutcome[];
-};
-
 /**
  * 续跑一轮要的全部已落库状态(issue #248)。一次读取取齐:批数用来核对重新切批的结果,
- * 历史快照给续跑的批次,已落库的批次不再重跑。
+ * 历史快照给续跑的批次,已落库的那些(批次, 模型)不再重跑。
  */
 export type ResumeState = {
   /** 开跑时审的那个 head。续跑必须审同一个,PR 上推了新 commit 就不再是同一轮。 */
@@ -1445,8 +1438,11 @@ export type ResumeState = {
   reviewers: string[];
   /** 开跑时的历史快照;升级前落的旧行没有,为 undefined。 */
   history: HistoryFinding[] | undefined;
-  /** 已经有结果的批次,键是从 0 起的批次下标。 */
-  batches: Map<number, BatchOutcomes>;
+  /**
+   * 已经有结果的那些(批次, 模型),外层键是从 0 起的批次下标、内层键是模型标识
+   * (issue #410)。一批里只有几个模型落了库是常态:恢复单位是一次完整的 Reviewer 会话。
+   */
+  batches: Map<number, Map<string, TimedOutcome>>;
 };
 
 export type OutcomeRecord = {
@@ -3872,14 +3868,14 @@ export type Store = {
    */
   interruptedRuns(): InterruptedRunDetail[];
   /**
-   * 一批跑完立即落库(issue #248)。同一批重复落库时覆盖——续跑本身不会走到这里,
-   * 但重复写也不该攒出第二份结果。
+   * 一个 Reviewer 在一批上跑完立即落库(issue #410)。同一个(批次, 模型)重复落库时
+   * 覆盖——续跑本身不会走到这里,但重复写也不该攒出第二份结果。
    */
-  recordBatchOutcomes(
+  recordBatchOutcome(
     runId: number,
     batchIndex: number,
-    files: readonly string[],
-    outcomes: readonly TimedOutcome[],
+    model: string,
+    outcome: TimedOutcome,
   ): void;
   /** 续跑一轮要的已落库状态(issue #248)。那一轮不存在时为 undefined。 */
   resumeState(runId: number): ResumeState | undefined;
@@ -4714,6 +4710,36 @@ export function openStore(dbPath: string): Store {
   // 旧的拆分会话照样打得开。
   db.exec("DROP TABLE IF EXISTS agent_session_output_finalization");
   db.exec("DROP TABLE IF EXISTS agent_session_output");
+
+  // 恢复粒度细化到 Reviewer × 批次(ADR 0024 的 2026-09-21 修订,issue #410):旧表一行
+  // 存整批各模型的结果,新表一行存一个模型在一批上的结果。旧行只在整批全部模型跑完之后
+  // 才写,按模型拆开因此无损——那一批的每个模型都已经有结果,续跑照常整批跳过。拆完删
+  // 旧表:重复插入由主键挡住,迁到一半断电也只是下一次启动接着迁,跑几遍都一样。
+  //
+  // 发版跑过之后即不再命中;下一次发版连同旧库用例一起删掉(src/AGENTS.md)。
+  const legacyBatchRows = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'review_run_batch'")
+    .get();
+  if (legacyBatchRows !== undefined) {
+    const insert = db.prepare(
+      `INSERT INTO review_run_batch_outcome (run_id, batch_index, model, outcome_json)
+       VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+    );
+    const legacy = db
+      .prepare("SELECT run_id, batch_index, outcomes_json FROM review_run_batch")
+      .all();
+    for (const row of legacy) {
+      for (const timed of JSON.parse(String(row["outcomes_json"])) as TimedOutcome[]) {
+        insert.run(
+          Number(row["run_id"]),
+          Number(row["batch_index"]),
+          timed.outcome.model,
+          JSON.stringify(timed),
+        );
+      }
+    }
+    db.exec("DROP TABLE review_run_batch");
+  }
 
   // 升级前的库缺的列(`ADDED_COLUMNS`):按 `pragma_table_info` 逐列判,缺了才补,补过即
   // 不再命中。回填只跟着补列那一次跑——`openStore` 每次请求都跑一遍,回填不该跟着每次
@@ -7881,7 +7907,7 @@ export function openStore(dbPath: string): Store {
             WHERE finished_at IS NULL${scope}`,
         ).run(at, failure, ...params);
         // 改判掉的那些轮次不会再被续跑,中间态的批次结果一并清掉(issue #248)。
-        const deleteBatches = db.prepare("DELETE FROM review_run_batch WHERE run_id = ?");
+        const deleteBatches = db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?");
         for (const row of rows) deleteBatches.run(row["id"] as number);
         db.exec("COMMIT");
       } catch (error) {
@@ -7926,13 +7952,13 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    recordBatchOutcomes(runId, batchIndex, files, outcomes) {
+    recordBatchOutcome(runId, batchIndex, model, outcome) {
       db.prepare(
-        `INSERT INTO review_run_batch (run_id, batch_index, files_json, outcomes_json)
+        `INSERT INTO review_run_batch_outcome (run_id, batch_index, model, outcome_json)
          VALUES (?, ?, ?, ?)
-         ON CONFLICT (run_id, batch_index)
-         DO UPDATE SET files_json = excluded.files_json, outcomes_json = excluded.outcomes_json`,
-      ).run(runId, batchIndex, JSON.stringify(files), JSON.stringify(outcomes));
+         ON CONFLICT (run_id, batch_index, model)
+         DO UPDATE SET outcome_json = excluded.outcome_json`,
+      ).run(runId, batchIndex, model, JSON.stringify(outcome));
     },
 
     resumeState(runId) {
@@ -7946,7 +7972,7 @@ export function openStore(dbPath: string): Store {
       if (run === undefined) return undefined;
       const rows = db
         .prepare(
-          `SELECT batch_index, files_json, outcomes_json FROM review_run_batch
+          `SELECT batch_index, model, outcome_json FROM review_run_batch_outcome
             WHERE run_id = ? ORDER BY batch_index`,
         )
         .all(runId);
@@ -7957,6 +7983,14 @@ export function openStore(dbPath: string): Store {
           "SELECT identity FROM review_run_reviewer_pin WHERE run_id = ? ORDER BY position",
         )
         .all(runId);
+      // 逐行按批次归拢成「这一批哪几个模型已经有结果」(issue #410)。
+      const batches = new Map<number, Map<string, TimedOutcome>>();
+      for (const row of rows) {
+        const index = Number(row["batch_index"]);
+        const byModel = batches.get(index) ?? new Map<string, TimedOutcome>();
+        byModel.set(String(row["model"]), JSON.parse(String(row["outcome_json"])) as TimedOutcome);
+        batches.set(index, byModel);
+      }
       return {
         headSha: String(run["head_sha"]),
         ruleSetVersion:
@@ -7976,15 +8010,7 @@ export function openStore(dbPath: string): Store {
           run["history_json"] === null
             ? undefined
             : (JSON.parse(String(run["history_json"])) as HistoryFinding[]),
-        batches: new Map(
-          rows.map((row) => [
-            Number(row["batch_index"]),
-            {
-              files: JSON.parse(String(row["files_json"])) as string[],
-              outcomes: JSON.parse(String(row["outcomes_json"])) as TimedOutcome[],
-            },
-          ]),
-        ),
+        batches,
       };
     },
 
@@ -8016,7 +8042,7 @@ export function openStore(dbPath: string): Store {
 
         // 中间态的批次结果到这里就没用了(issue #248):收尾已经把合并后的结果落进
         // reviewer_outcome 与 finding,这张表只服务「还没收尾的那一轮」。
-        db.prepare("DELETE FROM review_run_batch WHERE run_id = ?").run(runId);
+        db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?").run(runId);
 
         const insertOutcome = db.prepare(
           `INSERT INTO reviewer_outcome

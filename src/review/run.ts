@@ -1948,16 +1948,16 @@ function resumeMismatch(
       return `第 ${index + 1} 批的分组与冻结计划不符`;
     }
   }
-  for (const [index, batch] of resume.batches) {
-    const files = batches[index];
-    if (files === undefined || !sameSequence(batch.files, files)) {
-      return `第 ${index + 1} 批的文件清单与开跑时不同`;
-    }
-    if (
-      batch.outcomes.length !== reviewers.length ||
-      batch.outcomes.some((timed, position) => timed.outcome.model !== reviewers[position]?.model)
-    ) {
-      return `第 ${index + 1} 批已落库的 Reviewer 与这一轮的模型组合对不上`;
+  // 已落库的那些结果各自属于哪个模型(issue #410):组合里已经没有的那个模型说明这一轮
+  // 的 Reviewer 换过,它的结果续跑时没人接得住。这一道只看得见已落库的批次,零批次那一
+  // 档由上面的 pin 兜住。已落库的文件清单不再单独核对——逐批对照冻结计划那一道覆盖了它,
+  // 而计划本来就与落库时的分组同出一处。
+  const configured = new Set(reviewers.map((reviewer) => reviewer.model));
+  for (const [index, byModel] of resume.batches) {
+    for (const model of byModel.keys()) {
+      if (!configured.has(model)) {
+        return `第 ${index + 1} 批已落库的 Reviewer 与这一轮的模型组合对不上`;
+      }
     }
   }
   return undefined;
@@ -2309,9 +2309,17 @@ export async function runReview(
         // 这一批该拿到几条结论(issue #408):注入的历史里未处置的那些,判据与
         // `verdictRecords` 落库时同一个。已处置的只作背景,不要结论。
         const wanted = new Set(openHistory(batchHistory).map((entry) => entry.id));
+        // 这一批里已经落过库的那几个模型(issue #410)。整批都齐的批次根本走不到这里,
+        // 走到这里的是「批内一部分模型跑完了、进程就停下」的那些。
+        const recorded = resume?.batches.get(index);
         trace.run("batch_started", batch);
         const timedOutcomes = await Promise.all(
           deps.reviewers.map(async (reviewer) => {
+            // 库里已有这个模型这一批的结果就直接取它,不再开一次会话:恢复单位是一次
+            // 完整的 Reviewer 会话,同批其他模型没跑完不该让它陪着重跑一遍。收尾事件
+            // 原轮次已经发过,这里不补第二条。
+            const stored = recorded?.get(reviewer.model);
+            if (stored !== undefined) return stored;
             const startedAt = Date.now();
             // 工具调用数从事件流里数(issue #408):每次 `tool_execution_end` 恰好一条事件。
             let toolCalls = 0;
@@ -2375,6 +2383,21 @@ export async function runReview(
               findings = kept;
             }
             const durationMs = Date.now() - startedAt;
+            const timed = {
+              // 一条都没丢时原样沿用:批外报出是少数,多数批次的结论对象不必重建。
+              outcome:
+                findings.length === outcome.findings.length ? outcome : { ...outcome, findings },
+              startedAt,
+              durationMs,
+            };
+            // 这个模型这一批的结果立即落库(issue #410):内存里的结果随进程一起消失,
+            // 已经花掉的 token 只有落了库才保得住。落的是中间态,不进 reviewer_outcome、
+            // 不进 finding,因此也不进任何事后统计的分母。
+            //
+            // 落库排在收尾事件之前:两者之间进程停下时,先落库的那一侧丢的是轨迹上的
+            // 一行(这一批的收尾事件缺席),先发事件的那一侧丢的是结果——续跑会重跑这个
+            // 模型,同一个(模型,批)上因此出现两条收尾,而这一趟模型调用白花。
+            store.recordBatchOutcome(runId, index, reviewer.model, timed);
             // 这个模型这一批的收尾(issue #408):在这一刻落,不等整轮跑完——一个模型在
             // 某几批上无声收工时,轮次级那条收尾只汇总得出总数,说不出是哪一批。
             // 失败与正常同一档,由 `failed` 分;「给出 / 应给」指的就是复核结论。
@@ -2394,20 +2417,10 @@ export async function runReview(
               usage: outcome.usage ?? null,
               durationMs,
             });
-            return {
-              // 一条都没丢时原样返回:批外报出是少数,多数批次的结论对象不必重建。
-              outcome:
-                findings.length === outcome.findings.length ? outcome : { ...outcome, findings },
-              startedAt,
-              durationMs,
-            };
+            return timed;
           }),
         );
         trace.run("batch_finished", batch);
-        // 这一批立即落库(issue #248):内存里的结果随进程一起消失,已经花掉的 token
-        // 只有落了库才保得住。收尾仍只做一次合并与发评论,这里落的是中间态,不进
-        // reviewer_outcome、不进 finding,因此也不进任何事后统计的分母。
-        store.recordBatchOutcomes(runId, index, files, timedOutcomes);
         return timedOutcomes;
       };
 
@@ -2416,9 +2429,15 @@ export async function runReview(
       // 结果按批次序号写回,与各批的完成顺序无关——汇总、失败记第几批与复核结论谁作数
       // 都按序号,不按谁先回。
       const perBatch: TimedOutcome[][] = [];
-      // 续跑先把已落库的批次填回来(issue #248),那些批次不再调用 Reviewer:恢复粒度
-      // 是批次,批内的会话在内存里,中途续不了。
-      for (const [index, batch] of resume?.batches ?? []) perBatch[index] = batch.outcomes;
+      // 续跑先把整批都齐了的批次填回来(issue #248),那些批次整批跳过、一次 Reviewer 都
+      // 不调,也不再开 batch_started / batch_finished。缺几个模型的批次照跑一遍,批内已
+      // 落库的那几个在 `runBatch` 里各自取库里那一份(issue #410):恢复单位是一次完整的
+      // Reviewer 会话,会话在内存里、中途续不了,但同批别的模型不必陪它重跑。
+      for (const [index, byModel] of resume?.batches ?? []) {
+        if (deps.reviewers.every((reviewer) => byModel.has(reviewer.model))) {
+          perBatch[index] = deps.reviewers.map((reviewer) => byModel.get(reviewer.model)!);
+        }
+      }
       let nextBatch = 0;
       const parallel = Math.min(
         deps.maxParallelBatches ?? DEFAULT_MAX_PARALLEL_BATCHES,

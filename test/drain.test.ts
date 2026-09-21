@@ -44,7 +44,7 @@ test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨�
   assert.equal(result.aborted, true);
   // 第一批的结果已经落库,后两批一次都没跑。
   assert.deepEqual(
-    query(fixture.db.path, "SELECT batch_index FROM review_run_batch ORDER BY batch_index").map(
+    query(fixture.db.path, "SELECT batch_index FROM review_run_batch_outcome ORDER BY batch_index").map(
       (row) => row["batch_index"],
     ),
     [0],

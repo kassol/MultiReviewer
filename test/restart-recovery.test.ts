@@ -679,7 +679,7 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
     ),
     [plan],
   );
-  assert.equal(query(db.path, "SELECT run_id FROM review_run_batch").length, 0);
+  assert.equal(query(db.path, "SELECT run_id FROM review_run_batch_outcome").length, 0);
   assert.equal(memory.createdReviews.length, 0);
 });
 
