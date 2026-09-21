@@ -103,12 +103,19 @@ function findingAt(file: string, said?: { impact: string; suggestion: string }):
  * 一批报一条 Finding 的 Reviewer 桩。`throwOnCall` 给了就在第几次调用时抛——用它模拟
  * 服务在那一批上被重启:前面的批次已经落库,这一轮停在没有结束时间的状态。`onBatch`
  * 在每一批开跑时执行,用它模拟批次跑到一半收到停机信号。`said` 给每条 Finding 的影响
- * 与建议(issue #266),不给即两段为空。
+ * 与建议(issue #266),不给即两段为空。`failOnCall` 给了就在第几次调用时回一个失败的
+ * 结论(不抛):跑不成与超时在注入边界上是同一个形状。
+ *
+ * `yieldBeforeThrow` 让抛之前先让出一次事件循环(issue #410):同一批里另一个 Reviewer
+ * 的落库排在微任务里,让出之后它一定已经落完,「批内一个跑完、一个没跑完」因此是确定
+ * 的状态,不靠两个 promise 的先后碰运气。
  */
 export function batchReviewer(
   model: string,
   options: {
     throwOnCall?: number;
+    failOnCall?: number;
+    yieldBeforeThrow?: boolean;
     onBatch?: (call: number) => void;
     said?: { impact: string; suggestion: string };
   } = {},
@@ -120,15 +127,24 @@ export function batchReviewer(
     review: async ({ range, history }) => {
       calls.push({ range, history });
       options.onBatch?.(calls.length);
-      if (options.throwOnCall === calls.length) throw new Error("进程被重启了");
+      if (options.throwOnCall === calls.length) {
+        if (options.yieldBeforeThrow === true) await new Promise(setImmediate);
+        throw new Error("进程被重启了");
+      }
+      const failed = options.failOnCall === calls.length;
       return {
         model,
-        findings: range.files.map((file) => ({ ...findingAt(file, options.said), model })),
+        findings: failed
+          ? []
+          : range.files.map((file) => ({ ...findingAt(file, options.said), model })),
         anomalies: [],
         rejectedToolCalls: 0,
         anchorRejections: 0,
         usage: USAGE,
-        verdicts: history.map((entry) => ({ findingId: entry.id, verdict: "present" as const })),
+        verdicts: failed
+          ? []
+          : history.map((entry) => ({ findingId: entry.id, verdict: "present" as const })),
+        ...(failed ? { failure: "这一批跑不成" } : {}),
       };
     },
   };
