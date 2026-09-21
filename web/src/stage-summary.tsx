@@ -638,30 +638,26 @@ export function StageSummaryView({
     /*
      * 摆完之后再盯几帧:滚到位那一刻,落点上方靠近视口的那几张卡才被 `content-visibility`
      * 真正排版,高度从 320px 的预留值换成实测值,落点随之被顶开(部署实例实测偏了 144px)。
-     * 每帧按同一条基线补差,连续两帧不再偏、或满二十帧即停;人一动滚轮或触屏就立刻让手。
+     * 每帧按同一条基线补差,盯满一秒半才停:实测摆稳之后约 0.8 秒还会再来一次约 34px 的
+     * 位移(卡里的正文晚一拍才排完),只盯几帧会漏掉它。人一动滚轮、触屏或按键就立刻让手。
      */
-    let frames = 0;
-    let steady = 0;
+    const until = performance.now() + 1_500;
     let frame = 0;
     const stop = (): void => {
       cancelAnimationFrame(frame);
       container.removeEventListener("wheel", stop);
       container.removeEventListener("touchstart", stop);
+      window.removeEventListener("keydown", stop);
     };
     const follow = (): void => {
-      const drift = card.isConnected ? settle() : 0;
-      if (Math.abs(drift) > 1) {
-        container.scrollTop += drift;
-        steady = 0;
-      } else {
-        steady += 1;
-      }
-      frames += 1;
-      if (steady >= 2 || frames >= 20) return stop();
+      if (!card.isConnected || performance.now() > until) return stop();
+      const drift = settle();
+      if (Math.abs(drift) > 1) container.scrollTop += drift;
       frame = requestAnimationFrame(follow);
     };
     container.addEventListener("wheel", stop, { passive: true });
     container.addEventListener("touchstart", stop, { passive: true });
+    window.addEventListener("keydown", stop);
     frame = requestAnimationFrame(follow);
     return stop;
   }, [tab, rendered, restoreTick]);
