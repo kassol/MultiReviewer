@@ -532,6 +532,8 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - 整条铺满底边的抽屉（Finding 侧滑）自己盖住 Tab 栏，只给内部滚动区补 `pb-[calc(…+env(safe-area-inset-bottom))]`。
 - 横屏刘海那一侧由 `#root` 的 `padding-left/right: env(safe-area-inset-left/right)` 让位，竖屏与桌面上这两个值是 0。
 
+**顶边让位**:顶边被占掉的那一条就是顶栏自己的高度,`--v8-top-chrome` 是它的唯一事实来源,钉在顶栏之下的面一律引用它(阶段详情那条计数加 tab 栏的吸顶工具条)。这个值由 `TopBar` 用 ResizeObserver 量实高写回 `:root`,styles.css 里那个 88px 只是首帧的默认——顶栏高度随断点(`sm` 以下不画第二层导航)、指针类型(`pointer-coarse` 的 44px 命中区)与字体加载而变,写死哪一档都有另一档是错的:大了在窄屏上留一条穿帮的缝,小了让吸顶条钻进顶栏底下。JS 要这条线时不读这一格,直接量 `#panel-top-bar` 的下沿(它是滚动容器的头一个子节点又 `sticky top-0`,滚没滚都在同一处),两边量的是同一个元素。
+
 **顶栏第一行**：品牌方块 26px（`--v8-radius-mark`、`--v8-mark-gradient`、`--v8-shadow-mark`，内嵌 `Mark` 的白色线条）+ 品牌名 `text-xl` `font-bold` + 面包屑分隔符 `/`（`text-text-faint`，窄屏隐藏）+ 当前页名 `text-xl` `font-semibold`（窄屏隐藏）；右侧是搜索入口与头像菜单。
 
 **搜索入口**：`bg-fill`、`rounded-md`、`text-md`、`text-text-muted`，桌面 300px 宽并在右端显示 `⌘K` 键帽（`font-mono text-xs text-text-disabled`），窄屏收成只剩放大镜图标。`aria-keyshortcuts="Meta+K Control+K"`。
@@ -559,6 +561,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - 长名称和模型标识单行截断，hover/focus 时通过 Tooltip 查看全文。
 - 模型标识整段显示时（模型服务页的模型列表、模型组合框候选）用 `wrap-anywhere`（`overflow-wrap: anywhere`），断在 `-` `/` `:` `.` 上；不用 `break-all`，它在任意字符间断行，`claude-opus-latest` 会被切成 `claude-opus-lat` / `est`，读的人认不出这是哪个模型。
 - 地址、模型标识等可复制内容提供 Copy 按钮。
+- 阶段详情的三个计数与 tab 栏吸在顶栏之下(`sticky top-[var(--v8-top-chrome)] z-20`,见 7.1 的顶边让位),页头其余部分(阶段名、来源与状态、动作)照常滚走。几百条的阶段里往下看了一段之后,切到时间线、改处置状态筛选都得先滚回页顶才够得着,而三个计数正是处置状态筛选的唯一入口。这一条实底(`bg-background`,内容从它底下滚过去,半透明会让卡片的字透出来)、`-mx-1 px-1` 比内容轨宽出 8px 让卡影一并盖住,下边线就是 `Tabs.List` 自带的那道 inset 阴影、不另画一条。层级压在顶栏(z-30)与侧滑(z-40 / z-50)之下。吸顶态不换一套更紧凑的排版:检测「吸没吸着」要另搭一个哨兵,而它在 390×844 上占 165px(顶栏加这一条),换来的是筛选与两页入口一直够得着。
 - 阶段详情的 Finding 列表按滚动逐段渲染:首段 50 项,接近底部时追加一段,一张同根因组卡算一项(组内成员随组卡一起画)。尾部一行「已显示 N / M 条，向下滚动继续加载」,全部画完这一行就不出现。筛选与顶部三个计数仍对全量算;换筛选条件回到首段并把 `panel-main-scroll` 滚回顶部。几百条的阶段一次画全要两秒、留下两万多个 DOM 节点,而人一屏看得到的只有头几条。
 - 阶段详情的时间线是一条竖向时间轴。左侧一根 1px `border-chrome-line` 竖线,每次代码推进(pull request 的 head commit、范围审查的比较项)是轴上一个 16px 圆点节点:最新那组实心 `--v8-accent`,其余 `--v8-neutral-dot` 2px 描边空心;节点右侧一行 `text-base` 元信息(commit chip、推进的人、发起 / 增量评审、时刻),节点下一张详情内嵌卡(`border-overlay-line` + `shadow-control`),组内每一轮是卡里的连续行。行是 `MasterListItem selected={false}` 套 Link,沿四条列轨排:16px 状态图标(运行中 `StopwatchIcon` 主色、失败 `CrossCircledIcon` 红、结束 `CheckCircledIcon` 中性灰)、「第 N 轮」(`text-lg font-semibold`)旁挂一枚小号等宽的 `Run #<id>`(`text-sm font-normal tabular-nums text-text-secondary`,全局 id,排障口径与日志、API 一致)叠开跑时刻与耗时(`text-base text-text-muted`)、这一轮的五个数、行尾 `ReaderIcon` 加「审查轨迹」。`sm` 以下五个数落到第二行,行尾只留图标。竖线画在每组自己身上、最早那组不画,时间轴在最早的节点收住。点开一行的轨迹侧滑头部同样带这枚 `Run #<id>`,挂在结论徽章之前。
 
