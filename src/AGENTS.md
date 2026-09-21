@@ -59,7 +59,7 @@
 - 分批只切 `ReviewRange.files`,`worktreePath` 每批都是同一份完整的 head commit 工作副本。不为分批动 worktree——Reviewer 读不到其他批次改动后的代码就会报出"这个新函数没有调用者"这类误报。
 - 同一文件的改动绝不跨批,跨批因此不会出现指向同一处的 Finding。单个文件本身就超阈值时它自成一批,不拒审也不截断:不设批数或预算上限。
 - 批次受限并行,批内 Reviewer 全部并行(issue #232)。同时在跑的批次数不超过本轮冻结的批次并发数(`ReviewRunDeps.maxParallelBatches`,不传取 `DEFAULT_MAX_PARALLEL_BATCHES`):不设闸会一次开满「批数 × 模型数」个子进程,对宿主机不友好。闸只在这一轮之内,跨 Review Run 不设。实现是 `run.ts` 里的一个取号并发池——开「并发数」条取号线,每条取下一个还没跑的批次,跑完再取下一个;结果按批次序号写回,与各批的完成顺序无关。
-- 一个模型的多批结果合并成一个 `ReviewerOutcome`,`rejectedToolCalls`、`anchorRejections`、`anomalies` 与 `usage` 按批次累加。计数类字段新增时必须跟着加进这里,漏一个就是分批时数字丢一半。**耗时不累加**:批次并行之后各批的时间区间会重叠,相加会把重叠的那段数两遍,该模型的耗时因此取首批开始到末批结束的墙上时间(`TimedOutcome` 为此带上 `startedAt`)。复核结论(`verdicts`)只做拼接,没有「哪一批作数」这回事:历史按所在文件路由到批次(issue #235),一条历史只进一批,也就只有一批给得出它的结论。全部批次都失败才算缺席(记 `failure`,findings 丢弃);部分批次失败时保留成功批次的 Finding 并照常发布,记 `incompleteCoverage`,在 review 正文里与缺席分成两段呈现。
+- 一个模型的多批结果合并成一个 `ReviewerOutcome`,`rejectedToolCalls`、`anchorRejections`、`anomalies` 与 `usage` 按批次累加。计数类字段新增时必须跟着加进这里,漏一个就是分批时数字丢一半。**耗时不累加**:批次并行之后各批的时间区间会重叠,相加会把重叠的那段数两遍,该模型的耗时因此取各批时间区间的并集长度(`TimedOutcome` 为此带上 `startedAt`;issue #415 起不再是首批开始到末批结束——续跑轮次里那样算会把停机时长也计进去)。复核结论(`verdicts`)只做拼接,没有「哪一批作数」这回事:历史按所在文件路由到批次(issue #235),一条历史只进一批,也就只有一批给得出它的结论。全部批次都失败才算缺席(记 `failure`,findings 丢弃);部分批次失败时保留成功批次的 Finding 并照常发布,记 `incompleteCoverage`,在 review 正文里与缺席分成两段呈现。
 - 汇总去重在全部批次跑完之后做一次,一次 Review Run 只发一次 review。
 - 审查不设置任何阻断合并的状态。本工具从不调用 status / check API,`Forge` 接口里也没有这类方法,`createReview` 一律用不阻断的 COMMENT 事件。这是有意的:审查是建议,人保留最终判断权。
 - Webhook 单一端点接两个平台,靠请求头区分来源。必须先认 `X-Gitea-Event`——Gitea 为兼容 GitHub 的接收端把 `X-GitHub-Event` 一起发了,先认 GitHub 会把 Gitea 的投递按 GitHub 的 action 拼写解析,结果一条都不触发。

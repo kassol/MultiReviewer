@@ -1086,8 +1086,9 @@ function ReviewerTrace({
   ).length;
   // 这一批漏给了复核结论(issue #408):分组默认折着,不挂在标题上就得逐批展开才看得见。
   const batchEnd = events.find((event) => event.kind === "reviewer_batch_finished");
+  // 失败的那一批不算漏复核(issue #412):它没跑成,组标题已经标「失败」。
   const missedVerdicts =
-    batchEnd === undefined
+    batchEnd === undefined || batchEnd.payload["failed"] === true
       ? 0
       : (num(batchEnd.payload, "verdictsExpected") ?? 0) - (num(batchEnd.payload, "verdictsGiven") ?? 0);
   return (
