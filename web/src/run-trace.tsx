@@ -1335,6 +1335,10 @@ export function RunTrace({ run }: { run: RunItem }) {
     null,
   );
   // 轮次级「批次结束」已到的那几批:一个批次块的完成信号就是它(issue #246)。
+  //
+  // 判据是「出现过」,不是「出现几次」(issue #416、#423):续跑重新进入的批次会再发一对
+  // 轮次级起止,同一个批次序号因此可能来两条结束事件。集合天然去重;换成计数式实现
+  // (比如数到几条才算完)会把这几批判错。
   const finishedBatches = new Set(
     milestones.flatMap((event) => {
       if (event.kind !== "batch_finished") return [];
