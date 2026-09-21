@@ -465,62 +465,85 @@ test("批内某个 Reviewer 失败的结果同样当场落库,续跑不重跑它
   assert.equal(outcome?.["failure"], null);
 });
 
-/**
- * 升级前的中间态行一行存整批(issue #248 的形状)。它只在整批全部模型跑完之后才写,按
- * 模型拆开因此无损:那一批照常整批跳过。
- */
-test("升级前的整批中间态行拆成逐模型的行,续跑整批跳过(issue #410)", async () => {
+test("部分落库的批次续跑时,轮次级批次事件标明是续跑并写出这次跑了谁(issue #416)", async () => {
+  const fixture = setup(cleanups);
+  const done = batchReviewer("model-a");
+  const crashed = batchReviewer("model-b", { throwOnCall: 1, yieldBeforeThrow: true });
+
+  await assert.rejects(() => runReview(EVENT, deps(fixture, [done, crashed])), /进程被重启了/);
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const runId = Number(run?.["id"]);
+
+  await runReview(
+    EVENT,
+    deps(fixture, [batchReviewer("model-a"), batchReviewer("model-b")], { resumeRunId: runId }),
+  );
+
+  const events = query(
+    fixture.db.path,
+    `SELECT kind, payload FROM review_trace
+     WHERE kind IN ('batch_started', 'batch_finished') ORDER BY seq`,
+  ).map((row) => {
+    const payload = JSON.parse(String(row["payload"])) as Record<string, unknown>;
+    return [
+      String(row["kind"]),
+      payload["index"],
+      payload["resumed"] ?? null,
+      payload["models"] ?? null,
+    ];
+  });
+
+  assert.deepEqual(events, [
+    // 崩溃前的那一次:第一批开了、没结束,标记一格都没有。
+    ["batch_started", 1, null, null],
+    // 续跑重新进入第一批:model-a 的结果在库里,这次只跑 model-b。
+    ["batch_started", 1, true, ["model-b"]],
+    ["batch_finished", 1, true, ["model-b"]],
+    // 后两批一次都没跑过,不是续跑重新进入。
+    ["batch_started", 2, null, null],
+    ["batch_finished", 2, null, null],
+    ["batch_started", 3, null, null],
+    ["batch_finished", 3, null, null],
+  ]);
+});
+
+test("续跑轮次的单模型耗时不含两次进程之间的空档(issue #415)", async () => {
   const fixture = setup(cleanups);
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
   const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
   const runId = Number(run?.["id"]);
 
-  // 把前两批的行改造回升级前的形状:一批一行,`outcomes_json` 是整批的数组。
-  const stored = query(
-    fixture.db.path,
-    "SELECT batch_index, outcome_json FROM review_run_batch_outcome ORDER BY batch_index",
-  );
+  // 把已落库的那两批改写成一小时前的两段。它们各跑 1000 毫秒、错开 500 毫秒,并集因此是
+  // 1500 毫秒;中间那一小时是停机,没有任何一批盖着它。
+  const crashedAt = Date.now() - 3_600_000;
   const db = new DatabaseSync(fixture.db.path);
   try {
-    db.exec(`CREATE TABLE review_run_batch (
-      run_id INTEGER NOT NULL REFERENCES review_run(id),
-      batch_index INTEGER NOT NULL,
-      files_json TEXT NOT NULL,
-      outcomes_json TEXT NOT NULL,
-      PRIMARY KEY (run_id, batch_index)
-    )`);
-    const insert = db.prepare(
-      `INSERT INTO review_run_batch (run_id, batch_index, files_json, outcomes_json)
-       VALUES (?, ?, ?, ?)`,
+    const stored = db
+      .prepare("SELECT batch_index, outcome_json FROM review_run_batch_outcome")
+      .all() as unknown as Record<string, unknown>[];
+    const update = db.prepare(
+      "UPDATE review_run_batch_outcome SET outcome_json = ? WHERE run_id = ? AND batch_index = ?",
     );
     for (const row of stored) {
       const index = Number(row["batch_index"]);
-      insert.run(runId, index, JSON.stringify([FILES[index]]), `[${String(row["outcome_json"])}]`);
+      const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
+      update.run(
+        JSON.stringify({ ...timed, startedAt: crashedAt + index * 500, durationMs: 1_000 }),
+        runId,
+        index,
+      );
     }
-    db.exec("DELETE FROM review_run_batch_outcome");
   } finally {
     db.close();
   }
 
-  const resumed = batchReviewer("model-a");
-  const result = await runReview(EVENT, deps(fixture, [resumed], { resumeRunId: runId }));
+  await runReview(EVENT, deps(fixture, [batchReviewer("model-a")], { resumeRunId: runId }));
 
-  // 旧行拆开之后前两批照样跳过,只跑第三批;三批的用量一份不少。
-  assert.deepEqual(
-    resumed.calls.map((call) => call.range.files),
-    [["src/c.ts"]],
-  );
-  const [after] = query(fixture.db.path, "SELECT failed, total_tokens FROM review_run");
-  assert.equal(after?.["failed"], 0);
-  assert.equal(after?.["total_tokens"], USAGE.totalTokens * 3);
-  assert.equal(result.failed, false);
-  // 旧表迁完即删,不留着让下一次启动再扫一遍。
-  assert.equal(
-    query(
-      fixture.db.path,
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'review_run_batch'",
-    ).length,
-    0,
-  );
+  const [outcome] = query(fixture.db.path, "SELECT duration_ms FROM reviewer_outcome");
+  const durationMs = Number(outcome?.["duration_ms"]);
+  // 崩溃前跑掉的那 1500 毫秒保住(重叠的 500 毫秒只算一次),停机那一小时不计。
+  assert.ok(durationMs >= 1_500, `耗时 ${durationMs} 毫秒,少于崩溃前已经跑掉的 1500 毫秒`);
+  assert.ok(durationMs < 60_000, `耗时 ${durationMs} 毫秒,把停机那一小时算进去了`);
 });
+

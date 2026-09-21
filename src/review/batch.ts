@@ -106,9 +106,22 @@ export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutco
     outcome.incompleteCoverage = { batchCount: results.length, failures };
   }
 
-  // 批次受限并行(issue #232),各批的时间区间会重叠:该模型的墙上时间是首批开始到
-  // 末批结束这一段,相加会把重叠的那部分数两遍。
-  const startedAt = Math.min(...results.map((r) => r.startedAt));
-  const finishedAt = Math.max(...results.map((r) => r.startedAt + r.durationMs));
-  return { outcome, startedAt, durationMs: finishedAt - startedAt };
+  // 耗时取各批时间区间的并集长度。批次受限并行(issue #232)下各批的区间会重叠,相加会把
+  // 重叠的那部分数两遍;而续跑轮次里崩溃前那几批的区间来自上一个进程(issue #415),首批
+  // 开始到末批结束这一段会把两次进程之间的停机也算成审查耗时——停机那一段没有任何一批
+  // 盖着它,并集因此自然不计,重叠的仍只算一次。
+  const spans = [...results].sort((a, b) => a.startedAt - b.startedAt);
+  const startedAt = spans[0]!.startedAt;
+  let durationMs = 0;
+  let openedAt = startedAt;
+  let closedAt = startedAt;
+  for (const span of spans) {
+    // 与当前这一段接不上就先结算它,新开一段。
+    if (span.startedAt > closedAt) {
+      durationMs += closedAt - openedAt;
+      openedAt = span.startedAt;
+    }
+    closedAt = Math.max(closedAt, span.startedAt + span.durationMs);
+  }
+  return { outcome, startedAt, durationMs: durationMs + closedAt - openedAt };
 }

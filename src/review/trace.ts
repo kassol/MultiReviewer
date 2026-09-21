@@ -35,6 +35,11 @@ export type ReviewerTraceKind =
 /** Review Run 级的编排事件类型。 */
 export type RunTraceKind =
   | "worktree_ready"
+  /**
+   * 一批的起止。续跑重新进入的批次(批内一部分模型已落库,issue #410)再发一对,载荷多
+   * `resumed: true` 与 `models`(这次真要调的那几个模型,issue #416);整批跳过的批次与
+   * 没有中断过的轮次不发第二对,载荷也不带这两格。
+   */
   | "batch_started"
   | "batch_finished"
   | "finding_merged"

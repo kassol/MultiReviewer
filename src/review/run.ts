@@ -2312,7 +2312,19 @@ export async function runReview(
         // 这一批里已经落过库的那几个模型(issue #410)。整批都齐的批次根本走不到这里,
         // 走到这里的是「批内一部分模型跑完了、进程就停下」的那些。
         const recorded = resume?.batches.get(index);
-        trace.run("batch_started", batch);
+        // 续跑重新进入的批次(issue #416):这一批确实又开了一次,轮次级的起止因此再发一对。
+        // 标上续跑与这次真要调的那几个模型,读轨迹的人才分得出它与重复的区别。
+        const milestone =
+          recorded === undefined
+            ? batch
+            : {
+                ...batch,
+                resumed: true,
+                models: deps.reviewers
+                  .filter((reviewer) => !recorded.has(reviewer.model))
+                  .map((reviewer) => reviewer.model),
+              };
+        trace.run("batch_started", milestone);
         const timedOutcomes = await Promise.all(
           deps.reviewers.map(async (reviewer) => {
             // 库里已有这个模型这一批的结果就直接取它,不再开一次会话:恢复单位是一次
@@ -2420,7 +2432,7 @@ export async function runReview(
             return timed;
           }),
         );
-        trace.run("batch_finished", batch);
+        trace.run("batch_finished", milestone);
         return timedOutcomes;
       };
 

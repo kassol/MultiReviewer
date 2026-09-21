@@ -274,7 +274,10 @@ function ModelRetry({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-/** Pi 的一次上下文压缩(issue #409)。压缩改变会话走向,轨迹里此前看不到它发生过。 */
+/**
+ * Pi 的一次上下文压缩(issue #409)。压缩改变会话走向,轨迹里此前看不到它发生过。
+ * 压缩后的 token 数带「约」:Pi 给的是估算值,压缩前的那个是精确数(issue #417)。
+ */
 function ContextCompacted({ payload }: { payload: Record<string, unknown> }) {
   const reason = str(payload, "reason");
   const before = num(payload, "tokensBefore");
@@ -294,6 +297,7 @@ function ContextCompacted({ payload }: { payload: Record<string, unknown> }) {
       {before === null && after === null ? null : (
         <span className="text-sm text-text-secondary">
           <span className="font-mono tabular-nums">{before ?? "?"}</span> →{" "}
+          {after === null ? null : "约 "}
           <span className="font-mono tabular-nums">{after ?? "?"}</span> tokens
         </span>
       )}
@@ -388,13 +392,21 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         const index = num(payload, "index");
         const total = num(payload, "total");
         const files = strings(payload, "files");
+        // 续跑重新进入的批次(issue #416):这一批在轨迹上因此有两对起止,中间隔着停机。
+        // 没有这个标记的旧事件与没中断过的轮次显示不变。
+        const resumed = payload["resumed"] === true;
+        const models = strings(payload, "models");
         const label = event.kind === "batch_started" ? "开始" : "结束";
         return (
           <div className="flex min-w-0 flex-col gap-1">
             <span className="text-base text-text">
               第 <span className="font-mono tabular-nums">{index ?? "?"}</span>/
-              <span className="font-mono tabular-nums">{total ?? "?"}</span> 批{label}
+              <span className="font-mono tabular-nums">{total ?? "?"}</span> 批
+              {resumed ? `续跑${label}` : label}
             </span>
+            {resumed && models.length > 0 ? (
+              <span className="text-sm text-text-secondary">本次只跑 {models.join("、")}</span>
+            ) : null}
             <BatchFiles files={files} />
           </div>
         );
