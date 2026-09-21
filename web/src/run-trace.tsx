@@ -388,13 +388,21 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         const index = num(payload, "index");
         const total = num(payload, "total");
         const files = strings(payload, "files");
+        // 续跑重新进入的批次(issue #416):这一批在轨迹上因此有两对起止,中间隔着停机。
+        // 没有这个标记的旧事件与没中断过的轮次显示不变。
+        const resumed = payload["resumed"] === true;
+        const models = strings(payload, "models");
         const label = event.kind === "batch_started" ? "开始" : "结束";
         return (
           <div className="flex min-w-0 flex-col gap-1">
             <span className="text-base text-text">
               第 <span className="font-mono tabular-nums">{index ?? "?"}</span>/
-              <span className="font-mono tabular-nums">{total ?? "?"}</span> 批{label}
+              <span className="font-mono tabular-nums">{total ?? "?"}</span> 批
+              {resumed ? `续跑${label}` : label}
             </span>
+            {resumed && models.length > 0 ? (
+              <span className="text-sm text-text-secondary">本次只跑 {models.join("、")}</span>
+            ) : null}
             <BatchFiles files={files} />
           </div>
         );

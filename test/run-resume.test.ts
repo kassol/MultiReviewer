@@ -465,6 +465,48 @@ test("批内某个 Reviewer 失败的结果同样当场落库,续跑不重跑它
   assert.equal(outcome?.["failure"], null);
 });
 
+test("部分落库的批次续跑时,轮次级批次事件标明是续跑并写出这次跑了谁(issue #416)", async () => {
+  const fixture = setup(cleanups);
+  const done = batchReviewer("model-a");
+  const crashed = batchReviewer("model-b", { throwOnCall: 1, yieldBeforeThrow: true });
+
+  await assert.rejects(() => runReview(EVENT, deps(fixture, [done, crashed])), /进程被重启了/);
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const runId = Number(run?.["id"]);
+
+  await runReview(
+    EVENT,
+    deps(fixture, [batchReviewer("model-a"), batchReviewer("model-b")], { resumeRunId: runId }),
+  );
+
+  const events = query(
+    fixture.db.path,
+    `SELECT kind, payload FROM review_trace
+     WHERE kind IN ('batch_started', 'batch_finished') ORDER BY seq`,
+  ).map((row) => {
+    const payload = JSON.parse(String(row["payload"])) as Record<string, unknown>;
+    return [
+      String(row["kind"]),
+      payload["index"],
+      payload["resumed"] ?? null,
+      payload["models"] ?? null,
+    ];
+  });
+
+  assert.deepEqual(events, [
+    // 崩溃前的那一次:第一批开了、没结束,标记一格都没有。
+    ["batch_started", 1, null, null],
+    // 续跑重新进入第一批:model-a 的结果在库里,这次只跑 model-b。
+    ["batch_started", 1, true, ["model-b"]],
+    ["batch_finished", 1, true, ["model-b"]],
+    // 后两批一次都没跑过,不是续跑重新进入。
+    ["batch_started", 2, null, null],
+    ["batch_finished", 2, null, null],
+    ["batch_started", 3, null, null],
+    ["batch_finished", 3, null, null],
+  ]);
+});
+
 test("续跑轮次的单模型耗时不含两次进程之间的空档(issue #415)", async () => {
   const fixture = setup(cleanups);
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
