@@ -380,8 +380,9 @@ function RootCauseGroupCard({
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
     if (!pendingScroll) return;
-    // 卡片比视口高,居中会把根因说明与「处置整组」滚出视野,落点要停在卡头。
-    card.current?.scrollIntoView({ block: "start" });
+    // 卡片比视口高,居中会把根因说明与「处置整组」滚出视野,落点要停在卡头——停在吸顶
+    // 工具条与顶栏之下的那条线上,贴到滚动容器顶就钻到这两层底下去了(issue #435)。
+    if (card.current !== null) scrollCardIntoView(card.current);
     onScrolled();
   }, [pendingScroll, onScrolled]);
 
@@ -395,17 +396,14 @@ function RootCauseGroupCard({
       }`}
       asChild
     >
-      <section
-        ref={card}
-        data-row-key={rowKey}
-        aria-label={`同根因组：${group.reason}`}
-        // 顶栏是 sticky 叠在滚动容器上方的两行毛玻璃(main.tsx 的 TopBar),`block: "start"`
-        // 会把卡头贴到视口 y=0,正好钻进顶栏底下。scroll-mt 补出顶栏实际高度,贴顶落点让到它下面。
-        className="scroll-mt-[88px]"
-      >
+      <section ref={card} data-row-key={rowKey} aria-label={`同根因组：${group.reason}`}>
         <div className="flex flex-wrap items-start justify-between gap-2 px-4 py-2.5">
           <Collapsible.Trigger
             type="button"
+            // 这一组眼下有哪几条(issue #438):组折起时成员卡不在 DOM 里,关掉侧滑要把焦点
+            // 还给这颗按钮,`rootCauseTriggerFor` 按这一格找它。列的是筛选之后剩下的那几条
+            // ——侧滑的上一条 / 下一条走的也是这一份,两边说的是同一批成员。
+            data-root-cause-members={group.members.map((member) => member.id).join(" ")}
             className="flex min-w-0 flex-1 cursor-pointer items-start gap-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           >
             <ChevronDownIcon
@@ -454,7 +452,44 @@ function listScroller(): HTMLElement | null {
   return document.getElementById("panel-main-scroll");
 }
 
-/** 切 tab 之前记下的落点:视口里第一张卡是谁、它的卡头离滚动容器顶多远。 */
+/** 这一页那条吸顶工具条(三个计数与 tab 栏,issue #435)。列表要知道它占掉了哪一截。 */
+const STAGE_TOOLS_ID = "stage-sticky-tools";
+
+/**
+ * 内容真正露得出来的那条线离视口顶多远(issue #435)。滚动容器顶上压着两层 sticky:外壳
+ * 那条毛玻璃顶栏,与这一页的吸顶工具条。量落点、摆落点与深链接滚到哪三处按同一条基线算
+ * ——按容器顶算会把压在这两层底下的卡当成「视口里第一张」,摆回去时也摆到看不见的地方。
+ *
+ * 顶栏是滚动容器的头一个子节点又 `sticky top-0`,它的下沿因此滚没滚都在同一处;工具条按
+ * 高度算而不按它此刻的位置:切到时间线那一页比列表矮,浏览器把 scrollTop 夹到 0,那一刻
+ * 它并没有吸着,位置说明不了这条线在哪,而高度与吸没吸着无关。
+ */
+function listTop(): number {
+  const chrome = document.getElementById("panel-top-bar")?.getBoundingClientRect().bottom ?? 0;
+  return chrome + (document.getElementById(STAGE_TOOLS_ID)?.offsetHeight ?? 0);
+}
+
+/**
+ * 把一张卡摆到吸顶工具条正下面。`scrollIntoView({ block: "start" })` 贴的是滚动容器顶,
+ * 那正是两层 sticky 底下,得另给 `scroll-mt`;按同一条基线自己算就不必再维护那个像素值。
+ */
+function scrollCardIntoView(card: HTMLElement): void {
+  const container = listScroller();
+  if (container === null) return;
+  container.scrollTop += card.getBoundingClientRect().top - listTop();
+}
+
+/**
+ * 一条 Finding 所属那张组卡的展开按钮(issue #438)。组折起时 Radix 的 `Collapsible` 把成员
+ * 整片卸载,按 `?finding=` 在 DOM 里找入口链接因此找不着;这颗按钮在 DOM 里、可聚焦,也
+ * 正是通往那条成员的那一步。组开着时成员自己的入口找得到,轮不到这里。
+ */
+export function rootCauseTriggerFor(findingId: number): HTMLElement | null {
+  // `~=` 按空白分词整词匹配:找 12 不会命中列着 121 的那一组。
+  return document.querySelector<HTMLElement>(`[data-root-cause-members~="${findingId}"]`);
+}
+
+/** 切 tab 之前记下的落点:视口里第一张卡是谁、它的卡头离那条露得出来的线多远。 */
 type ListAnchor = { key: string; offset: number };
 
 /**
@@ -467,7 +502,7 @@ type ListAnchor = { key: string; offset: number };
 function measureListAnchor(): ListAnchor | null {
   const container = listScroller();
   if (container === null || container.scrollTop === 0) return null;
-  const top = container.getBoundingClientRect().top;
+  const top = listTop();
   for (const card of container.querySelectorAll<HTMLElement>("[data-row-key]")) {
     const box = card.getBoundingClientRect();
     // 第一张还没被整个滚过去的卡。`offset` 因此可以是负的:它正被滚到一半。
@@ -627,11 +662,10 @@ export function StageSummaryView({
     listAnchor.current = null;
     /*
      * 按差值挪,不按绝对位置:这张卡上面那些屏幕外的卡此刻是 320px 的预留高度,与离开时
-     * 的实测高度对不上,而差值只问「它现在离容器顶多远、当初离多远」。顶栏那 88px 在量与
-     * 摆两处都算在 offset 里,不必另扣(组卡的 `scroll-mt` 是给 `scrollIntoView` 用的)。
+     * 的实测高度对不上,而差值只问「它现在离那条线多远、当初离多远」。基线两处同取
+     * `listTop()`,顶栏与吸顶工具条占掉的那一截因此在量与摆两处抵消,不必另扣。
      */
-    container.scrollTop +=
-      card.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset;
+    container.scrollTop += card.getBoundingClientRect().top - listTop() - anchor.offset;
   }, [tab, rendered, restoreTick]);
 
   /*
@@ -703,59 +737,72 @@ export function StageSummaryView({
         </Callout.Root>
       ) : null}
 
-      {/* 三个计数是这个阶段的进度:待处置在最前,人看的就是它。 */}
-      <div className="grid grid-cols-3 gap-2 sm:flex">
-        {(
-          [
-            ["pending", counts.pending],
-            ["resolved", counts.resolved],
-            ["fixed", counts.fixed],
-          ] as const
-        ).map(([id, value]) => (
-          <button
-            key={id}
-            type="button"
-            aria-pressed={disposition === id}
-            // 计数兼任处置状态筛选,筛选只在 Finding 页可见:停在时间线页时点它先切回去,
-            // 否则改的是一个看不见的筛选(issue #236)。
-            onClick={() =>
-              refilter(() => {
-                setDisposition(disposition === id ? "all" : id);
-                if (tab !== "findings") onTabChange("findings");
-              })
-            }
-            className={`flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 sm:min-w-40 ${
-              disposition === id
-                ? "border-primary bg-accent-tint"
-                : "border-card-line bg-surface hover:bg-sunken"
-            }`}
-          >
-            <span className="flex items-center gap-1.5 text-sm text-text-secondary">
-              <span aria-hidden className={`size-1.5 rounded-full ${COUNT_DOT[id]}`} />
-              {DISPOSITION_LABEL[id]}
-            </span>
-            <span className="font-mono text-3xl font-bold tabular-nums">{value}</span>
-          </button>
-        ))}
-      </div>
-
       <Tabs.Root value={tab} onValueChange={(next) => changeTab(next as StageTab)}>
-        {/* 与知识集弹窗同一套 tab 语法:3px 圆头指示条,底线通栏。 */}
-        <Tabs.List size="2" className="shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
-          <Tabs.Trigger value="findings" className={TAB_TRIGGER}>Finding</Tabs.Trigger>
-          <Tabs.Trigger value="timeline" className={TAB_TRIGGER}>
-            时间线
-            <Badge
-              color={tab === "timeline" ? "blue" : "gray"}
-              variant="soft"
-              radius="full"
-              size="1"
-              className="ml-1.5 tabular-nums"
-            >
-              {entries.length}
-            </Badge>
-          </Tabs.Trigger>
-        </Tabs.List>
+        {/*
+          三个计数与 tab 栏吸在顶栏之下(issue #435)。几百条的阶段里往下看一段之后,切到
+          时间线与改处置状态筛选都得先滚回页顶才够得着——而三个计数正是处置状态筛选的唯一
+          入口。页头其余部分(标题、来源与状态、动作)照常滚走,它们读一次就够了。
+
+          底色实心:内容从它底下滚过去,半透明会让卡片的字透出来。下边线由 `Tabs.List` 自带
+          的那道 inset 阴影当,不另画一条。层级压在顶栏(z-30)与侧滑(z-40 / z-50)之下。
+        */}
+        <div
+          id={STAGE_TOOLS_ID}
+          className="sticky top-[var(--v8-top-chrome)] z-20 -mx-1 flex flex-col gap-3 bg-background px-1 pt-2"
+        >
+          {/* 三个计数是这个阶段的进度:待处置在最前,人看的就是它。 */}
+          <div className="grid grid-cols-3 gap-2 sm:flex">
+            {(
+              [
+                ["pending", counts.pending],
+                ["resolved", counts.resolved],
+                ["fixed", counts.fixed],
+              ] as const
+            ).map(([id, value]) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={disposition === id}
+                // 计数兼任处置状态筛选,筛选只在 Finding 页可见:停在时间线页时点它先切回去,
+                // 否则改的是一个看不见的筛选(issue #236)。
+                onClick={() =>
+                  refilter(() => {
+                    setDisposition(disposition === id ? "all" : id);
+                    if (tab !== "findings") onTabChange("findings");
+                  })
+                }
+                className={`flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 sm:min-w-40 ${
+                  disposition === id
+                    ? "border-primary bg-accent-tint"
+                    : "border-card-line bg-surface hover:bg-sunken"
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-sm text-text-secondary">
+                  <span aria-hidden className={`size-1.5 rounded-full ${COUNT_DOT[id]}`} />
+                  {DISPOSITION_LABEL[id]}
+                </span>
+                <span className="font-mono text-3xl font-bold tabular-nums">{value}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* 与知识集弹窗同一套 tab 语法:3px 圆头指示条,底线通栏。 */}
+          <Tabs.List size="2" className="shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
+            <Tabs.Trigger value="findings" className={TAB_TRIGGER}>Finding</Tabs.Trigger>
+            <Tabs.Trigger value="timeline" className={TAB_TRIGGER}>
+              时间线
+              <Badge
+                color={tab === "timeline" ? "blue" : "gray"}
+                variant="soft"
+                radius="full"
+                size="1"
+                className="ml-1.5 tabular-nums"
+              >
+                {entries.length}
+              </Badge>
+            </Tabs.Trigger>
+          </Tabs.List>
+        </div>
 
         {/* 三个筛选只属于 Finding 页;筛选值是组件内状态,切到时间线再切回来仍在。 */}
         <Tabs.Content value="findings" className="flex flex-col gap-3 pt-3">

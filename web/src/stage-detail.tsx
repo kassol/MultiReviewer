@@ -70,6 +70,7 @@ import {
 import { loadPanelSession, pullRequestUrl } from "./session.ts";
 import { type MinReportSeverity } from "./settings.tsx";
 import {
+  rootCauseTriggerFor,
   StageRound,
   StageSummaryView,
   useStageSummary,
@@ -275,6 +276,17 @@ export function StageDetailPage({
        */
       const target = links.find((link) => link.getClientRects().length > 0) ?? links[0];
       if (target !== undefined) return target;
+      /*
+       * 一条入口链接都没有,而这条 Finding 是某个折起的同根因组的成员(issue #438):焦点
+       * 还给那张组卡的展开按钮——它在 DOM 里、可聚焦,也正是通往这条成员的那一步。组折起时
+       * Radix 的 `Collapsible` 把成员整片卸载,分享链接直接带 `?finding=` 进来、或者在侧滑里
+       * 按 `J` / `K` 走到组里的成员,关掉侧滑时上面那圈查找因此一条都找不到。不展开组、也不
+       * 滚列表:关一个侧滑不该顺手改列表的形状。组开着时成员自己的入口找得到,轮不到这里。
+       */
+      if (drawer.kind === "finding") {
+        const trigger = rootCauseTriggerFor(drawer.id);
+        if (trigger !== null) return trigger;
+      }
     }
     return visibleNavCurrentItem();
   }, []);

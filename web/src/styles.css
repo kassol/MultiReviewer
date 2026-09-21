@@ -156,6 +156,16 @@
    */
   --v8-bottom-chrome: calc(51.5px + env(safe-area-inset-bottom));
 
+  /*
+   * 顶边被占掉的那一条 = 顶栏本身的高度。它 `sticky top-0` 压在内容上,谁要钉在它之下
+   * (阶段详情那条计数加 tab 栏的吸顶工具条,issue #435)谁就得让开这一条。
+   *
+   * 这里这个值只是首帧的默认:顶栏高度随断点(`sm` 以下不画第二层导航)、指针类型
+   * (`pointer-coarse` 的 44px 命中区)与字体加载而变,写死哪一个都有一档是错的。外壳
+   * 在 `main.tsx` 的 `TopBar` 里用 ResizeObserver 量它的实高写回这一格,那是唯一事实来源。
+   */
+  --v8-top-chrome: 88px;
+
   /* 旧语义名。页面仍在用 bg-background / text-muted-foreground 这类 Tailwind 类,
    * 迁移期保留映射;新组件直接用 --v8-* 或 Radix 令牌,不再新增这些名字。 */
   --radius: var(--v8-radius-control);

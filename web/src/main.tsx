@@ -20,7 +20,7 @@ import {
   MixerHorizontalIcon,
   PersonIcon,
 } from "@radix-ui/react-icons";
-import { Fragment, lazy, StrictMode, Suspense, useEffect } from "react";
+import { Fragment, lazy, StrictMode, Suspense, useEffect, useLayoutEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 
 import { CommandPalette, useCommandPalette } from "@/components/command-palette";
@@ -237,8 +237,27 @@ function TopBar({
   const located = pathname.startsWith("/stages") ? "/" : pathname;
   const current = nav.find((item) => item.to === "/" ? located === "/" : located.startsWith(item.to));
   const deeper = useProductCrumbs(pathname);
+  /*
+   * 顶栏实高写进 `--v8-top-chrome`(styles.css):钉在它之下的那些面(阶段详情的吸顶工具条,
+   * issue #435)按这一格让位,不各写各的像素值。量而不是写死,是因为这个高度随断点、指针
+   * 类型与字体加载而变——桌面两层 88px,窄屏只剩品牌那一行。
+   */
+  const bar = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const element = bar.current;
+    if (element === null) return;
+    const observer = new ResizeObserver(() => {
+      document.documentElement.style.setProperty("--v8-top-chrome", `${element.offsetHeight}px`);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <header className="sticky top-0 z-30 shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]">
+    <header
+      ref={bar}
+      id="panel-top-bar"
+      className="sticky top-0 z-30 shrink-0 border-b border-chrome-line bg-chrome backdrop-blur-[30px]"
+    >
       <div className="flex items-center justify-between gap-3 px-4 pt-[11px] pb-2 sm:px-7">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-[26px] shrink-0 items-center justify-center rounded-sm bg-[image:var(--v8-mark-gradient)] shadow-mark">
