@@ -2596,9 +2596,9 @@ export type StageStatus = "active" | "closed";
  * 最新一轮没跑全(issue #421):评审记录的行据此挂一枚警示,不点进阶段页也看得出
  * 这一轮的结论不完整。
  *
- * 两档分开说,排障方向不同:整轮没跑成的那个模型一条结论都没有,而部分批次没跑成的
- * 模型只在那几批的文件上没有结论(`missing_reason = 'batch-failed'`)。两样可以同时
- * 出现——一个模型整轮倒下、另一个只倒了几批。
+ * 三档分开说,排障方向不同:整轮没跑成的那个模型一条结论都没有,部分批次没跑成的
+ * 模型只在那几批的文件上没有结论(`missing_reason = 'batch-failed'`),而收尾失败时
+ * Reviewer 都跑成了、结论却没能落到 Forge 上。三样可以同时出现。
  */
 export type StageRunAlert = {
   /** 有模型整轮没跑成(`reviewer_outcome.failure` 非空)。 */
@@ -2609,6 +2609,12 @@ export type StageRunAlert = {
    * (头一轮尤其如此)复核记录一行都没有,只有轨迹说得出来。整轮没跑成的模型不算这一档。
    */
   batchFailed: boolean;
+  /**
+   * 轮次级失败原因的第一行(ADR 0026,issue #424),收尾正常即 null。非空本身就是这一档
+   * ——多一个布尔说不出别的。只给第一行:行上那枚徽章挂得住一句话,挂不住一整段堆栈,
+   * 要读全文去阶段页的时间线。
+   */
+  closingFailure: string | null;
 };
 
 /**
@@ -4590,10 +4596,12 @@ function stageRowEntry(row: Record<string, unknown>): StageRowEntry {
 }
 
 /**
- * 给定这几轮的警示(issue #421):哪几轮有模型整轮没跑成、哪几轮有模型的某几批没跑成。
+ * 给定这几轮的警示(issue #421、#424):哪几轮有模型整轮没跑成、哪几轮有模型的某几批
+ * 没跑成、哪几轮没有正常收尾。
  *
  * 一条查询算完这一页:逐行回查会让翻一页多发几十次。没有警示的那几轮不在结果里,
- * 调用方取不到即 null。
+ * 调用方取不到即 null——四段各自只在那一档成立时出行,一档都不成立的轮次因此落不进
+ * `GROUP BY`。
  *
  * 调用方只把**跑完的**那几轮交进来:警示说的是这一轮跑出来的结论不完整,而还在跑的
  * 那一轮还没有结论。今天这两张表都只在收尾那一笔事务里写,交进来也问不出东西;由
@@ -4608,12 +4616,13 @@ function stageRunAlerts(
   const marks = runIds.map(() => "?").join(",");
   const rows = db
     .prepare(
-      `SELECT run_id, MAX(batch_failed) AS batch_failed, MAX(model_failed) AS model_failed
-         FROM (SELECT run_id, 1 AS batch_failed, 0 AS model_failed
+      `SELECT run_id, MAX(batch_failed) AS batch_failed, MAX(model_failed) AS model_failed,
+              MAX(failure) AS failure
+         FROM (SELECT run_id, 1 AS batch_failed, 0 AS model_failed, NULL AS failure
                  FROM finding_verdict
                 WHERE run_id IN (${marks}) AND missing_reason = 'batch-failed'
                 UNION ALL
-               SELECT run_id, 1 AS batch_failed, 0 AS model_failed
+               SELECT run_id, 1 AS batch_failed, 0 AS model_failed, NULL AS failure
                  FROM review_trace t
                 WHERE run_id IN (${marks}) AND kind = 'reviewer_batch_finished'
                   AND json_extract(payload, '$.failed') = 1
@@ -4621,16 +4630,23 @@ function stageRunAlerts(
                                    WHERE o.run_id = t.run_id AND o.model = t.reviewer
                                      AND o.failure IS NOT NULL)
                 UNION ALL
-               SELECT run_id, 0 AS batch_failed, 1 AS model_failed
+               SELECT run_id, 0 AS batch_failed, 1 AS model_failed, NULL AS failure
                  FROM reviewer_outcome
-                WHERE run_id IN (${marks}) AND failure IS NOT NULL)
+                WHERE run_id IN (${marks}) AND failure IS NOT NULL
+                UNION ALL
+               -- 一轮至多一行,MAX() 因此取的就是它自己那句话。
+               SELECT id AS run_id, 0 AS batch_failed, 0 AS model_failed, failure
+                 FROM review_run
+                WHERE id IN (${marks}) AND failure IS NOT NULL)
         GROUP BY run_id`,
     )
-    .all(...runIds, ...runIds, ...runIds);
+    .all(...runIds, ...runIds, ...runIds, ...runIds);
   for (const row of rows) {
+    const failure = row["failure"];
     alerts.set(Number(row["run_id"]), {
       modelFailed: Number(row["model_failed"]) === 1,
       batchFailed: Number(row["batch_failed"]) === 1,
+      closingFailure: failure === null ? null : String(failure).split("\n")[0]!,
     });
   }
   return alerts;
