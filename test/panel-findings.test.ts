@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store.ts";
+import type { RunFinding, RunProjection } from "../src/contracts/runs.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -24,29 +25,12 @@ import { scriptedReviewer } from "./support/memory-forge.ts";
 const PASSWORD = "finding-dispose-test-password";
 const HASH = await hashTestPassword(PASSWORD);
 
-type RunFinding = {
-  id: number;
-  models: string[];
-  file: string;
-  line: number;
-  severity: string;
-  category: string;
-  description: string;
-  disposition: string;
-  placement: string;
-  commentId: string | null;
-  commentHtmlUrl: string | null;
-  disposedBy: string | null;
-  disposedAt: string | null;
-  note: string | null;
-};
-
-type RunRow = {
-  id: number;
-  resolved: number;
-  total: number;
-  findings: RunFinding[];
-};
+/*
+ * 轮次那一行与它的 Finding 都是契约(issue #433),从 `src/contracts/runs.ts` 引。这边
+ * 原先手抄一份,`severity` / `category` / `disposition` / `placement` 四格写成 `string`
+ * ——服务端把枚举改窄了这里照样编译得过。
+ */
+type RunRow = RunProjection;
 
 /**
  * 两条 Finding:两个文件各一条落在 diff 里,各自一条行级评论。锚定收敛之后落库的每条

@@ -11,8 +11,10 @@ import type {
   Disposition,
   Severity,
 } from "../contracts/finding.ts";
+/** 用量是轮次投影的一格(issue #433),同理住在 `src/contracts/runs.ts` 里。 */
+import type { ReviewerUsage } from "../contracts/runs.ts";
 
-export type { CarriedAttribution, Category, Disposition, Severity };
+export type { CarriedAttribution, Category, Disposition, ReviewerUsage, Severity };
 
 /**
  * 最低报告等级的系统默认:全报。缺行、旧轮次的空列都读成它,「P2 即全报」这一句判据
@@ -231,16 +233,6 @@ export type RawFinding = {
   /** 模型自报命中的那条规则的标识(issue #204)。没有命中任何规则时不给。 */
   ruleId?: number;
 };
-
-/** 一个 Reviewer 一次执行的 token 用量。运行诊断信息,不折算金额。 */
-export type ReviewerUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-};
-
 
 /** 一个 Reviewer 跑完之后的全部产出,含失败与异常,而不只是 Finding。 */
 export type ReviewerOutcome = {

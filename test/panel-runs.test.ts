@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { openStore } from "../src/review/store.ts";
-import type { ReviewerUsage } from "../src/review/finding.ts";
+import type { ReviewerUsage, RunProjection } from "../src/contracts/runs.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -20,28 +20,11 @@ import {
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
-type RunRow = {
-  id: number;
-  owner: string;
-  repo: string;
-  pullNumber: number;
-  headSha: string;
-  startedAt: string;
-  title: string | null;
-  triggeredBy: string | null;
-  failed: boolean;
-  models: {
-    model: string;
-    findings: number;
-    failure: string | null;
-    usage?: ReviewerUsage;
-  }[];
-  usage?: ReviewerUsage;
-  resolved: number;
-  total: number;
-  /** 这一轮的模式(issue #242);升级前的旧行读回来是完整审查。 */
-  mode: string;
-};
+/*
+ * 时间流那一行的形状是契约(issue #433),从 `src/contracts/runs.ts` 引:这边手抄一份
+ * 时服务端删改一格没人报错,而这份投影正是这个文件断言的对象。
+ */
+type RunRow = RunProjection;
 
 function seedRun(
   dbPath: string,

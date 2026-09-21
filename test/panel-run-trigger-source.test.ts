@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { openStore } from "../src/review/store.ts";
+import type { RunProjection } from "../src/contracts/runs.ts";
 import { confirmEmptyRuleSet, seedRun } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
@@ -20,7 +21,8 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
-type RunRow = { id: number; headSha: string; triggerSource: string };
+/* 轮次那一行的形状是契约(issue #433):来源那一格因此是枚举,不是任意 `string`。 */
+type RunRow = RunProjection;
 
 type StageDetailBody = {
   groups: { runs: { runId: number; triggerSource: string }[] }[];
