@@ -273,9 +273,10 @@ CREATE TABLE IF NOT EXISTS finding_carried_attribution (
 -- 指注入时该 Finding Identity 的最新一行。漏给结论的按「无法判断」照样落一行并标
 -- missing:沉默不是证据,但"这个模型压根没复核"要数得出来。这批记录同时是自动处置的裁决输入。
 --
--- missing_reason 说的是为什么没结论(issue #412):no-verdict 是这个模型跑了那一批却没给,
--- batch-failed 是那一批根本没跑成。两件事的排障方向不同——前者是模型行为,后者是模型服务
--- 或额度。升级前的行是 NULL,按旧口径整份算漏复核。给了结论的行 missing = 0、这一列为 NULL。
+-- missing_reason 说的是为什么没结论(issue #412、#413):no-verdict 是这个模型跑了那一批
+-- 却没给,batch-failed 是那一批根本没跑成,no-batch 是本轮没有哪一批读到它那个文件。三件事
+-- 的排障方向不同——前者是模型行为,后两者是模型服务与覆盖缺口。升级前的行是 NULL,按旧口径
+-- 整份算漏复核。给了结论的行 missing = 0、这一列为 NULL。
 CREATE TABLE IF NOT EXISTS finding_verdict (
   run_id INTEGER NOT NULL REFERENCES review_run(id),
   model TEXT NOT NULL,
@@ -1154,8 +1155,8 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   { table: "repo", column: "default_branch TEXT" },
   // 会话开在哪个 commit(issue #351):可空,补完即「这些会话没记过」,面板对它们什么都不显示。
   { table: "agent_session", column: "baselines TEXT" },
-  // 没给结论的由来(issue #412):可空,补完即「旧行说不出是哪一种」,按旧口径整份算漏
-  // 复核,与升级前一致。不回填——哪一批没跑成是当时的运行事实,事后推不出来。
+  // 没给结论的由来(issue #412、#413):可空,补完即「旧行说不出是哪一种」,按旧口径整份
+  // 算漏复核,与升级前一致。不回填——批次没跑成与覆盖缺口都是当时的运行事实,事后推不出来。
   { table: "finding_verdict", column: "missing_reason TEXT" },
   // 产品梳理谈完的时刻(issue #365):可空,补完即「这些会话都还没谈完」。
   {
@@ -1682,10 +1683,10 @@ export type RunRange = {
 };
 
 /**
- * 一条结论为什么没给出来(issue #412):这个模型跑了那一批却没给,还是那一批根本没跑成。
- * 只有前者说的是模型有没有认真复核。
+ * 一条结论为什么没给出来(issue #412、#413):这个模型跑了那一批却没给、那一批根本没跑成,
+ * 或者本轮没有哪一批读到它那个文件。只有第一种说的是模型有没有认真复核。
  */
-export type MissingVerdictReason = "no-verdict" | "batch-failed";
+export type MissingVerdictReason = "no-verdict" | "batch-failed" | "no-batch";
 
 /**
  * 一个 Reviewer 对一条历史 Finding 的复核结论(ADR 0016)。`findingId` 是注入时该
@@ -2420,8 +2421,8 @@ export type RunListItem = {
   }[];
   /**
    * 本轮漏复核的条数(ADR 0016):跑了那一批却没给结论的「Reviewer × 历史 Finding」对数。
-   * 它们按「无法判断」落库,这个数说的是模型有没有认真复核。那一批没跑成因此没结论的
-   * 不在里面(issue #412),它说的是模型服务或额度;要分档去阶段时间线读。
+   * 它们按「无法判断」落库,这个数说的是模型有没有认真复核。批次没跑成与本轮没审到那两档
+   * 不在里面(issue #412、#413),它们分别说的是模型服务与覆盖缺口;要分档去阶段时间线读。
    */
   missedVerdicts: number;
   /** 人工处置掉的 Finding 条数。 */
@@ -2546,8 +2547,8 @@ export type FindingLineAuthor = {
  *   ——承接旧位置的算已延续,本阶段更早出现过的算折叠,其余是本轮新报出。
  * - `fixed` 是本轮复核判已修、且这一条现在仍记着「已修复」的条数(ADR 0016);人事后
  *   把它改回未处置之后就退出这个数——那一条从此是人工处置。
- * - `missedVerdicts` / `batchFailedVerdicts` 是没拿到结论的「Reviewer × 历史 Finding」
- *   对数,按由来分两档(issue #412)。
+ * - `missedVerdicts` / `batchFailedVerdicts` / `uncoveredVerdicts` 是没拿到结论的
+ *   「Reviewer × 历史 Finding」对数,按由来分三档(issue #412、#413)。
  */
 export type StageTimelineEntry = {
   runId: number;
@@ -2572,6 +2573,11 @@ export type StageTimelineEntry = {
   missedVerdicts: number;
   /** 那一批根本没跑成,因此没有结论的条数(issue #412)。它说的是模型服务或额度。 */
   batchFailedVerdicts: number;
+  /**
+   * 本轮没有哪一批读到它那个文件,谁都复核不到的条数(issue #413)。它说的是覆盖缺口:
+   * 未处置历史落在本轮 diff 之外、又没被「文件已回退 / 已删除」自动处置掉的那些。
+   */
+  uncoveredVerdicts: number;
 };
 
 /**
@@ -8701,6 +8707,7 @@ export function openStore(dbPath: string): Store {
             continued: 0,
             missedVerdicts: 0,
             batchFailedVerdicts: 0,
+            uncoveredVerdicts: 0,
           },
         ]),
       );
@@ -8727,10 +8734,12 @@ export function openStore(dbPath: string): Store {
         const runId = Number(row["run_id"]);
         const entry = timeline.get(runId);
         if (entry === undefined) continue;
-        // 没给结论的按由来分两档(issue #412)。升级前的行没有由来这一列,归进漏复核
-        // ——那正是它当初被数进去的那一档。
+        // 没给结论的按由来分三档(issue #412、#413)。升级前的行没有由来这一列,归进
+        // 漏复核——那正是它当初被数进去的那一档,旧轮次因此只显示一个总数。
         if (Number(row["missing"]) === 1) {
-          if (row["missing_reason"] === "batch-failed") entry.batchFailedVerdicts += 1;
+          const reason = row["missing_reason"];
+          if (reason === "batch-failed") entry.batchFailedVerdicts += 1;
+          else if (reason === "no-batch") entry.uncoveredVerdicts += 1;
           else entry.missedVerdicts += 1;
         }
         const key = `${runId}\n${Number(row["finding_id"])}`;
@@ -9084,8 +9093,8 @@ export function openStore(dbPath: string): Store {
         .all(...ids);
 
       // 漏复核只数条数:结论本身在 finding_verdict 里,时间流要的是「有没有认真复核」。
-      // 只数「跑了那一批却没给」的那一档(issue #412):那一批没跑成说的是模型服务或额度,
-      // 与这个问题无关。升级前的行没有由来,照旧算在里面。
+      // 只数「跑了那一批却没给」的那一档(issue #412、#413):批次没跑成与本轮没审到那两档
+      // 说的是模型服务与覆盖缺口,与这个问题无关。升级前的行没有由来,照旧算在里面。
       const byVerdict = db
         .prepare(
           `SELECT run_id,

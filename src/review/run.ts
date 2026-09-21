@@ -1389,9 +1389,9 @@ export async function disposeAbsentHistory(
  * 那些已经不在这份历史里(issue #272),落在这里的是处置不掉的那些:没有评论载体的,以及
  * 写 Forge 失败留给人的。
  *
- * 没给结论的记下由来(issue #412):这个模型跑了那一批却没给,还是那一批根本没跑成。两件事
- * 的排障方向不同——前者是模型行为,后者是模型服务或额度。裁决口径一格未动:两档都不是
- * 「已修」的证据。
+ * 没给结论的记下由来(issue #412、#413):这个模型跑了那一批却没给、那一批根本没跑成,
+ * 还是本轮没有哪一批读到它那个文件。三件事的排障方向不同——只有头一种说的是模型有没有
+ * 认真复核,另两种分别指向模型服务与覆盖缺口。裁决口径一格未动:三档都不是「已修」的证据。
  */
 function verdictRecords(
   history: readonly HistoryFinding[],
@@ -1428,17 +1428,20 @@ function verdictRecords(
         if (verdict !== undefined) {
           return { model: outcome.model, findingId: entry.id, verdict };
         }
-        // 本轮没有哪一批读到它那个文件时 `batch` 是 undefined:那一条谁都复核不到,照旧
-        // 算漏复核——把它单列出来是 issue #413 的事。
+        // `batch` 是 undefined 即本轮没有哪一批读到它那个文件(issue #413):那一条谁都
+        // 复核不到,说的是覆盖缺口,不是这个模型漏了复核。
         const batch = single ? 1 : batchOf.get(entry.file);
+        const missing =
+          batch === undefined
+            ? ("no-batch" as const)
+            : failedBatches.has(batch)
+              ? ("batch-failed" as const)
+              : ("no-verdict" as const);
         return {
           model: outcome.model,
           findingId: entry.id,
           verdict: "unclear" as const,
-          missing:
-            batch !== undefined && failedBatches.has(batch)
-              ? ("batch-failed" as const)
-              : ("no-verdict" as const),
+          missing,
         };
       });
     });

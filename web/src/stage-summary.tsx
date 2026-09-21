@@ -83,6 +83,8 @@ export type StageTimelineEntry = {
   missedVerdicts: number;
   /** 那一批没跑成,因此没有结论的对数(issue #412)。 */
   batchFailedVerdicts: number;
+  /** 本轮没有哪一批读到它那个文件,谁都复核不到的对数(issue #413)。 */
+  uncoveredVerdicts: number;
 };
 
 export type StageSummaryBody = {
@@ -713,8 +715,9 @@ export function StageSummaryView({
  * 时间线里一轮的几个数(issue #168)。轮次降为历史之后,一轮要说的只剩「它做了什么」:
  * 报出了几条新的、折叠了几条旧的、自动修掉几条、交接几条,以及有几条没拿到结论。
  *
- * 没拿到结论的分两档说(issue #412):模型跑了那一批却没给,还是那一批没跑成。排障方向
- * 不同——前者看模型,后者看模型服务或额度。
+ * 没拿到结论的分三档说(issue #412、#413):模型跑了那一批却没给、那一批没跑成、本轮
+ * 没有哪一批读到它那个文件。排障方向不同——头一档看模型,后两档分别看模型服务与覆盖缺口。
+ * 升级前的轮次说不出由来,整份落在头一档,与升级前那个总数一致。
  *
  * 为零的不列——读者要的是这一轮做了什么,一排零只让人多数几个零。全零的那一轮
  * 显式写一句,免得看起来像还没渲染出来。
@@ -730,6 +733,7 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
       ["已延续", entry.continued, "text-text-secondary"],
       ["漏复核", entry.missedVerdicts, "text-warning"],
       ["批次没跑成", entry.batchFailedVerdicts, "text-warning"],
+      ["本轮没审到", entry.uncoveredVerdicts, "text-warning"],
     ] as const
   ).filter(([, value]) => value > 0);
   return (
