@@ -697,13 +697,21 @@ test("阶段列表:收尾失败的原因取头一行有内容的,整篇空白才
     [{ fingerprint: "fp-2" }],
     { closingFailure: "   \n  " },
   );
+  // 空串。
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 9, startedAt: "2026-08-03T00:00:00.000Z" },
+    [{ fingerprint: "fp-3" }],
+    { closingFailure: "" },
+  );
 
   const body = await stages(h);
-  assert.equal(body.stages.length, 2);
+  assert.equal(body.stages.length, 3);
   // 取的是头一行有内容的:原因写在第二行时照样读得到,整篇空白才回落。
   const reasons = new Map(
     body.stages.map((stage) => [stage.pullNumber, stage.latestRunAlert?.closingFailure]),
   );
   assert.equal(reasons.get(7), "发布 review 失败:Gitea 回了 500");
   assert.equal(reasons.get(8), "未记录原因");
+  assert.equal(reasons.get(9), "未记录原因");
 });
