@@ -146,6 +146,7 @@
 
 ## 变更日志
 
+- 2026-09-21: 落地 issue #430 的面板部分。`run-trace.tsx` 的 `contentSummary` 不再列「文本 N 块」:它只在没说话的回合上用,那时文本块必然是空的(旧事件里把空块数进去过,新事件已不计),列出来只会与「本回合没有说话」读着矛盾。
 - 2026-09-21: 落地 issue #424(纯前端)。`StageAlertBadge` 的文案改由 `lib/stage-alert.ts` 的 `stageAlertText` / `stageAlertDetail` 拼:两档「没跑成」(模型 / 批次)并成一句、收尾失败自成一句,三档七种组合因此不用七句硬编码;整句与收尾失败的原因第一行在 `title` 上。既有三种组合的文案逐字未变。单测在 `src/lib/stage-alert.test.ts`,七种组合全钉住。
 - 2026-09-21: 落地 issue #426(纯前端)。**响应契约不再手抄**:`runs.tsx` 的 `StageItem`、`stage-summary.tsx` 的 `StageTimelineEntry` 与 `TriggerSource`、`stage-detail.tsx` 的 `StageRunGroup` 与 `StageDetailBody`、`lib/stage-alert.ts` 的 `StageRunAlert` 全部改成从 `../../src/contracts/stages.ts` `import type` 再按原名导出。不配路径别名(`@/` 仍只指 `web/src`):`../../src/` 这个前缀本身就说明它是服务端的文件。
 - 2026-09-21: 落地 issue #425。**失败批次已给出的复核结论说明白不作数**。`stage-summary.tsx` 的 `StageRound` 在「批次没跑成」非零时另起一整行说明;`run-trace.tsx` 的 `BatchFinished` 失败那一档在 `verdictsGiven` 非零时补一句「已给出的 N 条复核结论不作数,这一批的历史按没复核记」,为零时与成功批、旧轨迹逐字不变。两句都写成可见文字而不是 `title` 或 `HelpTooltip`:`StageRound` 嵌在时间线那一行的 `Link` 里,链接里套不了按钮。

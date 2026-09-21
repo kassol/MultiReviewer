@@ -166,16 +166,15 @@ const ROUTINE_STOP = new Set(["stop", "toolUse"]);
  * 一个回合的内容构成读成一句话(issue #407)。思考只有块数与字数——正文不入库
  * (ADR 0017)。一块内容都没有时回「没有内容」:那正是线上那几批停住的样子。
  */
+// 只在没说话的回合上用:那时文本块必然是空的,不列(issue #430,旧事件里数进去过)。
 function contentSummary(content: Record<string, unknown> | null): string | null {
   if (content === null) return null;
-  const text = num(content, "text") ?? 0;
   const thinking = num(content, "thinking") ?? 0;
   const toolCalls = num(content, "toolCalls") ?? 0;
   const thinkingChars = num(content, "thinkingChars") ?? 0;
   const parts = [
     thinking === 0 ? null : `思考 ${thinking} 段 ${thinkingChars} 字`,
     toolCalls === 0 ? null : `调用工具 ${toolCalls} 次`,
-    text === 0 ? null : `文本 ${text} 块`,
   ].filter((part): part is string => part !== null);
   return parts.length === 0 ? "没有内容" : parts.join(" · ");
 }

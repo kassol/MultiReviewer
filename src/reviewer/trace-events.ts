@@ -34,10 +34,16 @@ function textBlocks(content: unknown): string[] {
  * (ADR 0017)。认不出的块型既不是文本也不是思考也不是工具调用,不计。
  */
 export function turnContent(content: unknown): TurnContent {
-  const blocks = Array.isArray(content) ? (content as { type?: unknown; thinking?: unknown }[]) : [];
+  const blocks = Array.isArray(content)
+    ? (content as { type?: unknown; text?: unknown; thinking?: unknown }[])
+    : [];
   const tally: TurnContent = { text: 0, thinking: 0, toolCalls: 0, thinkingChars: 0 };
   for (const block of blocks) {
-    if (block?.type === "text") tally.text += 1;
+    // 空文本块不计(issue #430):模型只调工具或无声收尾时常附一个空的,数进去会让
+    // 「没说话」与「文本 1 块」同时出现。
+    if (block?.type === "text") {
+      if (typeof block.text === "string" && block.text.trim() !== "") tally.text += 1;
+    }
     else if (block?.type === "toolCall") tally.toolCalls += 1;
     else if (block?.type === "thinking") {
       tally.thinking += 1;

@@ -93,8 +93,12 @@ test("只有工具调用的回合照样落一条事件,文本是空串(issue #40
     type: "message_end",
     message: {
       role: "assistant",
-      // 模型只调工具时常附一个空文本块。
-      content: [{ type: "text", text: "" }, { type: "toolCall", name: "read" }],
+      // 模型只调工具时常附一个空文本块,只有空白的同律:都不计入文本块数(issue #430)。
+      content: [
+        { type: "text", text: "" },
+        { type: "text", text: "  \n" },
+        { type: "toolCall", name: "read" },
+      ],
       stopReason: "toolUse",
       usage: { input: 120, output: 30, cacheRead: 8, cacheWrite: 4 },
     },
@@ -102,9 +106,10 @@ test("只有工具调用的回合照样落一条事件,文本是空串(issue #40
 
   assert.deepEqual(turn(events[0]), {
     kind: "assistant_message",
-    text: "",
+    // 文本照原样记(面板按去空白后是否为空判「说没说话」),块数不计这两块。
+    text: "\n  \n",
     stopReason: "toolUse",
-    content: { text: 1, thinking: 0, toolCalls: 1, thinkingChars: 0 },
+    content: { text: 0, thinking: 0, toolCalls: 1, thinkingChars: 0 },
     usage: { inputTokens: 120, outputTokens: 30, cacheReadTokens: 8, cacheWriteTokens: 4 },
   });
 });
