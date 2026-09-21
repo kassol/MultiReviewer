@@ -37,7 +37,6 @@ type RunRow = {
     usage?: ReviewerUsage;
   }[];
   usage?: ReviewerUsage;
-  missedVerdicts: number;
   resolved: number;
   total: number;
   /** 这一轮的模式(issue #242);升级前的旧行读回来是完整审查。 */
@@ -425,35 +424,6 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
   assert.deepEqual(h.runtimePlans.at(-1)!.map((plan) => plan.spec), [
     { provider: "rerun-provider", model: "override-model" },
   ]);
-});
-
-test("时间流 API:每轮带漏复核条数,没有历史可复核的那轮是零", async () => {
-  const h = await startPanelHarness();
-  const runId = seedRun(
-    h.db.path,
-    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
-    [{ model: "model-a" }],
-    [{ model: "model-a" }],
-  );
-  // 下一轮复核上一轮那条:一个模型给了结论,另一个漏给。
-  const store = openStore(h.db.path);
-  const findingId = store.listRuns({ limit: 10 })[0]!.findings[0]!.id;
-  store.close();
-  seedRun(
-    h.db.path,
-    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-03T00:00:00.000Z" },
-    [],
-    [{ model: "model-a" }, { model: "model-b" }],
-    [
-      { model: "model-a", findingId },
-      { model: "model-b", findingId, missing: true },
-    ],
-  );
-
-  const body = (await (await h.api("GET", "/runs")).json()) as { runs: RunRow[] };
-  assert.equal(body.runs[0]!.missedVerdicts, 1);
-  assert.equal(body.runs[1]!.id, runId);
-  assert.equal(body.runs[1]!.missedVerdicts, 0);
 });
 
 test("轮次列表与轮次详情都带这一轮的模式,升级前的旧行按完整审查算", async () => {

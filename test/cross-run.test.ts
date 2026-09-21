@@ -499,7 +499,7 @@ test("历史对所有 Reviewer 共享,每一批拿到的是同一份", async () 
   assert.deepEqual(first.calls[0]!.history, other.calls[0]!.history);
 });
 
-test("复核结论逐条落库,漏给的记为无法判断;时间流带本轮漏复核条数", async () => {
+test("复核结论逐条落库,漏给的记为无法判断", async () => {
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
@@ -530,12 +530,6 @@ test("复核结论逐条落库,漏给的记为无法判断;时间流带本轮漏
   );
   // 两轮的结论各归各轮:第一轮没有历史可复核,一条都不该有。
   assert.deepEqual([...new Set(rows.map((row) => Number(row["run_id"])))], [2]);
-
-  const store = openStore(db.path);
-  const runs = store.listRuns({ limit: 10 });
-  store.close();
-  assert.equal(runs[0]!.missedVerdicts, 1);
-  assert.equal(runs[1]!.missedVerdicts, 0);
 });
 
 test("已处置的历史不要结论:漏复核只数未处置的那些", async () => {
