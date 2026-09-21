@@ -264,10 +264,16 @@ export function StageDetailPage({
     const drawer = lastDrawer.current;
     if (drawer !== null) {
       const parameter = drawer.kind === "finding" ? "finding" : "trace";
-      const target = [...document.querySelectorAll<HTMLAnchorElement>("a[href]")].find((candidate) =>
-        new URL(candidate.href).searchParams.get(parameter) === String(drawer.id) &&
-        candidate.getClientRects().length > 0
+      const links = [...document.querySelectorAll<HTMLAnchorElement>("a[href]")].filter(
+        (candidate) => new URL(candidate.href).searchParams.get(parameter) === String(drawer.id),
       );
+      /*
+       * 看得见的优先:导航那种靠断点显隐的重复入口 `focus()` 不动(见 `visibleNavCurrentItem`)。
+       * 一条看得见的都没有时仍取第一条——卡片画出来了却滚出了视口时 `content-visibility`
+       * 跳过它的布局,那一档它没有 client rect,而焦点落到它身上正是对的:`focus()` 会让浏览器
+       * 把这一段重新画出来,总好过把焦点丢到导航项上。
+       */
+      const target = links.find((link) => link.getClientRects().length > 0) ?? links[0];
       if (target !== undefined) return target;
     }
     return visibleNavCurrentItem();
@@ -346,10 +352,14 @@ export function StageDetailPage({
           {/* 两个侧滑入口都是这一块里的链接:焦点来源在冒泡到这里时记下来。 */}
           <div>
             <StageSummaryView
+              // 换一个阶段时整块重来(issue #434 的评审复核):这一页的路由没变,不按阶段
+              // 重挂的话筛选条件、已渲染的段数与记着的落点会被带到另一个阶段上。
+              key={stageId}
               scope={scopeOf(body.stage)}
               canDispose={canDispose}
               canDisposeBatch={canDisposeBatch}
               focusRootCause={location.rootCause}
+              focusFinding={location.drawer?.kind === "finding" ? location.drawer.id : null}
               tab={location.tab}
               onTabChange={selectTab}
               onFeedback={setFeedback}

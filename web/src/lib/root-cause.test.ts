@@ -5,7 +5,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { disposableInGroup, foldByRootCause, type RootCauseRef } from "./root-cause.ts";
+import {
+  disposableInGroup,
+  foldByRootCause,
+  rootCauseRowKey,
+  rowIndexOfFinding,
+  type RootCauseRef,
+} from "./root-cause.ts";
 
 type Row = { id: number; rootCause: RootCauseRef | null };
 
@@ -73,4 +79,35 @@ test("一条都没入组时逐条列出,列表原样通过", () => {
     rows.map((row) => (row.kind === "finding" ? row.finding.id : -1)),
     [1, 2],
   );
+});
+
+test("项标识把组与 Finding 分在两个前缀下:同一个数字不撞车", () => {
+  const rows = foldByRootCause<Row>([
+    { id: 7, rootCause: null },
+    { id: 1, rootCause: ref(7, 2, 0) },
+    { id: 2, rootCause: ref(7, 2, 1) },
+  ]);
+  const keys = rows.map(rootCauseRowKey);
+  assert.deepEqual(keys, ["f7", "g7"]);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+test("一条 Finding 的项下标:入了组的那条算在组卡那一项上", () => {
+  const rows = foldByRootCause<Row>([
+    { id: 1, rootCause: null },
+    { id: 2, rootCause: ref(7, 3, 0) },
+    { id: 3, rootCause: null },
+    { id: 4, rootCause: ref(7, 3, 1) },
+  ]);
+  assert.equal(rowIndexOfFinding(rows, 1), 0);
+  // 2 与 4 是同一张组卡的两个成员,都落在第 1 项上。
+  assert.equal(rowIndexOfFinding(rows, 2), 1);
+  assert.equal(rowIndexOfFinding(rows, 4), 1);
+  assert.equal(rowIndexOfFinding(rows, 3), 2);
+});
+
+test("不在列表里的那条回 -1:扩渲染范围时当作没有目标", () => {
+  const rows = foldByRootCause<Row>([{ id: 1, rootCause: null }]);
+  assert.equal(rowIndexOfFinding(rows, 99), -1);
+  assert.equal(rowIndexOfFinding([], 1), -1);
 });
