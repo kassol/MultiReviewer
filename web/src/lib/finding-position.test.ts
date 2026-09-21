@@ -38,7 +38,6 @@ test("位置属于别的轮次、行号凑巧在渲染范围内:不锚定", () =
   assert.equal(isAnchorable({ line: 10, placedRunId: 11 }, 12, RENDERED), false);
 });
 
-test("没有 placedRunId(轮次页自己的 Finding):只看行号", () => {
-  assert.equal(isAnchorable({ line: 10 }, 12, RENDERED), true);
-  assert.equal(isAnchorable({ line: 99 }, 12, RENDERED), false);
+test("位置属于这一轮、行号不在渲染范围内:不锚定", () => {
+  assert.equal(isAnchorable({ line: 99, placedRunId: 12 }, 12, RENDERED), false);
 });

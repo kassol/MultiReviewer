@@ -672,9 +672,8 @@ export function FilePatch({
       hunk.lines.flatMap((line) => (line.newLine === null ? [] : [line.newLine])),
     ),
   );
-  // 可锚定的判据同一份(issue #368 追加修复):行号落在这一轮渲染范围内,且没带
-  // placedRunId、或 placedRunId 就是这一轮——位置属于别的轮次时行号即使落在范围内
-  // 也不算,那是另一轮代码上的巧合。
+  // 可锚定的判据同一份(issue #368 追加修复):行号落在这一轮渲染范围内,且位置就属于
+  // 这一轮——位置属于别的轮次时行号即使落在范围内也不算,那是另一轮代码上的巧合。
   const byLine = new Map<number, StageFinding[]>();
   for (const finding of findings) {
     if (!isAnchorable(finding, runId, rendered)) continue;

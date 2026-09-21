@@ -39,16 +39,16 @@ export function findingDiffSource(
 /**
  * 一条 Finding 能不能锚定到 `runId` 这一轮渲染出的某一行代码(issue #368 追加修复)。
  *
- * 行号必须落在这一轮渲染出的范围内;带着 `placedRunId` 的(阶段汇总里的 Finding)还要
- * 那个值等于 `runId`——位置属于别的轮次,行号即使凑巧落在这一轮的渲染范围内,那也是
- * 另一轮代码上的巧合,不是这一轮同一处代码。没有 `placedRunId` 的(轮次页自己的
- * Finding,只认本轮)照旧只看行号。
+ * 两条都要:行号落在这一轮渲染出的范围内,位置也属于这一轮。位置属于别的轮次时,行号
+ * 即使凑巧落在这一轮的渲染范围内,那也是另一轮代码上的巧合,不是这一轮同一处代码。
+ *
+ * 面板里唯一的调用方(代码差异视图)传进来的一律是阶段汇总里的 Finding,`placedRunId`
+ * 恒带(issue #433 起这一格直接来自契约),因此没有「不带位置轮次」那一档(issue #437)。
  */
 export function isAnchorable(
-  finding: { line: number; placedRunId?: number },
+  finding: { line: number; placedRunId: number },
   runId: number,
   renderedLines: ReadonlySet<number>,
 ): boolean {
-  if (!renderedLines.has(finding.line)) return false;
-  return finding.placedRunId === undefined || finding.placedRunId === runId;
+  return renderedLines.has(finding.line) && finding.placedRunId === runId;
 }
