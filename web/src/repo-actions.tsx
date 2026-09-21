@@ -143,8 +143,13 @@ export const RUN_DIRECTIVE_HINT =
 /**
  * 一次重跑的模式(CONTEXT.md 只复核,issue #242)。两处重跑入口共用一个类型与一句
  * 措辞:同一个勾选在两个地方读起来必须是同一件事。
+ *
+ * 它与阶段详情契约里那一轮的 `mode` 是同一个联合,因此直接引 `ReviewRunMode`(issue
+ * #429),在这一页沿用 `RerunMode` 这个名字——读起来是「重跑时选的那一档」。
  */
-export type RerunMode = "verdict-only" | "full";
+import type { ReviewRunMode as RerunMode } from "../../src/contracts/stages.ts";
+
+export type { RerunMode };
 
 /** 「完整审查」勾选的说明。勾上才会新报;重跑与增量评审两处默认都不勾。 */
 export const FULL_REVIEW_HINT = "不勾即只复核历史 Finding,不新报";

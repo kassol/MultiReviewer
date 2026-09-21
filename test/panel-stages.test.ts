@@ -20,25 +20,12 @@ import {
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
-type StageRow = {
-  stageId: string;
-  source: "pull-request" | "range-review";
-  owner: string;
-  repo: string;
-  pullNumber: number | null;
-  rangeReviewId: number | null;
-  title: string | null;
-  status: "active" | "closed";
-  latestRunId: number | null;
-  latestRunAt: string | null;
-  latestRunFinishedAt: string | null;
-  counts: { pending: number; resolved: number; fixed: number };
-  latestRunAlert: {
-    modelFailed: boolean;
-    batchFailed: boolean;
-    closingFailure: string | null;
-  } | null;
-};
+/*
+ * 行的形状引服务端那一份契约(issue #426、#429),不在这里手抄一遍:抄一份的时候契约
+ * 删一格、改一格用例照样编译得过,这里的断言于是什么都钉不住。信封那两格由端点在投影
+ * 之上拼,不属于契约,留在这里。
+ */
+import type { StageListItem as StageRow } from "../src/contracts/stages.ts";
 
 type StagesPage = { stages: StageRow[]; nextOffset: number | null };
 
