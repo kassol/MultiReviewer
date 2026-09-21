@@ -102,6 +102,24 @@ test("/assets 服务构建产物,带正确的内容类型", async () => {
   assert.equal((await h.get("/assets/missing.js")).status, 404);
 });
 
+test("/assets 长缓存、index.html 不缓存:发版后刷新一次就拿到新入口(issue #439)", async () => {
+  const h = await startPages();
+
+  // `/assets` 下的文件名带内容哈希,内容一变文件名就变,因此可以按永不过期给。
+  const asset = await h.get("/assets/app.js");
+  assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
+
+  // index.html 引的正是那些带哈希的文件名,它自己被缓存住就等于发版发不出去。
+  for (const path of ["/", `/stages/${encodeURIComponent("pr:acme/widgets/7")}`]) {
+    const page = await h.get(path);
+    assert.equal(page.status, 200, path);
+    assert.equal(page.headers.get("cache-control"), "no-cache", path);
+  }
+
+  // 取不到的产物不该被缓存成「这里没有东西」:404 一律不带缓存头。
+  assert.equal((await h.get("/assets/missing.js")).headers.get("cache-control"), null);
+});
+
 test("/assets 的路径穿越被挡住", async () => {
   const h = await startPages();
 

@@ -29,16 +29,15 @@ import {
 import { firstReportedFrom, roundFilterOptions, roundNumbers } from "@/lib/stage-rounds";
 import { localMinute } from "@/lib/time";
 
-import { fetchJson, send } from "./api.ts";
+import { send } from "./api.ts";
 import { FindingBadges, FindingRow } from "./run-diff.tsx";
 
-/**
- * 一个审查阶段(CONTEXT.md 审查阶段):范围审查那条按它自己的 id 取,pull request
- * 那条按 owner / repo / 序号取。两条链路读同一个接口、显示成同一个样子。
+/*
+ * 阶段片与这一页那份汇总查询的键、请求与保鲜时间都在 `lib/stage-queries.ts`(issue #439):
+ * 路由要在这一页的代码到齐之前就按同一份工厂预取,而它引不得这个模块——静态引一下,
+ * 整页代码就回到入口包里,懒加载白做。
  */
-export type StageScope =
-  | { kind: "range-review"; rangeReviewId: number }
-  | { kind: "pull-request"; owner: string; repo: string; pullNumber: number };
+import { stageIdOf, stageSummaryQuery, type StageScope } from "@/lib/stage-queries";
 
 /*
  * 阶段汇总整份响应与时间线那一轮都是契约(issue #426、#429),从 `src/contracts/` 引来
@@ -49,12 +48,9 @@ import type {
   ReviewTriggerSource as TriggerSource,
   StageTimelineEntry,
 } from "../../src/contracts/stages.ts";
-import type {
-  StageSummary as StageSummaryBody,
-  StageSummaryFinding as StageFinding,
-} from "../../src/contracts/stage-summary.ts";
+import type { StageSummaryFinding as StageFinding } from "../../src/contracts/stage-summary.ts";
 
-export type { StageFinding, StageSummaryBody, StageTimelineEntry, TriggerSource };
+export type { StageFinding, StageTimelineEntry, TriggerSource };
 
 /** 时间线上每一轮的来源标签。三档都标:只标其中一档,另外两档就得靠人猜。 */
 const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
@@ -64,42 +60,14 @@ const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
 };
 
 /**
- * 阶段详情地址上的那个标识(issue #175),与 `GET /stages` 行上的 `stageId` 同一格式:
- * 一个阶段在列表、地址与接口三处是同一个名字。
- */
-export function stageIdOf(scope: StageScope): string {
-  return scope.kind === "range-review"
-    ? `range:${scope.rangeReviewId}`
-    : `pr:${scope.owner}/${scope.repo}/${scope.pullNumber}`;
-}
-
-function scopePath(scope: StageScope): string {
-  return scope.kind === "range-review"
-    ? `/stage-summary?rangeReviewId=${scope.rangeReviewId}`
-    : `/stage-summary?owner=${encodeURIComponent(scope.owner)}&repo=${encodeURIComponent(
-        scope.repo,
-      )}&pullNumber=${scope.pullNumber}`;
-}
-
-/**
- * 阶段汇总的查询键。首段固定是 `stage-summary`:行内处置成功后按这一段整片失效,
- * 处置完的那一条立刻从待处置里退出去(与轮次那两份查询同一个理由)。
- */
-function stageSummaryKey(scope: StageScope): (string | number)[] {
-  return scope.kind === "range-review"
-    ? ["stage-summary", "range-review", scope.rangeReviewId]
-    : ["stage-summary", "pull-request", scope.owner, scope.repo, scope.pullNumber];
-}
-
-/**
  * 一个审查阶段的当前状态。阶段页的正文与 Finding 侧滑读的是同一份(issue #189):
  * 侧滑要的「这条 Finding 在哪个文件、同文件还有哪几条」就在这份里,查询键相同,
- * React Query 因此只发一次请求,两处看到的也永远是同一批行。
+ * React Query 因此只发一次请求,两处看到的也永远是同一批行。路由预取的也是这一份
+ * (issue #439),组件挂载时直接命中它,不再重发。
  */
 export function useStageSummary(scope: StageScope) {
   return useQuery({
-    queryKey: stageSummaryKey(scope),
-    queryFn: () => fetchJson<StageSummaryBody>(scopePath(scope)),
+    ...stageSummaryQuery(scope),
     // 还有轮次没跑完就每 10 秒续查,全部结束即停:人最想看结果的正是这几分钟。
     refetchInterval: (query) =>
       (query.state.data?.timeline ?? []).some((entry) => entry.finishedAt === null)

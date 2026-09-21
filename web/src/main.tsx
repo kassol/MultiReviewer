@@ -36,6 +36,11 @@ import {
   type AgentSession,
 } from "@/lib/agent-sessions";
 import { productQueryKey, type ProductDetail } from "@/lib/products";
+/*
+ * 阶段详情路由的预取(issue #439)。这两份工厂在 `lib/` 而不在阶段详情页里:静态引那一页
+ * 就等于把整页代码搬回入口包,懒加载白做;这个模块不含 JSX、只引 `api.ts`。
+ */
+import { scopeFromStageId, stageDetailQuery, stageSummaryQuery } from "@/lib/stage-queries";
 
 import { api, fetchJson } from "./api.ts";
 import type { ModelServiceTab } from "./credentials.tsx";
@@ -566,6 +571,21 @@ const stageDetailRoute = createRoute({
   path: "/stages/$stageId",
   beforeLoad: ({ context }) => {
     if (context.session.mustChangePassword) throw redirect({ to: "/password" });
+  },
+  /*
+   * 路由一匹配就并行发出阶段详情与阶段汇总(issue #439)。这一页按路由懒加载,原先两个
+   * 接口都得等它那一批 chunk 到齐、组件挂载之后才发得出去,汇总还要再等详情返回那一行
+   * 才算得出取哪一片——三段串成一条。现在标识直接推出汇总那一片,两个请求与 chunk 并行。
+   *
+   * 不 await:路由不因接口慢而卡住,页面照常先出骨架;预取失败也不拦路由,由组件自己的
+   * `useQuery` 走现有的加载与错误态。未登录的人到不了这里——父路由 `shellRoute` 的
+   * `beforeLoad` 先跑,读不到会话就已经转去登录页了。
+   */
+  loader: ({ params }) => {
+    void queryClient.prefetchQuery(stageDetailQuery(params.stageId));
+    const scope = scopeFromStageId(params.stageId);
+    // 认不出的标识不预取:服务端对它同样是 404,那一句由阶段详情自己说。
+    if (scope !== null) void queryClient.prefetchQuery(stageSummaryQuery(scope));
   },
   component: () => <BusinessPage Page={StageDetailRoutePage} />,
 });

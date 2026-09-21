@@ -39,6 +39,8 @@ import {
   visibleNavCurrentItem,
 } from "@/components/use-dialog-return-focus";
 import { findingDiffSource } from "@/lib/finding-position";
+/* 这一页那份详情查询的键、请求与保鲜时间与路由预取共用一份工厂(issue #439)。 */
+import { stageDetailQuery, type StageScope } from "@/lib/stage-queries";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -75,7 +77,6 @@ import {
   StageSummaryView,
   useStageSummary,
   type StageFinding,
-  type StageScope,
   type StageTab,
   type StageTimelineEntry,
 } from "./stage-summary.tsx";
@@ -179,8 +180,8 @@ export function StageDetailPage({
    */
   const [pollUntil, setPollUntil] = useState(0);
   const detail = useQuery({
-    queryKey: ["stage-detail", stageId],
-    queryFn: () => fetchJson<StageDetailBody>(`/stages/${encodeURIComponent(stageId)}`),
+    // 路由在页面代码到齐之前就按同一份工厂预取过它(issue #439),这里直接命中那一份。
+    ...stageDetailQuery<StageDetailBody>(stageId),
     // 还有轮次没跑完、刚推进的比较项还没有轮次、或刚触发过动作,就每 10 秒续查,
     // 全部结束即停:人最想看结果的正是这几分钟。
     refetchInterval: (query) =>
