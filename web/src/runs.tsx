@@ -197,6 +197,11 @@ export type StageItem = {
   latestRunFinishedAt: string | null;
   /** 阶段汇总的三个数,与 `GET /stage-summary` 同一口径。 */
   counts: { pending: number; resolved: number; fixed: number };
+  /**
+   * 最新一轮没跑全(issue #421)。跑得正常、还在跑、或者一轮都还没跑时为 null;更早
+   * 那轮出过问题不算。
+   */
+  latestRunAlert: { modelFailed: boolean; batchFailed: boolean } | null;
 };
 
 type StagesPage = { stages: StageItem[]; nextOffset: number | null };
@@ -228,6 +233,29 @@ export function StageStatusBadge({ stage }: { stage: StageItem }) {
     <StatusBadge tone="running">进行中</StatusBadge>
   ) : (
     <StatusBadge tone="neutral" icon={CheckCircledIcon}>已结束</StatusBadge>
+  );
+}
+
+/**
+ * 最新一轮没跑全时行上的警示(issue #421)。不点进阶段页翻时间线就看得出这一轮的
+ * 结论不完整。
+ *
+ * 两档分开说,排障方向不同:模型整轮没跑成去看模型服务,某几批没跑成只影响那几批的
+ * 文件。两样都有时徽章说模型那一档——它更重,整句在 title 上。这里不套 Tooltip:行
+ * 本身就是一个链接,再加一个可聚焦的触发器会在长列表里多出一串 tab 站点,而触屏上
+ * Tooltip 压根打不开(issue #374)。
+ */
+function StageAlertBadge({ alert }: { alert: NonNullable<StageItem["latestRunAlert"]> }) {
+  const detail = [
+    alert.modelFailed ? "有模型整轮没跑成，这一轮少了它的结论。" : null,
+    alert.batchFailed ? "有模型的部分批次没跑成，那几批文件上的历史这一轮少了它的复核。" : null,
+  ]
+    .filter((line) => line !== null)
+    .join("");
+  return (
+    <StatusBadge tone="warning" title={detail}>
+      {alert.modelFailed ? "上一轮有模型没跑成" : "上一轮有批次没跑成"}
+    </StatusBadge>
   );
 }
 
@@ -910,7 +938,8 @@ export function RunsPage({
                               <span className="break-words text-lg font-semibold">
                                 {stageLabel(stage)}
                               </span>
-                              <span className="flex flex-wrap items-center gap-x-1.5 text-base font-normal text-text-muted">
+                              {/* 警示徽章跟着这行小字一起折行,gap-y 因此不能省:窄屏上它必折。 */}
+                              <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-base font-normal text-text-muted">
                                 <span className="tabular-nums">{stageRef(stage)}</span>
                                 <span aria-hidden>·</span>
                                 {running ? (
@@ -930,6 +959,9 @@ export function RunsPage({
                                   >
                                     最新一轮 {since(stage.latestRunAt)}
                                   </time>
+                                )}
+                                {stage.latestRunAlert === null ? null : (
+                                  <StageAlertBadge alert={stage.latestRunAlert} />
                                 )}
                               </span>
                             </span>

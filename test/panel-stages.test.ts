@@ -33,6 +33,7 @@ type StageRow = {
   latestRunAt: string | null;
   latestRunFinishedAt: string | null;
   counts: { pending: number; resolved: number; fixed: number };
+  latestRunAlert: { modelFailed: boolean; batchFailed: boolean } | null;
 };
 
 type StagesPage = { stages: StageRow[]; nextOffset: number | null };
@@ -49,6 +50,14 @@ function seedRun(
     rangeReviewId?: number;
   },
   findings: { fingerprint: string; disposition?: "unknown" | "resolved" | "fixed" }[] = [],
+  /**
+   * 这一轮另外要落的东西(issue #421 的警示两档):整轮没跑成的那个模型,以及复核结论
+   * ——`findingId` 指的是上一轮那条历史,`missing` 说它为什么没拿到结论。
+   */
+  extra: {
+    failedModel?: string;
+    verdicts?: { model: string; findingId: number; missing: "no-verdict" | "batch-failed" }[];
+  } = {},
 ): number {
   const store = openStore(dbPath);
   const runId = seedRunRow(
@@ -95,10 +104,38 @@ function seedRun(
         anchorRejections: 0,
         durationMs: 1,
       },
+      ...(extra.failedModel === undefined
+        ? []
+        : [
+            {
+              model: extra.failedModel,
+              failure: "模型服务回了 429",
+              findingCount: 0,
+              anomalyCount: 0,
+              rejectedToolCalls: 0,
+              anchorRejections: 0,
+              durationMs: 1,
+            },
+          ]),
     ],
+    (extra.verdicts ?? []).map((entry) => ({
+      model: entry.model,
+      findingId: entry.findingId,
+      verdict: "unclear" as const,
+      missing: entry.missing,
+    })),
   );
   store.close();
   return runId;
+}
+
+/** 上一轮落的那条 Finding 的 id:下一轮的复核结论指向它。 */
+function historyFindingId(dbPath: string, runId: number): number {
+  const store = openStore(dbPath);
+  const run = store.listRuns({ limit: 50 }).find((item) => item.id === runId);
+  store.close();
+  assert.notEqual(run, undefined, `没有这一轮 ${runId}`);
+  return run!.findings[0]!.id;
 }
 
 /** 用 hook 的凭据签一次 pull request 投递。关闭与重开都走这一条真实链路。 */
@@ -479,4 +516,100 @@ test("单轮 API:按 id 取该阶段最新一轮,不存在的 id 是 404", async
   assert.equal(body.run.findings.length, 1);
 
   assert.equal((await h.api("GET", "/runs/9999")).status, 404);
+});
+
+/*
+ * 最新一轮没跑全时行上挂警示(issue #421)。Run #58 那种一个模型多批 429 的轮次此前
+ * 在列表上没有任何痕迹,要点进阶段页翻时间线才看得出来。
+ *
+ * 判据只看最新一轮:更早那轮出过问题不算——这一格说的是此刻的结论完不完整。
+ */
+test("阶段列表:最新一轮有批次没跑成,行上挂警示且说的是批次那一档", async () => {
+  const h = await startPanelHarness();
+  const first = seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+  );
+  // 下一轮复核上一轮那条:model-a 的那一批没跑成,这条历史因此没拿到结论。
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    [],
+    {
+      verdicts: [
+        { model: "model-a", findingId: historyFindingId(h.db.path, first), missing: "batch-failed" },
+      ],
+    },
+  );
+
+  const body = await stages(h);
+  assert.equal(body.stages.length, 1);
+  // 部分批次没跑成的模型不算整体失败:两档分开说,排障方向不同。
+  assert.deepEqual(body.stages[0]!.latestRunAlert, { modelFailed: false, batchFailed: true });
+});
+
+test("阶段列表:失败的那一批上没有历史时,批次没跑成由审查轨迹说出来", async () => {
+  const h = await startPanelHarness();
+  // 头一轮没有历史,复核记录一行都没有;model-a 第 2 批失败只留在批次收尾事件里。
+  const runId = seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+  );
+  const store = openStore(h.db.path);
+  store.appendTrace(runId, {
+    scope: "reviewer",
+    reviewer: "model-a",
+    kind: "reviewer_batch_finished",
+    payload: { batch: 2, failed: true, failure: "429" },
+  });
+  store.close();
+
+  const body = await stages(h);
+  assert.deepEqual(body.stages[0]!.latestRunAlert, { modelFailed: false, batchFailed: true });
+});
+
+test("阶段列表:最新一轮有模型整轮没跑成,行上挂警示且说的是模型那一档", async () => {
+  const h = await startPanelHarness();
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+    { failedModel: "model-b" },
+  );
+
+  const body = await stages(h);
+  assert.equal(body.stages.length, 1);
+  assert.deepEqual(body.stages[0]!.latestRunAlert, { modelFailed: true, batchFailed: false });
+});
+
+test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有警示", async () => {
+  const h = await startPanelHarness();
+  const first = seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+    { failedModel: "model-b" },
+  );
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    [],
+    {
+      verdicts: [
+        { model: "model-a", findingId: historyFindingId(h.db.path, first), missing: "batch-failed" },
+      ],
+    },
+  );
+  // 第三轮两样都没有:警示只看最新那一轮。
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-03T00:00:00.000Z" },
+    [],
+  );
+
+  const body = await stages(h);
+  assert.equal(body.stages.length, 1);
+  assert.equal(body.stages[0]!.latestRunAlert, null);
 });

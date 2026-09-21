@@ -2419,12 +2419,6 @@ export type RunListItem = {
      */
     handoffPending: boolean;
   }[];
-  /**
-   * 本轮漏复核的条数(ADR 0016):跑了那一批却没给结论的「Reviewer × 历史 Finding」对数。
-   * 它们按「无法判断」落库,这个数说的是模型有没有认真复核。批次没跑成与本轮没审到那两档
-   * 不在里面(issue #412、#413),它们分别说的是模型服务与覆盖缺口;要分档去阶段时间线读。
-   */
-  missedVerdicts: number;
   /** 人工处置掉的 Finding 条数。 */
   resolved: number;
   /** 「已修复」自动处置掉的 Finding 条数。 */
@@ -2599,6 +2593,25 @@ export type StageSource = "pull-request" | "range-review";
 export type StageStatus = "active" | "closed";
 
 /**
+ * 最新一轮没跑全(issue #421):评审记录的行据此挂一枚警示,不点进阶段页也看得出
+ * 这一轮的结论不完整。
+ *
+ * 两档分开说,排障方向不同:整轮没跑成的那个模型一条结论都没有,而部分批次没跑成的
+ * 模型只在那几批的文件上没有结论(`missing_reason = 'batch-failed'`)。两样可以同时
+ * 出现——一个模型整轮倒下、另一个只倒了几批。
+ */
+export type StageRunAlert = {
+  /** 有模型整轮没跑成(`reviewer_outcome.failure` 非空)。 */
+  modelFailed: boolean;
+  /**
+   * 有模型的某几批没跑成。两处证据任一即是:那几批文件上的历史记了 `batch-failed`,或
+   * 审查轨迹里有该模型失败的批次收尾事件(issue #408)——失败批上没有未处置历史时
+   * (头一轮尤其如此)复核记录一行都没有,只有轨迹说得出来。整轮没跑成的模型不算这一档。
+   */
+  batchFailed: boolean;
+};
+
+/**
  * 评审记录里的一行(issue #174):一个审查阶段,不是一轮 Review Run。同一 pull request
  * 推多少次、同一范围审查推进多少次,这里都只有一行。
  *
@@ -2628,6 +2641,11 @@ export type StageListItem = {
   latestRunFinishedAt: string | null;
   /** 阶段汇总的三个数,口径与 `stageSummary` 完全一致——它们就是从那里来的。 */
   counts: StageSummary["counts"];
+  /**
+   * 最新一轮没跑全时的警示(issue #421)。最新一轮跑得正常、还在跑、或者一轮都还没跑
+   * 时为 null;更早的轮次出过问题不算——这一格说的是此刻的结论完不完整。
+   */
+  latestRunAlert: StageRunAlert | null;
 };
 
 /**
@@ -4489,9 +4507,12 @@ export type StageScope =
   | { rangeReviewId: number }
   | { owner: string; repo: string; pullNumber: number };
 
-/** 评审记录的一行,外加算计数与时间线要用的范围(阶段行查询的产物)。 */
+/**
+ * 评审记录的一行,外加算计数与时间线要用的范围(阶段行查询的产物)。三个计数与最新
+ * 一轮的警示不在这一段查询里:它们只为回到 JS 的那几行算(见 `listStages`)。
+ */
 type StageRowEntry = {
-  item: Omit<StageListItem, "counts">;
+  item: Omit<StageListItem, "counts" | "latestRunAlert">;
   scope: StageScope;
 };
 
@@ -4566,6 +4587,58 @@ function stageRowEntry(row: Record<string, unknown>): StageRowEntry {
     scope:
       rangeReviewId === null ? { owner, repo, pullNumber: pullNumber! } : { rangeReviewId },
   };
+}
+
+/**
+ * 给定这几轮的警示(issue #421):哪几轮有模型整轮没跑成、哪几轮有模型的某几批没跑成。
+ *
+ * 一条查询算完这一页:逐行回查会让翻一页多发几十次。没有警示的那几轮不在结果里,
+ * 调用方取不到即 null。
+ *
+ * 调用方只把**跑完的**那几轮交进来:警示说的是这一轮跑出来的结论不完整,而还在跑的
+ * 那一轮还没有结论。今天这两张表都只在收尾那一笔事务里写,交进来也问不出东西;由
+ * 调用方筛是为了让这条规则读得见,而不是靠写入时机碰巧成立。
+ */
+function stageRunAlerts(
+  db: DatabaseSync,
+  runIds: readonly number[],
+): Map<number, StageRunAlert> {
+  const alerts = new Map<number, StageRunAlert>();
+  if (runIds.length === 0) return alerts;
+  const marks = runIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT run_id, MAX(batch_failed) AS batch_failed, MAX(model_failed) AS model_failed
+         FROM (SELECT run_id, 1 AS batch_failed, 0 AS model_failed
+                 FROM finding_verdict
+                WHERE run_id IN (${marks}) AND missing_reason = 'batch-failed'
+                UNION ALL
+               SELECT run_id, 1 AS batch_failed, 0 AS model_failed
+                 FROM review_trace t
+                WHERE run_id IN (${marks}) AND kind = 'reviewer_batch_finished'
+                  AND json_extract(payload, '$.failed') = 1
+                  AND NOT EXISTS (SELECT 1 FROM reviewer_outcome o
+                                   WHERE o.run_id = t.run_id AND o.model = t.reviewer
+                                     AND o.failure IS NOT NULL)
+                UNION ALL
+               SELECT run_id, 0 AS batch_failed, 1 AS model_failed
+                 FROM reviewer_outcome
+                WHERE run_id IN (${marks}) AND failure IS NOT NULL)
+        GROUP BY run_id`,
+    )
+    .all(...runIds, ...runIds, ...runIds);
+  for (const row of rows) {
+    alerts.set(Number(row["run_id"]), {
+      modelFailed: Number(row["model_failed"]) === 1,
+      batchFailed: Number(row["batch_failed"]) === 1,
+    });
+  }
+  return alerts;
+}
+
+/** 这一行要问警示的那一轮:最新一轮跑完了才问(见 `stageRunAlerts`)。 */
+function alertRunId(item: StageRowEntry["item"]): number | null {
+  return item.latestRunFinishedAt === null ? null : item.latestRunId;
 }
 
 /**
@@ -9056,19 +9129,6 @@ export function openStore(dbPath: string): Store {
         )
         .all(...ids);
 
-      // 漏复核只数条数:结论本身在 finding_verdict 里,时间流要的是「有没有认真复核」。
-      // 只数「跑了那一批却没给」的那一档(issue #412、#413):批次没跑成与本轮没审到那两档
-      // 说的是模型服务与覆盖缺口,与这个问题无关。升级前的行没有由来,照旧算在里面。
-      const byVerdict = db
-        .prepare(
-          `SELECT run_id,
-                  SUM(missing = 1 AND (missing_reason IS NULL OR missing_reason = 'no-verdict'))
-                    AS missed
-             FROM finding_verdict
-            WHERE run_id IN (${marks}) GROUP BY run_id`,
-        )
-        .all(...ids);
-
       const byFinding = db
         .prepare(
           `SELECT id, run_id, file, line, severity, category, description,
@@ -9135,10 +9195,6 @@ export function openStore(dbPath: string): Store {
         list.push({ model, findings, failure: null });
         list.sort((a, b) => a.model.localeCompare(b.model));
         models.set(runId, list);
-      }
-      const missedVerdicts = new Map<number, number>();
-      for (const row of byVerdict) {
-        missedVerdicts.set(Number(row["run_id"]), Number(row["missed"] ?? 0));
       }
       const groups = new Map<number, { resolved: number; fixed: number; total: number }>();
       for (const row of byGroup) {
@@ -9254,7 +9310,6 @@ export function openStore(dbPath: string): Store {
           ...(usage === undefined ? {} : { usage }),
           reviewerPins: reviewerPins.get(id) ?? [],
           findings: findings.get(id) ?? [],
-          missedVerdicts: missedVerdicts.get(id) ?? 0,
           resolved: groups.get(id)?.resolved ?? 0,
           fixed: groups.get(id)?.fixed ?? 0,
           total: groups.get(id)?.total ?? 0,
@@ -9304,8 +9359,20 @@ export function openStore(dbPath: string): Store {
         )
         .all(...params)
         .map(stageRowEntry);
+      // 警示也只为这一页算,而且一条查询算完这几轮,不跟着行数涨(issue #421)。
+      const alerts = stageRunAlerts(
+        db,
+        rows.map((row) => alertRunId(row.item)).filter((id) => id !== null),
+      );
       // 三个计数只为这一页算:每一行都要读一遍它整个阶段的 Finding。
-      return rows.map((row) => ({ ...row.item, counts: store.stageSummary(row.scope).counts }));
+      return rows.map((row) => {
+        const runId = alertRunId(row.item);
+        return {
+          ...row.item,
+          counts: store.stageSummary(row.scope).counts,
+          latestRunAlert: runId === null ? null : alerts.get(runId) ?? null,
+        };
+      });
     },
 
     stageDetail(stageId) {
@@ -9318,8 +9385,14 @@ export function openStore(dbPath: string): Store {
         row.item.rangeReviewId === null
           ? []
           : store.listRangeReviewComparisons(row.item.rangeReviewId);
+      // 阶段那一行在详情里与列表里是同一份形状,警示因此照样带上(issue #421)。
+      const runId = alertRunId(row.item);
       return {
-        stage: { ...row.item, counts: summary.counts },
+        stage: {
+          ...row.item,
+          counts: summary.counts,
+          latestRunAlert: runId === null ? null : stageRunAlerts(db, [runId]).get(runId) ?? null,
+        },
         groups: groupStageRuns(summary.timeline, comparisons),
       };
     },
