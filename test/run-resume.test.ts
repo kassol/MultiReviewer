@@ -547,3 +547,52 @@ test("续跑轮次的单模型耗时不含两次进程之间的空档(issue #415
   assert.ok(durationMs < 60_000, `耗时 ${durationMs} 毫秒,把停机那一小时算进去了`);
 });
 
+test("续跑轮次的轮次级耗时含崩溃前各批的并集,不含停机(issue #422)", async () => {
+  const fixture = setup(cleanups);
+  const crashed = batchReviewer("model-a", { throwOnCall: 3 });
+  await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const runId = Number(run?.["id"]);
+
+  // 已落库的那两批改写成隔着一小时的两段,各跑 1000 毫秒:并集因此是 2000 毫秒。两段分得
+  // 这么开,就是连续续跑两次时「已落库批次来自前两个进程」的样子——同一条规则覆盖。
+  const db = new DatabaseSync(fixture.db.path);
+  try {
+    const stored = db
+      .prepare("SELECT batch_index, outcome_json FROM review_run_batch_outcome")
+      .all() as unknown as Record<string, unknown>[];
+    const update = db.prepare(
+      "UPDATE review_run_batch_outcome SET outcome_json = ? WHERE run_id = ? AND batch_index = ?",
+    );
+    for (const row of stored) {
+      const index = Number(row["batch_index"]);
+      const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
+      update.run(
+        JSON.stringify({
+          ...timed,
+          startedAt: Date.now() - (index === 0 ? 7_200_000 : 3_600_000),
+          durationMs: 1_000,
+        }),
+        runId,
+        index,
+      );
+    }
+  } finally {
+    db.close();
+  }
+
+  await runReview(EVENT, deps(fixture, [batchReviewer("model-a")], { resumeRunId: runId }));
+
+  const [row] = query(
+    fixture.db.path,
+    `SELECT r.duration_ms AS run, MAX(o.duration_ms) AS model
+       FROM review_run r JOIN reviewer_outcome o ON o.run_id = r.id WHERE r.id = ${runId}`,
+  );
+  const runMs = Number(row?.["run"]);
+  const modelMs = Number(row?.["model"]);
+  assert.ok(runMs >= 2_000, `轮次耗时 ${runMs} 毫秒,少于崩溃前已经跑掉的 2000 毫秒`);
+  assert.ok(runMs < 60_000, `轮次耗时 ${runMs} 毫秒,把停机那两小时算进去了`);
+  // 面板上两个数不再矛盾:轮次耗时压得住它里头任一个模型的耗时。
+  assert.ok(runMs >= modelMs, `轮次耗时 ${runMs} 毫秒,小于单模型的 ${modelMs} 毫秒`);
+});
+

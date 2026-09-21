@@ -64,6 +64,32 @@ export function splitIntoBatches(
 export type TimedOutcome = { outcome: ReviewerOutcome; startedAt: number; durationMs: number };
 
 /**
+ * 若干时间区间的并集长度(issue #415、#422)。批次受限并行(issue #232)下各批的区间会
+ * 重叠,相加会把重叠的那段数两遍;续跑轮次里崩溃前那几批的区间来自上一个进程,首个开始到
+ * 末个结束那样算又会把两次进程之间的停机计进去——停机那一段没有任何一批盖着它,并集因此
+ * 自然不计,重叠的仍只算一次。单模型耗时与轮次级耗时用的是同一份。空列表即 0。
+ */
+export function spanUnionMs(
+  spans: readonly { startedAt: number; durationMs: number }[],
+): number {
+  const sorted = [...spans].sort((a, b) => a.startedAt - b.startedAt);
+  const first = sorted[0];
+  if (first === undefined) return 0;
+  let total = 0;
+  let openedAt = first.startedAt;
+  let closedAt = first.startedAt;
+  for (const span of sorted) {
+    // 与当前这一段接不上就先结算它,新开一段。
+    if (span.startedAt > closedAt) {
+      total += closedAt - openedAt;
+      openedAt = span.startedAt;
+    }
+    closedAt = Math.max(closedAt, span.startedAt + span.durationMs);
+  }
+  return total + closedAt - openedAt;
+}
+
+/**
  * 把同一个模型在各批次的结果合并成一个。入参按批次序号排,与各批的完成顺序无关
  * (issue #232):失败记的第几批、复核结论谁作数都按这个序。
  *
@@ -113,22 +139,10 @@ export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutco
     outcome.incompleteCoverage = { batchCount: results.length, failures };
   }
 
-  // 耗时取各批时间区间的并集长度。批次受限并行(issue #232)下各批的区间会重叠,相加会把
-  // 重叠的那部分数两遍;而续跑轮次里崩溃前那几批的区间来自上一个进程(issue #415),首批
-  // 开始到末批结束这一段会把两次进程之间的停机也算成审查耗时——停机那一段没有任何一批
-  // 盖着它,并集因此自然不计,重叠的仍只算一次。
-  const spans = [...results].sort((a, b) => a.startedAt - b.startedAt);
-  const startedAt = spans[0]!.startedAt;
-  let durationMs = 0;
-  let openedAt = startedAt;
-  let closedAt = startedAt;
-  for (const span of spans) {
-    // 与当前这一段接不上就先结算它,新开一段。
-    if (span.startedAt > closedAt) {
-      durationMs += closedAt - openedAt;
-      openedAt = span.startedAt;
-    }
-    closedAt = Math.max(closedAt, span.startedAt + span.durationMs);
-  }
-  return { outcome, startedAt, durationMs: durationMs + closedAt - openedAt };
+  // 耗时取各批时间区间的并集长度(issue #415),理由见 `spanUnionMs`。
+  return {
+    outcome,
+    startedAt: Math.min(...results.map((r) => r.startedAt)),
+    durationMs: spanUnionMs(results),
+  };
 }

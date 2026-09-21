@@ -24,6 +24,7 @@ import {
   DEFAULT_MAX_FILES_PER_BATCH,
   DEFAULT_MAX_PARALLEL_BATCHES,
   mergeBatchOutcomes,
+  spanUnionMs,
   splitIntoBatches,
   type TimedOutcome,
 } from "./batch.ts";
@@ -2868,10 +2869,21 @@ export async function runReview(
         members: indexes,
       }));
 
+      // 崩溃前已落库的那几批(issue #422)。`resume` 是开跑那一刻读的快照,里头全是上几个
+      // 进程跑的;按开始时刻再滤一道,连续续跑两次时前两个进程的区间都在库里,同一条规则
+      // 覆盖。崩溃前的准备阶段(备工作副本、读历史)没有记录,仍不计。
+      const priorSpans = [...(resume?.batches.values() ?? [])]
+        .flatMap((byModel) => [...byModel.values()])
+        .filter((timed) => timed.startedAt < startedAt.getTime());
+
       // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。
       const rootCauseGroupIds = store.finishRun(runId, {
         finishedAt: new Date().toISOString(),
-        durationMs: Date.now() - startedAt.getTime(),
+        // 轮次级耗时 = 续跑这一段 + 崩溃前各批时间区间的并集(issue #422),与单模型耗时
+        // (issue #415)从此同一条规则。只算续跑这一段会让轮次耗时小于其中某个模型的耗时,
+        // 面板上那两个数看着矛盾;停机没有任何一批盖着,并集自然不计。没续跑的轮次这一项
+        // 是 0,耗时逐数不变。
+        durationMs: Date.now() - startedAt.getTime() + spanUnionMs(priorSpans),
         failed,
         outcomes: outcomeRecords,
         findings: findingRecords,
