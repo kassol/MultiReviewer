@@ -6,14 +6,13 @@
  * 条目照旧逐条列出。筛选过的列表同样走这里——筛掉一部分成员之后卡里剩几条就列几条。
  */
 
-/** 一条 Finding 上的组引用,字段与 `GET /api/stage-summary` 的 `rootCause` 逐字对应。 */
-export type RootCauseRef = {
-  id: number;
-  reason: string;
-  /** 组的成员总数,与筛选无关:卡片上说的是这个组有多少处。 */
-  memberCount: number;
-  position: number;
-};
+/**
+ * 一条 Finding 上的组引用。它是阶段汇总的契约字段,因此直接引服务端那一份(issue #429),
+ * 在这一层沿用 `RootCauseRef` 这个名字——这里说的是「折叠按哪一格分组」,不是整条 Finding。
+ */
+import type { StageRootCauseRef as RootCauseRef } from "../../../src/contracts/stage-summary.ts";
+
+export type { RootCauseRef };
 
 /** 折叠之后列表里的一项:一张组卡,或一条未入组的 Finding。 */
 export type RootCauseRow<T> =

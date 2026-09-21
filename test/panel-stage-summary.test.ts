@@ -23,80 +23,13 @@ import {
   userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import type { StageSummary } from "../src/contracts/stage-summary.ts";
 
 const PASSWORD = "stage-summary-test-password";
 const HASH = await hashTestPassword(PASSWORD);
 
-type SummaryFinding = {
-  id: number;
-  file: string;
-  line: number;
-  title: string;
-  severity: string;
-  category: string;
-  description: string;
-  impact: string | null;
-  suggestion: string | null;
-  models: string[];
-  attributions: {
-    model: string;
-    severity: string;
-    category: string;
-    description: string;
-    impact: string | null;
-    suggestion: string | null;
-  }[];
-  carried: {
-    model: string;
-    runId: number;
-    headSha: string;
-    description: string;
-    impact: string | null;
-    suggestion: string | null;
-  }[];
-  disposition: string;
-  placement: string;
-  commentId: string | null;
-  commentHtmlUrl: string | null;
-  disposedBy: string | null;
-  disposedAt: string | null;
-  note: string | null;
-  continuedFrom: string | null;
-  lineAuthor: {
-    sha: string;
-    name: string;
-    email: string;
-    authoredAt: string;
-    adjacent: boolean;
-  } | null;
-  firstRunId: number;
-  firstReportedAt: string;
-  lastRunId: number;
-  lastReportedAt: string;
-  /** 它被报出来时的那一行(issue #368),与当前位置 `line` 分开。 */
-  reportedLine: number;
-  /** `line` 属于哪一轮(issue #368);侧滑按它取 diff。 */
-  placedRunId: number;
-};
-
-type TimelineEntry = {
-  runId: number;
-  headSha: string;
-  startedAt: string;
-  finishedAt: string | null;
-  failed: boolean;
-  reported: number;
-  folded: number;
-  fixed: number;
-  continued: number;
-  missedVerdicts: number;
-};
-
-type SummaryBody = {
-  findings: SummaryFinding[];
-  counts: { pending: number; resolved: number; fixed: number };
-  timeline: TimelineEntry[];
-};
+// 响应类型引共享契约(issue #429):手抄一份的话契约改名这里不报错。
+type SummaryBody = StageSummary;
 
 type SeedFinding = {
   file: string;
@@ -333,7 +266,8 @@ test("阶段汇总:同一条只出现一次、状态取最新一轮,已延续不
   assert.equal(c2.continuedFrom, "https://gitea.example.test/comments/c3");
   assert.equal(c2.firstRunId, runs[0]);
   assert.equal(c2.lastRunId, runs[2]);
-  assert.ok(!body.findings.some((finding) => finding.disposition === "continued"));
+  // 契约的类型已经排除了这一档;这里断言的是运行时的响应确实守住了它。
+  assert.ok(!body.findings.some((finding) => (finding.disposition as string) === "continued"));
 
   // 三个计数与列表口径一致:待处置只数未处置那两条,已延续一条都不占。
   assert.deepEqual(body.counts, { pending: 2, resolved: 1, fixed: 1 });

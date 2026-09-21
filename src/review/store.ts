@@ -1466,20 +1466,18 @@ export type OutcomeRecord = {
   usage?: ReviewerUsage;
 };
 
-/** Finding 的来源类型:进了行级评论,还是只进了 review 正文(fallback 与正文匹配)。 */
-export type FindingPlacement = "inline" | "body";
-
 /**
- * 落到一条 Finding 上的行作者(CONTEXT.md):git 作者与那次提交,外加相邻改动标记
- * (issue #241)。
+ * 来源类型、行作者与读回来的归属这三样同时是阶段汇总的契约字段,因此住在
+ * `src/contracts/finding.ts` 里、从这里再导出(issue #429)。面板引得动契约,引不动本
+ * 模块——那会把 `node:sqlite` 拖进前端的类型检查。服务端的调用点照旧引 `store.ts`。
  */
-export type RecordedLineAuthor = LineAuthor & {
-  /**
-   * 落点是 hunk 内的上下文行、作者取自同 hunk 内最近的那处改动时为 true。面板据此在
-   * 行作者之后写「相邻改动」:这一行本身这一轮没改。
-   */
-  adjacent: boolean;
-};
+import type {
+  FindingPlacement,
+  RecordedFindingAttribution,
+  RecordedLineAuthor,
+} from "../contracts/finding.ts";
+
+export type { FindingPlacement, RecordedFindingAttribution, RecordedLineAuthor };
 
 /** 一条 Finding 的一个归属:报出它的那个模型自己的说法(ADR 0015)。 */
 export type FindingAttributionRecord = {
@@ -1497,19 +1495,6 @@ export type FindingAttributionRecord = {
  * `headSha`——那是所属轮次的事实,读回时按 `runId` 取。
  */
 export type CarriedAttributionRecord = Omit<CarriedAttribution, "headSha">;
-
-/**
- * 读回来的一个归属(issue #266):面板按它逐模型展示问题、影响与建议。`impact` 与
- * `suggestion` 为 null 即升级前落的行,当时没存;空串是模型没给。
- */
-export type RecordedFindingAttribution = {
-  model: string;
-  severity: Severity;
-  category: Category;
-  description: string;
-  impact: string | null;
-  suggestion: string | null;
-};
 
 /**
  * 一条 Finding。`groupIndex` 是它在本次 Review Run 中的合并组序号,发布之后按它把
@@ -2427,95 +2412,6 @@ export type RunListItem = {
 };
 
 /**
- * 阶段汇总里的一条 Finding(issue #168):一个审查阶段按 Finding Identity 折叠之后的
- * 一条,取它最新一轮那一行——只有那一行带着当前的处置状态、备注与承载它的评论。
- *
- * `id` 是那一行的落库 id,面板按它走既有的处置接口。`firstRunId` / `lastRunId` 说的是
- * 这条活了多久:延续过的那些首见轮次跟着 Identity 走,不从交接那一轮重新算。
- *
- * 「已延续」的整条不在这里:那处 Finding 已经交接到新位置,新位置那条自己在列表里。
- */
-export type StageSummaryFinding = {
-  id: number;
-  file: string;
-  /**
-   * 这条 Finding 此刻指着的那一行(issue #368):每一轮开跑时按内容指纹重定位一次,
-   * 解析不到就停在上一次定下的位置上。它属于 `placedRunId` 那一轮的 head。
-   */
-  line: number;
-  /**
-   * `line` 属于哪一轮(issue #368):重定位过就是定下它的那一轮,没重定位过就是报出
-   * 它的那一轮。面板的代码差异侧滑按它取 diff——行号只有对着算出它的那个 head 才成立。
-   */
-  placedRunId: number;
-  /** 它被报出来时的那一行。归属与首次报出按这一份算;面板不展示它。 */
-  reportedLine: number;
-  /** 代表段那条归属给的标题:与 `description` 同一条来源;升级前的行没有它,占位为空。 */
-  title: string;
-  severity: Severity;
-  category: Category;
-  /** 代表段(issue #278):描述最长的那条归属的问题、影响与建议,三段同出一条。 */
-  description: string;
-  /**
-   * 升级前落的行没有存代表段的这两段,读回是按同一规则从归属现算的;归属本身也没存
-   * 的那一档为 null,面板整段不展示。
-   */
-  impact: string | null;
-  suggestion: string | null;
-  /** 报出它的全部模型,按首报先后(ADR 0015)。 */
-  models: string[];
-  /** 每个归属自己的说法,按首报先后(issue #266),取最新那一轮落的那几条。 */
-  attributions: RecordedFindingAttribution[];
-  /** 延续承接来的历史说法(issue #267),取最新那一轮那一行带的;没有延续过即空。 */
-  carried: CarriedAttribution[];
-  disposition: Exclude<Disposition, "continued">;
-  placement: FindingPlacement;
-  commentId: string | null;
-  commentHtmlUrl: string | null;
-  disposedBy: string | null;
-  disposedAt: string | null;
-  note: string | null;
-  /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
-  continuedFrom: string | null;
-  /**
-   * 交接未完成(ADR 0025):这条 Identity 承接过来的那条旧评论还没在 Forge 上关掉。
-   * 旧行自己不在汇总里,标记因此挂在承接它的这一条上,面板据此标「旧评论待关闭」。
-   */
-  handoffPending: boolean;
-  /** 行作者(CONTEXT.md),取最新那一轮判定的结果;未判定为 null,面板显示「无法追溯」。 */
-  lineAuthor: RecordedLineAuthor | null;
-  firstRunId: number;
-  firstReportedAt: string;
-  lastRunId: number;
-  lastReportedAt: string;
-  /** 这条属于哪个同根因组(issue #309);未入组即 null。 */
-  rootCause: StageRootCauseRef | null;
-};
-
-/**
- * 阶段汇总里一条 Finding 的同根因组引用(CONTEXT.md 同根因组,ADR 0030,issue #309)。
- * 面板按它把入组的条目折到组卡下面,`memberCount` 与 `position` 说的是折过去之后的那
- * 一组:成员映到当前行、映不过去的丢掉之后才数,与组列表里那一组逐字对得上。
- */
-export type StageRootCauseRef = {
-  id: number;
-  reason: string;
-  memberCount: number;
-  /** 组内次序,从 0 起,与落库的 `position` 同源。 */
-  position: number;
-};
-
-/**
- * 阶段汇总里的一个同根因组(issue #309)。组属于轮次(ADR 0030),这里取的是这个阶段
- * 最新一轮的那一批;成员是当前列表里的那几行,已被更后轮次延续掉的沿延续链指向新位置。
- */
-export type StageRootCauseGroup = {
-  id: number;
-  reason: string;
-  findingIds: number[];
-};
-
-/**
  * 一条还没判过行作者的 Finding(issue #199):四列同 NULL 的那些。
  *
  * 带上它自己那一轮的 head:行作者按所属 Review Run 的 head 判定,一个阶段里各轮的
@@ -2535,9 +2431,9 @@ export type FindingLineAuthor = {
 };
 
 /**
- * 阶段列表与阶段详情的这几个形状住在 `src/contracts/stages.ts`(issue #426):面板读的
- * 与这里投影出去的是同一个符号,漏一格两边都编译不过。从这里再导出,服务端的调用点
- * 照旧引 `store.ts`。
+ * 阶段列表、阶段详情与阶段汇总的这几个形状住在 `src/contracts/` 下(issue #426、#429):
+ * 面板读的与这里投影出去的是同一个符号,漏一格两边都编译不过。从这里再导出,服务端的
+ * 调用点照旧引 `store.ts`。
  */
 import type {
   StageDetail,
@@ -2548,27 +2444,25 @@ import type {
   StageStatus,
   StageTimelineEntry,
 } from "../contracts/stages.ts";
+import type {
+  StageRootCauseGroup,
+  StageRootCauseRef,
+  StageSummary,
+  StageSummaryFinding,
+} from "../contracts/stage-summary.ts";
 
 export type {
   StageDetail,
   StageListItem,
+  StageRootCauseGroup,
+  StageRootCauseRef,
   StageRunAlert,
   StageRunGroup,
   StageSource,
   StageStatus,
+  StageSummary,
+  StageSummaryFinding,
   StageTimelineEntry,
-};
-
-/**
- * 一个审查阶段的当前状态(issue #168)。三个计数与列表同一口径:待处置 + 人工已处置 +
- * 已修复 恰好等于列表长度,「已延续」两边都不占——计数的形状因此直接取行上那一格。
- */
-export type StageSummary = {
-  findings: StageSummaryFinding[];
-  counts: StageListItem["counts"];
-  timeline: StageTimelineEntry[];
-  /** 最新一轮的同根因组(issue #309)。合并 agent 缺席的那一轮没有组,这里就是空数组。 */
-  rootCauseGroups: StageRootCauseGroup[];
 };
 
 /** 选定比较项时用的分支或 Tag(issue #234),只用于下次打开选择器。 */
@@ -4545,7 +4439,12 @@ function stageRunAlerts(
       // 第一行去掉首尾空白;取不出东西(空串、只有空白、以换行开头)时回落成一句话
       // ——这一格是面板直接读给人看的,空原因会让悬停说明停在一个「:」上(issue #428)。
       closingFailure:
-        failure === null ? null : String(failure).split("\n")[0]!.trim() || "未记录原因",
+        failure === null
+          ? null
+          : (String(failure)
+              .split("\n")
+              .map((line) => line.trim())
+              .find((line) => line !== "") ?? "未记录原因"),
     });
   }
   return alerts;

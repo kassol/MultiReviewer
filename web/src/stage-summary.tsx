@@ -12,13 +12,12 @@ import { EmptyState } from "@/components/empty-state";
 import { FilePath } from "@/components/file-path";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
-import { disposableInGroup, foldByRootCause, type RootCauseRef } from "@/lib/root-cause";
+import { disposableInGroup, foldByRootCause } from "@/lib/root-cause";
 import { firstReportedFrom, roundFilterOptions, roundNumbers } from "@/lib/stage-rounds";
 import { localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
 import { FindingBadges, FindingRow } from "./run-diff.tsx";
-import type { RunFinding } from "./runs.tsx";
 
 /**
  * 一个审查阶段(CONTEXT.md 审查阶段):范围审查那条按它自己的 id 取,pull request
@@ -28,45 +27,27 @@ export type StageScope =
   | { kind: "range-review"; rangeReviewId: number }
   | { kind: "pull-request"; owner: string; repo: string; pullNumber: number };
 
-/**
- * 阶段汇总里的一条 Finding。字段与 `GET /api/stage-summary` 逐字对应:它是轮次
- * 那份 Finding 投影再加「这条活了多久」——同一条 Finding 在两处显示成同一个样子,
- * 行内处置也走同一个组件。
- */
-export type StageFinding = RunFinding & {
-  title: string;
-  firstRunId: number;
-  firstReportedAt: string;
-  lastRunId: number;
-  lastReportedAt: string;
-  placedRunId: number;
-  /** 这条属于哪个同根因组(issue #309);未入组即 null,列表照旧逐条列出。 */
-  rootCause: RootCauseRef | null;
-};
-
 /*
- * 时间线那一轮与它的来源都是阶段详情的契约(issue #426),从 `src/contracts/stages.ts`
- * 引来再导出:面板读的与服务端投影出去的是同一个符号。来源在这一页沿用 `TriggerSource`
- * 这个名字。
+ * 阶段汇总整份响应与时间线那一轮都是契约(issue #426、#429),从 `src/contracts/` 引来
+ * 再导出:面板读的与服务端投影出去的是同一个符号。汇总里的那条 Finding 在这一页沿用
+ * `StageFinding` 这个名字,来源沿用 `TriggerSource`。
  */
 import type {
   ReviewTriggerSource as TriggerSource,
   StageTimelineEntry,
 } from "../../src/contracts/stages.ts";
+import type {
+  StageSummary as StageSummaryBody,
+  StageSummaryFinding as StageFinding,
+} from "../../src/contracts/stage-summary.ts";
 
-export type { StageTimelineEntry, TriggerSource };
+export type { StageFinding, StageSummaryBody, StageTimelineEntry, TriggerSource };
 
 /** 时间线上每一轮的来源标签。三档都标:只标其中一档,另外两档就得靠人猜。 */
 const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
   delivery: "投递",
   panel: "面板",
   scheduled: "定时检查",
-};
-
-export type StageSummaryBody = {
-  findings: StageFinding[];
-  counts: { pending: number; resolved: number; fixed: number };
-  timeline: StageTimelineEntry[];
 };
 
 /**

@@ -255,17 +255,14 @@ export async function pinRunCommits(
   await git(worktreePath, ["update-ref", `${RUN_REF_PREFIX}/${runId}/head`, commits.headSha]);
 }
 
-/** 一行代码的行作者(CONTEXT.md):最后改动它的那个 git author 与那次提交。 */
-export type LineAuthor = {
-  /** 那次提交的完整 sha。 */
-  sha: string;
-  /** git author 的姓名,原样。 */
-  name: string;
-  /** git author 的邮箱,原样。 */
-  email: string;
-  /** authored 时间,ISO 字符串。 */
-  authoredAt: string;
-};
+/**
+ * 行作者是阶段汇总的契约字段(`StageSummaryFinding` 的 `lineAuthor`),因此住在
+ * `src/contracts/finding.ts` 里、从这里再导出(issue #429):契约文件一行运行时代码都
+ * 不能有,而这个文件全是 git 子进程调用。调用点照旧从这里引。
+ */
+import type { LineAuthor } from "../contracts/finding.ts";
+
+export type { LineAuthor };
 
 /** porcelain 每组的头一行:`<40 位 sha> <原文件行号> <本次结果里的行号> [<行数>]`。 */
 const BLAME_GROUP_HEADER = /^([0-9a-f]{40}) \d+ (\d+)/;

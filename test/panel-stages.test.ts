@@ -20,25 +20,12 @@ import {
 } from "./support/panel-harness.ts";
 import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
-type StageRow = {
-  stageId: string;
-  source: "pull-request" | "range-review";
-  owner: string;
-  repo: string;
-  pullNumber: number | null;
-  rangeReviewId: number | null;
-  title: string | null;
-  status: "active" | "closed";
-  latestRunId: number | null;
-  latestRunAt: string | null;
-  latestRunFinishedAt: string | null;
-  counts: { pending: number; resolved: number; fixed: number };
-  latestRunAlert: {
-    modelFailed: boolean;
-    batchFailed: boolean;
-    closingFailure: string | null;
-  } | null;
-};
+/*
+ * 行的形状引服务端那一份契约(issue #426、#429),不在这里手抄一遍:抄一份的时候契约
+ * 删一格、改一格用例照样编译得过,这里的断言于是什么都钉不住。信封那两格由端点在投影
+ * 之上拼,不属于契约,留在这里。
+ */
+import type { StageListItem as StageRow } from "../src/contracts/stages.ts";
 
 type StagesPage = { stages: StageRow[]; nextOffset: number | null };
 
@@ -694,7 +681,7 @@ test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有
  * 收尾失败那一档是面板直接读给人看的(issue #428):原因原文取不出第一行时,徽章照挂
  * 而悬停说明末尾会是「:」加一段空白。两种写法都落到同一句回落上。
  */
-test("阶段列表:收尾失败的原因取不出第一行时回落成未记录原因", async () => {
+test("阶段列表:收尾失败的原因取头一行有内容的,整篇空白才回落成未记录原因", async () => {
   const h = await startPanelHarness();
   // 以换行开头:第一行是空的。
   seedRun(
@@ -713,11 +700,10 @@ test("阶段列表:收尾失败的原因取不出第一行时回落成未记录�
 
   const body = await stages(h);
   assert.equal(body.stages.length, 2);
-  for (const stage of body.stages) {
-    assert.deepEqual(stage.latestRunAlert, {
-      modelFailed: false,
-      batchFailed: false,
-      closingFailure: "未记录原因",
-    });
-  }
+  // 取的是头一行有内容的:原因写在第二行时照样读得到,整篇空白才回落。
+  const reasons = new Map(
+    body.stages.map((stage) => [stage.pullNumber, stage.latestRunAlert?.closingFailure]),
+  );
+  assert.equal(reasons.get(7), "发布 review 失败:Gitea 回了 500");
+  assert.equal(reasons.get(8), "未记录原因");
 });

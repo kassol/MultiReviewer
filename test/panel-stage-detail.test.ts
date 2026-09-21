@@ -17,39 +17,13 @@ import {
   type PanelHarness,
 } from "./support/panel-harness.ts";
 
-type StageRunEntry = {
-  runId: number;
-  headSha: string;
-  startedAt: string;
-  finishedAt: string | null;
-  failed: boolean;
-  reported: number;
-  folded: number;
-  fixed: number;
-  continued: number;
-  missedVerdicts: number;
-};
-
-type StageDetailBody = {
-  stage: {
-    stageId: string;
-    source: "pull-request" | "range-review";
-    owner: string;
-    repo: string;
-    pullNumber: number | null;
-    rangeReviewId: number | null;
-    title: string | null;
-    status: "active" | "closed";
-    latestRunId: number | null;
-    counts: { pending: number; resolved: number; fixed: number };
-  };
-  groups: {
-    sha: string;
-    recordedBy: string | null;
-    recordedAt: string | null;
-    runs: StageRunEntry[];
-  }[];
-};
+/*
+ * 详情的形状引服务端那一份契约(issue #426、#429),不在这里手抄一遍:手抄的那一份已经
+ * 漂了六格(`failure`、`mode`、`triggerSource` 与三档没拿到结论的计数都没跟上),而漏格
+ * 的用例照样编译得过。端点在投影之上另拼的 `rangeReview` 与 `minReportSeverity` 不属于
+ * 契约,这个文件的用例也不读它们。
+ */
+import type { StageDetail as StageDetailBody } from "../src/contracts/stages.ts";
 
 /** 播种一轮 Review Run:一条 Finding 一个指纹,阶段汇总按「文件 + 指纹」折叠。 */
 function seedRun(
