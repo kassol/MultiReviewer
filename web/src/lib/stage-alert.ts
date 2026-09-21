@@ -5,13 +5,9 @@
  * (它们问的是同一件事——谁没跑),收尾失败自成一句。加一档只多一个分句,不多一句话。
  */
 
-/** 与服务端 `StageRunAlert` 逐字对应(`GET /stages` 行上的 `latestRunAlert`)。 */
-export type StageRunAlert = {
-  modelFailed: boolean;
-  batchFailed: boolean;
-  /** 非空即没有正常收尾,内容是失败原因的第一行。 */
-  closingFailure: string | null;
-};
+import type { StageRunAlert } from "../../../src/contracts/stages.ts";
+
+export type { StageRunAlert };
 
 /**
  * 徽章上看得见的那句话。三档都在这里说得出来:title 触屏上看不到、读屏也不一定读,

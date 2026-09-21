@@ -78,22 +78,14 @@ import {
   type StageTimelineEntry,
 } from "./stage-summary.tsx";
 
-/**
- * 时间线上的一组轮次(issue #175):一组是一次代码推进。pull request 阶段按 head
- * commit 分,范围审查阶段按比较项分;比较项多带推的人与时刻,head commit 那两项是 null。
- */
-type StageRunGroup = {
-  sha: string;
-  recordedBy: string | null;
-  recordedAt: string | null;
-  /** 这一组里的轮次,新的在前;刚推上去、还没跑过的比较项是空数组。 */
-  runs: StageTimelineEntry[];
-};
+/** 阶段详情的响应契约,与服务端投影是同一个符号(issue #426)。 */
+import type { StageDetail, StageRunGroup } from "../../src/contracts/stages.ts";
 
-/** 字段与 `GET /api/stages/{stageId}` 逐字对应。 */
-type StageDetailBody = {
-  stage: StageItem;
-  groups: StageRunGroup[];
+/**
+ * 字段与 `GET /api/stages/{stageId}` 逐字对应:阶段那一行与分组好的时间线就是服务端
+ * 投影的契约(`StageDetail`,issue #426),另两格由 `server.ts` 拼在它之上,不属于投影。
+ */
+type StageDetailBody = StageDetail & {
   /** 范围审查阶段自己那条记录;pull request 阶段没有这一格(issue #176)。 */
   rangeReview?: RangeReview;
   /** 这个阶段所属仓库的生效最低报告等级(issue #274):仓库覆盖优先,缺则全局。 */

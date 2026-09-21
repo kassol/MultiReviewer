@@ -11,8 +11,14 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
-import { stageAlertDetail, stageAlertText, type StageRunAlert } from "@/lib/stage-alert";
+import { stageAlertDetail, stageAlertText } from "@/lib/stage-alert";
 import { localClock, localDay } from "@/lib/time";
+
+/*
+ * 评审记录那一行的契约与服务端投影是同一个符号(issue #426),沿用 `StageItem` 这个
+ * 名字——面板这边七处引它,改名换不来任何东西。
+ */
+import type { StageListItem as StageItem, StageRunAlert } from "../../src/contracts/stages.ts";
 
 import { fetchJson, send } from "./api.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
@@ -172,38 +178,7 @@ export type RunFinding = {
   } | null;
 };
 
-/**
- * 评审记录里的一行(issue #174):一个审查阶段,不是一轮 Review Run。同一 pull request
- * 推多少次、同一范围审查推进多少次,列表里都只有这一行。
- *
- * `stageId` 由来源与键合成(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),阶段详情
- * 的地址用它作路径参数。容器 PR 的序号不在这里:它对面板用户透明(CONTEXT.md 容器 PR)。
- */
-export type StageItem = {
-  stageId: string;
-  source: "pull-request" | "range-review";
-  owner: string;
-  repo: string;
-  /** pull request 阶段的 PR 号;范围审查阶段为 null。 */
-  pullNumber: number | null;
-  /** 范围审查阶段的标识;pull request 阶段为 null。 */
-  rangeReviewId: number | null;
-  /** pull request 的标题快照;没有标题的旧行与范围审查都是 null。 */
-  title: string | null;
-  status: "active" | "closed";
-  /** 最新一轮 Review Run;范围审查刚发起、一轮都还没跑时为 null。 */
-  latestRunId: number | null;
-  latestRunAt: string | null;
-  /** 最新一轮跑完的时刻;还在跑时为 null,列表据此决定要不要续查。 */
-  latestRunFinishedAt: string | null;
-  /** 阶段汇总的三个数,与 `GET /stage-summary` 同一口径。 */
-  counts: { pending: number; resolved: number; fixed: number };
-  /**
-   * 最新一轮没跑全(issue #421、#424)。跑得正常、还在跑、或者一轮都还没跑时为 null;
-   * 更早那轮出过问题不算。
-   */
-  latestRunAlert: StageRunAlert | null;
-};
+export type { StageItem };
 
 type StagesPage = { stages: StageItem[]; nextOffset: number | null };
 

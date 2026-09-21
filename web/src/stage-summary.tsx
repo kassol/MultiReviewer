@@ -17,7 +17,6 @@ import { firstReportedFrom, roundFilterOptions, roundNumbers } from "@/lib/stage
 import { localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
-import { type RerunMode } from "./repo-actions.tsx";
 import { FindingBadges, FindingRow } from "./run-diff.tsx";
 import type { RunFinding } from "./runs.tsx";
 
@@ -45,46 +44,23 @@ export type StageFinding = RunFinding & {
   rootCause: RootCauseRef | null;
 };
 
-/**
- * 一轮 Review Run 是被谁开出来的(issue #312),与 `GET /stages/{stageId}` 那一格同名。
- * `scheduled` 是每日增量的定时检查开出的那一轮(spec #310),标签先备着。
+/*
+ * 时间线那一轮与它的来源都是阶段详情的契约(issue #426),从 `src/contracts/stages.ts`
+ * 引来再导出:面板读的与服务端投影出去的是同一个符号。来源在这一页沿用 `TriggerSource`
+ * 这个名字。
  */
-export type TriggerSource = "delivery" | "panel" | "scheduled";
+import type {
+  ReviewTriggerSource as TriggerSource,
+  StageTimelineEntry,
+} from "../../src/contracts/stages.ts";
+
+export type { StageTimelineEntry, TriggerSource };
 
 /** 时间线上每一轮的来源标签。三档都标:只标其中一档,另外两档就得靠人猜。 */
 const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
   delivery: "投递",
   panel: "面板",
   scheduled: "定时检查",
-};
-
-/** 时间线里的一轮:这一轮对这个阶段做了什么。 */
-export type StageTimelineEntry = {
-  runId: number;
-  headSha: string;
-  startedAt: string;
-  finishedAt: string | null;
-  failed: boolean;
-  /** 轮次级的失败原因(issue #256),与 `RunItem.failure` 同一格;null 即收尾正常。 */
-  failure: string | null;
-  /** 这一轮的模式(issue #242)。只复核那一轮在时间线上带标记。 */
-  mode: RerunMode;
-  /** 这一轮是被谁开出来的(issue #312)。时间线上每一轮都标出来。 */
-  triggerSource: TriggerSource;
-  /** 本轮新报出。 */
-  reported: number;
-  /** 折叠到本阶段已有的那条上。 */
-  folded: number;
-  /** 复核判已修、自动记「已修复」。 */
-  fixed: number;
-  /** 复核判仍在而代码已改写,交接到新位置。 */
-  continued: number;
-  /** 跑了那一批却没给结论的「Reviewer × 历史 Finding」对数。 */
-  missedVerdicts: number;
-  /** 那一批没跑成,因此没有结论的对数(issue #412)。 */
-  batchFailedVerdicts: number;
-  /** 本轮没有哪一批读到它那个文件,谁都复核不到的对数(issue #413)。 */
-  uncoveredVerdicts: number;
 };
 
 export type StageSummaryBody = {
