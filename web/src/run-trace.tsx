@@ -1312,7 +1312,7 @@ export function RunTrace({ run }: { run: RunItem }) {
     queryKey: traceKey(run.id),
     path: `/runs/${run.id}/trace`,
     live,
-    invalidateOnEnd: [["stages"], ["stage-detail"], ["run"]],
+    invalidateOnEnd: [["stages"], ["stage-detail"], ["stage-summary"], ["run"]],
   });
   // 人手动开合过的分组记在这里,其余按默认规则。
   const [toggled, setToggled] = useState<Record<string, boolean>>({});

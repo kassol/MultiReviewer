@@ -56,7 +56,7 @@ import {
   type ThinkingLevel,
 } from "./model-services.ts";
 import { MIN_REPORT_SEVERITY_LABEL, type MinReportSeverity } from "./settings.tsx";
-import { useSetupStatus } from "./setup-checklist.tsx";
+import { SETUP_STATUS_QUERY_KEY, useSetupStatus } from "./setup-checklist.tsx";
 
 /**
  * 仓库注册表的管理动作(issue #195):注册、配置(模型组合 / 准入 Key / 工作副本)、移除,
@@ -263,6 +263,9 @@ export function RegisterRepo({
           onDone={(repo) => {
             setOpen(false);
             void queryClient.invalidateQueries({ queryKey: ["repos"] });
+            // 注册不走 `useMutation`,`MutationCache` 那道失效够不着它(issue #439):首次
+            // 配置状态带保鲜时间,不在这里点名失效的话「实例启用」那一步要等半分钟才变。
+            void queryClient.invalidateQueries({ queryKey: SETUP_STATUS_QUERY_KEY });
             onRegistered(repo);
           }}
         />

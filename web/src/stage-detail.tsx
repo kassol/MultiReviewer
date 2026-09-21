@@ -653,6 +653,9 @@ function RerunAction({
       onFeedback({ text, isError: false });
       onTriggered();
       void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
+      // 汇总的时间线与计数同样要跟上新开的这一轮:它只在自己看得见未完成轮次时才轮询,
+      // 而带保鲜时间之后窗口聚焦也不再替它重取(issue #439)。
+      void queryClient.invalidateQueries({ queryKey: ["stage-summary"] });
     },
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
   });

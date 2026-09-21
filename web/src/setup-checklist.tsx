@@ -26,8 +26,9 @@ export type SetupStatus = {
  * 保鲜时间让同一页面只请求一次(issue #439):壳先挂载、发出请求,页面代码是懒加载的,
  * 它那一批 chunk 到齐之后检查单才挂载,那时上一份已经落地而默认保鲜时间是 0,新观察者
  * 于是立刻重发一次(实测间隔约 0.4 秒)。**检查单仍然及时**:任何一次成功的写请求都让
- * 这个键失效(`main.tsx` 的 `MutationCache`),失效不看保鲜时间,照样立刻重取——三步的
- * 写操作(配模型服务、存审查策略、注册仓库)全部走 `useMutation`。
+ * 这个键失效(`main.tsx` 的 `MutationCache`),失效不看保鲜时间,照样立刻重取——配模型
+ * 服务与存审查策略走 `useMutation`;注册仓库是普通的异步提交,它在成功之后自己点名失效
+ * 这个键(`repo-actions.tsx`)。
  */
 export function useSetupStatus() {
   return useQuery({
