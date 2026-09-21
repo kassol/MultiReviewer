@@ -272,12 +272,17 @@ CREATE TABLE IF NOT EXISTS finding_carried_attribution (
 -- 一轮里每个 Reviewer 对每条未处置历史 Finding 的复核结论(ADR 0016)。finding_id
 -- 指注入时该 Finding Identity 的最新一行。漏给结论的按「无法判断」照样落一行并标
 -- missing:沉默不是证据,但"这个模型压根没复核"要数得出来。这批记录同时是自动处置的裁决输入。
+--
+-- missing_reason 说的是为什么没结论(issue #412):no-verdict 是这个模型跑了那一批却没给,
+-- batch-failed 是那一批根本没跑成。两件事的排障方向不同——前者是模型行为,后者是模型服务
+-- 或额度。升级前的行是 NULL,按旧口径整份算漏复核。给了结论的行 missing = 0、这一列为 NULL。
 CREATE TABLE IF NOT EXISTS finding_verdict (
   run_id INTEGER NOT NULL REFERENCES review_run(id),
   model TEXT NOT NULL,
   finding_id INTEGER NOT NULL REFERENCES finding(id),
   verdict TEXT NOT NULL,
   missing INTEGER NOT NULL DEFAULT 0,
+  missing_reason TEXT,
   PRIMARY KEY (run_id, model, finding_id)
 );
 
@@ -1149,6 +1154,9 @@ const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string
   { table: "repo", column: "default_branch TEXT" },
   // 会话开在哪个 commit(issue #351):可空,补完即「这些会话没记过」,面板对它们什么都不显示。
   { table: "agent_session", column: "baselines TEXT" },
+  // 没给结论的由来(issue #412):可空,补完即「旧行说不出是哪一种」,按旧口径整份算漏
+  // 复核,与升级前一致。不回填——哪一批没跑成是当时的运行事实,事后推不出来。
+  { table: "finding_verdict", column: "missing_reason TEXT" },
   // 产品梳理谈完的时刻(issue #365):可空,补完即「这些会话都还没谈完」。
   {
     table: "agent_session",
@@ -1674,14 +1682,21 @@ export type RunRange = {
 };
 
 /**
+ * 一条结论为什么没给出来(issue #412):这个模型跑了那一批却没给,还是那一批根本没跑成。
+ * 只有前者说的是模型有没有认真复核。
+ */
+export type MissingVerdictReason = "no-verdict" | "batch-failed";
+
+/**
  * 一个 Reviewer 对一条历史 Finding 的复核结论(ADR 0016)。`findingId` 是注入时该
- * Finding Identity 的最新一行。`missing` 即这个模型没给这条结论,按「无法判断」落库。
+ * Finding Identity 的最新一行。`missing` 给了就是这个模型没给这条结论,按「无法判断」
+ * 落库,值说明是哪一种由来;缺省即它给了结论。
  */
 export type VerdictRecord = {
   model: string;
   findingId: number;
   verdict: ReviewVerdict;
-  missing: boolean;
+  missing?: MissingVerdictReason;
 };
 
 export type RunResult = {
@@ -2404,8 +2419,9 @@ export type RunListItem = {
     handoffPending: boolean;
   }[];
   /**
-   * 本轮漏复核的条数(ADR 0016):注入了历史却没给结论的「Reviewer × 历史 Finding」
-   * 对数。它们按「无法判断」落库,这个数说的是模型有没有认真复核。
+   * 本轮漏复核的条数(ADR 0016):跑了那一批却没给结论的「Reviewer × 历史 Finding」对数。
+   * 它们按「无法判断」落库,这个数说的是模型有没有认真复核。那一批没跑成因此没结论的
+   * 不在里面(issue #412),它说的是模型服务或额度;要分档去阶段时间线读。
    */
   missedVerdicts: number;
   /** 人工处置掉的 Finding 条数。 */
@@ -2530,7 +2546,8 @@ export type FindingLineAuthor = {
  *   ——承接旧位置的算已延续,本阶段更早出现过的算折叠,其余是本轮新报出。
  * - `fixed` 是本轮复核判已修、且这一条现在仍记着「已修复」的条数(ADR 0016);人事后
  *   把它改回未处置之后就退出这个数——那一条从此是人工处置。
- * - `missedVerdicts` 是注入了历史却没给结论的「Reviewer × 历史 Finding」对数。
+ * - `missedVerdicts` / `batchFailedVerdicts` 是没拿到结论的「Reviewer × 历史 Finding」
+ *   对数,按由来分两档(issue #412)。
  */
 export type StageTimelineEntry = {
   runId: number;
@@ -2548,7 +2565,13 @@ export type StageTimelineEntry = {
   folded: number;
   fixed: number;
   continued: number;
+  /**
+   * 这个模型跑了那一批却没给结论的条数。升级前的行说不出由来,一律落在这一档,与升级前
+   * 那个总数一致。它与本轮全部 `reviewer_batch_finished` 里非失败批的(应给 − 给出)相等。
+   */
   missedVerdicts: number;
+  /** 那一批根本没跑成,因此没有结论的条数(issue #412)。它说的是模型服务或额度。 */
+  batchFailedVerdicts: number;
 };
 
 /**
@@ -8149,16 +8172,18 @@ export function openStore(dbPath: string): Store {
         // 复核结论逐条落库(ADR 0016)。漏给的那些由编排层按「无法判断」补齐并标
         // `missing`,这里只照写:裁决在编排层按同一批记录做完。
         const insertVerdict = db.prepare(
-          `INSERT INTO finding_verdict (run_id, model, finding_id, verdict, missing)
-           VALUES (?, ?, ?, ?, ?)`,
+          `INSERT INTO finding_verdict (run_id, model, finding_id, verdict, missing, missing_reason)
+           VALUES (?, ?, ?, ?, ?, ?)`,
         );
         for (const verdict of result.verdicts ?? []) {
+          // 两列由同一格推出来:标记与由来因此不会各说各话。
           insertVerdict.run(
             runId,
             verdict.model,
             verdict.findingId,
             verdict.verdict,
-            verdict.missing ? 1 : 0,
+            verdict.missing === undefined ? 0 : 1,
+            verdict.missing ?? null,
           );
         }
 
@@ -8432,7 +8457,7 @@ export function openStore(dbPath: string): Store {
       const verdictRows = db
         .prepare(
           `SELECT v.run_id AS run_id, v.finding_id AS finding_id, v.verdict AS verdict,
-                  v.missing AS missing
+                  v.missing AS missing, v.missing_reason AS missing_reason
              FROM finding_verdict v
              JOIN review_run run ON v.run_id = run.id
             WHERE ${where}`,
@@ -8675,6 +8700,7 @@ export function openStore(dbPath: string): Store {
             fixed: 0,
             continued: 0,
             missedVerdicts: 0,
+            batchFailedVerdicts: 0,
           },
         ]),
       );
@@ -8701,7 +8727,12 @@ export function openStore(dbPath: string): Store {
         const runId = Number(row["run_id"]);
         const entry = timeline.get(runId);
         if (entry === undefined) continue;
-        if (Number(row["missing"]) === 1) entry.missedVerdicts += 1;
+        // 没给结论的按由来分两档(issue #412)。升级前的行没有由来这一列,归进漏复核
+        // ——那正是它当初被数进去的那一档。
+        if (Number(row["missing"]) === 1) {
+          if (row["missing_reason"] === "batch-failed") entry.batchFailedVerdicts += 1;
+          else entry.missedVerdicts += 1;
+        }
         const key = `${runId}\n${Number(row["finding_id"])}`;
         allFixed.set(key, (allFixed.get(key) ?? true) && String(row["verdict"]) === "fixed");
       }
@@ -9053,9 +9084,13 @@ export function openStore(dbPath: string): Store {
         .all(...ids);
 
       // 漏复核只数条数:结论本身在 finding_verdict 里,时间流要的是「有没有认真复核」。
+      // 只数「跑了那一批却没给」的那一档(issue #412):那一批没跑成说的是模型服务或额度,
+      // 与这个问题无关。升级前的行没有由来,照旧算在里面。
       const byVerdict = db
         .prepare(
-          `SELECT run_id, SUM(missing) AS missed
+          `SELECT run_id,
+                  SUM(missing = 1 AND (missing_reason IS NULL OR missing_reason = 'no-verdict'))
+                    AS missed
              FROM finding_verdict
             WHERE run_id IN (${marks}) GROUP BY run_id`,
         )

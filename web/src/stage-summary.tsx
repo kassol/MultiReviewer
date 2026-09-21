@@ -79,8 +79,10 @@ export type StageTimelineEntry = {
   fixed: number;
   /** 复核判仍在而代码已改写,交接到新位置。 */
   continued: number;
-  /** 注入了历史却没给结论的「Reviewer × 历史 Finding」对数。 */
+  /** 跑了那一批却没给结论的「Reviewer × 历史 Finding」对数。 */
   missedVerdicts: number;
+  /** 那一批没跑成,因此没有结论的对数(issue #412)。 */
+  batchFailedVerdicts: number;
 };
 
 export type StageSummaryBody = {
@@ -708,8 +710,11 @@ export function StageSummaryView({
 }
 
 /**
- * 时间线里一轮的五个数(issue #168)。轮次降为历史之后,一轮要说的只剩「它做了什么」:
- * 报出了几条新的、折叠了几条旧的、自动修掉几条、交接几条,以及有几条根本没复核。
+ * 时间线里一轮的几个数(issue #168)。轮次降为历史之后,一轮要说的只剩「它做了什么」:
+ * 报出了几条新的、折叠了几条旧的、自动修掉几条、交接几条,以及有几条没拿到结论。
+ *
+ * 没拿到结论的分两档说(issue #412):模型跑了那一批却没给,还是那一批没跑成。排障方向
+ * 不同——前者看模型,后者看模型服务或额度。
  *
  * 为零的不列——读者要的是这一轮做了什么,一排零只让人多数几个零。全零的那一轮
  * 显式写一句,免得看起来像还没渲染出来。
@@ -724,6 +729,7 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
       ["已修复", entry.fixed, "text-success"],
       ["已延续", entry.continued, "text-text-secondary"],
       ["漏复核", entry.missedVerdicts, "text-warning"],
+      ["批次没跑成", entry.batchFailedVerdicts, "text-warning"],
     ] as const
   ).filter(([, value]) => value > 0);
   return (
