@@ -4307,11 +4307,15 @@ function stageRowEntry(row: Record<string, unknown>): StageRowEntry {
 const UNRECORDED_RUN_FAILURE = "未记录原因";
 
 /**
- * 写进 `review_run.failure` 之前过这一道(issue #432):通篇空白的原因换成一句话。
- * 「非空即收尾失败」这一档否则可以在没有任何原因的情况下成立,轮次侧滑上得到一句
- * 尾巴空着的话。正常的原因原样落库——不截断,也不改写。
+ * 轮次级失败原因在这里定形(issue #432、#436):通篇空白的原因换成一句话。「非空即
+ * 收尾失败」这一档否则可以在没有任何原因的情况下成立,轮次侧滑上得到一句尾巴空着的
+ * 话。正常的原因原样返回——不截断,也不改写。
+ *
+ * 同一句原因有三个去处:`review_run.failure`、改判时借 `reviewer_outcome.failure` 落的
+ * 那一份,与轨迹的 `run_failed` 事件。**产生这句话的那一处先过它**,之后三处读的就是
+ * 同一个字符串;只在写库那一侧兜底的话,轨迹会与库里说得不一样。
  */
-function runFailureText(failure: string): string {
+export function runFailureText(failure: string): string {
   return failure.trim() === "" ? UNRECORDED_RUN_FAILURE : failure;
 }
 
@@ -7698,6 +7702,9 @@ export function openStore(dbPath: string): Store {
         .all(...params);
       // 没有中断轮次时一个写都不发:启动路径因此零改动,调用方也不去问 Forge。
       if (rows.length === 0) return [];
+      // 一句原因落两处,先定形再写(issue #436):轮次那一列与借来的 outcome 行说的是
+      // 同一件事,兜底只在其中一处时两边会说不一样的话。
+      const text = runFailureText(failure);
       db.exec("BEGIN");
       try {
         // 失败原因借 Reviewer 指定各写一行 outcome:计数与耗时都归零,这一轮它们
@@ -7713,7 +7720,7 @@ export function openStore(dbPath: string): Store {
         );
         for (const row of rows) {
           for (const pin of pins.all(row["id"] as number)) {
-            insertOutcome.run(row["id"] as number, String(pin["identity"]), failure);
+            insertOutcome.run(row["id"] as number, String(pin["identity"]), text);
           }
         }
         // 结束时间取启动时刻。耗时留空:进程什么时候落地的没人知道,写一个算出来的
@@ -7722,7 +7729,7 @@ export function openStore(dbPath: string): Store {
         db.prepare(
           `UPDATE review_run SET finished_at = ?, failed = 1, failure = ?
             WHERE finished_at IS NULL${scope}`,
-        ).run(at, runFailureText(failure), ...params);
+        ).run(at, text, ...params);
         // 改判掉的那些轮次不会再被续跑,中间态的批次结果一并清掉(issue #248)。
         const deleteBatches = db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?");
         for (const row of rows) deleteBatches.run(row["id"] as number);

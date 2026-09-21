@@ -77,6 +77,7 @@ import {
 import {
   DEFAULT_MIN_REPORT_SEVERITY,
   openStore,
+  runFailureText,
   type ContinuationCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
@@ -2955,7 +2956,8 @@ export async function runReview(
           // 明确失败与结果不确定同一条路:不 resolve、不记延续,旧行留在未处置。不确定
           // 那一档禁止重发——review 可能已经在 Forge 上;轮次有结束时间,启动续跑也不会
           // 再选中它。
-          publishFailure = publishFailureReason(error);
+          // 先定形再用(issue #436):这一句同时进 `review_run.failure` 与轨迹事件。
+          publishFailure = runFailureText(publishFailureReason(error));
           console.error("[review] 发布 review 失败,本轮结果已落库:", publishFailure);
           store.recordRunFailure(runId, publishFailure);
           trace.run("run_failed", { reason: publishFailure });
