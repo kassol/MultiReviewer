@@ -4711,42 +4711,6 @@ export function openStore(dbPath: string): Store {
   db.exec("DROP TABLE IF EXISTS agent_session_output_finalization");
   db.exec("DROP TABLE IF EXISTS agent_session_output");
 
-  // 恢复粒度细化到 Reviewer × 批次(ADR 0024 的 2026-09-21 修订,issue #410):旧表一行
-  // 存整批各模型的结果,新表一行存一个模型在一批上的结果。旧行只在整批全部模型跑完之后
-  // 才写,按模型拆开因此无损——那一批的每个模型都已经有结果,续跑照常整批跳过。拆完删
-  // 旧表:重复插入由主键挡住,迁到一半断电也只是下一次启动接着迁,跑几遍都一样。
-  //
-  // 发版跑过之后即不再命中;下一次发版连同旧库用例一起删掉(src/AGENTS.md)。
-  const legacyBatchRows = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'review_run_batch'")
-    .get();
-  if (legacyBatchRows !== undefined) {
-    const insert = db.prepare(
-      `INSERT INTO review_run_batch_outcome (run_id, batch_index, model, outcome_json)
-       VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-    );
-    const legacy = db
-      .prepare("SELECT run_id, batch_index, outcomes_json FROM review_run_batch")
-      .all();
-    for (const row of legacy) {
-      // 解不开的那一行跳过:开库在每条请求路径上,抛出去就是整个服务不可用;跳过的
-      // 那一批续跑时按缺结果重跑,语义安全。
-      try {
-        for (const timed of JSON.parse(String(row["outcomes_json"])) as TimedOutcome[]) {
-          insert.run(
-            Number(row["run_id"]),
-            Number(row["batch_index"]),
-            timed.outcome.model,
-            JSON.stringify(timed),
-          );
-        }
-      } catch {
-        continue;
-      }
-    }
-    db.exec("DROP TABLE review_run_batch");
-  }
-
   // 升级前的库缺的列(`ADDED_COLUMNS`):按 `pragma_table_info` 逐列判,缺了才补,补过即
   // 不再命中。回填只跟着补列那一次跑——`openStore` 每次请求都跑一遍,回填不该跟着每次
   // 请求扫一次只增不减的表。
