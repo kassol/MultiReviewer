@@ -583,6 +583,8 @@ export function StageSummaryView({
    * 切回来人就停在列表顶上了。离开 Finding 页那一刻量一次落点,回来时把那张卡摆回原位。
    */
   const listAnchor = useRef<ListAnchor | null>(null);
+  const restoreAttempts = useRef(0);
+  const [restoreTick, setRestoreTick] = useState(0);
   const changeTab = (next: StageTab): void => {
     if (tab === "findings" && next !== "findings") listAnchor.current = measureListAnchor();
     onTabChange(next);
@@ -606,8 +608,23 @@ export function StageSummaryView({
     const card = [...(container?.querySelectorAll<HTMLElement>("[data-row-key]") ?? [])].find(
       (element) => element.dataset.rowKey === anchor.key,
     );
+    /*
+     * 卡片此刻可能还不在 DOM 里:Radix 的 `Tabs.Content` 经 Presence 挂内容,要到 tab 变了
+     * 之后的下一次渲染才画出来,而这个 effect 在 tab 刚变的那一次提交里就跑。下一帧再来
+     * 一遍,试几次还找不到就放弃——落点留着不清会在之后哪次追加时把人突然拽走。
+     */
+    if (container === null || card === undefined) {
+      if (restoreAttempts.current < 5) {
+        restoreAttempts.current += 1;
+        const frame = requestAnimationFrame(() => setRestoreTick((tick) => tick + 1));
+        return () => cancelAnimationFrame(frame);
+      }
+      restoreAttempts.current = 0;
+      listAnchor.current = null;
+      return;
+    }
+    restoreAttempts.current = 0;
     listAnchor.current = null;
-    if (container === null || card === undefined) return;
     /*
      * 按差值挪,不按绝对位置:这张卡上面那些屏幕外的卡此刻是 320px 的预留高度,与离开时
      * 的实测高度对不上,而差值只问「它现在离容器顶多远、当初离多远」。顶栏那 88px 在量与
@@ -615,7 +632,7 @@ export function StageSummaryView({
      */
     container.scrollTop +=
       card.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset;
-  }, [tab, rendered]);
+  }, [tab, rendered, restoreTick]);
 
   /*
    * 换筛选条件就回到首段,并把外壳滚回顶部。不滚回去的话:范围缩到首段、内容跟着变矮,浏览器
