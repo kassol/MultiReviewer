@@ -19,10 +19,21 @@ export type SetupStatus = {
   instanceEnabled: boolean;
 };
 
+/**
+ * 首次配置状态。同一页面里有三处读它——顶栏导航的告警点、这张检查单、以及注册仓库那颗
+ * 按钮,三处共用这一个查询键。
+ *
+ * 保鲜时间让同一页面只请求一次(issue #439):壳先挂载、发出请求,页面代码是懒加载的,
+ * 它那一批 chunk 到齐之后检查单才挂载,那时上一份已经落地而默认保鲜时间是 0,新观察者
+ * 于是立刻重发一次(实测间隔约 0.4 秒)。**检查单仍然及时**:任何一次成功的写请求都让
+ * 这个键失效(`main.tsx` 的 `MutationCache`),失效不看保鲜时间,照样立刻重取——三步的
+ * 写操作(配模型服务、存审查策略、注册仓库)全部走 `useMutation`。
+ */
 export function useSetupStatus() {
   return useQuery({
     queryKey: SETUP_STATUS_QUERY_KEY,
     queryFn: () => fetchJson<SetupStatus>("/setup-status"),
+    staleTime: 30_000,
   });
 }
 
