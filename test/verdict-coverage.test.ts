@@ -4,6 +4,9 @@
  * 打在 `runReview` 入口加临时库上:一条历史没拿到结论,可能是这个模型跑了这一批却没给、
  * 这一批根本没跑成,也可能是本轮没有哪一批读到它那个文件——三件事的排障方向不同,时间线
  * 因此分开数。断言落库的 `missing_reason` 与阶段时间线的三个数。
+ *
+ * 失败批在倒下之前给出的结论一并丢弃(issue #420),那几条历史因此同样落进「批次没跑成」:
+ * 后两条用例打在这个丢弃上——不作自动处置的证据,也不触发延续。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -12,7 +15,7 @@ import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import { testCleanups } from "./support/git-fixture.ts";
-import { EVENT, FILES, batchReviewer, query, setup as setupRepo } from "./support/batch-run.ts";
+import { EVENT, FILES, STUB, batchReviewer, query, setup as setupRepo } from "./support/batch-run.ts";
 
 const cleanups = testCleanups();
 
@@ -130,4 +133,107 @@ test("文件不在本轮任何批次里的那条历史记「没有批次覆盖�
     batchFailedVerdicts: 0,
     uncoveredVerdicts: 1,
   });
+});
+
+/** 一个仓库三批、一批一个文件:历史因此一条一批,失败的是哪一批一目了然。 */
+function perFileBatches(fixture: ReturnType<typeof setupRepo>) {
+  return {
+    forge: fixture.forge.forge,
+    cacheDir: fixture.cache.dir,
+    dbPath: fixture.db.path,
+    maxChangedLinesPerBatch: 100,
+    maxFilesPerBatch: 1,
+  };
+}
+
+/**
+ * 第三批(`FILES[2]`)在倒下之前给出结论,另两批照常跑完(issue #420)。结论与失败同一次
+ * 返回:一批跑到一半 429 的模型在注入边界上就是这个形状。`line` 给了就是「仍在」一并给出的
+ * 新位置。本轮一条都不报出,`finding` 表里因此只有头一轮那三行。
+ */
+function failingBatchReviewer(model: string, verdict: "fixed" | "present", line?: number): Reviewer {
+  return {
+    model,
+    review: async ({ range, history }) => {
+      const base = { model, findings: [], anomalies: [], rejectedToolCalls: 0, anchorRejections: 0 };
+      if (range.files[0] !== FILES[2]) {
+        return {
+          ...base,
+          verdicts: history.map((entry) => ({ findingId: entry.id, verdict: "present" as const })),
+        };
+      }
+      return {
+        ...base,
+        verdicts: history.map((entry) => ({
+          findingId: entry.id,
+          verdict,
+          ...(line === undefined ? {} : { line }),
+        })),
+        failure: "子进程退出码 7",
+        exitCode: 7,
+      };
+    },
+  };
+}
+
+/** 这一轮的 run id。 */
+function latestRunId(dbPath: string): number {
+  const store = openStore(dbPath);
+  try {
+    return store.listRuns({ limit: 1 })[0]!.id;
+  } finally {
+    store.close();
+  }
+}
+
+/** 库里每条 Finding 的处置与延续来源,按文件。`node:sqlite` 的行是空原型,逐格抄出来再比。 */
+function findingRows(dbPath: string): { file: string; disposition: string; continuedFrom: unknown }[] {
+  return query(dbPath, "SELECT file, disposition, continued_from FROM finding ORDER BY file").map(
+    (row) => ({
+      file: String(row["file"]),
+      disposition: String(row["disposition"]),
+      continuedFrom: row["continued_from"],
+    }),
+  );
+}
+
+/** 三个文件各一条未处置历史,一条都没被处置、也没被交接走。 */
+const UNTOUCHED = FILES.map((file) => ({
+  file,
+  disposition: "unknown",
+  continuedFrom: null,
+}));
+
+test("失败批在倒下之前给出的「已修」不作自动处置的证据,由来记「批次没跑成」", async () => {
+  const fixture = setupRepo(cleanups);
+  const common = perFileBatches(fixture);
+
+  // 头一轮三个文件各留一条未处置历史,第二轮每一批因此恰好要复核一条。
+  await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
+  await runReview(EVENT, { ...common, reviewers: [failingBatchReviewer("model-a", "fixed")] });
+
+  assert.deepEqual(reasons(fixture.db.path, latestRunId(fixture.db.path)), { "batch-failed": 1 });
+  assert.deepEqual(fixture.forge.resolvedIds, [], "失败批的「已修」却把 Forge 上的评论关掉了");
+  assert.deepEqual(findingRows(fixture.db.path), UNTOUCHED);
+});
+
+test("失败批带新位置的「仍在」不触发延续:旧评论不关,不合成承接它的那条", async () => {
+  const fixture = setupRepo(cleanups);
+  const common = perFileBatches(fixture);
+
+  await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
+  // 改掉 `FILES[2]` 上那条 Finding 指着的第 4 行:它的指纹在新 head 上算不出,延续的前置
+  // 条件因此成立——结论要是没被丢掉,这一条就会被承接到第 5 行去。
+  fixture.forge.pullRequest.headSha = fixture.repo.pushToHead({
+    [FILES[2]!]: `${STUB}const x = 2;\nconst y = 1;\n`,
+  });
+
+  await runReview(EVENT, {
+    ...common,
+    reviewers: [failingBatchReviewer("model-a", "present", 5)],
+  });
+
+  assert.deepEqual(reasons(fixture.db.path, latestRunId(fixture.db.path)), { "batch-failed": 1 });
+  assert.deepEqual(fixture.forge.resolvedIds, [], "延续把旧评论关掉了");
+  assert.deepEqual(findingRows(fixture.db.path), UNTOUCHED);
 });

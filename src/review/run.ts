@@ -1424,12 +1424,12 @@ function verdictRecords(
       );
       return open.map((entry) => {
         const verdict = given.get(entry.id);
-        // 失败的那一批照样可能在倒下之前给出几条结论,给了就是给了:由来只说没给的那些。
         if (verdict !== undefined) {
           return { model: outcome.model, findingId: entry.id, verdict };
         }
-        // `batch` 是 undefined 即本轮没有哪一批读到它那个文件(issue #413):那一条谁都
-        // 复核不到,说的是覆盖缺口,不是这个模型漏了复核。
+        // 失败的那一批在倒下之前给出的结论已经被合并丢掉(issue #420),那一批的历史因此
+        // 恒走到这里,记「批次没跑成」。`batch` 是 undefined 即本轮没有哪一批读到它那个
+        // 文件(issue #413):那一条谁都复核不到,说的是覆盖缺口,不是这个模型漏了复核。
         const batch = single ? 1 : batchOf.get(entry.file);
         const missing =
           batch === undefined

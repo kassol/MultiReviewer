@@ -70,6 +70,12 @@ export type TimedOutcome = { outcome: ReviewerOutcome; startedAt: number; durati
  * 全部批次都失败才算该模型缺席,其 Finding 一并丢弃;部分批次失败时保留成功批次的
  * Finding——每批是独立的文件集合,成功批次的结果自身是完整的,丢掉等于白花已付出的
  * 成本,只需在 review 正文里标注该模型覆盖不全。
+ *
+ * 失败批次的产出一律不要,Finding 与复核结论同一口径(issue #420):整体失败的模型一条
+ * 结论都不记(`verdictRecords` 按 `failure` 滤掉它),失败批次的 Finding 丢弃,失败批次在
+ * 倒下之前给出的结论因此也丢弃——一批跑到一半 429 的模型,它已经给的那几条不该一边作自动
+ * 处置与延续的证据、一边让同一批的 Finding 作废。丢掉之后那几条历史落进「批次没跑成」
+ * (`verdictRecords` 的 `batch-failed`),时间线上数得出来。
  */
 export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutcome {
   const first = results[0]!;
@@ -92,8 +98,9 @@ export function mergeBatchOutcomes(results: readonly TimedOutcome[]): TimedOutco
     rejectedToolCalls: results.reduce((n, r) => n + r.outcome.rejectedToolCalls, 0),
     anchorRejections: results.reduce((n, r) => n + r.outcome.anchorRejections, 0),
     // 历史按所在文件路由到批次(issue #235):一条历史只进一批,也就只有一批给得出它的
-    // 结论,合并因此只做拼接——没有「哪一批作数」这回事。
-    verdicts: results.flatMap((r) => r.outcome.verdicts ?? []),
+    // 结论,合并因此只做拼接——没有「哪一批作数」这回事。失败批次的那些与它的 Finding
+    // 同批丢弃(issue #420)。
+    verdicts: succeeded.flatMap((r) => r.outcome.verdicts ?? []),
     // 一批都没回报用量时保持"取不到",不伪造出一行零用量。
     ...(usage === undefined ? {} : { usage }),
   };

@@ -203,13 +203,11 @@ test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得
 
   // 「跑了没给」只数非失败批的那部分(issue #412),两边逐条对得上;失败那一批的历史另记
   // 一档「批次跑不成」,不混进漏复核——它说的是模型服务或额度,不是模型有没有认真复核。
-  const failedSkipped = batchEnds
+  // 失败批这一侧对的是「应给」而不是「应给 − 给出」(issue #420):那一批给过的结论在合并
+  // 时整份丢掉,它的历史因此一条不落地全记「批次跑不成」,而事件里的「给出」照实记。
+  const failedExpected = batchEnds
     .filter((payload) => payload["failed"] === true)
-    .reduce(
-      (sum, payload) =>
-        sum + ((payload["verdictsExpected"] as number) - (payload["verdictsGiven"] as number)),
-      0,
-    );
+    .reduce((sum, payload) => sum + (payload["verdictsExpected"] as number), 0);
   const [row] = query(
     fixture.db.path,
     `SELECT SUM(missing_reason = 'no-verdict') AS missed,
@@ -217,7 +215,7 @@ test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得
        FROM finding_verdict WHERE run_id = ${runId}`,
   );
   assert.equal(row!["missed"], skipped);
-  assert.equal(row!["batchFailed"], failedSkipped);
+  assert.equal(row!["batchFailed"], failedExpected);
 });
 
 test("只复核那一轮的批次同样落这条事件,报出条数恒为 0", async () => {
