@@ -815,6 +815,9 @@ function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
         <Callout.Text>
           本批运行失败：{str(payload, "failure") ?? "未记录原因"}
           {exitCode === null ? null : `（退出码 ${exitCode}）`}
+          {/* 倒下之前给出的结论一律丢掉(issue #420),这一批的历史在阶段时间线上记成
+              「批次没跑成」;这里的条数是运行事实。两处对不上不说清会被当成算错。 */}
+          {given === 0 ? null : `。已给出的 ${given} 条复核结论不作数，这一批的历史按没复核记`}
         </Callout.Text>
       </Callout.Root>
     );

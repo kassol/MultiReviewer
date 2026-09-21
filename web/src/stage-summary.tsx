@@ -766,6 +766,15 @@ export function StageRound({ entry }: { entry: StageTimelineEntry }) {
               </span>
             ))
           )}
+          {/* 「批次没跑成」与审查轨迹上那一批的「复核结论 N/M」对不上是有意的(issue #420):
+              失败的批次在倒下之前给过的结论一律丢掉,库里这几条因此记成没复核,而轨迹如实
+              记它给过几条。差额不当面说清会被当成其中一个数算错(issue #425)。写成可见的
+              一句而不是 title:触屏上悬停读不到,而这正是排障时要读的那句。 */}
+          {entry.batchFailedVerdicts === 0 ? null : (
+            <span className="basis-full text-sm text-text-secondary">
+              「批次没跑成」的那几条所在的批次半路倒下，那一批即便给过复核结论也不作数，这一轮按没复核记。
+            </span>
+          )}
         </>
       )}
       {/* 原因整句摊开,列表上就看得到为什么;改判的那一轮与收尾失败的那一轮同一个位置。 */}
