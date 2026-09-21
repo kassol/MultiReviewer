@@ -569,9 +569,8 @@ export async function runAgentWorker(
   // `session.prompt()` 在模型调用失败时也正常返回,失败只在这两处可见。
   const failure = sessionFailure(session, thrown, options.runtime.apiKey);
 
-  // 回合数与末回合的停止原因只有会话自己数得出(issue #408):空文本的回合不发
-  // `assistant_message` 事件,轨迹里数出来的段数少于真实回合数;而「读完一次工具结果
-  // 就无声结束」这种收工不报错、不留文本,停止原因是它唯一的线索。
+  // 回合数与末回合的停止原因从会话自己的消息列表取(issue #408),不依赖事件流:
+  // 「读完一次工具结果就无声结束」这种收工不报错、不留文本,停止原因是它唯一的线索。
   const assistants = session.messages.filter((message) => message.role === "assistant");
   const stopReason = assistants.at(-1)?.stopReason;
 

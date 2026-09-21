@@ -53,13 +53,13 @@ export type WorkerMessage =
       failure?: string;
       /**
        * 末条 assistant 消息的停止原因(issue #408)。会话无声收工时它是唯一的线索:
-       * 读完一次工具结果就结束的那种回合不报错、不留文本,轨迹里什么都数不出来。
+       * 读完一次工具结果就结束的那种回合不报错、不留文本。
        * 会话没建起来、或一条 assistant 消息都没有时取不到。
        */
       stopReason?: string;
       /**
-       * 这次会话的回合数,即 assistant 消息条数(issue #408)。空文本的回合不发
-       * `assistant_message` 事件,轨迹里数出来的段数因此少于真实回合数。
+       * 这次会话的回合数,即 assistant 消息条数(issue #408)。取自会话自己的消息列表,
+       * 不依赖事件流。
        */
       turns?: number;
       /** Pi 会话统计出的用量。会话没建起来时取不到。 */

@@ -12,7 +12,7 @@ import type { Reviewer, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store.ts";
 import { testCleanups } from "./support/git-fixture.ts";
-import { EVENT, FILES, batchReviewer, setup as setupRepo } from "./support/batch-run.ts";
+import { EVENT, FILES, batchReviewer, query, setup as setupRepo } from "./support/batch-run.ts";
 import { verdictReviewer } from "./support/memory-forge.ts";
 
 const cleanups = testCleanups();
@@ -185,18 +185,32 @@ test("漏给结论的条数与 finding_verdict 里标 missing 的对得上", asy
 
   const store = openStore(fixture.db.path);
   const runId = store.listRuns({ limit: 1 })[0]!.id;
-  const missing = store
+  const batchEnds = store
     .listTrace(runId)
     .filter((event) => event.kind === "reviewer_batch_finished")
-    // 失败的那一批一条结论都不落库(它没跑),漏给结论说的是跑完了却没给的那些。
-    .filter((event) => (event.payload as Record<string, unknown>)["failed"] !== true)
-    .reduce((sum, event) => {
-      const payload = event.payload as Record<string, number>;
-      return sum + (payload["verdictsExpected"]! - payload["verdictsGiven"]!);
-    }, 0);
+    .map((event) => event.payload as Record<string, number | boolean>);
   store.close();
 
-  assert.equal(missing, 1, "第二批那一条历史没拿到结论");
+  // 跑完了却没给的那些:失败的那一批不算,它没跑。
+  const skipped = batchEnds
+    .filter((payload) => payload["failed"] !== true)
+    .reduce(
+      (sum, payload) =>
+        sum + ((payload["verdictsExpected"] as number) - (payload["verdictsGiven"] as number)),
+      0,
+    );
+  assert.equal(skipped, 1, "第二批那一条历史没拿到结论");
+
+  // 库里标 missing 的还多出失败那一批的应给:这个模型别的批跑成了,它不算整体失败,
+  // 失败批上的历史因此同样按漏给结论落。两边逐条对得上。
+  const failedExpected = batchEnds
+    .filter((payload) => payload["failed"] === true)
+    .reduce((sum, payload) => sum + (payload["verdictsExpected"] as number), 0);
+  const [row] = query(
+    fixture.db.path,
+    `SELECT SUM(missing) AS missed FROM finding_verdict WHERE run_id = ${runId}`,
+  );
+  assert.equal(row!["missed"], skipped + failedExpected);
 });
 
 test("只复核那一轮的批次同样落这条事件,报出条数恒为 0", async () => {

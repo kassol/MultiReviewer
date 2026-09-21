@@ -693,7 +693,12 @@ function nestedEvents(payload: Record<string, unknown>): Record<string, unknown>
 function NestedEvent({ event }: { event: Record<string, unknown> }) {
   const kind = str(event, "kind");
   if (kind !== null && SESSION_EVENT_KINDS.has(kind)) {
-    return <SessionEvent kind={kind} payload={event} />;
+    // 子会话说的话比外层小一号,嵌套层级靠它分得出。
+    return (
+      <div className="min-w-0 [&_p]:text-sm">
+        <SessionEvent kind={kind} payload={event} />
+      </div>
+    );
   }
   if (kind === "tool_call") return <ToolCall event={{ payload: event }} />;
   return <UnknownEvent event={{ kind: kind ?? "(未命名事件)", payload: event }} />;
@@ -819,7 +824,7 @@ function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
       )}
       {stopReason === null ? null : (
         <span className={abnormal ? "text-warning" : "text-sm text-text-secondary"}>
-          停止原因 <span className="font-mono">{stopReason}</span>
+          停止原因：{STOP_REASON_LABEL[stopReason] ?? stopReason}
         </span>
       )}
       <span className="text-sm text-text-secondary">
@@ -1065,7 +1070,7 @@ function ReviewerTrace({
   const toolCalls = events.filter((event) => event.kind === "tool_call").length;
   // 空回合也落事件(issue #407),「段文本」只数说了话的那些。
   const messages = events.filter(
-    (event) => event.kind === "assistant_message" && (str(event.payload, "text") ?? "") !== "",
+    (event) => event.kind === "assistant_message" && (str(event.payload, "text") ?? "").trim() !== "",
   ).length;
   // 这一批漏给了复核结论(issue #408):分组默认折着,不挂在标题上就得逐批展开才看得见。
   const batchEnd = events.find((event) => event.kind === "reviewer_batch_finished");

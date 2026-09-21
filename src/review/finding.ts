@@ -309,8 +309,8 @@ export type ReviewerOutcome = {
   usage?: ReviewerUsage;
   /**
    * 末回合的停止原因与这一批的回合数(issue #408)。只有真实子进程给得出:它们取自 Pi
-   * 会话自己的消息列表,轨迹事件里数不出来——空文本的回合一条事件都不发。脚本化的
-   * Reviewer 不给,批次收尾事件里那两格因此是空的。
+   * 会话自己的消息列表,不依赖事件流——收尾事件因此自己说得清这一批是怎么结束的。
+   * 脚本化的 Reviewer 不给,批次收尾事件里那两格因此是空的。
    */
   stopReason?: string;
   turns?: number;

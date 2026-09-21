@@ -2313,8 +2313,7 @@ export async function runReview(
         const timedOutcomes = await Promise.all(
           deps.reviewers.map(async (reviewer) => {
             const startedAt = Date.now();
-            // 工具调用数从事件流里数(issue #408):每次 `tool_execution_end` 恰好一条
-            // 事件,不像 assistant 消息那样会因为文本为空而整条不发。
+            // 工具调用数从事件流里数(issue #408):每次 `tool_execution_end` 恰好一条事件。
             let toolCalls = 0;
             // 工作副本每批都是同一份完整的 head commit:Reviewer 要能读到其他批次
             // 改动后的代码,否则会报出"这个新函数没有调用者"这类因分批而来的误报。
