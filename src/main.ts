@@ -22,7 +22,7 @@ const DEFAULT_PORT = 3000;
  * 排空上限(issue #249)。与 `docker-compose.yml` 的 `stop_grace_period` 是同一个数:
  * 容器的宽限期短于它的话,等到一半仍会被 SIGKILL,批次白跑。改一处必须改另一处。
  */
-const DEFAULT_DRAIN_TIMEOUT_SECONDS = 300;
+const DEFAULT_DRAIN_TIMEOUT_SECONDS = 900;
 
 function required(name: string): string {
   const value = process.env[name];
