@@ -1,5 +1,7 @@
 # Agent 会话的记录原样存 Pi 的会话条目,SQLite 是唯一真相
 
+> 2026-09-22 附记(ADR 0036):持久化迁到 PostgreSQL 之后,本文里的「SQLite」读作「数据库」。「Pi 会话不落盘、记录表是唯一真相」这一决策不变。
+
 Agent 会话要跨页面关闭、空闲回收与服务重启续谈(地图 #318,票 #320)。Pi 自己把会话存成 append-only 的 JSONL 文件,也能用 `SessionManager.inMemory(cwd, options, entries)` 从外部条目重建;重建要求条目全量且 `parentId` 链与 compaction 的 `firstKeptEntryId` 引用完整,缺了会静默截断历史而不报错。选定的做法:**Pi 会话不落盘,每条 `SessionEntry` 按 `message_end` / `compaction_end` 等事件原样以 JSON 落进 SQLite 的会话记录表,一行一条,附 seq、类型、时间与用量几列索引;重建时把这张表整段喂回 `inMemory`。**系统消息(被排空中止、静默判死、人点停止、模型切换)以 Pi 的 `custom` 条目落同一张表,不进模型上下文。
 
 ## Considered Options
