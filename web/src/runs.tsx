@@ -11,7 +11,14 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
+import { stageAlertDetail, stageAlertText } from "@/lib/stage-alert";
 import { localClock, localDay } from "@/lib/time";
+
+/*
+ * 评审记录那一行的契约与服务端投影是同一个符号(issue #426),沿用 `StageItem` 这个
+ * 名字——面板这边七处引它,改名换不来任何东西。
+ */
+import type { StageListItem as StageItem, StageRunAlert } from "../../src/contracts/stages.ts";
 
 import { fetchJson, send } from "./api.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
@@ -171,38 +178,7 @@ export type RunFinding = {
   } | null;
 };
 
-/**
- * 评审记录里的一行(issue #174):一个审查阶段,不是一轮 Review Run。同一 pull request
- * 推多少次、同一范围审查推进多少次,列表里都只有这一行。
- *
- * `stageId` 由来源与键合成(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),阶段详情
- * 的地址用它作路径参数。容器 PR 的序号不在这里:它对面板用户透明(CONTEXT.md 容器 PR)。
- */
-export type StageItem = {
-  stageId: string;
-  source: "pull-request" | "range-review";
-  owner: string;
-  repo: string;
-  /** pull request 阶段的 PR 号;范围审查阶段为 null。 */
-  pullNumber: number | null;
-  /** 范围审查阶段的标识;pull request 阶段为 null。 */
-  rangeReviewId: number | null;
-  /** pull request 的标题快照;没有标题的旧行与范围审查都是 null。 */
-  title: string | null;
-  status: "active" | "closed";
-  /** 最新一轮 Review Run;范围审查刚发起、一轮都还没跑时为 null。 */
-  latestRunId: number | null;
-  latestRunAt: string | null;
-  /** 最新一轮跑完的时刻;还在跑时为 null,列表据此决定要不要续查。 */
-  latestRunFinishedAt: string | null;
-  /** 阶段汇总的三个数,与 `GET /stage-summary` 同一口径。 */
-  counts: { pending: number; resolved: number; fixed: number };
-  /**
-   * 最新一轮没跑全(issue #421)。跑得正常、还在跑、或者一轮都还没跑时为 null;更早
-   * 那轮出过问题不算。
-   */
-  latestRunAlert: { modelFailed: boolean; batchFailed: boolean } | null;
-};
+export type { StageItem };
 
 type StagesPage = { stages: StageItem[]; nextOffset: number | null };
 
@@ -237,28 +213,19 @@ export function StageStatusBadge({ stage }: { stage: StageItem }) {
 }
 
 /**
- * 最新一轮没跑全时行上的警示(issue #421)。不点进阶段页翻时间线就看得出这一轮的
- * 结论不完整。
+ * 最新一轮没跑全时行上的警示(issue #421、#424)。不点进阶段页翻时间线就看得出这一轮
+ * 的结论不完整。
  *
- * 两档分开说,排障方向不同:模型整轮没跑成去看模型服务,某几批没跑成只影响那几批的
- * 文件。两样都有时徽章两档都说——title 触屏上看不到、读屏也不一定读,看得见的那几个字得自己说全;整句仍在 title 上。这里不套 Tooltip:行
- * 本身就是一个链接,再加一个可聚焦的触发器会在长列表里多出一串 tab 站点,而触屏上
- * Tooltip 压根打不开(issue #374)。
+ * 三档分开说,排障方向不同:模型整轮没跑成去看模型服务,某几批没跑成只影响那几批的
+ * 文件,收尾失败则是结论没能落到 Forge 上。几样都有时徽章每一档都说——title 触屏上
+ * 看不到、读屏也不一定读,看得见的那几个字得自己说全;整句仍在 title 上。这里不套
+ * Tooltip:行本身就是一个链接,再加一个可聚焦的触发器会在长列表里多出一串 tab 站点,
+ * 而触屏上 Tooltip 压根打不开(issue #374)。
  */
-function StageAlertBadge({ alert }: { alert: NonNullable<StageItem["latestRunAlert"]> }) {
-  const detail = [
-    alert.modelFailed ? "有模型整轮没跑成，这一轮少了它的结论。" : null,
-    alert.batchFailed ? "有模型的部分批次没跑成，那几批文件上的历史这一轮少了它的复核。" : null,
-  ]
-    .filter((line) => line !== null)
-    .join("");
+function StageAlertBadge({ alert }: { alert: StageRunAlert }) {
   return (
-    <StatusBadge tone="warning" title={detail}>
-      {alert.modelFailed
-        ? alert.batchFailed
-          ? "上一轮有模型与批次没跑成"
-          : "上一轮有模型没跑成"
-        : "上一轮有批次没跑成"}
+    <StatusBadge tone="warning" title={stageAlertDetail(alert)}>
+      {stageAlertText(alert)}
     </StatusBadge>
   );
 }

@@ -134,23 +134,14 @@ export type Finding = {
 };
 
 /**
- * 一轮 Review Run 的模式(CONTEXT.md 只复核,issue #242)。
- *
- * `full` 是完整审查:照常报出新问题,顺带复核历史。`verdict-only` 是只复核:这一轮只对
- * 有未处置历史的文件跑,Reviewer 不注册报出工具,只能给复核结论——清历史与找新问题是
- * 两个目标,整段范围每重跑一轮就多几十条新报,一次重跑不该被迫两件事一起做。
+ * 这两个取值同时是阶段详情的契约字段(`StageTimelineEntry` 的 `mode` 与 `triggerSource`),
+ * 因此住在 `src/contracts/stages.ts` 里、从这里再导出:契约文件一行运行时代码都不能有,
+ * 而这个文件有 `DEFAULT_MIN_REPORT_SEVERITY`,反过来引会把它拖进面板的类型检查。
+ * 服务端照旧从这里引,调用点一处没动。
  */
-export type ReviewRunMode = "full" | "verdict-only";
+import type { ReviewRunMode, ReviewTriggerSource } from "../contracts/stages.ts";
 
-/**
- * 一轮 Review Run 是被谁开出来的(issue #312)。
- *
- * `delivery` 是 Forge 投递,`panel` 是人在面板上的重跑、发起范围审查与推进比较项,
- * `scheduled` 是每日增量的定时检查(spec #310;本票只定义这一档,写入由那张票做)。
- * 它与调用者用户名快照分开:定时开出的那一轮没有调用者,「没有用户名」从此不再等于
- * 「投递」。升级前的旧行按用户名回填(有即 `panel`,否则 `delivery`)。
- */
-export type ReviewTriggerSource = "delivery" | "panel" | "scheduled";
+export type { ReviewRunMode, ReviewTriggerSource };
 
 /** 一次 Review Run 覆盖的代码范围。`baseSha` 是 merge-base,不是 base 分支尖端。 */
 export type ReviewRange = {

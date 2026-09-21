@@ -14,6 +14,10 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json web/
 RUN pnpm install --frozen-lockfile --filter @multireviewer/web
 COPY web ./web
+# 面板与服务端共用的响应契约(issue #426)。`web/` 之外的唯一一份源码:它只有类型,
+# esbuild 会把 `import type` 整句抹掉,但拷进来才不用指望这一点——哪天契约里多一个值,
+# 这一层照样构建得起来。
+COPY src/contracts ./src/contracts
 RUN pnpm --filter @multireviewer/web build \
  && rm -rf "$(pnpm store path)" /root/.cache /root/.npm
 

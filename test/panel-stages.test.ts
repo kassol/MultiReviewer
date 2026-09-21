@@ -33,7 +33,11 @@ type StageRow = {
   latestRunAt: string | null;
   latestRunFinishedAt: string | null;
   counts: { pending: number; resolved: number; fixed: number };
-  latestRunAlert: { modelFailed: boolean; batchFailed: boolean } | null;
+  latestRunAlert: {
+    modelFailed: boolean;
+    batchFailed: boolean;
+    closingFailure: string | null;
+  } | null;
 };
 
 type StagesPage = { stages: StageRow[]; nextOffset: number | null };
@@ -51,12 +55,14 @@ function seedRun(
   },
   findings: { fingerprint: string; disposition?: "unknown" | "resolved" | "fixed" }[] = [],
   /**
-   * 这一轮另外要落的东西(issue #421 的警示两档):整轮没跑成的那个模型,以及复核结论
-   * ——`findingId` 指的是上一轮那条历史,`missing` 说它为什么没拿到结论。
+   * 这一轮另外要落的东西(issue #421、#424 的警示三档):整轮没跑成的那个模型、复核结论
+   * ——`findingId` 指的是上一轮那条历史,`missing` 说它为什么没拿到结论——以及轮次级的
+   * 收尾失败原因(ADR 0026)。
    */
   extra: {
     failedModel?: string;
     verdicts?: { model: string; findingId: number; missing: "no-verdict" | "batch-failed" }[];
+    closingFailure?: string;
   } = {},
 ): number {
   const store = openStore(dbPath);
@@ -125,6 +131,7 @@ function seedRun(
       missing: entry.missing,
     })),
   );
+  if (extra.closingFailure !== undefined) store.recordRunFailure(runId, extra.closingFailure);
   store.close();
   return runId;
 }
@@ -546,7 +553,11 @@ test("阶段列表:最新一轮有批次没跑成,行上挂警示且说的是批
   const body = await stages(h);
   assert.equal(body.stages.length, 1);
   // 部分批次没跑成的模型不算整体失败:两档分开说,排障方向不同。
-  assert.deepEqual(body.stages[0]!.latestRunAlert, { modelFailed: false, batchFailed: true });
+  assert.deepEqual(body.stages[0]!.latestRunAlert, {
+    modelFailed: false,
+    batchFailed: true,
+    closingFailure: null,
+  });
 });
 
 test("阶段列表:失败的那一批上没有历史时,批次没跑成由审查轨迹说出来", async () => {
@@ -567,7 +578,11 @@ test("阶段列表:失败的那一批上没有历史时,批次没跑成由审查
   store.close();
 
   const body = await stages(h);
-  assert.deepEqual(body.stages[0]!.latestRunAlert, { modelFailed: false, batchFailed: true });
+  assert.deepEqual(body.stages[0]!.latestRunAlert, {
+    modelFailed: false,
+    batchFailed: true,
+    closingFailure: null,
+  });
 });
 
 test("阶段列表:最新一轮有模型整轮没跑成,行上挂警示且说的是模型那一档", async () => {
@@ -581,7 +596,68 @@ test("阶段列表:最新一轮有模型整轮没跑成,行上挂警示且说的
 
   const body = await stages(h);
   assert.equal(body.stages.length, 1);
-  assert.deepEqual(body.stages[0]!.latestRunAlert, { modelFailed: true, batchFailed: false });
+  assert.deepEqual(body.stages[0]!.latestRunAlert, {
+    modelFailed: true,
+    batchFailed: false,
+    closingFailure: null,
+  });
+});
+
+/*
+ * 第三档:Reviewer 都跑成了,轮次却没有正常收尾(ADR 0026,issue #424)。发布 review
+ * 失败意味着 Forge 上根本没有这一轮的评论,而这种阶段在列表上此前看着一切正常。
+ */
+test("阶段列表:最新一轮收尾失败,行上挂警示并带原因第一行", async () => {
+  const h = await startPanelHarness();
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+    { closingFailure: "发布 review 失败:Gitea 回了 500\n这一行不进警示" },
+  );
+
+  const body = await stages(h);
+  assert.equal(body.stages.length, 1);
+  // 只取第一行:行上那枚徽章的 title 放得下一句话,放不下一整段堆栈。
+  assert.deepEqual(body.stages[0]!.latestRunAlert, {
+    modelFailed: false,
+    batchFailed: false,
+    closingFailure: "发布 review 失败:Gitea 回了 500",
+  });
+});
+
+test("阶段列表:三档同时出现时各自说得出,阶段详情那一行同形", async () => {
+  const h = await startPanelHarness();
+  const first = seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+  );
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    [],
+    {
+      failedModel: "model-b",
+      verdicts: [
+        { model: "model-a", findingId: historyFindingId(h.db.path, first), missing: "batch-failed" },
+      ],
+      closingFailure: "resolve 旧评论失败",
+    },
+  );
+  const expected = {
+    modelFailed: true,
+    batchFailed: true,
+    closingFailure: "resolve 旧评论失败",
+  };
+
+  const body = await stages(h);
+  assert.deepEqual(body.stages[0]!.latestRunAlert, expected);
+  // 阶段详情里的那一行与列表是同一份形状,警示因此也是同一份。
+  const response = await h.api("GET", `/stages/${encodeURIComponent("pr:acme/widgets/7")}`);
+  assert.equal(response.status, 200);
+  const detail = (await response.json()) as { stage: StageRow };
+  assert.deepEqual(detail.stage.latestRunAlert, expected);
 });
 
 test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有警示", async () => {
@@ -590,7 +666,7 @@ test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
-    { failedModel: "model-b" },
+    { failedModel: "model-b", closingFailure: "发布 review 失败" },
   );
   seedRun(
     h.db.path,
