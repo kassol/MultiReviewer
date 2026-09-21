@@ -4729,13 +4729,19 @@ export function openStore(dbPath: string): Store {
       .prepare("SELECT run_id, batch_index, outcomes_json FROM review_run_batch")
       .all();
     for (const row of legacy) {
-      for (const timed of JSON.parse(String(row["outcomes_json"])) as TimedOutcome[]) {
-        insert.run(
-          Number(row["run_id"]),
-          Number(row["batch_index"]),
-          timed.outcome.model,
-          JSON.stringify(timed),
-        );
+      // 解不开的那一行跳过:开库在每条请求路径上,抛出去就是整个服务不可用;跳过的
+      // 那一批续跑时按缺结果重跑,语义安全。
+      try {
+        for (const timed of JSON.parse(String(row["outcomes_json"])) as TimedOutcome[]) {
+          insert.run(
+            Number(row["run_id"]),
+            Number(row["batch_index"]),
+            timed.outcome.model,
+            JSON.stringify(timed),
+          );
+        }
+      } catch {
+        continue;
       }
     }
     db.exec("DROP TABLE review_run_batch");
