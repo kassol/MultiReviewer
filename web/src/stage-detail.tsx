@@ -61,6 +61,7 @@ import {
   rerunRangeReviewRequest,
   runStatus,
   stageLabel,
+  StageAlertBadge,
   StageSourceBadge,
   StageStatusBadge,
   type RunItem,
@@ -320,9 +321,13 @@ export function StageDetailPage({
               />
             }
           />
+          {/* 警示跟来源与状态排在同一行,窄屏上跟着一起折(issue #428)。 */}
           <div className="flex flex-wrap items-center gap-2">
             <StageSourceBadge stage={body.stage} />
             <StageStatusBadge stage={body.stage} />
+            {body.stage.latestRunAlert === null ? null : (
+              <StageAlertBadge alert={body.stage.latestRunAlert} />
+            )}
           </div>
 
           {feedback === null ? null : (
