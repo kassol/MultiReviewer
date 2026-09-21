@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEventHandler } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEventHandler,
+} from "react";
 
 import { ChevronDownIcon, CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Select, Skeleton, Tabs, Text, TextArea } from "@radix-ui/themes";
@@ -13,7 +20,12 @@ import { FilePath } from "@/components/file-path";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 import { renderedCovering } from "@/lib/paged-list";
-import { disposableInGroup, foldByRootCause } from "@/lib/root-cause";
+import {
+  disposableInGroup,
+  foldByRootCause,
+  rootCauseRowKey,
+  rowIndexOfFinding,
+} from "@/lib/root-cause";
 import { firstReportedFrom, roundFilterOptions, roundNumbers } from "@/lib/stage-rounds";
 import { localMinute } from "@/lib/time";
 
@@ -142,17 +154,26 @@ function FindingCard({
   scope,
   canDispose,
   roundOf,
+  rowKey,
   onDrawerTrigger,
 }: {
   finding: StageFinding;
   scope: StageScope;
   canDispose: boolean;
   roundOf: Map<number, number>;
+  /**
+   * 这张卡当的那一列表项的标识(`rootCauseRowKey`)。只有顶层那几张带它:组卡里的成员
+   * 不是列表项,切 tab 回来按卡片摆回原位时找的是顶层那一层。
+   */
+  rowKey?: string;
   onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
 }) {
   return (
     // 一段 50 张:屏幕外的那些由浏览器跳过布局与绘制,预留高度渲染过一次后改用实测值。
-    <section className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control [contain-intrinsic-size:auto_320px] [content-visibility:auto]">
+    <section
+      data-row-key={rowKey}
+      className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control [contain-intrinsic-size:auto_320px] [content-visibility:auto]"
+    >
       {/*
         点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
         地址上多一个 `finding=`,关掉侧滑就回到这一页本身。
@@ -323,8 +344,11 @@ function DisposeRootCauseGroupAction({
 function RootCauseGroupCard({
   scope,
   group,
+  rowKey,
   defaultOpen,
   focused,
+  pendingScroll,
+  onScrolled,
   canDispose,
   canDisposeBatch,
   pending,
@@ -334,9 +358,18 @@ function RootCauseGroupCard({
 }: {
   scope: StageScope;
   group: { id: number; reason: string; memberCount: number; members: StageFinding[] };
+  /** 这张卡当的那一列表项的标识(`rootCauseRowKey`)。 */
+  rowKey: string;
   defaultOpen: boolean;
-  /** 地址指的正是这一组:首次渲染滚到它。 */
+  /** 地址指的正是这一组:卡片高亮。 */
   focused: boolean;
+  /**
+   * 地址指的正是这一组,而且这一次深链接还没滚过去:挂上就滚到它,滚完回报一声。
+   * 「滚过没有」记在上层(issue #434 的评审复核):这张卡在换筛选条件与切 tab 时都会重挂,
+   * 每次重挂都再滚一次的话,「换筛选回到顶部」与「切回来停在原位」都会被它当场抵消。
+   */
+  pendingScroll: boolean;
+  onScrolled: () => void;
   canDispose: boolean;
   canDisposeBatch: boolean;
   pending: boolean;
@@ -346,9 +379,11 @@ function RootCauseGroupCard({
 }) {
   const card = useRef<HTMLElement>(null);
   useEffect(() => {
+    if (!pendingScroll) return;
     // 卡片比视口高,居中会把根因说明与「处置整组」滚出视野,落点要停在卡头。
-    if (focused) card.current?.scrollIntoView({ block: "start" });
-  }, [focused]);
+    card.current?.scrollIntoView({ block: "start" });
+    onScrolled();
+  }, [pendingScroll, onScrolled]);
 
   return (
     <Collapsible.Root
@@ -362,6 +397,7 @@ function RootCauseGroupCard({
     >
       <section
         ref={card}
+        data-row-key={rowKey}
         aria-label={`同根因组：${group.reason}`}
         // 顶栏是 sticky 叠在滚动容器上方的两行毛玻璃(main.tsx 的 TopBar),`block: "start"`
         // 会把卡头贴到视口 y=0,正好钻进顶栏底下。scroll-mt 补出顶栏实际高度,贴顶落点让到它下面。
@@ -413,6 +449,36 @@ function RootCauseGroupCard({
   );
 }
 
+/** 列表所在的滚动容器:外壳那一个(main.tsx 的 `panel-main-scroll`),不是视口本身。 */
+function listScroller(): HTMLElement | null {
+  return document.getElementById("panel-main-scroll");
+}
+
+/** 切 tab 之前记下的落点:视口里第一张卡是谁、它的卡头离滚动容器顶多远。 */
+type ListAnchor = { key: string; offset: number };
+
+/**
+ * 量一次当前的落点。列表停在顶上(或者容器还没挂)时不记——那一档切回来什么都不用摆。
+ *
+ * 记卡片而不记 scrollTop(issue #434 的评审复核):`Tabs.Content` 切走就卸载,切回来整列
+ * 卡片都是新挂的,`content-visibility` 替屏幕外那些记下的实测高度跟着没了,它们退回 320px
+ * 的预留高度,同一个 scrollTop 落到的是另一张卡上。按卡片锚定与这些高度无关。
+ */
+function measureListAnchor(): ListAnchor | null {
+  const container = listScroller();
+  if (container === null || container.scrollTop === 0) return null;
+  const top = container.getBoundingClientRect().top;
+  for (const card of container.querySelectorAll<HTMLElement>("[data-row-key]")) {
+    const box = card.getBoundingClientRect();
+    // 第一张还没被整个滚过去的卡。`offset` 因此可以是负的:它正被滚到一半。
+    if (box.bottom > top) {
+      const key = card.dataset.rowKey;
+      return key === undefined ? null : { key, offset: box.top - top };
+    }
+  }
+  return null;
+}
+
 /**
  * 一个审查阶段的主视图(issue #168):顶部三个计数,正文分成 Finding 与时间线两页
  * (issue #236)——一个阶段跑到几百条待处置之后,时间线不该被压在列表底下。
@@ -425,6 +491,7 @@ export function StageSummaryView({
   canDispose,
   canDisposeBatch,
   focusRootCause,
+  focusFinding,
   tab,
   onTabChange,
   timeline,
@@ -439,6 +506,12 @@ export function StageSummaryView({
   canDisposeBatch: boolean;
   /** 地址上 `?rootCause=` 指的那个组:进来时展开并滚到它。没有即 null。 */
   focusRootCause: number | null;
+  /**
+   * 侧滑此刻开着的那条 Finding(地址上的 `?finding=`)。列表不跟着它滚,只保证它那一项画
+   * 得出来:侧滑的上一条 / 下一条走到首段之外时,关掉侧滑要把焦点还给它那张卡的入口链接,
+   * 而卡片不在 DOM 里就找不着那条链接,焦点会掉到导航项上(issue #434 的评审复核)。
+   */
+  focusFinding: number | null;
   /** 组级处置的结果写到页头的那条提示上,与按阈值批量处置同一处。 */
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
   /** 当前在哪一页。tab 记在地址上,由阶段页读写(issue #236)。 */
@@ -505,45 +578,82 @@ export function StageSummaryView({
   );
 
   /*
-   * 切到时间线再切回来时回到列表原来滚到的地方。外壳只在换一级页面时才把滚动容器摆回顶部
+   * 切到时间线再切回来时回到列表原来看的那张卡。外壳只在换一级页面时才把滚动容器摆回顶部
    * (main.tsx),但时间线那一页比列表矮得多,浏览器会顺手把 scrollTop 夹到那一页的高度上,
-   * 切回来人就停在列表顶上了。离开 Finding 页那一刻记一笔,回来时摆回去。
+   * 切回来人就停在列表顶上了。离开 Finding 页那一刻量一次落点,回来时把那张卡摆回原位。
    */
-  const listScrollTop = useRef(0);
+  const listAnchor = useRef<ListAnchor | null>(null);
   const changeTab = (next: StageTab): void => {
-    if (tab === "findings" && next !== "findings") {
-      listScrollTop.current = document.getElementById("panel-main-scroll")?.scrollTop ?? 0;
-    }
+    if (tab === "findings" && next !== "findings") listAnchor.current = measureListAnchor();
     onTabChange(next);
   };
   useLayoutEffect(() => {
-    if (tab !== "findings" || listScrollTop.current === 0) return;
-    document.getElementById("panel-main-scroll")?.scrollTo(0, listScrollTop.current);
-  }, [tab]);
+    const anchor = listAnchor.current;
+    if (tab !== "findings" || anchor === null) return;
+    const index = rows.findIndex((row) => rootCauseRowKey(row) === anchor.key);
+    // 那一项不在了(这段时间里被处置掉、或者重取之后换了内容):摆不回去就停在顶上。
+    if (index === -1) {
+      listAnchor.current = null;
+      return;
+    }
+    // 先画到它。范围一变这个 effect 自己会再来一遍,那一遍才摆。
+    const covering = renderedCovering(rendered, index, FINDING_PAGE);
+    if (covering !== rendered) {
+      setRendered(covering);
+      return;
+    }
+    const container = listScroller();
+    const card = [...(container?.querySelectorAll<HTMLElement>("[data-row-key]") ?? [])].find(
+      (element) => element.dataset.rowKey === anchor.key,
+    );
+    listAnchor.current = null;
+    if (container === null || card === undefined) return;
+    /*
+     * 按差值挪,不按绝对位置:这张卡上面那些屏幕外的卡此刻是 320px 的预留高度,与离开时
+     * 的实测高度对不上,而差值只问「它现在离容器顶多远、当初离多远」。顶栏那 88px 在量与
+     * 摆两处都算在 offset 里,不必另扣(组卡的 `scroll-mt` 是给 `scrollIntoView` 用的)。
+     */
+    container.scrollTop +=
+      card.getBoundingClientRect().top - container.getBoundingClientRect().top - anchor.offset;
+  }, [tab, rendered]);
 
   /*
    * 换筛选条件就回到首段,并把外壳滚回顶部。不滚回去的话:范围缩到首段、内容跟着变矮,浏览器
    * 把 scrollTop 夹到新的底部,哨兵正好落进视口——它会一段接一段补到与原来那个滚动位置齐平
-   * 为止,等于没缩。记着的那个 tab 位置一并清掉:此刻人要看的是筛出来的头几条。
+   * 为止,等于没缩。记着的那个落点一并清掉:此刻人要看的是筛出来的头几条。
    */
   const refilter = (apply: () => void): void => {
     apply();
     setRendered(FINDING_PAGE);
-    listScrollTop.current = 0;
-    document.getElementById("panel-main-scroll")?.scrollTo(0, 0);
+    listAnchor.current = null;
+    listScroller()?.scrollTo(0, 0);
   };
 
   /*
-   * 地址上 `?rootCause=` 指的那个组落在已渲染的范围之外时,先把范围扩到包含它:组卡不渲染,
-   * 它那句「滚到我这里」的 effect 就永远不会跑,点进来看着像链接失效了。
+   * `?rootCause=` 指的那一组进来时展开并滚到它,而这一滚一个组只做一次:组卡在换筛选条件
+   * (范围缩回首段)与切 tab 时都会重挂,重挂一次就再滚一次的话,上面那两处刚摆好的滚动位置
+   * 会被它当场抵消。地址换成另一个组时照常滚那一个。
    */
-  const focusIndex =
-    focusRootCause === null
-      ? -1
-      : rows.findIndex((row) => row.kind === "group" && row.id === focusRootCause);
+  const scrolledTo = useRef<number | null>(null);
+  const focusPending = focusRootCause !== null && scrolledTo.current !== focusRootCause;
+  const markScrolled = useCallback(() => {
+    scrolledTo.current = focusRootCause;
+  }, [focusRootCause]);
+
+  /*
+   * 深链接指的那一项落在已渲染的范围之外时先把范围扩到包含它:组卡不渲染,它那句「滚到我
+   * 这里」的 effect 就永远不会跑,点进来看着像链接失效了;侧滑那条不渲染则是关掉侧滑之后
+   * 焦点无处可还。两个目标取下标大的那个即可——扩出来的范围只增不减,装得下远的就装得下近的。
+   */
+  const focusIndex = focusPending
+    ? rows.findIndex((row) => row.kind === "group" && row.id === focusRootCause)
+    : -1;
+  const findingIndex = focusFinding === null ? -1 : rowIndexOfFinding(rows, focusFinding);
   useEffect(() => {
-    setRendered((current) => renderedCovering(current, focusIndex, FINDING_PAGE));
-  }, [focusIndex]);
+    setRendered((current) =>
+      renderedCovering(current, Math.max(focusIndex, findingIndex), FINDING_PAGE),
+    );
+  }, [focusIndex, findingIndex]);
 
   /*
    * 滚到列表底部附近就追加一段。追加完 effect 重挂一次:哨兵还留在视口里时要接着补下一段,
@@ -560,9 +670,8 @@ export function StageSummaryView({
           setRendered((current) => current + FINDING_PAGE);
         }
       },
-      // 滚动容器是外壳那一个(main.tsx 的 `panel-main-scroll`),不是视口本身;提前一张卡的
-      // 高度开始补,人滚到底时下一段已经在那儿了。
-      { root: document.getElementById("panel-main-scroll"), rootMargin: "0px 0px 320px 0px" },
+      // 提前一张卡的高度开始补,人滚到底时下一段已经在那儿了。
+      { root: listScroller(), rootMargin: "0px 0px 320px 0px" },
     );
     observer.observe(target);
     return () => observer.disconnect();
@@ -717,7 +826,8 @@ export function StageSummaryView({
           {renderedRows.map((row) =>
             row.kind === "finding" ? (
               <FindingCard
-                key={row.finding.id}
+                key={rootCauseRowKey(row)}
+                rowKey={rootCauseRowKey(row)}
                 finding={row.finding}
                 scope={scope}
                 canDispose={canDispose}
@@ -726,11 +836,14 @@ export function StageSummaryView({
               />
             ) : (
               <RootCauseGroupCard
-                key={`group-${row.id}`}
+                key={rootCauseRowKey(row)}
+                rowKey={rootCauseRowKey(row)}
                 scope={scope}
                 group={row}
                 defaultOpen={row.id === focusRootCause}
                 focused={row.id === focusRootCause}
+                pendingScroll={focusPending && row.id === focusRootCause}
+                onScrolled={markScrolled}
                 canDispose={canDispose}
                 canDisposeBatch={canDisposeBatch}
                 pending={pendingGroups.has(row.id)}

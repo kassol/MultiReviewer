@@ -49,6 +49,30 @@ export function foldByRootCause<T extends { rootCause: RootCauseRef | null }>(
 }
 
 /**
+ * 折叠之后列表里那一项的标识。组 id 与 Finding id 各数各的,同一个数字在两边指的是两回事,
+ * 因此各带一个前缀。列表逐段渲染之后这个标识是「切到时间线再切回来仍停在原来看的那张卡」
+ * 的锚点(issue #434 的评审复核):认错一位就摆到别的卡上去了。
+ */
+export function rootCauseRowKey(row: RootCauseRow<{ id: number }>): string {
+  return row.kind === "group" ? `g${row.id}` : `f${row.finding.id}`;
+}
+
+/**
+ * 一条 Finding 落在折叠之后的第几项。入了组的那条落在它那张组卡上——组卡才是列表项,
+ * 成员随组卡一起画出来。被筛掉、不在列表里的回 -1。
+ */
+export function rowIndexOfFinding(
+  rows: readonly RootCauseRow<{ id: number }>[],
+  id: number,
+): number {
+  return rows.findIndex((row) =>
+    row.kind === "group"
+      ? row.members.some((member) => member.id === id)
+      : row.finding.id === id,
+  );
+}
+
+/**
  * 「处置整组」写得动的成员(issue #309):判据与服务端跳过的那一份同口径——组级处置只写
  * 当前未处置、且有行级评论承载的成员(`server.ts` 的 `handleDisposeRootCauseGroup`)。
  * 没有评论 id 的那条在 Forge 上没有可 resolve 的载体,逐条处置同样处置不了它;把它算成
