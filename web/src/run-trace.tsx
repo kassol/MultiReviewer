@@ -666,10 +666,12 @@ function RunMilestone({ event }: { event: TraceEvent }) {
       }
       // 这一轮没有正常收尾(issue #256):`reason` 与轮次投影上的失败原因是同一句,改判的
       // 中断轮次没有 `run_finished`,轨迹里只有这一条说得出它为什么停了。
+      // issue #432 之前落下的原因可能是空串或只有空白:与评审记录那一档(服务端
+      // `UNRECORDED_RUN_FAILURE`)同一口径回落成「未记录原因」(issue #444)。
       case "run_failed":
         return (
           <span className="text-base text-danger">
-            本轮失败:{str(payload, "reason") ?? "原因缺失"}
+            本轮失败:{str(payload, "reason")?.trim() || "未记录原因"}
           </span>
         );
       case "run_finished":

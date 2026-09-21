@@ -83,12 +83,22 @@ export function stageSummaryKey(scope: StageScope): (string | number)[] {
  */
 const STAGE_QUERY_STALE_TIME = 30_000;
 
+/*
+ * 预取失败之后组件挂载不再重发(issue #444)。React Query 默认 `retryOnMount: true`:
+ * 缓存里那一份停在错误态时,挂载会再发一次,打开一个不存在的阶段因此有两条详情请求。
+ * 预取那一次对 5xx 已经按全局判据重试过三次,4xx 本来就不该重试,挂载再发没有新信息。
+ * 这是观察者选项,预取(`prefetchQuery`)不读它;下一次进这条路由时 loader 照常预取,
+ * 停在错误态的那一份因此不会一直卡住。
+ */
+const STAGE_QUERY_RETRY_ON_MOUNT = false;
+
 /** 阶段汇总:这个阶段此刻还剩什么没处置。预取与 `useStageSummary` 共用这一份。 */
 export function stageSummaryQuery(scope: StageScope) {
   return {
     queryKey: stageSummaryKey(scope),
     queryFn: () => fetchJson<StageSummary>(scopePath(scope)),
     staleTime: STAGE_QUERY_STALE_TIME,
+    retryOnMount: STAGE_QUERY_RETRY_ON_MOUNT,
   };
 }
 
@@ -102,6 +112,7 @@ export function stageDetailQuery<T = unknown>(stageId: string) {
     queryKey: ["stage-detail", stageId],
     queryFn: () => fetchJson<T>(`/stages/${encodeURIComponent(stageId)}`),
     staleTime: STAGE_QUERY_STALE_TIME,
+    retryOnMount: STAGE_QUERY_RETRY_ON_MOUNT,
   };
 }
 

@@ -77,7 +77,11 @@ export function loadPanelSession(): Promise<PanelSession | null> {
         bootstrapNeeded = body?.bootstrap === true;
         return null;
       }
-      if (!response.ok) throw new Error(await errorText(response));
+      // 与 `fetchJson` 同形带上状态码:阶段详情页拿它当 `useQuery` 的 queryFn,全局重试判据
+      // 按它分 4xx 与其余(issue #444)。
+      if (!response.ok) {
+        throw Object.assign(new Error(await errorText(response)), { status: response.status });
+      }
       bootstrapNeeded = false;
       return (await response.json()) as PanelSession;
     })

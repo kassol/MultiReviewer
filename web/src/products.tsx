@@ -422,6 +422,9 @@ export function ProductsPage({
         里滚,左栏因此 sticky 在顶栏之下自己滚:跳到会话页时它停在同一处,不跟着主区走。
         `lg` 以下左栏让出自己的盒子,它那三张卡与这一列主区同为这个 flex 容器的直接子项,靠
         `max-lg:order-*` 排成 产品列表 → 会话 → 仓库 → 概览 + 产品知识(issue #383)。
+        左栏最大高度 = 视口 − 顶栏 − `PageBody` 的底部留白 `pb-20`(80px):滚到最底时这一行
+        的底边停在视口底边之上 80px,左栏再高就被这条底边顶上去、钻进顶栏底下(issue #444,
+        原先减的是 24px,差出的正是那 56px)。改 `PageBody` 的底部留白要连这里一起改。
       */}
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
         <ProductRail
@@ -430,7 +433,7 @@ export function ProductsPage({
           canChat={canChat}
           busy={busy}
           onFeedback={setFeedback}
-          className="lg:sticky lg:top-[var(--v8-top-chrome)] lg:max-h-[calc(100vh_-_var(--v8-top-chrome)_-_24px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
+          className="lg:sticky lg:top-[var(--v8-top-chrome)] lg:max-h-[calc(100vh_-_var(--v8-top-chrome)_-_80px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
         />
         <div className="flex min-w-0 flex-1 flex-col gap-3 max-lg:order-4">
           {productsQuery.isPending ? (

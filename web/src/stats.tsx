@@ -12,7 +12,7 @@ import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { cn } from "@/lib/utils";
 
-import { api, fetchJson } from "./api.ts";
+import { fetchJson } from "./api.ts";
 import type { UsageSummary } from "./runs.tsx";
 
 /** 处置率矩阵的一格:仓库 × category(ADR 0015)。 */
@@ -204,12 +204,7 @@ export function StatsPage() {
       const params = new URLSearchParams();
       if (from) params.set("from", `${from}T00:00:00.000Z`);
       if (to) params.set("to", `${to}T23:59:59.999Z`);
-      const response = await api(`/stats?${params}`);
-      if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `请求失败(${response.status})`);
-      }
-      return (await response.json()) as StatsResponse;
+      return fetchJson<StatsResponse>(`/stats?${params}`);
     },
   });
 

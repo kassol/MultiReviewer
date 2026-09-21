@@ -657,15 +657,28 @@ export function StageSummaryView({
   }, [tab, rendered, restoreTick]);
 
   /*
-   * 换筛选条件就回到首段,并把外壳滚回顶部。不滚回去的话:范围缩到首段、内容跟着变矮,浏览器
-   * 把 scrollTop 夹到新的底部,哨兵正好落进视口——它会一段接一段补到与原来那个滚动位置齐平
-   * 为止,等于没缩。记着的那个落点一并清掉:此刻人要看的是筛出来的头几条。
+   * 换筛选条件就回到首段,并把列表起点滚回吸顶工具条下沿。不滚回去的话:范围缩到首段、内容
+   * 跟着变矮,浏览器把 scrollTop 夹到新的底部,哨兵正好落进视口——它会一段接一段补到与原来
+   * 那个滚动位置齐平为止,等于没缩。记着的那个落点一并清掉:此刻人要看的是筛出来的头几条。
+   *
+   * 只滚到工具条那条线,不滚回页顶(issue #444):工具条吸顶之后,滚回页顶那一下它先脱开再
+   * 落回原处,整页跳一截。列表起点(第一张卡)还没滚过那条线——人就在页顶附近——就一格不动。
+   * 在 `apply` 的状态落地之前量:第一张卡以上是页头与筛选那一排,换筛选不改它们的高度。
+   * 停在时间线页时点计数会切回 Finding 页,那一刻 DOM 里没有卡,改量当前那一页 tab 内容的
+   * 起点——两页从同一处开始。
    */
   const refilter = (apply: () => void): void => {
+    const container = listScroller();
+    const first =
+      container?.querySelector<HTMLElement>("[data-row-key]")
+      ?? container?.querySelector<HTMLElement>('[role="tabpanel"]');
+    if (container != null && first != null) {
+      const past = first.getBoundingClientRect().top - listTop();
+      if (past < 0) container.scrollTop += past;
+    }
     apply();
     setRendered(FINDING_PAGE);
     listAnchor.current = null;
-    listScroller()?.scrollTo(0, 0);
   };
 
   /*
@@ -733,10 +746,15 @@ export function StageSummaryView({
 
           底色实心:内容从它底下滚过去,半透明会让卡片的字透出来。下边线由 `Tabs.List` 自带
           的那道 inset 阴影当,不另画一条。层级压在顶栏(z-30)与侧滑(z-40 / z-50)之下。
+
+          `sm` 以下压矮(issue #444):上留白、两行之间的间距、计数键的上下内边距与数字字号
+          各收一档,内容一样不少,估算从约 128px 收到约 109px(计数键 53px + tab 栏在粗指针
+          下的 44px 命中区 + 间距)。计数键收完仍高于 44px,tab 的 44px 由 styles.css 的
+          coarse 块给,两处命中区都不破。`sm` 起一格不变。
         */}
         <div
           id={STAGE_TOOLS_ID}
-          className="sticky top-[var(--v8-top-chrome)] z-20 -mx-1 flex flex-col gap-3 bg-background px-1 pt-2"
+          className="sticky top-[var(--v8-top-chrome)] z-20 -mx-1 flex flex-col gap-3 bg-background px-1 pt-2 max-sm:gap-2 max-sm:pt-1"
         >
           {/* 三个计数是这个阶段的进度:待处置在最前,人看的就是它。 */}
           <div className="grid grid-cols-3 gap-2 sm:flex">
@@ -759,7 +777,7 @@ export function StageSummaryView({
                     if (tab !== "findings") onTabChange("findings");
                   })
                 }
-                className={`flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 sm:min-w-40 ${
+                className={`flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left max-sm:py-1 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 sm:min-w-40 ${
                   disposition === id
                     ? "border-primary bg-accent-tint"
                     : "border-card-line bg-surface hover:bg-sunken"
@@ -769,7 +787,7 @@ export function StageSummaryView({
                   <span aria-hidden className={`size-1.5 rounded-full ${COUNT_DOT[id]}`} />
                   {DISPOSITION_LABEL[id]}
                 </span>
-                <span className="font-mono text-3xl font-bold tabular-nums">{value}</span>
+                <span className="font-mono text-3xl font-bold tabular-nums max-sm:text-xl">{value}</span>
               </button>
             ))}
           </div>
