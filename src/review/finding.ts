@@ -422,7 +422,10 @@ export type ReviewerEvent =
       /** 手动、到阈值还是上下文溢出。 */
       reason: string;
       tokensBefore: number | null;
-      /** Pi 给的是估算值(`estimatedTokensAfter`)。 */
+      /**
+       * 压缩之后还剩多少 token。**这是估算值**:Pi 只给 `estimatedTokensAfter`,没有精确数。
+       * 面板显示它时带「约」,与精确的 `tokensBefore` 分开(issue #417)。
+       */
       tokensAfter: number | null;
       error: string | null;
     };

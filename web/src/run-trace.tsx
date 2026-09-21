@@ -274,7 +274,10 @@ function ModelRetry({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-/** Pi 的一次上下文压缩(issue #409)。压缩改变会话走向,轨迹里此前看不到它发生过。 */
+/**
+ * Pi 的一次上下文压缩(issue #409)。压缩改变会话走向,轨迹里此前看不到它发生过。
+ * 压缩后的 token 数带「约」:Pi 给的是估算值,压缩前的那个是精确数(issue #417)。
+ */
 function ContextCompacted({ payload }: { payload: Record<string, unknown> }) {
   const reason = str(payload, "reason");
   const before = num(payload, "tokensBefore");
@@ -294,6 +297,7 @@ function ContextCompacted({ payload }: { payload: Record<string, unknown> }) {
       {before === null && after === null ? null : (
         <span className="text-sm text-text-secondary">
           <span className="font-mono tabular-nums">{before ?? "?"}</span> →{" "}
+          {after === null ? null : "约 "}
           <span className="font-mono tabular-nums">{after ?? "?"}</span> tokens
         </span>
       )}
