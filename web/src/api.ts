@@ -30,9 +30,15 @@ export async function errorText(response: Response): Promise<string> {
   return body?.requestId === undefined ? message : `${message}（request id：${body.requestId}）`;
 }
 
+/**
+ * 失败时抛出的 Error 带上 HTTP 状态码(issue #440):全局查询的重试判据
+ * (`lib/query-retry.ts`)按它区分 4xx 与其余,文案仍是 `errorText` 那一句。
+ */
 export async function fetchJson<T>(path: string): Promise<T> {
   const response = await api(path);
-  if (!response.ok) throw new Error(await errorText(response));
+  if (!response.ok) {
+    throw Object.assign(new Error(await errorText(response)), { status: response.status });
+  }
   return (await response.json()) as T;
 }
 

@@ -66,14 +66,8 @@ const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
  * (issue #439),组件挂载时直接命中它,不再重发。
  */
 export function useStageSummary(scope: StageScope) {
-  return useQuery({
-    ...stageSummaryQuery(scope),
-    // 还有轮次没跑完就每 10 秒续查,全部结束即停:人最想看结果的正是这几分钟。
-    refetchInterval: (query) =>
-      (query.state.data?.timeline ?? []).some((entry) => entry.finishedAt === null)
-        ? 10_000
-        : false,
-  });
+  // 不自己续查(issue #441):阶段页按详情续查到的轮次签名让它失效,见 `stage-detail.tsx`。
+  return useQuery(stageSummaryQuery(scope));
 }
 
 /** 阶段详情正文的两页(issue #236):Finding 列表与时间线。 */

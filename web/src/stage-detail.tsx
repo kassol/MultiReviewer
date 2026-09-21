@@ -40,7 +40,7 @@ import {
 } from "@/components/use-dialog-return-focus";
 import { findingDiffSource } from "@/lib/finding-position";
 /* 这一页那份详情查询的键、请求与保鲜时间与路由预取共用一份工厂(issue #439)。 */
-import { stageDetailQuery, type StageScope } from "@/lib/stage-queries";
+import { stageDetailQuery, stageRunsSignature, type StageScope } from "@/lib/stage-queries";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
@@ -194,6 +194,23 @@ export function StageDetailPage({
         : false,
   });
   const armPolling = () => setPollUntil(Date.now() + 90_000);
+  /*
+   * 阶段汇总不自己续查(issue #441),跟着这份详情走:续查到的轮次签名变了(新轮次出现、
+   * 某一轮结束或失败)才让汇总失效重取一次。头一次拿到数据、或换到另一个阶段时只记下
+   * 签名——那一刻的汇总路由已经预取过了。
+   */
+  const queryClient = useQueryClient();
+  const runsSignature =
+    detail.data === undefined ? null : stageRunsSignature(detail.data.groups);
+  const seenSignature = useRef<{ stageId: string; signature: string } | null>(null);
+  useEffect(() => {
+    if (runsSignature === null) return;
+    const seen = seenSignature.current;
+    seenSignature.current = { stageId, signature: runsSignature };
+    if (seen !== null && seen.stageId === stageId && seen.signature !== runsSignature) {
+      void queryClient.invalidateQueries({ queryKey: ["stage-summary"] });
+    }
+  }, [stageId, runsSignature, queryClient]);
   /*
    * 侧滑开的是哪一条与来时的列表过滤都记在地址里:刷新仍停在同一条,链接发给同事打开
    * 的也是它。旧地址上的 `run=` 不再有读者,带着它进来就是一张普通的阶段页。

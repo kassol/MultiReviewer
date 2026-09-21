@@ -78,8 +78,8 @@ export function stageSummaryKey(scope: StageScope): (string | number)[] {
 /**
  * 预取落地到组件挂载之间的保鲜时间。只为这一段路存在:预取先跑完、缓存里那一份立刻
  * 就算过期的话,组件挂载会再发一次,两个请求变成四个,预取等于没做。懒加载那几个
- * chunk 再慢也到不了这个数。失效(处置、重跑、推进)与续查(`refetchInterval`)都不看
- * 它,那两条路因此一格未变。
+ * chunk 再慢也到不了这个数。失效(处置、重跑、推进,以及阶段详情续查到的轮次签名变了
+ * 带动的汇总失效)与阶段详情的续查(`refetchInterval`)都不看它,那几条路因此一格未变。
  */
 const STAGE_QUERY_STALE_TIME = 30_000;
 
@@ -103,4 +103,22 @@ export function stageDetailQuery<T = unknown>(stageId: string) {
     queryFn: () => fetchJson<T>(`/stages/${encodeURIComponent(stageId)}`),
     staleTime: STAGE_QUERY_STALE_TIME,
   };
+}
+
+/**
+ * 阶段详情时间线上轮次的签名(issue #441):每一轮的 id、结束没有、失败没有。阶段汇总
+ * 不再自己每 10 秒续查(390 条 Finding 的阶段一次 1.28 MB),而 Finding 在轮次收尾那一笔
+ * 事务里才落库,运行途中汇总基本不变;阶段页拿续查到的详情算这份签名,变了(新轮次
+ * 出现、某一轮结束或失败)才让汇总失效重取一次。
+ */
+export function stageRunsSignature(
+  groups: readonly { runs: readonly { runId: number; finishedAt: string | null; failed: boolean }[] }[],
+): string {
+  return groups
+    .flatMap((group) =>
+      group.runs.map(
+        (run) => `${run.runId}:${run.finishedAt === null ? "running" : "finished"}:${run.failed ? "failed" : "ok"}`,
+      ),
+    )
+    .join(",");
 }

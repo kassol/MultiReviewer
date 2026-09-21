@@ -6,7 +6,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { scopeFromStageId, scopePath, stageIdOf, stageSummaryKey } from "./stage-queries.ts";
+import {
+  scopeFromStageId,
+  scopePath,
+  stageIdOf,
+  stageRunsSignature,
+  stageSummaryKey,
+} from "./stage-queries.ts";
 
 test("两种来源的阶段标识各推出自己那一片", () => {
   assert.deepEqual(scopeFromStageId("range:21"), { kind: "range-review", rangeReviewId: 21 });
@@ -62,4 +68,26 @@ test("两种来源的汇总各有自己的查询键与地址", () => {
   const pull = { kind: "pull-request", owner: "acme", repo: "my widgets", pullNumber: 7 } as const;
   assert.deepEqual(stageSummaryKey(pull), ["stage-summary", "pull-request", "acme", "my widgets", 7]);
   assert.equal(scopePath(pull), "/stage-summary?owner=acme&repo=my%20widgets&pullNumber=7");
+});
+
+test("轮次签名只随轮次的集合、结束与失败变化(issue #441)", () => {
+  const run = (runId: number, finishedAt: string | null, failed = false) => ({
+    runId,
+    finishedAt,
+    failed,
+    reported: 0,
+  });
+  const running = [{ runs: [run(9, null), run(8, "2026-09-21T09:00:00")] }];
+  const base = stageRunsSignature(running);
+  // 同一批轮次、只有别的格变了:签名不变,汇总不重取。
+  assert.equal(
+    stageRunsSignature([{ runs: [{ ...run(9, null), reported: 3 }, run(8, "2026-09-21T09:00:00")] }]),
+    base,
+  );
+  // 某一轮结束、某一轮失败、新轮次出现:各自改变签名。
+  assert.notEqual(stageRunsSignature([{ runs: [run(9, "2026-09-21T10:00:00"), run(8, "2026-09-21T09:00:00")] }]), base);
+  assert.notEqual(stageRunsSignature([{ runs: [run(9, null, true), run(8, "2026-09-21T09:00:00")] }]), base);
+  assert.notEqual(stageRunsSignature([{ runs: [run(10, null)] }, ...running]), base);
+  // 刚推进、还没有轮次的比较项不算:汇总里没有它的任何东西。
+  assert.equal(stageRunsSignature([{ runs: [] }, ...running]), base);
 });

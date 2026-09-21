@@ -430,7 +430,7 @@ export function ProductsPage({
           canChat={canChat}
           busy={busy}
           onFeedback={setFeedback}
-          className="lg:sticky lg:top-[88px] lg:max-h-[calc(100vh-112px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
+          className="lg:sticky lg:top-[var(--v8-top-chrome)] lg:max-h-[calc(100vh_-_var(--v8-top-chrome)_-_24px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
         />
         <div className="flex min-w-0 flex-1 flex-col gap-3 max-lg:order-4">
           {productsQuery.isPending ? (
@@ -629,11 +629,12 @@ function Annotations({ entry }: { entry: ProductKnowledge }) {
 
 /**
  * 区块小标题:标题加条数,三段共用一份。段内锚点跳的就是它,顶栏是 sticky 的两行毛玻璃,
- * `block: "start"` 会把它贴到视口 y=0 钻进底下,因此让开 88px。
+ * `block: "start"` 会把它贴到视口 y=0 钻进底下,因此让开顶栏实高 `--v8-top-chrome`——`sm` 以下
+ * 顶栏只剩一行,写死 88px 会多让出一截空白(issue #442)。
  */
 function SectionHeading({ id, title, count }: { id: string; title: string; count: number }) {
   return (
-    <h3 id={id} className="flex scroll-mt-[88px] items-center gap-1.5 text-lg font-semibold">
+    <h3 id={id} className="flex scroll-mt-[var(--v8-top-chrome)] items-center gap-1.5 text-lg font-semibold">
       {title}
       <span className="font-mono text-xs font-normal text-text-muted tabular-nums">{count}</span>
     </h3>

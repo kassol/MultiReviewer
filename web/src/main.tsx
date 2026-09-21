@@ -36,6 +36,7 @@ import {
   type AgentSession,
 } from "@/lib/agent-sessions";
 import { productQueryKey, type ProductDetail } from "@/lib/products";
+import { shouldRetryQuery } from "@/lib/query-retry";
 /*
  * 阶段详情路由的预取(issue #439)。这两份工厂在 `lib/` 而不在阶段详情页里:静态引那一页
  * 就等于把整页代码搬回入口包,懒加载白做;这个模块不含 JSX、只引 `api.ts`。
@@ -853,6 +854,8 @@ declare module "@tanstack/react-router" {
 }
 
 const queryClient = new QueryClient({
+  // 4xx 不重试(issue #440):打开不存在或没分到的阶段不必先等约 7 秒骨架才出错误态。
+  defaultOptions: { queries: { retry: shouldRetryQuery } },
   mutationCache: new MutationCache({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: SETUP_STATUS_QUERY_KEY });
