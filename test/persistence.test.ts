@@ -539,3 +539,68 @@ test("正常收尾的轮次没有轮次级失败原因;recordRunFailure 只写�
     store.close();
   }
 });
+
+test("轮次级失败原因通篇空白时落的是「未记录原因」,正常原因原样落库", () => {
+  // 「非空即收尾失败」这一档不能在没有任何原因的情况下成立(issue #432):轮次侧滑
+  // 原样渲染这一列,空原因就是一句尾巴空着的话。两条写入路径各验一遍。
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.path);
+  const start = (pullNumber: number) =>
+    store.startRun({
+      owner: "acme",
+      repo: "widgets",
+      pullNumber,
+      headSha: "deadbee",
+      startedAt: "2026-09-21T00:00:00.000Z",
+      changedFiles: 1,
+      changedLines: 2,
+      batchCount: 1,
+      reviewerPins: [],
+    });
+  const failureOf = (runId: number) =>
+    store.listRuns({ limit: 10 }).find((run) => run.id === runId)!.failure;
+  try {
+    // 发布失败那条路径。
+    const empty = start(7);
+    store.finishRun(empty, {
+      finishedAt: "2026-09-21T00:10:00.000Z",
+      durationMs: 1,
+      failed: false,
+      outcomes: [],
+      findings: [],
+    });
+    store.recordRunFailure(empty, "");
+    assert.equal(failureOf(empty), "未记录原因");
+
+    const blank = start(8);
+    store.finishRun(blank, {
+      finishedAt: "2026-09-21T00:10:00.000Z",
+      durationMs: 1,
+      failed: false,
+      outcomes: [],
+      findings: [],
+    });
+    store.recordRunFailure(blank, " \n\t ");
+    assert.equal(failureOf(blank), "未记录原因");
+
+    // 首尾有空白、正文非空的原样落库:不截断,也不改写。
+    const real = start(9);
+    store.finishRun(real, {
+      finishedAt: "2026-09-21T00:10:00.000Z",
+      durationMs: 1,
+      failed: false,
+      outcomes: [],
+      findings: [],
+    });
+    store.recordRunFailure(real, "\n发布 review 失败:Gitea 回 502\n");
+    assert.equal(failureOf(real), "\n发布 review 失败:Gitea 回 502\n");
+
+    // 改判失败那条路径(服务重启、续跑不成立):只有它还停在运行中,改判只碰它。
+    const interrupted = start(10);
+    store.failInterruptedRuns("   ", "2026-09-21T01:00:00.000Z");
+    assert.equal(failureOf(interrupted), "未记录原因");
+  } finally {
+    store.close();
+  }
+});

@@ -4386,6 +4386,21 @@ function stageRowEntry(row: Record<string, unknown>): StageRowEntry {
 }
 
 /**
+ * 轮次级失败原因(ADR 0026)去掉首尾空白后为空时落的那句话。写入侧与读取侧共用一处:
+ * 两边各写一遍字面量,哪天改文案就会剩下一处没改。
+ */
+const UNRECORDED_RUN_FAILURE = "未记录原因";
+
+/**
+ * 写进 `review_run.failure` 之前过这一道(issue #432):通篇空白的原因换成一句话。
+ * 「非空即收尾失败」这一档否则可以在没有任何原因的情况下成立,轮次侧滑上得到一句
+ * 尾巴空着的话。正常的原因原样落库——不截断,也不改写。
+ */
+function runFailureText(failure: string): string {
+  return failure.trim() === "" ? UNRECORDED_RUN_FAILURE : failure;
+}
+
+/**
  * 给定这几轮的警示(issue #421、#424):哪几轮有模型整轮没跑成、哪几轮有模型的某几批
  * 没跑成、哪几轮没有正常收尾。
  *
@@ -4436,15 +4451,16 @@ function stageRunAlerts(
     alerts.set(Number(row["run_id"]), {
       modelFailed: Number(row["model_failed"]) === 1,
       batchFailed: Number(row["batch_failed"]) === 1,
-      // 第一行去掉首尾空白;取不出东西(空串、只有空白、以换行开头)时回落成一句话
-      // ——这一格是面板直接读给人看的,空原因会让悬停说明停在一个「:」上(issue #428)。
+      // 第一行去掉首尾空白(issue #428):这一格是面板直接读给人看的,空原因会让悬停
+      // 说明停在一个「:」上。取不出东西时的那道回落只为写入侧收口(issue #432)之前
+      // 落下的旧行留着——新落的行整篇空白已经换成了同一句话。
       closingFailure:
         failure === null
           ? null
           : (String(failure)
               .split("\n")
               .map((line) => line.trim())
-              .find((line) => line !== "") ?? "未记录原因"),
+              .find((line) => line !== "") ?? UNRECORDED_RUN_FAILURE),
     });
   }
   return alerts;
@@ -7791,7 +7807,7 @@ export function openStore(dbPath: string): Store {
         db.prepare(
           `UPDATE review_run SET finished_at = ?, failed = 1, failure = ?
             WHERE finished_at IS NULL${scope}`,
-        ).run(at, failure, ...params);
+        ).run(at, runFailureText(failure), ...params);
         // 改判掉的那些轮次不会再被续跑,中间态的批次结果一并清掉(issue #248)。
         const deleteBatches = db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?");
         for (const row of rows) deleteBatches.run(row["id"] as number);
@@ -7809,7 +7825,10 @@ export function openStore(dbPath: string): Store {
     },
 
     recordRunFailure(runId, failure) {
-      db.prepare("UPDATE review_run SET failure = ? WHERE id = ?").run(failure, runId);
+      db.prepare("UPDATE review_run SET failure = ? WHERE id = ?").run(
+        runFailureText(failure),
+        runId,
+      );
     },
 
     interruptedRuns() {
