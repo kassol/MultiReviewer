@@ -10743,6 +10743,12 @@ async function handleHookCheck(
   });
 }
 
+/**
+ * `/assets` 下的产物永不过期(issue #439)。Vite 给每个文件名都带上内容哈希,内容一变
+ * 文件名就变,因此浏览器缓存住的那一份永远是对的;发版后换的是 index.html 里引的文件名。
+ */
+const ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
+
 /** `/assets` 下会出现的几种产物。列表外的一律按二进制流给,浏览器自己认。 */
 const ASSET_TYPES: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
@@ -10774,6 +10780,7 @@ async function serveAsset(
     const content = await readFile(file);
     res.writeHead(200, {
       "content-type": ASSET_TYPES[extname(file)] ?? "application/octet-stream",
+      "cache-control": ASSET_CACHE_CONTROL,
     });
     res.end(content);
   } catch {
@@ -10783,6 +10790,10 @@ async function serveAsset(
 
 /**
  * 面板页面:原样返回 index.html。深层路由刷新也走这里,客户端路由自己接管路径。
+ *
+ * 它明确 `no-cache`(issue #439):这一份引的是带哈希的产物文件名,自己被缓存住就等于
+ * 发版发不出去——人刷新一次仍拿到上一版的入口。不加 etag:没有校验器就每次全量取,
+ * 而这一份只有几百字节。
  */
 async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
   let html: string;
@@ -10794,7 +10805,10 @@ async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<
     res.end("面板前端产物缺失:镜像构建要包含 web/dist,或检查 MULTIREVIEWER_PANEL_DIST。");
     return;
   }
-  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-cache",
+  });
   res.end(html);
 }
 
