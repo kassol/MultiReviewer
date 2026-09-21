@@ -14,7 +14,13 @@ import { languageOf, splitHighlightedLines, splitIndent } from "@/lib/highlight-
 import { localClock, localDay } from "@/lib/time";
 
 import { fetchJson, send } from "./api.ts";
-import { type RunFinding } from "./runs.tsx";
+/*
+ * 这几个组件渲染的一律是阶段汇总里的 Finding(issue #433):两个调用方(阶段汇总的列表
+ * 与阶段详情的代码差异侧滑)传进来的都是它,而它带着行作者与 `placedRunId`——轮次自己
+ * 那份投影没有这两格。直接引契约,不经 `stage-summary.tsx` 再导出一手:那个文件反过来
+ * 引本文件。
+ */
+import type { StageSummaryFinding as StageFinding } from "../../src/contracts/stage-summary.ts";
 
 /** `GET /runs/{id}/diff?file=` 的一个文件的 unified diff。 */
 type RunFilePatch = { path: string; patch: string };
@@ -99,7 +105,7 @@ const CODE_TINT = { add: "bg-success-tint/50", del: "bg-danger-tint/50", context
 const SEVERITY_COLOR = { P0: "red", P1: "amber", P2: "gray" } as const;
 
 /** 已处置:人工与「已修复」自动处置都算。 */
-function findingDisposed(finding: RunFinding): boolean {
+function findingDisposed(finding: StageFinding): boolean {
   return finding.disposition === "resolved" || finding.disposition === "fixed";
 }
 
@@ -113,7 +119,7 @@ function hasText(value: string | null): boolean {
  * 正文只呈现代表段那一份,这里是核对某个模型原话的地方,因此问题那一段照原样列出,
  * 不因为与代表段相同就省掉——省掉会让人以为这个模型没说过问题本身。
  */
-function AttributionSaid({ said }: { said: RunFinding["attributions"][number] }) {
+function AttributionSaid({ said }: { said: StageFinding["attributions"][number] }) {
   return (
     <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
       <span className="min-w-0 break-all font-mono">{said.model}</span>
@@ -131,7 +137,7 @@ function AttributionSaid({ said }: { said: RunFinding["attributions"][number] })
  * 模型。与 `AttributionSaid` 同一条规则:问题那一段照原样列出,影响与建议两段都没有内容
  * 也照样出块——正文是综合文本时,承接段的问题说法在这里是唯一能核对的原话。
  */
-function CarriedSaid({ said }: { said: RunFinding["carried"][number] }) {
+function CarriedSaid({ said }: { said: StageFinding["carried"][number] }) {
   return (
     <div className="flex flex-col gap-0.5 text-sm text-text-secondary">
       <p className="flex flex-wrap items-center gap-1.5">
@@ -153,7 +159,7 @@ function CarriedSaid({ said }: { said: RunFinding["carried"][number] }) {
  * 代表段,要核对某个模型的原话在这里展开。只有一条归属又没有承接段时不给这个入口
  * ——展开与正文逐字相同,是白按一下。
  */
-function OriginalSaid({ finding }: { finding: RunFinding }) {
+function OriginalSaid({ finding }: { finding: StageFinding }) {
   if (finding.attributions.length <= 1 && finding.carried.length === 0) return null;
   return (
     <Collapsible.Root className="group/said flex flex-col gap-1.5">
@@ -200,7 +206,7 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }) {
+function LineAuthorLine({ lineAuthor }: { lineAuthor: StageFinding["lineAuthor"] }) {
   if (lineAuthor === null) {
     return <MetaRow label="行作者">无法追溯</MetaRow>;
   }
@@ -229,7 +235,7 @@ function LineAuthorLine({ lineAuthor }: { lineAuthor: RunFinding["lineAuthor"] }
  * 严重度与类别两枚徽章。已处置的那条把严重度换成绿勾:它不再等人排优先级。阶段列表的
  * 卡头与 diff 里的卡片共用这一份。
  */
-export function FindingBadges({ finding }: { finding: RunFinding }) {
+export function FindingBadges({ finding }: { finding: StageFinding }) {
   return (
     <>
       {findingDisposed(finding) ? (
@@ -287,8 +293,7 @@ export function FindingRow({
   canDispose,
   heading = true,
 }: {
-  /** 阶段汇总里的 Finding 带标题;轮次自己的没有。 */
-  finding: RunFinding & { title?: string };
+  finding: StageFinding;
   canDispose: boolean;
   /** 徽章与标题由卡片自己画。阶段列表的卡头已经画了这两样,那里传 false。 */
   heading?: boolean;
@@ -329,7 +334,7 @@ export function FindingRow({
               <div className="flex flex-wrap items-center gap-1.5">
                 <FindingBadges finding={finding} />
               </div>
-              {finding.title === undefined || finding.title === "" ? null : (
+              {finding.title === "" ? null : (
                 <p className={`text-lg font-semibold break-words ${resolved ? "text-text-secondary line-through" : ""}`}>
                   {finding.title}
                 </p>
@@ -342,7 +347,7 @@ export function FindingRow({
           <BodyPart
             text={finding.description}
             resolved={resolved}
-            struck={resolved && (finding.title === undefined || finding.title === "")}
+            struck={resolved && finding.title === ""}
           />
           {hasText(finding.impact) ? (
             <BodyPart label="影响" text={finding.impact ?? ""} resolved={resolved} />
@@ -531,7 +536,7 @@ function FindingCells({
   canDispose,
   focusFindingId,
 }: {
-  findings: readonly (RunFinding & { title?: string })[];
+  findings: readonly StageFinding[];
   canDispose: boolean;
   focusFindingId?: number;
 }) {
@@ -567,7 +572,7 @@ function FindingCells({
                       findingDisposed(finding) ? "text-text-secondary line-through" : ""
                     }`}
                   >
-                    {hasText(finding.title ?? null) ? finding.title : finding.description}
+                    {hasText(finding.title) ? finding.title : finding.description}
                   </span>
                   <ChevronDownIcon
                     aria-hidden
@@ -609,7 +614,7 @@ export function FilePatch({
   runId: number;
   path: string;
   /** 这个文件下的全部 Finding,含锚不上的那些。 */
-  findings: readonly RunFinding[];
+  findings: readonly StageFinding[];
   canDispose: boolean;
   /** 打开侧滑时点的那一条:滚到它锚定的行并高亮它。 */
   focusFindingId?: number;
@@ -670,7 +675,7 @@ export function FilePatch({
   // 可锚定的判据同一份(issue #368 追加修复):行号落在这一轮渲染范围内,且没带
   // placedRunId、或 placedRunId 就是这一轮——位置属于别的轮次时行号即使落在范围内
   // 也不算,那是另一轮代码上的巧合。
-  const byLine = new Map<number, RunFinding[]>();
+  const byLine = new Map<number, StageFinding[]>();
   for (const finding of findings) {
     if (!isAnchorable(finding, runId, rendered)) continue;
     byLine.set(finding.line, [...(byLine.get(finding.line) ?? []), finding]);

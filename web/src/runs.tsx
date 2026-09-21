@@ -19,6 +19,15 @@ import { localClock, localDay } from "@/lib/time";
  * 名字——面板这边七处引它,改名换不来任何东西。
  */
 import type { StageListItem as StageItem, StageRunAlert } from "../../src/contracts/stages.ts";
+/*
+ * 轮次那一行与它的用量同理(issue #433),沿用 `RunItem` / `UsageSummary` 这两个名字。
+ * 轮次的 Finding 这边一个读者都没有:代码差异视图渲染的是阶段汇总里的那份形状,它直接
+ * 引 `stage-summary.ts` 的契约。
+ */
+import type {
+  ReviewerUsage as UsageSummary,
+  RunProjection as RunItem,
+} from "../../src/contracts/runs.ts";
 
 import { fetchJson, send } from "./api.ts";
 import { RangeReviewLaunch } from "./range-review-launch.tsx";
@@ -31,152 +40,14 @@ import {
 } from "./repo-actions.tsx";
 import { RepoRules } from "./repo-rules.tsx";
 import { clearPanelSession } from "./session.ts";
-import type { TriggerSource } from "./stage-summary.tsx";
 import { SummaryRate } from "./stats.tsx";
 
-/** 一轮或一个 Reviewer 的 token 用量。运行诊断信息,不折算金额(issue #188)。 */
-export type UsageSummary = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-};
-
-export type RunItem = {
-  id: number;
-  owner: string;
-  repo: string;
-  pullNumber: number;
-  headSha: string;
-  /** 被审 pull request 的标题快照;null 即范围审查那一档或升级前的旧行。 */
-  title: string | null;
-  startedAt: string;
-  /** 手动重新运行的调用者用户名快照；null 表示自动触发。 */
-  triggeredBy: string | null;
-  /** 这一轮是被谁开出来的(issue #312)。定时那一档没有调用者,来源只在这一格上。 */
-  triggerSource: TriggerSource;
-  /** 这一轮归属的范围审查；null 即由 pull request 触发。 */
-  rangeReviewId: number | null;
-  /** 发起这一轮时附的本轮指令(issue #225);null 即没有附。只属于这一轮。 */
-  directive: string | null;
-  /** 这一轮的模式(issue #242)。升级前的旧行读回来是完整审查。 */
-  mode: RerunMode;
-  finishedAt: string | null;
-  failed: boolean;
-  /**
-   * 轮次级的失败原因(issue #256):这一轮为什么没有正常收尾。null 即收尾正常;与
-   * `failed` 分开读——`failed` 说的是全部 Reviewer 失败,这一格说的是收尾。
-   */
-  failure: string | null;
-  /** 一行一个参与本轮的模型。`failure` 非 null 即这个模型这轮失败了(节选文本)。 */
-  models: {
-    model: string;
-    findings: number;
-    failure: string | null;
-    usage?: UsageSummary;
-  }[];
-  /** 会话没有产生统计时省略。 */
-  usage?: UsageSummary;
-  /** 人工处置掉的 Finding 条数。 */
-  resolved: number;
-  /** 「已修复」自动处置掉的 Finding 条数。 */
-  fixed: number;
-  total: number;
-};
+export type { RunItem, UsageSummary };
 
 /** 已处置的 Finding 条数:人工与自动都算。进度与状态一律按它判。 */
 function disposedCount(run: { resolved: number; fixed: number }): number {
   return run.resolved + run.fixed;
 }
-
-/**
- * 一条落库的 Finding。`commentId` 为 null 的那些只活在 review 正文里(fallback),
- * 没有可处置的载体,行内不给处置动作。
- */
-export type RunFinding = {
-  id: number;
-  /** 报出它的全部模型,按首报先后(ADR 0015)。 */
-  models: string[];
-  /**
-   * 每个归属自己的说法,按首报先后(issue #266);同一模型的多条各占一项。`impact` /
-   * `suggestion` 为 null 即升级前落的行,当时没存;空串是模型没给。两档都不展示那一段。
-   */
-  attributions: {
-    model: string;
-    severity: "P0" | "P1" | "P2";
-    category: string;
-    description: string;
-    impact: string | null;
-    suggestion: string | null;
-  }[];
-  /**
-   * 延续承接来的历史说法(issue #267):只有按复核结论合成的延续那一行才有,每段是历史
-   * 某个归属的问题、影响与建议,带原模型、来源轮次与那一轮的 head(建议适用的代码版本),
-   * 尚未针对新代码重新验证。它们不是本轮的归属,不在 `models` 里。
-   */
-  carried: {
-    model: string;
-    runId: number;
-    headSha: string;
-    description: string;
-    impact: string | null;
-    suggestion: string | null;
-  }[];
-  file: string;
-  line: number;
-  /**
-   * `line` 属于哪一轮(issue #368):只有阶段汇总里的 Finding 带这一格,轮次页自己的
-   * Finding 没有——它本就只认本轮,不需要另外比对。
-   */
-  placedRunId?: number;
-  severity: "P0" | "P1" | "P2";
-  category: string;
-  /** 代表段(issue #278):描述最长的那条归属的问题、影响与建议,三段同出一条。 */
-  description: string;
-  /**
-   * 代表段的影响与建议。null 即升级前落的行连归属上也没存,整段不展示;空串是模型
-   * 没给,同样不展示。
-   */
-  impact: string | null;
-  suggestion: string | null;
-  /**
-   * `fixed` 是「已修复」自动处置,处置人为空;`continued` 是「已延续」——这处代码已改写,
-   * 同一条 Finding 由新一轮在新位置那条承接,这一行只剩交接的记录,不是处置。
-   */
-  disposition: "resolved" | "unresolved" | "unknown" | "fixed" | "continued";
-  placement: "inline" | "body";
-  commentId: string | null;
-  /** Forge 上那条原评论的地址。 */
-  commentHtmlUrl: string | null;
-  /** 在面板上处置的人与时刻;在 Gitea 上处置的两项为 null。 */
-  disposedBy: string | null;
-  disposedAt: string | null;
-  /** 处置备注,只存面板。 */
-  note: string | null;
-  /** 承接来的那条旧评论的地址(CONTEXT.md 已延续);不是延续来的为 null。 */
-  continuedFrom: string | null;
-  /**
-   * 交接未完成(ADR 0025,issue #252):延续时旧评论的 resolve 没成,它还留在 Forge 上
-   * 待关闭。轮次投影上挂在「已延续」的旧行上,阶段汇总里挂在承接它的那条上;下一轮
-   * Review Run 收尾时重试,成功即清掉。
-   */
-  handoffPending: boolean;
-  /**
-   * 行作者(CONTEXT.md):这条 Finding 所在行在它那一轮的 head 上最后一次改动的 git
-   * author 与那次提交。判不出来为 null,面板显示「无法追溯」。
-   *
-   * `adjacent` 即相邻改动(issue #241):落点这一行本身这一轮没改,作者取自同一个 hunk
-   * 内离它最近的那处改动。
-   */
-  lineAuthor: {
-    sha: string;
-    name: string;
-    email: string;
-    authoredAt: string;
-    adjacent: boolean;
-  } | null;
-};
 
 export type { StageItem };
 
