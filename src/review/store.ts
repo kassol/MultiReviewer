@@ -4542,7 +4542,10 @@ function stageRunAlerts(
     alerts.set(Number(row["run_id"]), {
       modelFailed: Number(row["model_failed"]) === 1,
       batchFailed: Number(row["batch_failed"]) === 1,
-      closingFailure: failure === null ? null : String(failure).split("\n")[0]!,
+      // 第一行去掉首尾空白;取不出东西(空串、只有空白、以换行开头)时回落成一句话
+      // ——这一格是面板直接读给人看的,空原因会让悬停说明停在一个「:」上(issue #428)。
+      closingFailure:
+        failure === null ? null : String(failure).split("\n")[0]!.trim() || "未记录原因",
     });
   }
   return alerts;

@@ -689,3 +689,35 @@ test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有
   assert.equal(body.stages.length, 1);
   assert.equal(body.stages[0]!.latestRunAlert, null);
 });
+
+/*
+ * 收尾失败那一档是面板直接读给人看的(issue #428):原因原文取不出第一行时,徽章照挂
+ * 而悬停说明末尾会是「:」加一段空白。两种写法都落到同一句回落上。
+ */
+test("阶段列表:收尾失败的原因取不出第一行时回落成未记录原因", async () => {
+  const h = await startPanelHarness();
+  // 以换行开头:第一行是空的。
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+    { closingFailure: "\n发布 review 失败:Gitea 回了 500" },
+  );
+  // 通篇只有空白。
+  seedRun(
+    h.db.path,
+    { owner: "acme", repo: "widgets", pullNumber: 8, startedAt: "2026-08-02T00:00:00.000Z" },
+    [{ fingerprint: "fp-2" }],
+    { closingFailure: "   \n  " },
+  );
+
+  const body = await stages(h);
+  assert.equal(body.stages.length, 2);
+  for (const stage of body.stages) {
+    assert.deepEqual(stage.latestRunAlert, {
+      modelFailed: false,
+      batchFailed: false,
+      closingFailure: "未记录原因",
+    });
+  }
+});

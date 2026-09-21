@@ -213,16 +213,17 @@ export function StageStatusBadge({ stage }: { stage: StageItem }) {
 }
 
 /**
- * 最新一轮没跑全时行上的警示(issue #421、#424)。不点进阶段页翻时间线就看得出这一轮
- * 的结论不完整。
+ * 最新一轮没跑全时的警示(issue #421、#424)。不点进阶段页翻时间线就看得出这一轮的
+ * 结论不完整;**阶段详情的页头用的是同一枚**(issue #428),从分享链接直接进去的人
+ * 看到的那句话与列表行逐字一致。
  *
  * 三档分开说,排障方向不同:模型整轮没跑成去看模型服务,某几批没跑成只影响那几批的
  * 文件,收尾失败则是结论没能落到 Forge 上。几样都有时徽章每一档都说——title 触屏上
  * 看不到、读屏也不一定读,看得见的那几个字得自己说全;整句仍在 title 上。这里不套
- * Tooltip:行本身就是一个链接,再加一个可聚焦的触发器会在长列表里多出一串 tab 站点,
- * 而触屏上 Tooltip 压根打不开(issue #374)。
+ * Tooltip:列表里行本身就是一个链接,再加一个可聚焦的触发器会在长列表里多出一串 tab
+ * 站点,而触屏上 Tooltip 压根打不开(issue #374)。
  */
-function StageAlertBadge({ alert }: { alert: StageRunAlert }) {
+export function StageAlertBadge({ alert }: { alert: StageRunAlert }) {
   return (
     <StatusBadge tone="warning" title={stageAlertDetail(alert)}>
       {stageAlertText(alert)}
