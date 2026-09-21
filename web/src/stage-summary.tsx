@@ -633,7 +633,37 @@ export function StageSummaryView({
      * 的实测高度对不上,而差值只问「它现在离那条线多远、当初离多远」。基线两处同取
      * `listTop()`,顶栏与吸顶工具条占掉的那一截因此在量与摆两处抵消,不必另扣。
      */
-    container.scrollTop += card.getBoundingClientRect().top - listTop() - anchor.offset;
+    const settle = (): number => card.getBoundingClientRect().top - listTop() - anchor.offset;
+    container.scrollTop += settle();
+    /*
+     * 摆完之后再盯几帧:滚到位那一刻,落点上方靠近视口的那几张卡才被 `content-visibility`
+     * 真正排版,高度从 320px 的预留值换成实测值,落点随之被顶开(部署实例实测偏了 144px)。
+     * 每帧按同一条基线补差,连续两帧不再偏、或满二十帧即停;人一动滚轮或触屏就立刻让手。
+     */
+    let frames = 0;
+    let steady = 0;
+    let frame = 0;
+    const stop = (): void => {
+      cancelAnimationFrame(frame);
+      container.removeEventListener("wheel", stop);
+      container.removeEventListener("touchstart", stop);
+    };
+    const follow = (): void => {
+      const drift = card.isConnected ? settle() : 0;
+      if (Math.abs(drift) > 1) {
+        container.scrollTop += drift;
+        steady = 0;
+      } else {
+        steady += 1;
+      }
+      frames += 1;
+      if (steady >= 2 || frames >= 20) return stop();
+      frame = requestAnimationFrame(follow);
+    };
+    container.addEventListener("wheel", stop, { passive: true });
+    container.addEventListener("touchstart", stop, { passive: true });
+    frame = requestAnimationFrame(follow);
+    return stop;
   }, [tab, rendered, restoreTick]);
 
   /*
