@@ -1384,32 +1384,64 @@ export async function disposeAbsentHistory(
  * Reviewer 不记:那不是漏复核,是它根本没跑。这批记录同时是自动处置的裁决输入。
  *
  * 全集是本阶段全部未处置的历史,而不是注入过的那些(issue #235):所在文件不在本轮任何
- * 批次里的那条谁都没复核过,按漏给结论落,与「注入了但没给结论」同形——面板上因此分得出
+ * 批次里的那条谁都没复核过,同样落一行,与「注入了但没给结论」同形——面板上因此分得出
  * 「没人复核」与「复核判仍在」,也不需要一档新状态。开跑时按「文件已回退 / 已删除」处置掉的
  * 那些已经不在这份历史里(issue #272),落在这里的是处置不掉的那些:没有评论载体的,以及
  * 写 Forge 失败留给人的。
+ *
+ * 没给结论的记下由来(issue #412、#413):这个模型跑了那一批却没给、那一批根本没跑成,
+ * 还是本轮没有哪一批读到它那个文件。三件事的排障方向不同——只有头一种说的是模型有没有
+ * 认真复核,另两种分别指向模型服务与覆盖缺口。裁决口径一格未动:三档都不是「已修」的证据。
  */
 function verdictRecords(
   history: readonly HistoryFinding[],
   outcomes: readonly ReviewerOutcome[],
+  batches: readonly (readonly string[])[],
 ): VerdictRecord[] {
   const open = history.filter(
     (entry) => entry.disposition === "unresolved" || entry.disposition === "unknown",
   );
   if (open.length === 0) return [];
 
+  // 文件 → 它所在批次的序号(从 1 起,与 `incompleteCoverage` 同一口径)。不分批时全部
+  // 历史都进那唯一一批(`runBatch` 同律),「不在任何批次里」这件事本身不成立。
+  const single = batches.length === 1;
+  const batchOf = new Map<string, number>();
+  if (!single) {
+    batches.forEach((files, index) => {
+      for (const file of files) batchOf.set(file, index + 1);
+    });
+  }
+
   return outcomes
     .filter((outcome) => outcome.failure === undefined)
     .flatMap((outcome) => {
       // 编出来的 id 不在本轮注入的历史里,不落库:它对应不到任何一条 Finding。
       const given = new Map((outcome.verdicts ?? []).map((v) => [v.findingId, v.verdict]));
+      // 这个模型有几批没跑成。整体失败的上面已经滤掉,剩下的是部分批次失败那一档。
+      const failedBatches = new Set(
+        (outcome.incompleteCoverage?.failures ?? []).map((failure) => failure.batchIndex),
+      );
       return open.map((entry) => {
         const verdict = given.get(entry.id);
+        // 失败的那一批照样可能在倒下之前给出几条结论,给了就是给了:由来只说没给的那些。
+        if (verdict !== undefined) {
+          return { model: outcome.model, findingId: entry.id, verdict };
+        }
+        // `batch` 是 undefined 即本轮没有哪一批读到它那个文件(issue #413):那一条谁都
+        // 复核不到,说的是覆盖缺口,不是这个模型漏了复核。
+        const batch = single ? 1 : batchOf.get(entry.file);
+        const missing =
+          batch === undefined
+            ? ("no-batch" as const)
+            : failedBatches.has(batch)
+              ? ("batch-failed" as const)
+              : ("no-verdict" as const);
         return {
           model: outcome.model,
           findingId: entry.id,
-          verdict: verdict ?? ("unclear" as const),
-          missing: verdict === undefined,
+          verdict: "unclear" as const,
+          missing,
         };
       });
     });
@@ -2653,7 +2685,7 @@ export async function runReview(
       });
 
       // 本轮的复核结论。裁决与落库用同一批记录,面板上看到的与自动处置依据的是同一件事。
-      const verdicts = verdictRecords(history, outcomes);
+      const verdicts = verdictRecords(history, outcomes, batches);
 
       // 「已修复」自动处置(ADR 0016),PR 触发与范围审查走的是同一段代码。全部 Reviewer
       // 都失败时不做:那一轮一条结论都没有,没有证据就不动。延续同理。

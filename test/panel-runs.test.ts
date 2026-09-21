@@ -105,12 +105,13 @@ function seedRun(
       durationMs: 1,
       ...(o.usage === undefined ? {} : { usage: o.usage }),
     })),
-    // 漏给结论的按无法判断落库并标 missing(ADR 0016),时间流数的就是它。
+    // 漏给结论的按无法判断落库并记由来(ADR 0016,issue #412),时间流数的就是它。
+    // 这份夹具只造「跑了那一批却没给」那一档,另两档由 `verdict-coverage` 端到端覆盖。
     verdicts.map((v) => ({
       model: v.model,
       findingId: v.findingId,
       verdict: v.missing === true ? ("unclear" as const) : ("fixed" as const),
-      missing: v.missing === true,
+      ...(v.missing === true ? { missing: "no-verdict" as const } : {}),
     })),
   );
   store.close();

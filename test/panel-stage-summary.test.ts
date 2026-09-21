@@ -168,11 +168,13 @@ function seedRun(
       ...(finding.carried === undefined ? {} : { carried: finding.carried }),
     })),
     [],
+    // 这份夹具只造「跑了那一批却没给」那一档(issue #412),另两档由 `verdict-coverage`
+    // 端到端覆盖:批次失败与覆盖缺口都要真跑一轮才造得出来。
     verdicts.map((entry) => ({
       model: entry.model,
       findingId: entry.findingId,
       verdict: entry.verdict,
-      missing: entry.missing === true,
+      ...(entry.missing === true ? { missing: "no-verdict" as const } : {}),
     })),
   );
 }

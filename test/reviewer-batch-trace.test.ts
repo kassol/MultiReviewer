@@ -176,7 +176,7 @@ test("每个 Reviewer × 批次一条收尾事件:给全结论、漏给结论与
   });
 });
 
-test("漏给结论的条数与 finding_verdict 里标 missing 的对得上", async () => {
+test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得上", async () => {
   const fixture = setupRepo(cleanups);
   const common = deps(fixture);
 
@@ -201,16 +201,23 @@ test("漏给结论的条数与 finding_verdict 里标 missing 的对得上", asy
     );
   assert.equal(skipped, 1, "第二批那一条历史没拿到结论");
 
-  // 库里标 missing 的还多出失败那一批的应给:这个模型别的批跑成了,它不算整体失败,
-  // 失败批上的历史因此同样按漏给结论落。两边逐条对得上。
-  const failedExpected = batchEnds
+  // 「跑了没给」只数非失败批的那部分(issue #412),两边逐条对得上;失败那一批的历史另记
+  // 一档「批次跑不成」,不混进漏复核——它说的是模型服务或额度,不是模型有没有认真复核。
+  const failedSkipped = batchEnds
     .filter((payload) => payload["failed"] === true)
-    .reduce((sum, payload) => sum + (payload["verdictsExpected"] as number), 0);
+    .reduce(
+      (sum, payload) =>
+        sum + ((payload["verdictsExpected"] as number) - (payload["verdictsGiven"] as number)),
+      0,
+    );
   const [row] = query(
     fixture.db.path,
-    `SELECT SUM(missing) AS missed FROM finding_verdict WHERE run_id = ${runId}`,
+    `SELECT SUM(missing_reason = 'no-verdict') AS missed,
+            SUM(missing_reason = 'batch-failed') AS batchFailed
+       FROM finding_verdict WHERE run_id = ${runId}`,
   );
-  assert.equal(row!["missed"], skipped + failedExpected);
+  assert.equal(row!["missed"], skipped);
+  assert.equal(row!["batchFailed"], failedSkipped);
 });
 
 test("只复核那一轮的批次同样落这条事件,报出条数恒为 0", async () => {
