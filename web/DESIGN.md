@@ -559,6 +559,7 @@ Radix 侧把 `--font-weight-medium` 覆写成 590、`--font-weight-bold` 覆写�
 - 长名称和模型标识单行截断，hover/focus 时通过 Tooltip 查看全文。
 - 模型标识整段显示时（模型服务页的模型列表、模型组合框候选）用 `wrap-anywhere`（`overflow-wrap: anywhere`），断在 `-` `/` `:` `.` 上；不用 `break-all`，它在任意字符间断行，`claude-opus-latest` 会被切成 `claude-opus-lat` / `est`，读的人认不出这是哪个模型。
 - 地址、模型标识等可复制内容提供 Copy 按钮。
+- 阶段详情的 Finding 列表按滚动逐段渲染:首段 50 项,接近底部时追加一段,一张同根因组卡算一项(组内成员随组卡一起画)。尾部一行「已显示 N / M 条，向下滚动继续加载」,全部画完这一行就不出现。筛选与顶部三个计数仍对全量算;换筛选条件回到首段并把 `panel-main-scroll` 滚回顶部。几百条的阶段一次画全要两秒、留下两万多个 DOM 节点,而人一屏看得到的只有头几条。
 - 阶段详情的时间线是一条竖向时间轴。左侧一根 1px `border-chrome-line` 竖线,每次代码推进(pull request 的 head commit、范围审查的比较项)是轴上一个 16px 圆点节点:最新那组实心 `--v8-accent`,其余 `--v8-neutral-dot` 2px 描边空心;节点右侧一行 `text-base` 元信息(commit chip、推进的人、发起 / 增量评审、时刻),节点下一张详情内嵌卡(`border-overlay-line` + `shadow-control`),组内每一轮是卡里的连续行。行是 `MasterListItem selected={false}` 套 Link,沿四条列轨排:16px 状态图标(运行中 `StopwatchIcon` 主色、失败 `CrossCircledIcon` 红、结束 `CheckCircledIcon` 中性灰)、「第 N 轮」(`text-lg font-semibold`)旁挂一枚小号等宽的 `Run #<id>`(`text-sm font-normal tabular-nums text-text-secondary`,全局 id,排障口径与日志、API 一致)叠开跑时刻与耗时(`text-base text-text-muted`)、这一轮的五个数、行尾 `ReaderIcon` 加「审查轨迹」。`sm` 以下五个数落到第二行,行尾只留图标。竖线画在每组自己身上、最早那组不画,时间轴在最早的节点收住。点开一行的轨迹侧滑头部同样带这枚 `Run #<id>`,挂在结论徽章之前。
 
 ### 7.4 路由

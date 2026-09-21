@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState, type MouseEventHandler } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEventHandler } from "react";
 
 import { ChevronDownIcon, CrossCircledIcon, FileTextIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Select, Skeleton, Tabs, Text, TextArea } from "@radix-ui/themes";
@@ -12,6 +12,7 @@ import { EmptyState } from "@/components/empty-state";
 import { FilePath } from "@/components/file-path";
 import { Button } from "@/components/theme-button";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
+import { renderedCovering } from "@/lib/paged-list";
 import { disposableInGroup, foldByRootCause } from "@/lib/root-cause";
 import { firstReportedFrom, roundFilterOptions, roundNumbers } from "@/lib/stage-rounds";
 import { localMinute } from "@/lib/time";
@@ -118,6 +119,13 @@ type SeverityFilter = "all" | "P0" | "P1" | "P2";
 /** 行作者筛选里 `lineAuthor` 为 null 的那一档:与 `run-diff.tsx` 的「无法追溯」同一件事。 */
 const UNKNOWN_AUTHOR = "未知";
 
+/**
+ * Finding 列表一段渲染多少项(issue #434)。384 条的阶段一次画全要花两秒、留下两万多个 DOM
+ * 节点,而人一屏看得到的只有头几条。首段与之后每一段同一个数,不做成配置——它是这一页的
+ * 渲染节奏,不是要人调的旋钮。
+ */
+const FINDING_PAGE = 50;
+
 /** 一条 Finding 现在落在三档里的哪一档。已延续不会出现在汇总里,那不是处置。 */
 function bucketOf(finding: StageFinding): Exclude<DispositionFilter, "all"> {
   if (finding.disposition === "fixed") return "fixed";
@@ -143,7 +151,7 @@ function FindingCard({
   onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
 }) {
   return (
-    // 几百张卡一次全渲染:屏幕外的由浏览器跳过布局与绘制,预留高度渲染过一次后改用实测值。
+    // 一段 50 张:屏幕外的那些由浏览器跳过布局与绘制,预留高度渲染过一次后改用实测值。
     <section className="overflow-hidden rounded-lg border border-overlay-line bg-surface shadow-control [contain-intrinsic-size:auto_320px] [content-visibility:auto]">
       {/*
         点一条 Finding 就在侧滑里看它的 diff(issue #189):卡头整块是那个入口,
@@ -480,6 +488,86 @@ export function StageSummaryView({
     onVisibleOrder?.(order === "" ? [] : order.split(",").map(Number));
   }, [order, onVisibleOrder]);
 
+  /*
+   * 列表按滚动逐段渲染(issue #434):画出来的是 `rows` 的前 `rendered` 项——一张组卡算一项,
+   * 组内成员随组卡一起画。筛选、三个计数与上面那份 `order` 仍然对全量算,逐段渲染只管这一页
+   * 此刻往 DOM 里放几张卡:侧滑的上一条 / 下一条因此照样走得到还没画出来的那些条目。
+   *
+   * 段数是这个组件的 state,不在 Finding 那一页里面——Radix 的 `Tabs.Content` 切走就卸载,
+   * 放在里面的话切一趟时间线回来就回到首段了。
+   */
+  const [rendered, setRendered] = useState(FINDING_PAGE);
+  const renderedRows = rows.slice(0, rendered);
+  const more = rendered < rows.length;
+  const shown = renderedRows.reduce(
+    (count, row) => count + (row.kind === "finding" ? 1 : row.members.length),
+    0,
+  );
+
+  /*
+   * 切到时间线再切回来时回到列表原来滚到的地方。外壳只在换一级页面时才把滚动容器摆回顶部
+   * (main.tsx),但时间线那一页比列表矮得多,浏览器会顺手把 scrollTop 夹到那一页的高度上,
+   * 切回来人就停在列表顶上了。离开 Finding 页那一刻记一笔,回来时摆回去。
+   */
+  const listScrollTop = useRef(0);
+  const changeTab = (next: StageTab): void => {
+    if (tab === "findings" && next !== "findings") {
+      listScrollTop.current = document.getElementById("panel-main-scroll")?.scrollTop ?? 0;
+    }
+    onTabChange(next);
+  };
+  useLayoutEffect(() => {
+    if (tab !== "findings" || listScrollTop.current === 0) return;
+    document.getElementById("panel-main-scroll")?.scrollTo(0, listScrollTop.current);
+  }, [tab]);
+
+  /*
+   * 换筛选条件就回到首段,并把外壳滚回顶部。不滚回去的话:范围缩到首段、内容跟着变矮,浏览器
+   * 把 scrollTop 夹到新的底部,哨兵正好落进视口——它会一段接一段补到与原来那个滚动位置齐平
+   * 为止,等于没缩。记着的那个 tab 位置一并清掉:此刻人要看的是筛出来的头几条。
+   */
+  const refilter = (apply: () => void): void => {
+    apply();
+    setRendered(FINDING_PAGE);
+    listScrollTop.current = 0;
+    document.getElementById("panel-main-scroll")?.scrollTo(0, 0);
+  };
+
+  /*
+   * 地址上 `?rootCause=` 指的那个组落在已渲染的范围之外时,先把范围扩到包含它:组卡不渲染,
+   * 它那句「滚到我这里」的 effect 就永远不会跑,点进来看着像链接失效了。
+   */
+  const focusIndex =
+    focusRootCause === null
+      ? -1
+      : rows.findIndex((row) => row.kind === "group" && row.id === focusRootCause);
+  useEffect(() => {
+    setRendered((current) => renderedCovering(current, focusIndex, FINDING_PAGE));
+  }, [focusIndex]);
+
+  /*
+   * 滚到列表底部附近就追加一段。追加完 effect 重挂一次:哨兵还留在视口里时要接着补下一段,
+   * 而 IntersectionObserver 只在相交状态变化时回调,不重挂就停在这一段上不动了。`tab` 也在
+   * 依赖里——哨兵随 `Tabs.Content` 一起卸载,切回来要重新观察。
+   */
+  const sentinel = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const target = sentinel.current;
+    if (target === null) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setRendered((current) => current + FINDING_PAGE);
+        }
+      },
+      // 滚动容器是外壳那一个(main.tsx 的 `panel-main-scroll`),不是视口本身;提前一张卡的
+      // 高度开始补,人滚到底时下一段已经在那儿了。
+      { root: document.getElementById("panel-main-scroll"), rootMargin: "0px 0px 320px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [rendered, rows.length, tab]);
+
   return (
     <div className="flex flex-col gap-3">
       {summary.isError ? (
@@ -504,10 +592,12 @@ export function StageSummaryView({
             aria-pressed={disposition === id}
             // 计数兼任处置状态筛选,筛选只在 Finding 页可见:停在时间线页时点它先切回去,
             // 否则改的是一个看不见的筛选(issue #236)。
-            onClick={() => {
-              setDisposition(disposition === id ? "all" : id);
-              if (tab !== "findings") onTabChange("findings");
-            }}
+            onClick={() =>
+              refilter(() => {
+                setDisposition(disposition === id ? "all" : id);
+                if (tab !== "findings") onTabChange("findings");
+              })
+            }
             className={`flex cursor-pointer flex-col items-start gap-0.5 rounded-lg border px-3 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/40 sm:min-w-40 ${
               disposition === id
                 ? "border-primary bg-accent-tint"
@@ -523,7 +613,7 @@ export function StageSummaryView({
         ))}
       </div>
 
-      <Tabs.Root value={tab} onValueChange={(next) => onTabChange(next as StageTab)}>
+      <Tabs.Root value={tab} onValueChange={(next) => changeTab(next as StageTab)}>
         {/* 与知识集弹窗同一套 tab 语法:3px 圆头指示条,底线通栏。 */}
         <Tabs.List size="2" className="shadow-[inset_0_-1px_0_0_var(--v8-border-chrome)]">
           <Tabs.Trigger value="findings" className={TAB_TRIGGER}>Finding</Tabs.Trigger>
@@ -548,7 +638,7 @@ export function StageSummaryView({
               轮次筛选(issue #369):选中第 N 轮即「首次报出在第 N 轮或之后」。每天看一次
               的人要的是这几天新出的那批,与「待处置」叠起来就是当天的工作集。
             */}
-            <Select.Root value={round} onValueChange={setRound} size="1">
+            <Select.Root value={round} onValueChange={(next) => refilter(() => setRound(next))} size="1">
               <Select.Trigger aria-label="按首次报出轮次筛选" />
               <Select.Content>
                 <Select.Item value="all">全部轮次</Select.Item>
@@ -557,7 +647,11 @@ export function StageSummaryView({
                 ))}
               </Select.Content>
             </Select.Root>
-            <Select.Root value={lineAuthor} onValueChange={setLineAuthor} size="1">
+            <Select.Root
+              value={lineAuthor}
+              onValueChange={(next) => refilter(() => setLineAuthor(next))}
+              size="1"
+            >
               <Select.Trigger aria-label="按行作者筛选" />
               <Select.Content>
                 <Select.Item value="all">全部行作者</Select.Item>
@@ -566,7 +660,11 @@ export function StageSummaryView({
                 ))}
               </Select.Content>
             </Select.Root>
-            <Select.Root value={severity} onValueChange={(next) => setSeverity(next as SeverityFilter)} size="1">
+            <Select.Root
+              value={severity}
+              onValueChange={(next) => refilter(() => setSeverity(next as SeverityFilter))}
+              size="1"
+            >
               <Select.Trigger aria-label="按问题等级筛选" />
               <Select.Content>
                 <Select.Item value="all">全部等级</Select.Item>
@@ -586,12 +684,14 @@ export function StageSummaryView({
                 variant="ghost"
                 color="gray"
                 size={{ initial: "3", sm: "1" }}
-                onClick={() => {
-                  setDisposition("all");
-                  setRound("all");
-                  setLineAuthor("all");
-                  setSeverity("all");
-                }}
+                onClick={() =>
+                  refilter(() => {
+                    setDisposition("all");
+                    setRound("all");
+                    setLineAuthor("all");
+                    setSeverity("all");
+                  })
+                }
               >
                 清除筛选
               </Button>
@@ -614,7 +714,7 @@ export function StageSummaryView({
             </p>
           ) : null}
 
-          {rows.map((row) =>
+          {renderedRows.map((row) =>
             row.kind === "finding" ? (
               <FindingCard
                 key={row.finding.id}
@@ -640,6 +740,20 @@ export function StageSummaryView({
               />
             ),
           )}
+
+          {/*
+            还没画完时说清楚看得到的是哪一截(issue #434):浏览器的页内查找只搜得到已经画出来
+            的这些,不写出来的话人会以为筛完就这么多。哨兵挨着它,滚到这儿就补下一段。
+          */}
+          {more ? (
+            <>
+              <div ref={sentinel} />
+              <p className="text-center text-sm text-text-muted" aria-live="polite">
+                已显示 <span className="font-mono tabular-nums">{shown}</span> /{" "}
+                <span className="font-mono tabular-nums">{visible.length}</span> 条，向下滚动继续加载
+              </p>
+            </>
+          ) : null}
         </Tabs.Content>
 
         <Tabs.Content value="timeline" className="flex flex-col gap-3 pt-3">
