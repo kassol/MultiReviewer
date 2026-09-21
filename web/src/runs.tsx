@@ -241,7 +241,7 @@ export function StageStatusBadge({ stage }: { stage: StageItem }) {
  * 结论不完整。
  *
  * 两档分开说,排障方向不同:模型整轮没跑成去看模型服务,某几批没跑成只影响那几批的
- * 文件。两样都有时徽章说模型那一档——它更重,整句在 title 上。这里不套 Tooltip:行
+ * 文件。两样都有时徽章两档都说——title 触屏上看不到、读屏也不一定读,看得见的那几个字得自己说全;整句仍在 title 上。这里不套 Tooltip:行
  * 本身就是一个链接,再加一个可聚焦的触发器会在长列表里多出一串 tab 站点,而触屏上
  * Tooltip 压根打不开(issue #374)。
  */
@@ -254,7 +254,11 @@ function StageAlertBadge({ alert }: { alert: NonNullable<StageItem["latestRunAle
     .join("");
   return (
     <StatusBadge tone="warning" title={detail}>
-      {alert.modelFailed ? "上一轮有模型没跑成" : "上一轮有批次没跑成"}
+      {alert.modelFailed
+        ? alert.batchFailed
+          ? "上一轮有模型与批次没跑成"
+          : "上一轮有模型没跑成"
+        : "上一轮有批次没跑成"}
     </StatusBadge>
   );
 }
