@@ -465,6 +465,46 @@ test("批内某个 Reviewer 失败的结果同样当场落库,续跑不重跑它
   assert.equal(outcome?.["failure"], null);
 });
 
+test("续跑轮次的单模型耗时不含两次进程之间的空档(issue #415)", async () => {
+  const fixture = setup(cleanups);
+  const crashed = batchReviewer("model-a", { throwOnCall: 3 });
+  await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
+  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const runId = Number(run?.["id"]);
+
+  // 把已落库的那两批改写成一小时前的两段。它们各跑 1000 毫秒、错开 500 毫秒,并集因此是
+  // 1500 毫秒;中间那一小时是停机,没有任何一批盖着它。
+  const crashedAt = Date.now() - 3_600_000;
+  const db = new DatabaseSync(fixture.db.path);
+  try {
+    const stored = db
+      .prepare("SELECT batch_index, outcome_json FROM review_run_batch_outcome")
+      .all() as unknown as Record<string, unknown>[];
+    const update = db.prepare(
+      "UPDATE review_run_batch_outcome SET outcome_json = ? WHERE run_id = ? AND batch_index = ?",
+    );
+    for (const row of stored) {
+      const index = Number(row["batch_index"]);
+      const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
+      update.run(
+        JSON.stringify({ ...timed, startedAt: crashedAt + index * 500, durationMs: 1_000 }),
+        runId,
+        index,
+      );
+    }
+  } finally {
+    db.close();
+  }
+
+  await runReview(EVENT, deps(fixture, [batchReviewer("model-a")], { resumeRunId: runId }));
+
+  const [outcome] = query(fixture.db.path, "SELECT duration_ms FROM reviewer_outcome");
+  const durationMs = Number(outcome?.["duration_ms"]);
+  // 崩溃前跑掉的那 1500 毫秒保住(重叠的 500 毫秒只算一次),停机那一小时不计。
+  assert.ok(durationMs >= 1_500, `耗时 ${durationMs} 毫秒,少于崩溃前已经跑掉的 1500 毫秒`);
+  assert.ok(durationMs < 60_000, `耗时 ${durationMs} 毫秒,把停机那一小时算进去了`);
+});
+
 /**
  * 升级前的中间态行一行存整批(issue #248 的形状)。它只在整批全部模型跑完之后才写,按
  * 模型拆开因此无损:那一批照常整批跳过。

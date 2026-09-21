@@ -600,7 +600,7 @@ test("各批完成顺序打乱时,汇总仍按批次序号定序", async () => {
   assert.deepEqual(result.findings.map((f) => f.file).sort(), ["src/b.ts", "src/c.ts"]);
 });
 
-test("单模型耗时是首批开始到末批结束的墙上时间,不是各批相加", () => {
+test("单模型耗时是各批时间区间的并集:重叠只算一次,空档不计", () => {
   const outcome = (): ReviewerOutcome => ({
     model: "model-a",
     findings: [],
@@ -616,6 +616,15 @@ test("单模型耗时是首批开始到末批结束的墙上时间,不是各批�
 
   assert.equal(merged.startedAt, 1_000);
   assert.equal(merged.durationMs, 150);
+
+  // 续跑的两段中间隔着停机(issue #415):那一段没有任何一批盖着,不算进耗时。
+  const resumed = mergeBatchOutcomes([
+    { outcome: outcome(), startedAt: 1_000, durationMs: 100 },
+    { outcome: outcome(), startedAt: 3_600_000, durationMs: 100 },
+  ]);
+
+  assert.equal(resumed.startedAt, 1_000);
+  assert.equal(resumed.durationMs, 200);
 });
 
 test("并行跑的三批落库的耗时是墙上时间,不是三批相加", async () => {
