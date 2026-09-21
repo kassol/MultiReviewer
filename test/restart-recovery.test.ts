@@ -18,7 +18,7 @@ import type { ReviewRunReviewerPin } from "../src/config.ts";
 import type { Forge, PullRequestRef, Reaction } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore, runFailureText } from "../src/review/store.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { query } from "./support/batch-run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
@@ -306,6 +306,29 @@ test("改判写轮次级失败原因并记 run_failed 事件,零 pin 的轮次�
       [UNREGISTERED, UNREGISTERED],
     );
     assert.deepEqual(store.listRuns({ limit: 10, id: bare })[0]?.models, []);
+  } finally {
+    store.close();
+  }
+});
+
+test("改判时通篇空白的原因:轮次那一列与逐模型失败行是同一句兜底文本", () => {
+  // issue #436:同一句轮次级原因落两处(`review_run.failure` 与借来的 `reviewer_outcome`
+  // 行),兜底只在其中一处时两边会说不一样的话。两条真实调用都带固定前缀,空白原因
+  // 只在库这一层构造得出来。
+  const db = makeDbPath();
+  cleanups.push(db.cleanup);
+  const runId = startRunning(db.path, 13);
+  const store = openStore(db.path);
+  try {
+    store.failInterruptedRuns(" \n\t ", AT);
+    const expected = runFailureText(" \n\t ");
+    assert.equal(expected, "未记录原因");
+    const [run] = store.listRuns({ limit: 10, id: runId });
+    assert.equal(run?.failure, expected);
+    assert.deepEqual(
+      run?.models.map((entry) => entry.failure),
+      [expected, expected],
+    );
   } finally {
     store.close();
   }

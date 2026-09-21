@@ -128,6 +128,7 @@ import {
   modelServiceTargetSetFingerprint,
   normalizeModelServiceTargets,
   openStore,
+  runFailureText,
   storedReviewersEmpty,
   toKnowledgeEntry,
   toPendingProposal,
@@ -10891,7 +10892,8 @@ function resumeInterruptedRuns(
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
         // 退回 issue #247 的改判:这一轮标记失败并写上原因,下一次启动因此不会再看到它。
-        const reason = `服务重启,上一轮没跑完;${failure}`;
+        // 先定形再用(issue #436):这一句进轮次那一列、各模型的失败行与轨迹事件三处。
+        const reason = runFailureText(`服务重启,上一轮没跑完;${failure}`);
         const interrupted = withStore(deps.dbPath, (store) => {
           const runs = store.failInterruptedRuns(
             reason,
