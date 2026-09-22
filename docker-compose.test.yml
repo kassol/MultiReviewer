@@ -14,6 +14,10 @@ services:
       POSTGRES_USER: multireviewer
       POSTGRES_PASSWORD: multireviewer
       POSTGRES_DB: multireviewer
+    # 连接数放宽:`node --test` 并发跑几个文件,每个文件又建好几个库、好几个连接池,默认的
+    # 100 会撞上「sorry, too many clients already」。应用侧的池上限另由
+    # `MULTIREVIEWER_DB_POOL_MAX` 收(测试夹具把它设成 3)。
+    command: ["postgres", "-c", "max_connections=500"]
     ports:
       - "54329:5432"
     # 数据不持久:测试库用完即删,重启从空实例起反而干净。
