@@ -22,8 +22,17 @@ export type Orm = NodePgDatabase<typeof schema>;
  * - `int8`(`COUNT(*)`、`SUM(整数列)` 的结果类型)与 `numeric` → number。本项目的计数与用量
  *   都在 2^53 以内,读成字符串只会让每一处 `Number(...)` 之外的算术静默变成字符串拼接。
  *
- * 装在模块加载时,进程内只装一次。它作用在 `orm.execute` 这类原始查询的结果上;Drizzle 的
- * builder 对自己发出的查询另按列类型映一遍(见 `schema/columns.ts`,两头都是恒等)。
+ * 装在模块加载时,进程内只装一次。**`jsonb` 与 `int8` 这两项到处都生效**(builder、
+ * `orm.execute`、裸驱动三条路读回来的都一样),`timestamptz` 那一项只对**不经 Drizzle**
+ * 的读生效(测试里直连库的 `withTestDb`)——Drizzle 给自己发出的每一条查询另装一份解析器,
+ * 把时刻原样交给它自己的映射层,全局这一份在它的查询上不生效。因此时刻有两种读法:
+ *
+ * - 走列对象、或者 `sql` 表达式接 `.mapWith(某个时刻列)` → `schema/columns.ts` 的
+ *   `isoTimestamp.fromDriver` 归一,拿到 ISO。
+ * - 不接 `.mapWith` 的 `sql` 表达式、以及 `orm.execute` 的结果 → PostgreSQL 的原文
+ *   (`2026-08-03 00:00:00+00`),在 JS 侧过一道 `shared.ts` 的 `isoTime`。
+ *
+ * 2026-09-22 在本机测试实例上逐条实测过这五条路,上面写的是实测结果。
  */
 types.setTypeParser(types.builtins.TIMESTAMPTZ, (value) => new Date(value).toISOString());
 types.setTypeParser(types.builtins.JSONB, (value) => value);
@@ -54,18 +63,13 @@ export type StoreTransaction = {
   rollback(value?: unknown): never;
 };
 
-/**
- * 事务的取锁方式。SQLite 那一版靠 `BEGIN IMMEDIATE` 一开头拿写锁;PostgreSQL 没有对应物,
- * 「先读后判再写」要在事务里对父行 `SELECT … FOR UPDATE`(ADR 0036)。
- *
- * ponytail:这个参数在 PG 上不起作用,留着是因为九处调用点标着「这里要拿写锁」,它们各自的
- * `FOR UPDATE` 由这个标记引到。九处都核过一遍之后连参数一起删。
- */
-export type TransactionMode = "deferred" | "immediate";
-
 export type StoreDb = {
   orm: Orm;
-  transaction<T>(mode: TransactionMode, run: (tx: StoreTransaction) => Promise<T>): Promise<T>;
+  /**
+   * 一次事务。没有取锁方式这个参数:PostgreSQL 没有 `BEGIN IMMEDIATE` 的对应物,
+   * 「先读后判再写」一律在事务里对父行 `SELECT … FOR UPDATE`(ADR 0036)。
+   */
+  transaction<T>(run: (tx: StoreTransaction) => Promise<T>): Promise<T>;
 };
 
 export function storeDb(pool: PgPool): StoreDb {
@@ -93,7 +97,7 @@ export function storeDb(pool: PgPool): StoreDb {
 
   return {
     orm,
-    async transaction(_mode, body) {
+    async transaction(body) {
       // 已经在一个事务里就并进去,不再 BEGIN:PostgreSQL 没有嵌套事务,并进去严格好过报错。
       if (activeClient.getStore() !== undefined) return await run(body);
       const client = await pool.connect();

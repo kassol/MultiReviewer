@@ -286,7 +286,7 @@ export function productsMethods({ orm, transaction }: StoreContext): ProductsMet
     },
 
     async deleteProduct(productId) {
-      return await transaction("deferred", async () => {
+      return await transaction(async () => {
         await orm.delete(productRepo).where(eq(productRepo.productId, productId));
         // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。指向条目的「被取代」
         // 是同一张表内的外键,不必先松开——一句 DELETE 把指过去的与被指的一并删掉时,
@@ -342,7 +342,7 @@ export function productsMethods({ orm, transaction }: StoreContext): ProductsMet
     },
 
     async writeProductKnowledge(record) {
-      return await transaction<ProductKnowledgeEntry | undefined>("deferred", async (tx) => {
+      return await transaction<ProductKnowledgeEntry | undefined>(async (tx) => {
         // 改写的目标与被取代的目标都在这一笔事务里先锁住再判:判完到写下之间那一条被撤回的
         // 话,落下去的就是一条指向不存在条目的「被取代」。
         const locked = async (id: number): Promise<boolean> =>

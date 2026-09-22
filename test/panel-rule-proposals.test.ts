@@ -217,6 +217,42 @@ test("提案状态机:待裁决只裁一次,驳回不动知识集", async () => 
   }
 });
 
+test("并入时那条提案刚被裁决:并不进去,已裁决的那一条一个字不动", async () => {
+  const db = await makeTestDatabase();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.url);
+  try {
+    await store.registerRepo({ repoId: 80, owner: "acme", repo: "raced", generation: 1, key: "k" });
+    const id = (await store.addRuleProposal(80, proposal()))!;
+
+    let merged: boolean | undefined;
+    await withTestDb(db.url, async (sql) => {
+      // 另一条连接先把那一行锁住,再在并入排在锁后面的时候把它裁决掉:并入要是在事务外
+      // 读一次就写,读到的还是「待裁决」,改写于是落在一条已经作数的提案上。
+      await sql("BEGIN");
+      await sql("SELECT id FROM rule_proposal WHERE id = $1 FOR UPDATE", id);
+      const merging = store
+        .mergeIntoRuleProposal(80, id, { statement: "并入写进来的", source: source() })
+        .then((ok) => {
+          merged = ok;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(merged, undefined, "并入这时应当还卡在那把锁上");
+      await sql("UPDATE rule_proposal SET state = 'rejected', decided_at = $2 WHERE id = $1", id, AT);
+      await sql("COMMIT");
+      await merging;
+    });
+
+    assert.equal(merged, false, "并不进去,那一条退回按新增处理");
+    const [row] = await store.getRuleProposals(80);
+    assert.equal(row!.state, "rejected");
+    assert.equal(row!.statement, proposal().statement, "已裁决的陈述没被并入覆盖");
+    assert.equal(row!.sources.length, 1, "也没有多出一条附注");
+  } finally {
+    await store.close();
+  }
+});
+
 test("三种变更类型各自的落库形态:新增进集、修改留下旧那版、废止只废止", async () => {
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);

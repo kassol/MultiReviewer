@@ -236,8 +236,8 @@ export const ruleTrace = pgTable(
   {
     /**
      * 任务标识由 identity 列发号(ADR 0036):起头那一条不给它,PostgreSQL 自己取下一个;
-     * 同一条轨迹后面的每一条照旧显式写回同一个号。SQLite 那一版靠 `MAX(task_id) + 1`,
-     * 两次并发起头会算出同一个号、主键当场撞上。
+     * 同一条轨迹后面的每一条照旧显式写回同一个号。自己算 `MAX(task_id) + 1` 的话,两次
+     * 并发起头会算出同一个号、主键当场撞上。
      */
     taskId: integer("task_id").notNull().generatedByDefaultAsIdentity(),
     repoId: integer("repo_id")

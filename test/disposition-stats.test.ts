@@ -436,7 +436,7 @@ for (const c of CASES) {
       }
     } finally {
       await store.close();
-      db.cleanup();
+      await db.cleanup();
     }
   });
 }
@@ -499,6 +499,6 @@ test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一�
     assert.equal((await reopened.dispositionStats(...WIDE))[0]?.unknownOpen, 2, "两条各自独立");
     await reopened.close();
   } finally {
-    db.cleanup();
+    await db.cleanup();
   }
 });

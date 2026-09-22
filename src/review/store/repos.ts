@@ -6,6 +6,7 @@
  * 的列对象。写法见 `src/AGENTS.md` 的「域文件的分工与写法」。
  */
 import { and, asc, count, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import {
   assertReviewerSpecs,
@@ -44,7 +45,7 @@ import {
   repoKey,
   webhookDelivery,
 } from "../schema/repos.ts";
-import { reviewRun } from "../schema/runs.ts";
+import { finding, reviewRun } from "../schema/runs.ts";
 import type {
   ModelCredentialState,
   ModelDirectoryState,
@@ -346,8 +347,8 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
 
   /**
    * 把一份模型引用涉及的那几家服务锁住(ADR 0036)。「先判可用性再写」是读-判-写:不锁的话
-   * 切版或删服务会插在两步中间,写进去的组合当场就跑不动了。SQLite 那一版靠 `BEGIN IMMEDIATE`
-   * 的单写者锁,PostgreSQL 在这里锁父行——模型服务那一行就是可用性的父行。
+   * 切版或删服务会插在两步中间,写进去的组合当场就跑不动了。锁的是父行——模型服务那一行
+   * 就是可用性的父行。
    */
   const lockReferencedServices = async (json: string | null, context: string): Promise<void> => {
     if (json === null) return;
@@ -429,7 +430,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
 
   return {
     async registerRepo(record) {
-      return await transaction("immediate", async (tx) => {
+      return await transaction(async (tx) => {
         if (record.reviewersJson !== undefined) {
           const context = `仓库 ${record.repoId} 的模型覆盖`;
           await lockReferencedServices(record.reviewersJson, context);
@@ -496,7 +497,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
     },
 
     async putRepoSettings(repoId, expectedVersion, settings) {
-      return await transaction("immediate", async (tx) => {
+      return await transaction(async (tx) => {
         // 先锁住这个仓库那一行(ADR 0036):版本号读出来就要按它写回去,不锁的话两次并发的
         // 保存会读到同一个版本、各写各的。
         const [row] = await orm
@@ -553,7 +554,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
     },
 
     async removeRepo(repoId) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         await orm.delete(repoKey).where(eq(repoKey.repoId, repoId));
         await orm.delete(panelUserRepo).where(eq(panelUserRepo.repoId, repoId));
         // 产品归属跟着仓库走(issue #331):留下来产品就挂着一个已经不存在的仓库。
@@ -597,25 +598,32 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
     async listRepos() {
       // 评审记录按注册时的 owner/repo 匹配。仓库在 Forge 上改名后新记录用新名字,
       // 旧名字的记录不再计入——注册表的名字由后续的注册流程更新,这里不猜。
-      const sameRepo = sql`run.owner = ${repoTable.owner} AND run.repo = ${repoTable.repo}`;
+      const run = alias(reviewRun, "run");
+      const f = alias(finding, "f");
+      const sameRepo = sql`${run.owner} = ${repoTable.owner} AND ${run.repo} = ${repoTable.repo}`;
+      // 三段子查询各先拼成自己的 `sql` 再放进投影:`select({...})` 的 SQL 字段在单表查询上
+      // 会被 Drizzle 摘掉直接写在里面的列的表限定(它假定单表不必限定),`"f"."run_id"` 因此
+      // 会变成裸的 `"run_id"` 而与 `"run"."id"` 撞名。套一层之后里面的列原样渲染。
+      const runCount = sql<number>`(SELECT COUNT(*) FROM ${reviewRun} ${run} WHERE ${sameRepo})`;
+      const findingCount = sql<number>`(SELECT COUNT(*) FROM ${finding} ${f}
+                                          JOIN ${reviewRun} ${run} ON ${f.runId} = ${run.id}
+                                         WHERE ${sameRepo})`;
+      const lastActivity = sql`(SELECT MAX(${run.startedAt}) FROM ${reviewRun} ${run}
+                                 WHERE ${sameRepo})`;
       const rows = await orm
         .select({
           row: repoTable,
-          runCount: sql<number>`(SELECT COUNT(*) FROM ${reviewRun} run WHERE ${sameRepo})`,
-          findingCount: sql<number>`(SELECT COUNT(*) FROM finding f
-                                       JOIN ${reviewRun} run ON f.run_id = run.id
-                                      WHERE ${sameRepo})`,
+          runCount: sql<number>`${runCount}`,
+          findingCount: sql<number>`${findingCount}`,
           // 时刻列从原始 SQL 回来的是 PostgreSQL 的原文,`mapWith` 借那一列自己的解析器
           // 换回 ISO,读法因此与 builder 选出来的一样。
-          lastActivity: sql<string>`(SELECT MAX(run.started_at) FROM ${reviewRun} run
-                                      WHERE ${sameRepo})`.mapWith(reviewRun.startedAt),
+          lastActivity: sql<string>`${lastActivity}`.mapWith(reviewRun.startedAt),
         })
         .from(repoTable)
         // 最近有动静的排在前面,没跑过的按注册时刻垫底。
         .orderBy(
-          sql`(SELECT MAX(run.started_at) FROM ${reviewRun} run WHERE ${sameRepo}) IS NULL`,
-          sql`COALESCE((SELECT MAX(run.started_at) FROM ${reviewRun} run WHERE ${sameRepo}),
-                       ${repoTable.registeredAt}) DESC`,
+          sql`${lastActivity} IS NULL`,
+          sql`COALESCE(${lastActivity}, ${repoTable.registeredAt}) DESC`,
         );
       return rows.map(({ row, runCount, findingCount, lastActivity }) => ({
         ...repoRecord(row),
@@ -661,7 +669,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
     },
 
     async getReviewRunSnapshot(repoId) {
-      return await transaction("deferred", async () => {
+      return await transaction(async () => {
         const repo = await store().getRepo(repoId);
         if (repo === undefined) throw new Error(`仓库 ${repoId} 不在注册表里`);
         const settings = await store().getGlobalSettings();
@@ -700,7 +708,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
     },
 
     async replaceGlobalSettings(expectedVersion, next) {
-      return await transaction("immediate", async (tx) => {
+      return await transaction(async (tx) => {
         // 审查策略整页一次全量替换,版本号是读-判-写:整张表锁住再读版本(ADR 0036)。
         // 表上常常连版本那一行都还没有(首次配置之前),锁不到父行,与 bootstrap 同一档。
         await orm.execute(sql`LOCK TABLE ${globalSetting} IN SHARE ROW EXCLUSIVE MODE`);
@@ -779,7 +787,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
       }
       const targetsJson = targets === null ? null : JSON.stringify(targets);
 
-      return await transaction("immediate", async (tx) => {
+      return await transaction(async (tx) => {
         // 切版是读-判-写:先把这一行锁住(ADR 0036),引用判定与版本推进之间插不进另一次切版。
         const current = await lockService(record.provider);
         if (!(await recordSupportsCurrentReferences(record))) {
@@ -890,7 +898,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
     },
 
     async renameConflictingCustomModelService(provider, newProvider, expectedVersion, updatedAt) {
-      return await transaction("immediate", async (tx) => {
+      return await transaction(async (tx) => {
         if (!CUSTOM_PROVIDER_NAME_PATTERN.test(newProvider)) {
           return tx.rollback({ status: "invalid-provider" });
         }
@@ -1038,7 +1046,7 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
     },
 
     async removeCustomModelService(provider, expectedVersion) {
-      return await transaction("immediate", async (tx) => {
+      return await transaction(async (tx) => {
         const current = await lockService(provider);
         if (
           current === undefined ||
@@ -1288,15 +1296,17 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
       if (requested.some((model) => model === "")) {
         throw new Error("模型标识不能为空");
       }
-      return await transaction("immediate", async (tx) => {
+      return await transaction(async (tx) => {
         const service = await lockService(provider);
         if (service === undefined || service.version !== expectedVersion) {
           return tx.rollback({ status: "version-conflict" } as const);
         }
         const knownRows = await orm.execute<{ model: string }>(sql`
-          SELECT model FROM ${modelDirectoryModel}
-           WHERE provider = ${provider} AND service_version = ${expectedVersion}
-          UNION SELECT model FROM ${modelSupplement} WHERE provider = ${provider}`);
+          SELECT ${modelDirectoryModel.model} FROM ${modelDirectoryModel}
+           WHERE ${modelDirectoryModel.provider} = ${provider}
+             AND ${modelDirectoryModel.serviceVersion} = ${expectedVersion}
+          UNION SELECT ${modelSupplement.model} FROM ${modelSupplement}
+                 WHERE ${modelSupplement.provider} = ${provider}`);
         const known = new Set(knownRows.rows.map((row) => row.model));
         const unknownModels = requested.filter((model) => !known.has(model));
         if (unknownModels.length > 0) {

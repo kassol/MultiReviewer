@@ -61,8 +61,18 @@ import {
   type StoreContext,
 } from "./shared.ts";
 
-/** 一行 finding 属于哪条 Finding Identity。列名按 Drizzle 渲染的表限定写法取。 */
-const FINDING_IDENTITY = sql.raw(identityKey('"finding".'));
+/** 一行 finding 属于哪条 Finding Identity。 */
+const FINDING_IDENTITY = identityKey(finding);
+
+/** 两段阶段行 SELECT 里 range_review 与 review_run 的别名。 */
+const RR = alias(rangeReview, "rr");
+const LATEST_RUN = alias(reviewRun, "latest");
+const RUN = alias(reviewRun, "run");
+/** 参与条数那条查询里 finding_attribution 的别名。 */
+const ATTRIBUTION = alias(findingAttribution, "a");
+/** 阶段警示那条查询里审查轨迹与 Reviewer 结果的别名。 */
+const TRACE = alias(reviewTrace, "t");
+const OUTCOME = alias(reviewerOutcome, "o");
 
 /** 阶段行查询回来的一行。两段 SELECT 的列名与顺序逐字对齐。 */
 type StageQueryRow = {
@@ -91,37 +101,39 @@ type StageQueryRow = {
  *
  * 每个 pull request 取 id 最大的那一轮——id 即落库顺序,与开跑时间同序,那一轮带着这个
  * 阶段当前的标题与关闭标记。`DISTINCT ON (owner, repo, pull_number)` 加 `ORDER BY … id DESC`
- * 让 PostgreSQL 每组只留 id 最大的那一行(ADR 0036);SQLite 那一版靠的是「与 `MAX()` 同行
- * 的裸列」,PostgreSQL 不认这种写法。
+ * 让 PostgreSQL 每组只留 id 最大的那一行(ADR 0036):`GROUP BY` 里与 `MAX()` 同行的裸列
+ * PostgreSQL 不认。
  */
 function pullStageSelect(filter: SQL): SQL {
-  return sql`SELECT DISTINCT ON (owner, repo, pull_number)
+  const { owner, repo, pullNumber, prState, id, startedAt, finishedAt } = reviewRun;
+  return sql`SELECT DISTINCT ON (${owner}, ${repo}, ${pullNumber})
                     'pull-request' AS source,
-                    'pr:' || owner || '/' || repo || '/' || pull_number AS stage_id,
-                    owner, repo, pull_number,
-                    NULL::integer AS range_review_id, title,
-                    CASE WHEN pr_state = 'closed' THEN 'closed' ELSE 'active' END AS status,
-                    id AS latest_run_id, started_at AS latest_run_at,
-                    finished_at AS latest_run_finished_at, started_at AS activity_at
-               FROM review_run
-              WHERE range_review_id IS NULL AND ${filter}
-              ORDER BY owner, repo, pull_number, id DESC`;
+                    'pr:' || ${owner} || '/' || ${repo} || '/' || ${pullNumber} AS stage_id,
+                    ${owner}, ${repo}, ${pullNumber},
+                    NULL::integer AS range_review_id, ${reviewRun.title},
+                    CASE WHEN ${prState} = 'closed' THEN 'closed' ELSE 'active' END AS status,
+                    ${id} AS latest_run_id, ${startedAt} AS latest_run_at,
+                    ${finishedAt} AS latest_run_finished_at, ${startedAt} AS activity_at
+               FROM ${reviewRun}
+              WHERE ${reviewRun.rangeReviewId} IS NULL AND ${filter}
+              ORDER BY ${owner}, ${repo}, ${pullNumber}, ${id} DESC`;
 }
 
 /** 见 `pullStageSelect`。一轮都还没跑的范围审查也是一个阶段,因此从 `range_review` 出发。 */
 function rangeStageSelect(filter: SQL): SQL {
   return sql`SELECT 'range-review' AS source,
-                    'range:' || rr.id AS stage_id,
-                    rr.owner AS owner, rr.repo AS repo, NULL::integer AS pull_number,
-                    rr.id AS range_review_id, rr.title AS title,
-                    CASE WHEN rr.state = 'in-progress' THEN 'active' ELSE 'closed' END AS status,
-                    latest.id AS latest_run_id, latest.started_at AS latest_run_at,
-                    latest.finished_at AS latest_run_finished_at,
-                    COALESCE(latest.started_at, rr.created_at) AS activity_at
-               FROM range_review rr
-               LEFT JOIN review_run latest
-                 ON latest.id = (SELECT MAX(run.id) FROM review_run run
-                                  WHERE run.range_review_id = rr.id)
+                    'range:' || ${RR.id} AS stage_id,
+                    ${RR.owner} AS owner, ${RR.repo} AS repo, NULL::integer AS pull_number,
+                    ${RR.id} AS range_review_id, ${RR.title} AS title,
+                    CASE WHEN ${RR.state} = 'in-progress' THEN 'active' ELSE 'closed' END AS status,
+                    ${LATEST_RUN.id} AS latest_run_id,
+                    ${LATEST_RUN.startedAt} AS latest_run_at,
+                    ${LATEST_RUN.finishedAt} AS latest_run_finished_at,
+                    COALESCE(${LATEST_RUN.startedAt}, ${RR.createdAt}) AS activity_at
+               FROM ${rangeReview} ${RR}
+               LEFT JOIN ${reviewRun} ${LATEST_RUN}
+                 ON ${LATEST_RUN.id} = (SELECT MAX(${RUN.id}) FROM ${reviewRun} ${RUN}
+                                         WHERE ${RUN.rangeReviewId} = ${RR.id})
               WHERE ${filter}`;
 }
 
@@ -277,13 +289,15 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
                  WHERE ${findingVerdict.runId} IN ${ids}
                    AND ${findingVerdict.missingReason} = 'batch-failed'
                  UNION ALL
-                SELECT t.run_id, 1 AS batch_failed, 0 AS model_failed, NULL::text AS failure
-                  FROM ${reviewTrace} t
-                 WHERE t.run_id IN ${ids} AND t.kind = 'reviewer_batch_finished'
-                   AND t.payload->>'failed' = 'true'
-                   AND NOT EXISTS (SELECT 1 FROM ${reviewerOutcome} o
-                                    WHERE o.run_id = t.run_id AND o.model = t.reviewer
-                                      AND o.failure IS NOT NULL)
+                SELECT ${TRACE.runId} AS run_id, 1 AS batch_failed, 0 AS model_failed,
+                       NULL::text AS failure
+                  FROM ${reviewTrace} ${TRACE}
+                 WHERE ${TRACE.runId} IN ${ids} AND ${TRACE.kind} = 'reviewer_batch_finished'
+                   AND ${TRACE.payload}->>'failed' = 'true'
+                   AND NOT EXISTS (SELECT 1 FROM ${reviewerOutcome} ${OUTCOME}
+                                    WHERE ${OUTCOME.runId} = ${TRACE.runId}
+                                      AND ${OUTCOME.model} = ${TRACE.reviewer}
+                                      AND ${OUTCOME.failure} IS NOT NULL)
                  UNION ALL
                 SELECT ${reviewerOutcome.runId} AS run_id, 0 AS batch_failed, 1 AS model_failed,
                        NULL::text AS failure
@@ -330,14 +344,15 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
     if (stageId.startsWith("range:")) {
       const rangeReviewId = Number(stageId.slice("range:".length));
       if (!Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) return undefined;
-      query = rangeStageSelect(sql`rr.id = ${rangeReviewId}`);
+      query = rangeStageSelect(sql`${RR.id} = ${rangeReviewId}`);
     } else if (stageId.startsWith("pr:")) {
       const parts = stageId.slice("pr:".length).split("/");
       if (parts.length !== 3) return undefined;
       const pullNumber = Number(parts[2]);
       if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) return undefined;
       query = pullStageSelect(
-        sql`owner = ${parts[0]!} AND repo = ${parts[1]!} AND pull_number = ${pullNumber}`,
+        sql`${reviewRun.owner} = ${parts[0]!} AND ${reviewRun.repo} = ${parts[1]!}
+            AND ${reviewRun.pullNumber} = ${pullNumber}`,
       );
     } else {
       return undefined;
@@ -754,6 +769,7 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
           : opts.repos.filter(
               (pair) => !scoped || (pair.owner === opts.owner && pair.repo === opts.repo),
             );
+      // 这两格筛的是 UNION 出来的 `stages` 那张子查询,不是某张表,因此只有列名。
       const conditions: SQL[] = [];
       if (opts.status !== undefined) conditions.push(sql`status = ${opts.status}`);
       if (opts.source !== undefined) conditions.push(sql`source = ${opts.source}`);
@@ -763,9 +779,9 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
       // PostgreSQL 会把它读成整个 UNION 的排序而在 `UNION` 处报语法错。
       const rows = (
         await orm.execute<StageQueryRow>(sql`
-          SELECT * FROM ((${pullStageSelect(repoPairFilter(pairs, ""))})
+          SELECT * FROM ((${pullStageSelect(repoPairFilter(pairs, reviewRun.owner, reviewRun.repo))})
                           UNION ALL
-                          (${rangeStageSelect(repoPairFilter(pairs, "rr."))})) stages
+                          (${rangeStageSelect(repoPairFilter(pairs, RR.owner, RR.repo))})) stages
           ${filtered}
           -- 最近有动静的排在前面。时刻相同的按阶段标识兜底,翻页才不会漂。
           ORDER BY activity_at DESC, stage_id DESC
@@ -813,7 +829,7 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
     async createRangeReview(record) {
       // 分支名要跟着记录一起可见:插入拿到 id 之后立刻补上,失败时整笔回滚。
       // 发起时的比较项同时进历史表:它是这个阶段审过的第一个 commit。
-      return await transaction("deferred", async () => {
+      return await transaction(async () => {
         const [inserted] = await orm
           .insert(rangeReview)
           .values({
@@ -870,7 +886,7 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
     },
 
     async advanceRangeReview(record) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         await orm
           .update(rangeReview)
           .set({
@@ -974,7 +990,7 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
           unknown_closed: number;
           unknown_open: number;
         }>(sql`
-          ${sql.raw(STATS_IDENTITY_CTE)},
+          ${STATS_IDENTITY_CTE},
           labeled AS (
             SELECT identity.*,
                    (SELECT s.category FROM src s
@@ -1012,17 +1028,21 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
       // 模型在其中几行上都报过也只算这条一次;不同模型报同一条则各算一次。
       const rows = (
         await orm.execute<{ model: string; findings: number }>(sql`
-          ${sql.raw(STATS_IDENTITY_CTE)}
+          ${STATS_IDENTITY_CTE}
+          -- 外层查的是 participation 这张子查询,它的列同样只有名字。
           SELECT model, COUNT(*) AS findings
             FROM (
-              SELECT DISTINCT a.model, s.owner, s.repo, s.pull_number, s.file, s.fp
+              SELECT DISTINCT ${ATTRIBUTION.model},
+                     s.owner, s.repo, s.pull_number, s.file, s.fp
                 FROM src s
-                JOIN ${findingAttribution} a ON a.finding_id = s.id
+                JOIN ${findingAttribution} ${ATTRIBUTION}
+                  ON ${ATTRIBUTION.findingId} = s.id
                 JOIN identity i
                   ON i.owner = s.owner AND i.repo = s.repo
                  AND i.pull_number = s.pull_number AND i.file = s.file AND i.fp = s.fp
                WHERE i.continued = 0 AND i.first_seen >= ${from} AND i.first_seen <= ${to}
-                 AND ${repoPairFilter(repos, "s.")}
+                 -- src 是 CTE 不是表,它自己那几列只能写名字(见 STATS_IDENTITY_CTE)。
+                 AND ${repoPairFilter(repos, sql`s.owner`, sql`s.repo`)}
             ) participation
            GROUP BY model
            ORDER BY model`)
@@ -1049,7 +1069,7 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
             FROM ${reviewRun}
            WHERE ${reviewRun.totalTokens} IS NOT NULL
              AND ${reviewRun.startedAt} >= ${from} AND ${reviewRun.startedAt} <= ${to}
-             AND ${repoPairFilter(repos, "")}`)
+             AND ${repoPairFilter(repos, reviewRun.owner, reviewRun.repo)}`)
       ).rows;
       const runs = Number(row!.usage_rows);
       if (runs === 0) return undefined;

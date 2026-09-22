@@ -6,9 +6,12 @@
  * 这个文件**不引 `./index.ts` 的运行时值**(只 `import type`):两边互引运行时值会成环。
  */
 import { createHash } from "node:crypto";
-import { sql, type SQL } from "drizzle-orm";
+import { sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import { assertReviewerSpecs, type ReviewerSpec } from "../../config.ts";
+import { toIso } from "../schema/columns.ts";
+import { finding, reviewRun } from "../schema/runs.ts";
 import type {
   CarriedAttribution,
   Category,
@@ -17,9 +20,25 @@ import type {
 } from "../finding.ts";
 import type { RecordedFindingAttribution } from "../../contracts/finding.ts";
 import { normalizeModelServiceBaseUrl } from "../../reviewer/model-service-runtime.ts";
-import type { Orm, StoreTransaction, TransactionMode } from "./pg.ts";
+import type { Orm, StoreTransaction } from "./pg.ts";
 export type { Orm } from "./pg.ts";
 import type { ModelSupplementSource, StageScope, Store } from "./index.ts";
+
+/**
+ * 一张表在某条查询里的那几列。schema 里的列对象是这个形状,`alias(表, "别名")` 出来的
+ * 也是——`sql` 模板里引它们渲染出的是带表限定的写法(`"run"."owner"`),列名因此不必
+ * 在查询里手写。
+ */
+type Columns<K extends string> = Record<K, SQLWrapper>;
+
+/**
+ * 一列在 `UPDATE … SET (a, b) = (…)` 的目标列表里的写法。那个位置不收表限定的列名
+ * (`"finding"."disposed_by"` 在 PostgreSQL 上是语法错),所以只能写名字——名字仍从列
+ * 对象上取,不手打。
+ */
+export function columnName(column: { name: string }): SQLWrapper {
+  return sql.identifier(column.name);
+}
 
 export const MIN_REPORT_SEVERITIES: readonly Severity[] = ["P0", "P1", "P2"];
 
@@ -29,8 +48,8 @@ export function readMinReportSeverity(stored: string | undefined): Severity | nu
 }
 
 /**
- * 一行 `review_run.trigger_source` 读成触发来源(issue #312)。`openStore` 已经把旧行回填
- * 过,认不出的一格仍读作投递——一行坏数据不该让整张时间线读不出来。
+ * 一行 `review_run.trigger_source` 读成触发来源(issue #312)。认不出的一格读作投递——
+ * 一行坏数据不该让整张时间线读不出来。
  */
 export function readTriggerSource(stored: unknown): ReviewTriggerSource {
   return stored === "panel" || stored === "scheduled" ? stored : "delivery";
@@ -47,25 +66,37 @@ export function readTriggerSource(stored: unknown): ReviewTriggerSource {
  * 没有评论载体的行(review 正文那一档,以及平台读不回评论标识的那一轮)退回「文件 +
  * 指纹」,指纹也算不出时用自己的 id 兜底成独立键——它们本来就没有可分辨的载体,口径
  * 与这一票之前逐字一致。
+ *
+ * `t` 是 finding 表在那条查询里的样子:不起别名就传 `finding`,起了别名传
+ * `alias(finding, "f")`,渲染出来的列名跟着走。
  */
-export function identityKey(prefix: string): string {
-  return `COALESCE(${prefix}comment_id,
-                   ${prefix}file || chr(10) || COALESCE(${prefix}fingerprint, 'row:' || ${prefix}id))`;
+export function identityKey(t: Columns<"id" | "commentId" | "file" | "fingerprint">): SQL {
+  return sql`COALESCE(${t.commentId},
+                      ${t.file} || chr(10) || COALESCE(${t.fingerprint}, 'row:' || ${t.id}))`;
 }
+
+/** `STATS_IDENTITY_CTE` 里 finding 与 review_run 的别名。外层查的是它摊出来的 CTE,用不到。 */
+const STATS_FINDING = alias(finding, "f");
+const STATS_RUN = alias(reviewRun, "run");
 
 /**
  * 统计口径的共同前半段:`src` 把参与统计的 finding 行摊平(fallback 在最内层就排除),
  * `identity` 按 Finding Identity 折叠(键见 `identityKey`)。处置率与参与条数共用它,
  * 两个数才落在同一批 Identity 上;补的那半段各自接在后面。
+ *
+ * `src` 与 `identity` 是 CTE 不是 schema 里的表,它们自己那几列因此只能写名字——外层
+ * 查询引的也是这两个名字,`src s` / `identity i` 那两个别名同理。
  */
-export const STATS_IDENTITY_CTE = `WITH src AS (
-             SELECT f.id, f.category, f.file, f.disposition,
-                    ${identityKey("f.")} AS fp,
-                    run.owner, run.repo, run.pull_number, run.started_at,
-                    CASE WHEN run.pr_state = 'closed' THEN 1 ELSE 0 END AS closed
-               FROM finding f
-               JOIN review_run run ON f.run_id = run.id
-              WHERE f.placement = 'inline'
+export const STATS_IDENTITY_CTE: SQL = sql`WITH src AS (
+             SELECT ${STATS_FINDING.id}, ${STATS_FINDING.category}, ${STATS_FINDING.file},
+                    ${STATS_FINDING.disposition},
+                    ${identityKey(STATS_FINDING)} AS fp,
+                    ${STATS_RUN.owner}, ${STATS_RUN.repo}, ${STATS_RUN.pullNumber},
+                    ${STATS_RUN.startedAt},
+                    CASE WHEN ${STATS_RUN.prState} = 'closed' THEN 1 ELSE 0 END AS closed
+               FROM ${finding} ${STATS_FINDING}
+               JOIN ${reviewRun} ${STATS_RUN} ON ${STATS_FINDING.runId} = ${STATS_RUN.id}
+              WHERE ${STATS_FINDING.placement} = 'inline'
            ),
            identity AS (
              SELECT owner, repo, pull_number, file, fp,
@@ -149,44 +180,43 @@ export function carriedAttribution(row: Record<string, unknown>): CarriedAttribu
  * 且不属于任何范围审查」的全部轮次,范围审查阶段是它名下的全部轮次。历史注入与阶段汇总读的
  * 是同一个阶段,判据因此只定这一次。
  *
- * `alias` 是 `review_run` 在这条查询里的名字:builder 不起别名时就是表名,`sql` 模板里
- * `JOIN review_run run` 那种写法传 `"run"`。
+ * `run` 是 `review_run` 在这条查询里的样子:不起别名就用默认的表本身,`sql` 模板里
+ * `JOIN review_run run` 那种写法传 `alias(reviewRun, "run")`。
  */
-export function stageScopeFilter(scope: StageScope, alias = "review_run"): SQL {
-  const at = sql.raw(`${alias}.`);
+export function stageScopeFilter(
+  scope: StageScope,
+  run: Columns<"rangeReviewId" | "owner" | "repo" | "pullNumber"> = reviewRun,
+): SQL {
   return "rangeReviewId" in scope
-    ? sql`${at}range_review_id = ${scope.rangeReviewId}`
-    : sql`${at}owner = ${scope.owner} AND ${at}repo = ${scope.repo}
-            AND ${at}pull_number = ${scope.pullNumber} AND ${at}range_review_id IS NULL`;
+    ? sql`${run.rangeReviewId} = ${scope.rangeReviewId}`
+    : sql`${run.owner} = ${scope.owner} AND ${run.repo} = ${scope.repo}
+            AND ${run.pullNumber} = ${scope.pullNumber} AND ${run.rangeReviewId} IS NULL`;
 }
 
 /**
- * 一组 owner/repo 对的过滤条件(CONTEXT.md 仓库分配)。省略即不限,空数组即一个都不给;
- * `prefix` 是这两列在查询里的表别名前缀(含点号,空串即不限定)。
+ * 一组 owner/repo 对的过滤条件(CONTEXT.md 仓库分配)。省略即不限,空数组即一个都不给。
+ * `owner` 与 `repo` 是这两列在查询里的引用:表的列对象,或者(CTE 那一档)一段写着
+ * 它在 CTE 里叫什么的 `sql`。
  */
 export function repoPairFilter(
   pairs: readonly { owner: string; repo: string }[] | undefined,
-  prefix: string,
+  owner: SQLWrapper,
+  repo: SQLWrapper,
 ): SQL {
   if (pairs === undefined) return sql`true`;
   if (pairs.length === 0) return sql`false`;
-  const at = sql.raw(prefix);
   return sql`(${sql.join(
-    pairs.map((pair) => sql`(${at}owner = ${pair.owner} AND ${at}repo = ${pair.repo})`),
+    pairs.map((pair) => sql`(${owner} = ${pair.owner} AND ${repo} = ${pair.repo})`),
     sql` OR `,
   )})`;
 }
 
 /**
- * 走 `orm.execute` 的原始查询取回来的一格时刻。
- *
- * `store/pg.ts` 装的全局解析器把 `timestamptz` 读成 ISO 字符串,而 Drizzle 对自己发出的
- * 每一条查询都把这个类型改回「原样的 PostgreSQL 文本」(它自己按列类型再映)——builder
- * 的结果因此是 ISO,`execute` 的结果是 `2026-08-03 00:00:00+00` 这种写法。这一格在这里
- * 归一,面板与用例看到的仍是 ISO。
+ * 走 `orm.execute` 的原始查询取回来的一格时刻(为什么要归一见 `store/pg.ts`)。归一本身
+ * 与列类型是同一份实现(`schema/columns.ts` 的 `toIso`),这里只多接一个 NULL。
  */
 export function isoTime(value: string | null): string | null {
-  return value === null ? null : new Date(value).toISOString();
+  return value === null ? null : toIso(value);
 }
 
 /**
@@ -199,13 +229,13 @@ export function isoTime(value: string | null): string | null {
  * `index.ts` 里接进去的是一行 `...runsMethods(ctx)`。
  *
  * - `orm` 是 Drizzle 的句柄,读写一律经它。
- * - `transaction(mode, async tx => …)` 见 `store/pg.ts`。
+ * - `transaction(async tx => …)` 见 `store/pg.ts`。
  * - `store()` 惰性取整份 store:方法之间互相调用时用它(装配那一刻 store 还没拼好)。
  * - 其余是开库时建出来的共用闭包。
  */
 export type StoreContext = StoreHelpers & {
   orm: Orm;
-  transaction<T>(mode: TransactionMode, run: (tx: StoreTransaction) => Promise<T>): Promise<T>;
+  transaction<T>(run: (tx: StoreTransaction) => Promise<T>): Promise<T>;
   store: () => Store;
 };
 

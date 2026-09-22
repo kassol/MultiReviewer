@@ -358,6 +358,10 @@ export function makeCacheDir(): { dir: string; cleanup(): void } {
   return { dir, cleanup: () => removeTempDir(dir) };
 }
 
+// 一个测试文件会建好几个库、好几个池,几路并发跑起来就会把 PostgreSQL 的 `max_connections`
+// 占满。每个测试库上同时在跑的查询本来也只有几条,把池收到 3 条连接。
+process.env["MULTIREVIEWER_DB_POOL_MAX"] ??= "3";
+
 /**
  * 给这一次测试建一个真的 PostgreSQL 库(ADR 0036):在 `MULTIREVIEWER_TEST_DATABASE_URL`
  * 指的实例上 `CREATE DATABASE`、跑一遍迁移,收尾时关掉连接池再 `DROP DATABASE`。
@@ -365,10 +369,6 @@ export function makeCacheDir(): { dir: string; cleanup(): void } {
  * 一个库一次调用,不共用:测试之间的数据隔离靠库本身,而不是靠每个用例自己清表。
  * `dataDir` 是会话图片附件的落点(issue #336),库不再是文件之后它另占一个临时目录。
  */
-// 一个测试文件会建好几个库、好几个池,几路并发跑起来就会把 PostgreSQL 的 `max_connections`
-// 占满。每个测试库上同时在跑的查询本来也只有几条,把池收到 3 条连接。
-process.env["MULTIREVIEWER_DB_POOL_MAX"] ??= "3";
-
 export async function makeTestDatabase(): Promise<{
   url: string;
   dataDir: string;
@@ -382,18 +382,29 @@ export async function makeTestDatabase(): Promise<{
   const url = new URL(admin);
   url.pathname = `/${name}`;
   const databaseUrl = url.href;
-  await migrateStore(databaseUrl);
-  const dataDir = mkdtempSync(join(tmpdir(), "multireviewer-data-"));
+  // 先关连接池:还连着的库 DROP 不掉。
+  const dropDatabase = async (): Promise<void> => {
+    await closeStorePool(databaseUrl);
+    await onAdminConnection(admin, async (client) => {
+      await client.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    });
+  };
+  let dataDir: string;
+  try {
+    await migrateStore(databaseUrl);
+    dataDir = mkdtempSync(join(tmpdir(), "multireviewer-data-"));
+  } catch (error) {
+    // 库已经建出来了,而 `cleanup` 还没交到调用方手上:这里自己收掉,不然迁移一失败
+    // 就在实例上留一个没人删得掉的库,跑几轮之后实例里全是这种库。
+    await dropDatabase();
+    throw error;
+  }
   return {
     url: databaseUrl,
     dataDir,
     cleanup: async () => {
-      // 先关连接池:还连着的库 DROP 不掉。
-      await closeStorePool(databaseUrl);
+      await dropDatabase();
       removeTempDir(dataDir);
-      await onAdminConnection(admin, async (client) => {
-        await client.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-      });
     },
   };
 }

@@ -7,7 +7,8 @@
  */
 import { matchesGlob } from "node:path";
 
-import { and, asc, count, desc, eq, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 
 import type { ReviewRunReviewerPin, ThinkingLevel } from "../../config.ts";
 import type {
@@ -42,27 +43,36 @@ import {
 } from "../schema/runs.ts";
 import type { RootCauseGroup, RunListItem, Store } from "./index.ts";
 import {
+  columnName,
   identityKey,
   readMinReportSeverity,
   readTriggerSource,
+  repoPairFilter,
   representativeSegment,
   stageScopeFilter,
   type StoreContext,
 } from "./shared.ts";
+
+/** finding 与 review_run 在那几条 `sql` 模板里的别名,列引用因此不必手写表限定写法。 */
+const F = alias(finding, "f");
+const RUN = alias(reviewRun, "run");
+/** 同一条查询里 finding 的第二份:被继承、被交接的那一行。 */
+const PRIOR = alias(finding, "prior");
 
 /**
  * 还能自动处置的那些行(ADR 0016):当前处置是 unknown 或未处置,且从来没有被显式处置过。
  * `disposed_at` 就是那个标记——面板处置写它,自动处置也写它(处置人留空),于是一行至多被
  * 自动处置一次:人把「已修复」改回未处置之后,自动规则不再碰它。
  */
-const AUTO_DISPOSABLE = sql`disposition IN ('unknown', 'unresolved') AND disposed_at IS NULL`;
+const AUTO_DISPOSABLE = sql`${finding.disposition} IN ('unknown', 'unresolved')
+                            AND ${finding.disposedAt} IS NULL`;
 
 /** 「同一个 pull request 名下的历史 finding」。回填与自动处置都按它限定范围。 */
 function pullRequestScope(owner: string, repo: string, pullNumber: number): SQL {
-  return sql`run_id IN (SELECT id FROM ${reviewRun}
-                         WHERE ${reviewRun.owner} = ${owner}
-                           AND ${reviewRun.repo} = ${repo}
-                           AND ${reviewRun.pullNumber} = ${pullNumber})`;
+  return sql`${finding.runId} IN (SELECT ${reviewRun.id} FROM ${reviewRun}
+                                   WHERE ${reviewRun.owner} = ${owner}
+                                     AND ${reviewRun.repo} = ${repo}
+                                     AND ${reviewRun.pullNumber} = ${pullNumber})`;
 }
 
 /**
@@ -72,19 +82,9 @@ function pullRequestScope(owner: string, repo: string, pullNumber: number): SQL 
  * 恒不成立,整个条件就只剩后一档,正文锚点那一档因此走同一句 SQL。
  */
 function backfillTarget(commentId: string | null, file: string, fingerprint: string): SQL {
-  return sql`(comment_id = ${commentId}
-              OR (comment_id IS NULL AND file = ${file} AND fingerprint = ${fingerprint}))`;
-}
-
-/** 一组 owner/repo 对的过滤条件(CONTEXT.md 仓库分配)。省略即不限,空数组即一个都不给。 */
-function repoPairs(
-  pairs: readonly { owner: string; repo: string }[] | undefined,
-): SQL | undefined {
-  if (pairs === undefined) return undefined;
-  if (pairs.length === 0) return sql`false`;
-  return or(
-    ...pairs.map((pair) => and(eq(reviewRun.owner, pair.owner), eq(reviewRun.repo, pair.repo))),
-  );
+  return sql`(${finding.commentId} = ${commentId}
+              OR (${finding.commentId} IS NULL AND ${finding.file} = ${file}
+                  AND ${finding.fingerprint} = ${fingerprint}))`;
 }
 
 /** 五列用量读成一份 `ReviewerUsage`。总量为 NULL 即这一行没有记过用量。 */
@@ -256,9 +256,9 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
    */
   const latestPerIdentity = (columns: SQL, scopeCondition: SQL, extra: SQL | undefined): SQL =>
     sql`WITH scoped AS (
-          SELECT ${columns}, ${sql.raw(identityKey("f."))} AS fp
-            FROM ${finding} f
-            JOIN ${reviewRun} run ON f.run_id = run.id
+          SELECT ${columns}, ${identityKey(F)} AS fp
+            FROM ${finding} ${F}
+            JOIN ${reviewRun} ${RUN} ON ${F.runId} = ${RUN.id}
            WHERE ${scopeCondition}
         )
         SELECT s.* FROM scoped s
@@ -269,7 +269,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
 
   return {
     async startRun(meta) {
-      return await transaction("deferred", async () => {
+      return await transaction(async () => {
         const rangeReviewId = meta.rangeReviewId ?? null;
         // PR 状态属于整个审查阶段。closed/reopened 会改写该 PR 的全部历史行;新轮次在
         // 同一事务里继承当前值,手动重跑已关闭 PR 时不能凭一行 NULL 把阶段改回进行中。
@@ -369,7 +369,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       // 同一件事,兜底只在其中一处时两边会说不一样的话。
       const text = runFailureText(failure);
       const ids = rows.map((row) => row.id);
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         // 失败原因借 Reviewer 指定各写一行 outcome:计数与耗时都归零,这一轮它们
         // 什么都没跑完。
         const pins = await orm
@@ -459,7 +459,9 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
             reviewRunBatchOutcome.batchIndex,
             reviewRunBatchOutcome.model,
           ],
-          set: { outcomeJson: sql`excluded.outcome_json` },
+          set: {
+            outcomeJson: sql`excluded.${columnName(reviewRunBatchOutcome.outcomeJson)}`,
+          },
         });
     },
 
@@ -523,7 +525,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       const rootCauseGroupIds: number[] = [];
       // 一次 Review Run 的收尾要么整体可见,要么整体不可见:半张表的 Finding
       // 会让事后的处置率统计算出偏低的分母。
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         // 本轮总量含合并 agent(issue #228):面板的花费数字要覆盖这一轮真的花掉的全部
         // token,而逐 Reviewer 那几行仍只有各自的会话——差额就是合并 agent。
         const runUsage = sumUsage([
@@ -663,20 +665,19 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
         // 的标记也会被新的一行稀释,自动处置于是又碰它一次(ADR 0016)。`disposition`
         // 不在此列——它由跨轮匹配与回填决定,口径不变。本轮新发的评论不必走这一步:
         // 它的 id 是新的,库里不会有同 id 的历史行,`recordFindingComments` 因此不动。
+        const inheritable = sql`${PRIOR.commentId} = ${finding.commentId}
+                                AND ${PRIOR.runId} <> ${finding.runId}
+                                AND ${PRIOR.disposedAt} IS NOT NULL`;
         await orm.execute(sql`
           UPDATE ${finding}
-             SET (disposed_by, disposed_at, disposition_note) =
-                   (SELECT prior.disposed_by, prior.disposed_at, prior.disposition_note
-                      FROM ${finding} prior
-                     WHERE prior.comment_id = finding.comment_id
-                       AND prior.run_id <> finding.run_id
-                       AND prior.disposed_at IS NOT NULL
-                     ORDER BY prior.id DESC LIMIT 1)
-           WHERE run_id = ${runId} AND comment_id IS NOT NULL
-             AND EXISTS (SELECT 1 FROM ${finding} prior
-                          WHERE prior.comment_id = finding.comment_id
-                            AND prior.run_id <> finding.run_id
-                            AND prior.disposed_at IS NOT NULL)`);
+             SET (${columnName(finding.disposedBy)}, ${columnName(finding.disposedAt)},
+                  ${columnName(finding.dispositionNote)}) =
+                   (SELECT ${PRIOR.disposedBy}, ${PRIOR.disposedAt}, ${PRIOR.dispositionNote}
+                      FROM ${finding} ${PRIOR}
+                     WHERE ${inheritable}
+                     ORDER BY ${PRIOR.id} DESC LIMIT 1)
+           WHERE ${finding.runId} = ${runId} AND ${finding.commentId} IS NOT NULL
+             AND EXISTS (SELECT 1 FROM ${finding} ${PRIOR} WHERE ${inheritable})`);
       });
       return rootCauseGroupIds;
     },
@@ -711,12 +712,12 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       const rows = (
         await orm.execute(
           sql`${latestPerIdentity(
-            sql`f.id AS id, f.file AS file,
-                COALESCE(f.placed_line, f.line) AS line, f.title AS title,
-                f.severity AS severity, f.category AS category,
-                f.description AS description, f.disposition AS disposition,
-                f.disposition_note AS note`,
-            stageScopeFilter(scope, "run"),
+            sql`${F.id} AS id, ${F.file} AS file,
+                COALESCE(${F.placedLine}, ${F.line}) AS line, ${F.title} AS title,
+                ${F.severity} AS severity, ${F.category} AS category,
+                ${F.description} AS description, ${F.disposition} AS disposition,
+                ${F.dispositionNote} AS note`,
+            stageScopeFilter(scope, RUN),
             undefined,
           )} ORDER BY s.id`,
         )
@@ -751,10 +752,10 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       const rows = (
         await orm.execute(
           sql`${latestPerIdentity(
-            sql`f.id AS id, f.file AS file,
-                COALESCE(f.placed_line, f.line) AS line,
-                f.fingerprint AS fingerprint, f.disposition AS disposition`,
-            stageScopeFilter(scope, "run"),
+            sql`${F.id} AS id, ${F.file} AS file,
+                COALESCE(${F.placedLine}, ${F.line}) AS line,
+                ${F.fingerprint} AS fingerprint, ${F.disposition} AS disposition`,
+            stageScopeFilter(scope, RUN),
             sql`AND s.fingerprint IS NOT NULL`,
           )} ORDER BY s.id`,
         )
@@ -780,11 +781,11 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       const rows = (
         await orm.execute(
           sql`${latestPerIdentity(
-            sql`f.id AS id, f.file AS file, f.line AS line, f.title AS title,
-                f.severity AS severity, f.disposition AS disposition,
-                f.description AS description, f.impact AS impact,
-                f.suggestion AS suggestion`,
-            sql`run.owner = ${query.owner} AND run.repo = ${query.repo}`,
+            sql`${F.id} AS id, ${F.file} AS file, ${F.line} AS line, ${F.title} AS title,
+                ${F.severity} AS severity, ${F.disposition} AS disposition,
+                ${F.description} AS description, ${F.impact} AS impact,
+                ${F.suggestion} AS suggestion`,
+            sql`${RUN.owner} = ${query.owner} AND ${RUN.repo} = ${query.repo}`,
             query.disposition === undefined
               ? undefined
               : sql`AND s.disposition = ${query.disposition}`,
@@ -813,21 +814,17 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
     },
 
     async pendingLineAuthors(scope) {
-      const rows = (
-        await orm.execute(
-          sql`SELECT f.id AS id, run.head_sha AS head_sha, f.file AS file, f.line AS line
-                FROM ${finding} f
-                JOIN ${reviewRun} run ON f.run_id = run.id
-               WHERE ${stageScopeFilter(scope, "run")} AND f.line_author_sha IS NULL
-               ORDER BY f.id`,
-        )
-      ).rows as Record<string, unknown>[];
-      return rows.map((row) => ({
-        findingId: Number(row["id"]),
-        headSha: String(row["head_sha"]),
-        file: String(row["file"]),
-        line: Number(row["line"]),
-      }));
+      return await orm
+        .select({
+          findingId: finding.id,
+          headSha: reviewRun.headSha,
+          file: finding.file,
+          line: finding.line,
+        })
+        .from(finding)
+        .innerJoin(reviewRun, eq(finding.runId, reviewRun.id))
+        .where(and(stageScopeFilter(scope), isNull(finding.lineAuthorSha)))
+        .orderBy(asc(finding.id));
     },
 
     async recordLineAuthors(authors) {
@@ -861,7 +858,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       const reviewer = event.reviewer ?? null;
       // 序号是这一轮之内的 `MAX + 1`:事务里先把轮次那一行锁住再取(ADR 0036),否则
       // 两个连接并发追加会算出同一个号,主键当场撞上。
-      const seq = await transaction("immediate", async () => {
+      const seq = await transaction(async () => {
         await orm.execute(
           sql`SELECT 1 FROM ${reviewRun} WHERE ${reviewRun.id} = ${runId} FOR UPDATE`,
         );
@@ -925,7 +922,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
         opts.rangeReviewId === undefined
           ? undefined
           : eq(reviewRun.rangeReviewId, opts.rangeReviewId),
-        repoPairs(opts.repos),
+        repoPairFilter(opts.repos, reviewRun.owner, reviewRun.repo),
         opts.id === undefined ? undefined : eq(reviewRun.id, opts.id),
       ];
       const runs = await orm
@@ -1235,7 +1232,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
         .where(
           and(
             eq(finding.commentId, input.commentId),
-            sql`${finding.runId} IN (SELECT id FROM ${reviewRun}
+            sql`${finding.runId} IN (SELECT ${reviewRun.id} FROM ${reviewRun}
                                       WHERE ${reviewRun.owner} = ${input.owner}
                                         AND ${reviewRun.repo} = ${input.repo})`,
           ),
@@ -1255,20 +1252,22 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
         const rows = (
           await orm.execute(
             sql`WITH seed AS (
-                  SELECT ${sql.raw(identityKey("f."))} AS key,
-                         run.owner AS owner, run.repo AS repo, run.pull_number AS pull_number
-                    FROM ${finding} f JOIN ${reviewRun} run ON run.id = f.run_id
-                   WHERE f.id = ${findingId}
+                  SELECT ${identityKey(F)} AS key,
+                         ${RUN.owner} AS owner, ${RUN.repo} AS repo,
+                         ${RUN.pullNumber} AS pull_number
+                    FROM ${finding} ${F} JOIN ${reviewRun} ${RUN} ON ${RUN.id} = ${F.runId}
+                   WHERE ${F.id} = ${findingId}
                 )
-                SELECT finding.id AS id, finding.comment_id AS comment_id
+                SELECT ${finding.id} AS id, ${finding.commentId} AS comment_id
                   FROM ${finding}, seed
-                 WHERE ${sql.raw(identityKey("finding."))} = seed.key
-                   AND finding.comment_id IS NOT NULL
+                 WHERE ${identityKey(finding)} = seed.key
+                   AND ${finding.commentId} IS NOT NULL
                    AND ${AUTO_DISPOSABLE}
-                   AND finding.run_id IN (SELECT id FROM ${reviewRun}
-                                           WHERE owner = seed.owner AND repo = seed.repo
-                                             AND pull_number = seed.pull_number)
-                 ORDER BY finding.id`,
+                   AND ${finding.runId} IN (SELECT ${reviewRun.id} FROM ${reviewRun}
+                                             WHERE ${reviewRun.owner} = seed.owner
+                                               AND ${reviewRun.repo} = seed.repo
+                                               AND ${reviewRun.pullNumber} = seed.pull_number)
+                 ORDER BY ${finding.id}`,
           )
         ).rows as Record<string, unknown>[];
         for (const row of rows) {
@@ -1287,9 +1286,11 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       // 那些行也记成已修复,而 Disposition 的权威状态在 Forge 上(ADR 0006)。
       await orm.execute(
         sql`UPDATE ${finding}
-               SET disposition = 'fixed', disposed_at = ${disposedAt},
-                   disposition_note = COALESCE(${note ?? null}, disposition_note)
-             WHERE id = ${candidate.findingId}
+               SET ${columnName(finding.disposition)} = 'fixed',
+                   ${columnName(finding.disposedAt)} = ${disposedAt},
+                   ${columnName(finding.dispositionNote)} =
+                     COALESCE(${note ?? null}, ${finding.dispositionNote})
+             WHERE ${finding.id} = ${candidate.findingId}
                AND ${AUTO_DISPOSABLE}
                AND ${pullRequestScope(owner, repo, pullNumber)}`,
       );
@@ -1370,16 +1371,18 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
     },
 
     async recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate, handoffPending }) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         // 先把旧行的三列抄到新行上,再改旧行的处置值:两条语句都只碰自己那一侧,
         // 顺序其实无关,写成这样是让「谁继承谁」一眼看得出来。
         await orm.execute(
           sql`UPDATE ${finding}
-                 SET (disposed_by, disposed_at, disposition_note, continued_from) =
-                       (SELECT prior.disposed_by, prior.disposed_at, prior.disposition_note,
+                 SET (${columnName(finding.disposedBy)}, ${columnName(finding.disposedAt)},
+                      ${columnName(finding.dispositionNote)},
+                      ${columnName(finding.continuedFrom)}) =
+                       (SELECT ${PRIOR.disposedBy}, ${PRIOR.disposedAt}, ${PRIOR.dispositionNote},
                                ${candidate.commentHtmlUrl}
-                          FROM ${finding} prior WHERE prior.id = ${candidate.findingId})
-               WHERE run_id = ${runId} AND group_index = ${groupIndex}`,
+                          FROM ${finding} ${PRIOR} WHERE ${PRIOR.id} = ${candidate.findingId})
+               WHERE ${finding.runId} = ${runId} AND ${finding.groupIndex} = ${groupIndex}`,
         );
         // 折叠键与读侧同源:`identityKey`——交接的是承载它的那条评论所指的那条 Finding,
         // 同一处的另一条 Identity 各有各的评论,不跟着这一次交接走(ADR 0030)。本轮新行
@@ -1387,11 +1390,12 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
         // 改掉。交接未完成的标记与处置值同一笔写(ADR 0025):整条 Identity 一起带上。
         await orm.execute(
           sql`UPDATE ${finding}
-                 SET disposition = 'continued', handoff_pending = ${handoffPending ? true : null}
-               WHERE ${sql.raw(identityKey(""))} =
-                     (SELECT ${sql.raw(identityKey("prior."))} FROM ${finding} prior
-                       WHERE prior.id = ${candidate.findingId})
-                 AND disposition IN ('unknown', 'unresolved')
+                 SET ${columnName(finding.disposition)} = 'continued',
+                     ${columnName(finding.handoffPending)} = ${handoffPending ? true : null}
+               WHERE ${identityKey(finding)} =
+                     (SELECT ${identityKey(PRIOR)} FROM ${finding} ${PRIOR}
+                       WHERE ${PRIOR.id} = ${candidate.findingId})
+                 AND ${finding.disposition} IN ('unknown', 'unresolved')
                  AND ${pullRequestScope(owner, repo, pullNumber)}`,
         );
       });
@@ -1417,24 +1421,24 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
 
     async completeHandoff(owner, repo, pullNumber, findingId) {
       await orm.execute(
-        sql`UPDATE ${finding} SET handoff_pending = NULL
-             WHERE ${sql.raw(identityKey(""))} =
-                   (SELECT ${sql.raw(identityKey("prior."))} FROM ${finding} prior
-                     WHERE prior.id = ${findingId})
-               AND handoff_pending = true
+        sql`UPDATE ${finding} SET ${columnName(finding.handoffPending)} = NULL
+             WHERE ${identityKey(finding)} =
+                   (SELECT ${identityKey(PRIOR)} FROM ${finding} ${PRIOR}
+                     WHERE ${PRIOR.id} = ${findingId})
+               AND ${finding.handoffPending} = true
                AND ${pullRequestScope(owner, repo, pullNumber)}`,
       );
     },
 
     async backfillDispositions(owner, repo, pullNumber, updates) {
       if (updates.length === 0) return;
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         for (const entry of updates) {
           const target = backfillTarget(entry.commentId ?? null, entry.file, entry.fingerprint);
           const scope = pullRequestScope(owner, repo, pullNumber);
           if (entry.disposition === undefined) {
             await orm.execute(
-              sql`UPDATE ${finding} SET placement = ${entry.placement}
+              sql`UPDATE ${finding} SET ${columnName(finding.placement)} = ${entry.placement}
                    WHERE ${target} AND ${scope}`,
             );
             continue;
@@ -1446,20 +1450,21 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
           // 交接的痕迹,不是处置;人在 Forge 上把它 unresolve 也一样。
           const keepFixed =
             entry.disposition === "resolved"
-              ? sql` AND disposition <> 'fixed'`
+              ? sql` AND ${finding.disposition} <> 'fixed'`
               : sql``;
           await orm.execute(
-            sql`UPDATE ${finding} SET disposition = ${entry.disposition},
-                                      placement = ${entry.placement}
-                 WHERE ${target} AND disposition <> 'continued'${keepFixed} AND ${scope}`,
+            sql`UPDATE ${finding} SET ${columnName(finding.disposition)} = ${entry.disposition},
+                                      ${columnName(finding.placement)} = ${entry.placement}
+                 WHERE ${target} AND ${finding.disposition} <> 'continued'${keepFixed}
+                   AND ${scope}`,
           );
           // 「已延续」只放开这一格(ADR 0025):旧评论读回已 resolve,交接要等的就是这个
           // 结果,待办标记清掉;处置值仍不动。
           if (entry.disposition === "resolved") {
             await orm.execute(
-              sql`UPDATE ${finding} SET handoff_pending = NULL
-                   WHERE ${target} AND disposition = 'continued'
-                     AND handoff_pending = true AND ${scope}`,
+              sql`UPDATE ${finding} SET ${columnName(finding.handoffPending)} = NULL
+                   WHERE ${target} AND ${finding.disposition} = 'continued'
+                     AND ${finding.handoffPending} = true AND ${scope}`,
             );
           }
         }

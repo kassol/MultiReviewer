@@ -208,7 +208,7 @@ export function sessionsMethods({ orm, transaction }: StoreContext): SessionsMet
 
   /**
    * 事务里先把这个会话那一行锁住(ADR 0036)。序号是 `MAX + 1`、排队消息是「先读后删」,
-   * 两处都要在同一条会话上串起来——SQLite 那一版靠的是单写者锁。
+   * 两处都是读-判-写,要在同一条会话上串起来。
    */
   const lockSession = async (sessionId: number): Promise<void> => {
     await orm.execute(
@@ -296,7 +296,7 @@ export function sessionsMethods({ orm, transaction }: StoreContext): SessionsMet
     },
 
     async deleteAgentSession(sessionId) {
-      return transaction("deferred", async () => {
+      return transaction(async () => {
         // 记录、受理过的消息 id、图片与排队消息只属于这个会话,跟着它走(issue #333、#336)。
         await deleteAgentSessionRows(orm, [sessionId]);
         const removed = await orm
@@ -328,7 +328,7 @@ export function sessionsMethods({ orm, transaction }: StoreContext): SessionsMet
     },
 
     async appendAgentSessionEntry(sessionId, input) {
-      return transaction("deferred", async () => {
+      return transaction(async () => {
         // 序号在锁住这一行之后才算:两条并发的落库不锁的话会算出同一个 seq,主键当场撞上。
         await lockSession(sessionId);
         const [top] = await orm
@@ -422,7 +422,7 @@ export function sessionsMethods({ orm, transaction }: StoreContext): SessionsMet
     },
 
     async putAgentSessionPendingMessages(sessionId, messages) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         await lockSession(sessionId);
         await orm
           .delete(agentSessionPendingMessage)
@@ -443,7 +443,7 @@ export function sessionsMethods({ orm, transaction }: StoreContext): SessionsMet
     async takeAgentSessionPendingMessages(sessionId) {
       // 「取出即删」要整段原子:先锁住会话那一行,另一个连接因此排在后面,读到的是空队列
       // ——同一条排队消息不会被两边各投一次(issue #401 在 PG 上的对应物)。
-      return transaction("immediate", async () => {
+      return transaction(async () => {
         await lockSession(sessionId);
         const messages = await pendingOf(sessionId);
         await orm

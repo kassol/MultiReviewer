@@ -108,7 +108,7 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
     },
 
     async createPanelRole(record) {
-      return await transaction("deferred", async () => {
+      return await transaction(async () => {
         const [inserted] = await orm
           .insert(panelRole)
           .values({ name: record.name, createdAt: record.createdAt })
@@ -125,7 +125,7 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
         .from(panelRole)
         .where(eq(panelRole.id, id));
       if (existing.length === 0) return undefined;
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         await orm.update(panelRole).set({ name: record.name }).where(eq(panelRole.id, id));
         await orm.delete(panelRolePermission).where(eq(panelRolePermission.roleId, id));
         await writeRolePermissions(id, record.permissions);
@@ -141,7 +141,7 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
         .orderBy(asc(panelUser.username));
       const usernames = holders.map((row) => row.username);
       if (usernames.length > 0) return { removed: false, usernames };
-      return await transaction("deferred", async () => {
+      return await transaction(async () => {
         await orm.delete(panelRolePermission).where(eq(panelRolePermission.roleId, id));
         const removed = await orm
           .delete(panelRole)
@@ -170,7 +170,7 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
     },
 
     async setPanelUserAssignment(username, repoIds) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         await orm.delete(panelUserRepo).where(eq(panelUserRepo.username, username));
         // 重复的 repo id 只落一行:整组覆盖说的是集合,不是列表。
         const unique = [...new Set(repoIds)];
@@ -186,7 +186,6 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
       const prior = await store().getPanelUser(username);
       if (prior === undefined) return "missing";
       return await transaction<"updated" | "missing" | "last-system-admin">(
-        "deferred",
         async (tx) => {
           await orm
             .update(panelUser)
@@ -207,7 +206,7 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
     },
 
     async resetPanelPassword(username, passwordHash) {
-      return await transaction("deferred", async () => {
+      return await transaction(async () => {
         const updated = await orm
           .update(panelUser)
           .set({ passwordHash, mustChangePassword: true })
@@ -239,9 +238,9 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
 
     async registerFirstPanelUser(record) {
       // 「查与插是一个决定」:事务里先把用户表锁住再数,两个 bootstrap 请求撞上时后到的
-      // 那个数到的是 1。SQLite 那一版靠 `BEGIN IMMEDIATE` 拿写锁,PostgreSQL 在这里显式
-      // 锁表——零用户时没有父行可以 `FOR UPDATE`(ADR 0036)。
-      return await transaction("immediate", async (tx) => {
+      // 那个数到的是 1。这里显式锁表而不是锁父行:零用户时没有父行可以 `FOR UPDATE`
+      // (ADR 0036)。
+      return await transaction(async (tx) => {
         await orm.execute(sql`LOCK TABLE ${panelUser} IN SHARE ROW EXCLUSIVE MODE`);
         const [row] = await orm.select({ value: count() }).from(panelUser);
         if ((row?.value ?? 0) !== 0) return tx.rollback(false);
@@ -315,7 +314,7 @@ export function accountsMethods({ orm, transaction, store }: StoreContext): Acco
     },
 
     async removePanelUser(username) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         await orm.delete(panelSession).where(eq(panelSession.username, username));
         await orm.delete(panelUserRepo).where(eq(panelUserRepo.username, username));
         await orm.delete(panelUser).where(eq(panelUser.username, username));

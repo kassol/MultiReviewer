@@ -48,41 +48,56 @@ Reviewer 结果、批次中间态、Finding 与归属、复核结论、同根因
 服务在开始监听之前执行它(`migrateStore`,失败即拒绝启动)。开库时的全量 DDL、
 `PRAGMA user_version` 与按 `pragma_table_info` 补列的升级路径全部退役。
 `schema/columns.ts` 有两个自定义列类型:`isoTimestamp` 是 `timestamptz`、JS 侧仍是 ISO 字符串,
-`jsonText` 是 `jsonb`、JS 侧仍是 JSON 文本——两头都靠 `store/pg.ts` 装的全局读取解析器,三百多处
-调用点的读法因此一个字没动。布尔列是真 `boolean`:`Number(x) === 1` 照样成立(`Number(true)` 是
-1),裸 `x === 1` 不成立,写入侧给 `1` / `0` PostgreSQL 也认。
+`jsonText` 是 `jsonb`、JS 侧仍是 JSON 文本,三百多处调用点的读法因此一个字没动。
+**两类归一的落点不同,实测见 `store/pg.ts` 的注释**:`jsonb` 与 `int8` 靠那里装的全局读取解析器
+(builder、`orm.execute` 与裸驱动三条路都生效),时刻靠 `isoTimestamp` 自己的 `fromDriver`——
+Drizzle 给自己发出的查询另装一份解析器,全局那一份在它的查询上不生效。布尔列是真 `boolean`:
+`Number(x) === 1` 照样成立(`Number(true)` 是 1),裸 `x === 1` 不成立,写入侧给 `1` / `0`
+PostgreSQL 也认。
 - **连接池一个,事务绑在同一条连接上**。`openStore(databaseUrl)` 按连接串取进程内共用的池,
 `store.close()` 不再关任何东西,池由 `closeStorePools()` 关(服务退出一次、测试每个文件一次)。
-`transaction(mode, run)` 从池里取一条连接、`BEGIN` → 跑回调 → `COMMIT`,回调抛错即回滚后重抛,
+`transaction(run)` 从池里取一条连接、`BEGIN` → 跑回调 → `COMMIT`,回调抛错即回滚后重抛,
 按业务判定中途回滚的走 `tx.rollback(值)`;**回调现在是 async 的**,里面可以 `await`。
 事务回调里直接用 `orm` 照样落在同一条连接上:`store/pg.ts` 用 `AsyncLocalStorage` 记着当前事务的
 连接,Drizzle 每一次查询都现问一遍。嵌套 `transaction` 并进外层,不再 `BEGIN`。
-`mode` 的 `"immediate"` 在 PostgreSQL 上不起作用,留着是九处「这里要拿写锁」的记号。
+**没有取锁方式这个参数**:PostgreSQL 没有 `BEGIN IMMEDIATE` 的对应物,「先读后判再写」一律在
+事务里对父行 `SELECT … FOR UPDATE`。
 - **域文件的分工与写法**。账号域(`store/accounts.ts`)是最短的一份,照它写:
   - **跨域共用件在 `store/shared.ts` 里,别各抽一份**:SQL 片段与行读法(`identityKey`、
-    `STATS_IDENTITY_CTE`、`stageScopeFilter`、`repoPairFilter`、`isoTime`、
+    `STATS_IDENTITY_CTE`、`stageScopeFilter`、`repoPairFilter`、`columnName`、`isoTime`、
     `readMinReportSeverity`、`readTriggerSource`、`recordedAttribution` /
     `representativeSegment` / `carriedAttribution`、模型调用目标那四件)。只被一个域用到的
-    东西不放这里——它住在那一域自己的文件里。
+    东西不放这里——它住在那一域自己的文件里。前四件收的是**列引用**而不是表名前缀字符串:
+    不起别名传 schema 里的表,起了别名传 `alias(表, "别名")`,渲染出来的表限定写法跟着走。
   - **域文件的入口形状**:`export function runsMethods(ctx: StoreContext): Pick<Store, "startRun" | …>`,
     在 `index.ts` 的 `openStore` 里接成一行 `...runsMethods(ctx)`。`ctx`(`shared.ts` 的
-    `StoreContext`)里有 `orm`(Drizzle)、`transaction(mode, async tx => …)`、`store()`(惰性取
+    `StoreContext`)里有 `orm`(Drizzle)、`transaction(async tx => …)`、`store()`(惰性取
     整份 store,方法互调用它)与两个解析闭包。类型从 `./index.ts` 一律 `import type`(运行时
     擦掉,不成环);`shared.ts` 不引 `./index.ts` 的运行时值,新加的共用件也守这一条。
   - **读写优先 Drizzle builder**,行类型由 `typeof 表.$inferSelect` 推导,不再手抄列名字符串。
     builder 表达不了的(CTE、窗口、复杂聚合)用 `sql` 模板,**模板里仍引 schema 的列对象**
-    (`sql\`${t.owner} = ${owner}\``),别写裸字符串。
-  - **`sql` 模板取回来的时刻要自己归一**。模板绕过了列类型,而 Drizzle 对自己发出的查询把
-    `timestamptz` 的全局解析器改回「PostgreSQL 原文」——不接一句读回来的是
-    `2026-08-03 00:00:00+00` 而不是 ISO。`select({...})` 里的那种表达式接
-    `.mapWith(某个时刻列)`(见 `sessions.ts` 的 `LAST_ACTIVE_AT`),走 `orm.execute` 的原始查询
-    在 JS 侧过一道 `isoTime`(见 `stages.ts` 的阶段行)。
+    (`sql\`${t.owner} = ${owner}\``),别写裸表名与裸列名,也别用 `sql.raw` 拼它们。同一张表
+    在一条查询里出现两次就各起一个 `alias(表, "别名")`,`FROM ${表} ${别名}` 写出表加别名
+    (单独引别名对象只渲染别名)。三处躲不开写名字:CTE 与子查询自己的输出列(`src`、
+    `identity`、`participation` 那几处,它们不是 schema 里的表)、`UPDATE … SET` 的目标列表
+    (那个位置不收表限定写法,用 `columnName(列)` 从列对象取名字)、以及 `excluded.<列>`。
+  - **`select({...})` 里的 `sql` 字段,列引用要套一层**。单表查询(没有 join)上 Drizzle 会把
+    直接写在 SQL 字段里的列的表限定摘掉——它假定单表不必限定,于是子查询里 `"f"."run_id"`
+    变成裸的 `"run_id"` 而与别的表撞名。先把那段 `sql` 拼成一个常量再放进投影(嵌套的 `SQL`
+    不受影响),见 `repos.ts` 的 `listRepos`。
+  - **`sql` 模板取回来的时刻要自己归一**。ISO 由 `isoTimestamp` 的 `fromDriver` 给出,而模板
+    绕过了列类型——不接一句读回来的是 `2026-08-03 00:00:00+00` 而不是 ISO。`select({...})`
+    里的那种表达式接 `.mapWith(某个时刻列)`(见 `sessions.ts` 的 `LAST_ACTIVE_AT`),走
+    `orm.execute` 的原始查询在 JS 侧过一道 `isoTime`(见 `stages.ts` 的阶段行);两条路的归一
+    是同一份实现。
   - **分页哨兵别用 `Number.MAX_SAFE_INTEGER`**:`integer` 列容不下它,PostgreSQL 当场报越界。
     「不限」那一档把条件整个省掉,别塞一个大数进去。
   - **列类型换过之后要删的读写侧包装**:时刻与 JSON 两类由自定义列类型接住了,不必动;
     布尔列上的 `Number(x) === 1` 可以直接写成 `x`,写入侧的 `? 1 : 0` 直接给布尔。
-  - **`immediate` 事务改成事务内 `SELECT … FOR UPDATE` 锁父行**(ADR 0036),锁不到父行的那一档
-    (零行时的 bootstrap)显式 `LOCK TABLE`,见 `accounts.ts` 的 `registerFirstPanelUser`。
+  - **「先读后判再写」在事务内 `SELECT … FOR UPDATE` 锁父行**(ADR 0036):判据要在锁后面重读
+    一遍,判完到写下之间那一行可能已经被人改掉(见 `knowledge.ts` 的 `lockPendingProposal`)。
+    锁不到父行的那一档(零行时的 bootstrap)显式 `LOCK TABLE`,见 `accounts.ts` 的
+    `registerFirstPanelUser`。
   - **乐观并发按改到的行数判**:`await orm.update(...).where(eq(t.version, expected)).returning(...)`
     回空数组即版本对不上,回 409。
   - **`ON CONFLICT`**:`INSERT OR IGNORE` 换 `.onConflictDoNothing()`,`DO UPDATE SET … = excluded.…`

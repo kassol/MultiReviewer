@@ -37,7 +37,7 @@ import {
 } from "./shared.ts";
 export * from "./shared.ts";
 import { createPool, storeDb, type PgPool } from "./pg.ts";
-export type { StoreTransaction, TransactionMode } from "./pg.ts";
+export type { StoreTransaction } from "./pg.ts";
 
 import {
   type ReviewerSpec,
@@ -2567,13 +2567,6 @@ export type RepoFinding = {
   suggestion?: string;
 };
 
-
-
-
-
-
-
-/** 打开当前 schema；schema-v0 数据库开不起来。 */
 /**
  * 进程内按连接串共用的连接池(ADR 0036)。`openStore` 每次给回一份门面,底下永远是同一个池
  * ——「每请求开一次库、用完关掉」的形状到此退役,`(await store.close())` 因此也不再关任何东西。

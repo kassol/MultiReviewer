@@ -318,6 +318,22 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
       (row) => row.id === proposalId && row.state === "pending",
     );
 
+  /**
+   * 同一件事,但先把那一行锁住(ADR 0036):调用方要在同一笔事务里读、判、再写,不锁的话
+   * 判完到写下之间那条提案可能已经被人裁决,改写就落在一条已经作数的提案上。只能在事务里调。
+   */
+  const lockPendingProposal = async (
+    repoId: number,
+    proposalId: number,
+  ): Promise<RuleProposal | undefined> => {
+    const [locked] = await orm
+      .select({ id: ruleProposal.id })
+      .from(ruleProposal)
+      .where(and(eq(ruleProposal.id, proposalId), eq(ruleProposal.repoId, repoId)))
+      .for("update");
+    return locked === undefined ? undefined : await pendingProposal(repoId, proposalId);
+  };
+
   const plannedAcceptance = async (
     repoId: number,
     proposalId: number,
@@ -393,9 +409,9 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
     repoId: number,
     write: (version: number, at: string) => Promise<T>,
   ): Promise<T> =>
-    await transaction("deferred", async () => {
+    await transaction(async () => {
       // 先锁住这个仓库那一行(ADR 0036):版本号是 `MAX + 1`,不锁的话两次并发的确认会算出
-      // 同一个号,主键当场撞上。SQLite 那一版靠的是单写者锁。
+      // 同一个号,主键当场撞上。
       await orm.select({ id: repo.id }).from(repo).where(eq(repo.id, repoId)).for("update");
       const [current] = await orm
         .select({ version: max(ruleSetVersion.version) })
@@ -505,7 +521,7 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
     },
 
     async finishRuleExploration(repoId, items, at) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         // 整组覆盖:草案每仓库至多一份,重探索的产出取代未确认的旧草案(含人手加的条目)。
         await orm.delete(ruleDraftItem).where(eq(ruleDraftItem.repoId, repoId));
         if (items.length > 0) {
@@ -526,7 +542,7 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
     },
 
     async finishRuleExplorationAsProposals(repoId, proposals, at) {
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         // 与草案同一条覆盖语义:一次基点探索是对照当前知识集的完整推导,新一次的未裁决
         // 产出取代上一次的,不是追加。只覆盖出处附注全部来自基点探索的待裁决行(issue
         // #281):已裁决的留作历史;带处置反哺或知识整理附注的那些里有人写下的意见,
@@ -791,7 +807,7 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
       }
       const keep = Math.min(...unique);
       const dropped = unique.filter((id) => id !== keep);
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         // 附注并入保留行:一条提案的出处是它被哪几件事提过,合并不该把其中几件丢掉。
         await orm
           .update(ruleProposalSource)
@@ -969,18 +985,20 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
     },
 
     async mergeIntoRuleProposal(repoId, proposalId, merge) {
-      // 已裁决的、不在这个仓库的、根本不存在的都并不进去:那一条退回按新增处理。
-      const queued = await pendingProposal(repoId, proposalId);
-      if (queued === undefined) return false;
       const at = new Date().toISOString();
-      // 型规则(CONTEXT.md 修订提案,issue #295):修改型要换型即改成指向同一条目标的
-      // 单目标合并——修改那一档不许翻型,而改型正是这一次改写的意图。新增型与合并型的
-      // 变更类型不动,型直接换。
-      const change =
-        merge.type !== undefined && merge.type !== queued.type && queued.change === "modify"
-          ? "merge"
-          : queued.change;
-      await transaction("deferred", async () => {
+      return await transaction(async () => {
+        // 已裁决的、不在这个仓库的、根本不存在的都并不进去:那一条退回按新增处理。判据
+        // 在同一笔事务里锁着那一行读——不锁的话判完到写下之间它可能刚被人裁决,并入就
+        // 落在一条已经作数的提案上,人再也没有机会看这次改写。
+        const queued = await lockPendingProposal(repoId, proposalId);
+        if (queued === undefined) return false;
+        // 型规则(CONTEXT.md 修订提案,issue #295):修改型要换型即改成指向同一条目标的
+        // 单目标合并——修改那一档不许翻型,而改型正是这一次改写的意图。新增型与合并型的
+        // 变更类型不动,型直接换。
+        const change =
+          merge.type !== undefined && merge.type !== queued.type && queued.change === "modify"
+            ? "merge"
+            : queued.change;
         // 陈述与附注必须一起落:换了陈述没留下附注,队列里那一条就说不出它是被哪两次
         // 备注合起来的。
         await orm
@@ -993,8 +1011,8 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
           })
           .where(eq(ruleProposal.id, proposalId));
         await insertRuleProposalSource(proposalId, merge.source, at);
+        return true;
       });
-      return true;
     },
 
     async acceptRuleProposal(repoId, proposalId) {
@@ -1045,15 +1063,15 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
       }
       const at = new Date().toISOString();
       // 一组状态一起落:「一条都不改」这句话要成立,中途出错时已经改掉的那几条得退回去。
-      await transaction("deferred", async () => {
+      await transaction(async () => {
         for (const id of proposalIds) await rejectProposalRow(id, at);
       });
       return true;
     },
 
     async startRuleTrace(repoId, source, payload) {
-      // 任务标识由 identity 列发号(ADR 0036):不给它,PostgreSQL 自己取下一个。SQLite
-      // 那一版在 INSERT 里算 `MAX(task_id) + 1`,并发起头的两条会拿到同一个号。
+      // 任务标识由 identity 列发号(ADR 0036):不给它,PostgreSQL 自己取下一个。自己在
+      // INSERT 里算 `MAX(task_id) + 1` 的话,并发起头的两条会拿到同一个号。
       const [inserted] = await orm
         .insert(ruleTrace)
         .values({
@@ -1074,7 +1092,7 @@ export function knowledgeMethods({ orm, transaction, store }: StoreContext): Kno
       // repo_id 与 source 从这条轨迹的头一行抄:它们描述的是整条轨迹,逐行重复只是
       // 为了让可见性与级联删除各只读一张表。那一行同时是这条轨迹的父行,事务里先锁住
       // 它再取 `MAX(seq) + 1`(ADR 0036):不锁的话并发的两条会拿到同一个号。
-      const seq = await transaction("immediate", async () => {
+      const seq = await transaction(async () => {
         const [head] = await orm
           .select({ repoId: ruleTrace.repoId, source: ruleTrace.source })
           .from(ruleTrace)
