@@ -4,7 +4,7 @@
  * 叶子类型——阶段汇总(`stage-summary.ts`)先用上,轮次详情迁过来时也是这一批。
  *
  * 住在这里而不在 `src/review/finding.ts` 或 `store.ts`:那两个文件有运行时代码
- * (`DEFAULT_MIN_REPORT_SEVERITY`、`node:sqlite`),契约文件一行都不能有(见 `stages.ts`
+ * (`DEFAULT_MIN_REPORT_SEVERITY`、`pg`),契约文件一行都不能有(见 `stages.ts`
  * 的文件头)。服务端照旧从原来那几处引,它们从这里再导出,调用点一处没动。
  */
 

@@ -6,7 +6,7 @@
  *   node scripts/migrate-sqlite-to-pg.ts /data/multireviewer.db postgres://…/multireviewer
  *
  * 表、列与列类型全部从 `src/review/schema/` 现问一遍,不另抄一张对照表——抄一份迟早与
- * schema 漂开。两边的表名与列名逐字相同(新 schema 是照着旧 `STORE_SCHEMA` 翻的),要转的
+ * schema 漂开。两边的表名与列名逐字相同(新 schema 是照着旧那份 SQLite DDL 翻的),要转的
  * 只有列类型:ISO 字符串 → `timestamptz`、0/1 → `boolean`、JSON 文本 → `jsonb`。前两样与
  * JSON 那样由 `schema/columns.ts` 的自定义列类型接住(两头都是恒等,PostgreSQL 自己认 ISO
  * 文本与 JSON 文本),真正要动手的只有布尔。

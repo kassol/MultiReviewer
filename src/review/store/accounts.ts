@@ -1,9 +1,8 @@
 /**
  * 面板账号域的持久化(spec #445 第二段):角色、用户、会话与仓库分配。
  *
- * 这一域已经迁到 Drizzle:读写用 builder,行类型从 schema 推导,不再有手抄的列名字符串。
- * 其余各域仍走 `store/pg.ts` 的方言 shim(旧 SQL 原样跑在 PostgreSQL 上),迁法见
- * `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
+ * 读写用 builder,行类型从 schema 推导,不再有手抄的列名字符串。写法见 `src/AGENTS.md`
+ * 的「域文件的分工与写法」。
  */
 import { and, asc, count, eq, ne, sql } from "drizzle-orm";
 

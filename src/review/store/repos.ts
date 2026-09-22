@@ -2,9 +2,8 @@
  * 仓库域的持久化(spec #445 第二段,issue #451):仓库注册表与它的 Key、仓库配置、审查策略,
  * 以及模型服务、凭据、目录快照、模型补录与模型状态。
  *
- * 这一域已经迁到 Drizzle:读写用 builder,builder 写不出来的(相关子查询、jsonb 函数)用
- * `sql` 模板并引 schema 的列对象,不再有走 `store/pg.ts` 方言 shim 的旧 SQL。迁法见
- * `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
+ * 读写用 builder,builder 写不出来的(相关子查询、jsonb 函数)用 `sql` 模板并引 schema
+ * 的列对象。写法见 `src/AGENTS.md` 的「域文件的分工与写法」。
  */
 import { and, asc, count, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 
@@ -43,6 +42,7 @@ import {
   modelSupplement,
   repo as repoTable,
   repoKey,
+  webhookDelivery,
 } from "../schema/repos.ts";
 import { reviewRun } from "../schema/runs.ts";
 import type {
@@ -201,6 +201,7 @@ type ReposMethods = Pick<
   | "listModelServiceModelStates"
   | "updateModelServiceModelStates"
   | "listModelSupplements"
+  | "claimDelivery"
 >;
 
 export function reposMethods(ctx: StoreContext): ReposMethods {
@@ -1335,6 +1336,16 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
         targetFingerprint: row.targetFingerprint,
         createdAt: row.createdAt,
       }));
+    },
+
+    async claimDelivery(owner, repo, headSha) {
+      // 判重靠唯一约束上的插入冲突:插得进即这一次是第一次,插不进即已经领走过。
+      const claimed = await orm
+        .insert(webhookDelivery)
+        .values({ owner, repo, headSha, claimedAt: new Date().toISOString() })
+        .onConflictDoNothing()
+        .returning({ id: webhookDelivery.id });
+      return claimed.length > 0;
     },
   };
 }

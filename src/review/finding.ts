@@ -21,7 +21,7 @@ export type { CarriedAttribution, Category, Disposition, ReviewerUsage, Severity
  * 因此只写在这里。
  *
  * 住在 `Severity` 旁边而不在 `store.ts`:判据的读者除了库,还有编排层与 Reviewer 子
- * 进程,后两者不能引 `store.ts`——那会把 `node:sqlite` 拖进 Reviewer 进程。
+ * 进程,后两者不能引 `store/`——那会把 `pg` 与连接池拖进 Reviewer 进程。
  */
 export const DEFAULT_MIN_REPORT_SEVERITY: Severity = "P2";
 

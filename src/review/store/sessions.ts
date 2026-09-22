@@ -2,13 +2,26 @@
  * Agent 会话域的持久化(spec #445 第二段):会话本身、会话记录、受理过的客户端消息 id、
  * 图片与排队消息。
  *
- * 这一域已经迁到 Drizzle:读写用 builder,行类型从 schema 推导,不再走 `store/pg.ts` 的
- * 方言 shim。迁法见 `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
+ * 读写用 builder,行类型从 schema 推导。写法见 `src/AGENTS.md` 的「域文件的分工与写法」。
  *
  * 两处并发点按 ADR 0036 锁会话那一行:记录的会话内序号是 `MAX(seq) + 1`,排队消息的取走
  * 是「先读后删」——不锁的话两个连接会算出同一个序号、或者把同一条排队消息各取走一遍。
  */
-import { and, asc, desc, eq, getTableColumns, gt, gte, lte, lt, max, sql, sum } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  gte,
+  inArray,
+  lte,
+  lt,
+  max,
+  sql,
+  sum,
+} from "drizzle-orm";
 
 import {
   agentSession,
@@ -26,7 +39,25 @@ import type {
   AgentSessionStatus,
   Store,
 } from "./index.ts";
-import type { StoreContext } from "./shared.ts";
+import type { Orm, StoreContext } from "./shared.ts";
+
+/**
+ * 这几个会话底下的全部行。删会话与删产品级联都照这一份清单删——两处当初各写一份逐字相同
+ * 的清单,新增一张挂会话的表会漏掉一处。调用方自己开事务:两处都要与删会话行本身同进同退。
+ */
+export async function deleteAgentSessionRows(
+  orm: Orm,
+  sessionIds: readonly number[],
+): Promise<void> {
+  if (sessionIds.length === 0) return;
+  const ids = [...sessionIds];
+  await orm.delete(agentSessionEntry).where(inArray(agentSessionEntry.sessionId, ids));
+  await orm.delete(agentSessionMessage).where(inArray(agentSessionMessage.sessionId, ids));
+  await orm.delete(agentSessionImage).where(inArray(agentSessionImage.sessionId, ids));
+  await orm
+    .delete(agentSessionPendingMessage)
+    .where(inArray(agentSessionPendingMessage.sessionId, ids));
+}
 
 /** 库里那一列的形状:记来源种类之前落下的行没有 `kind`,读的时候补成分支。 */
 type StoredAgentSessionBaseline = Omit<AgentSessionBaseline, "kind"> & {
@@ -176,19 +207,6 @@ export function sessionsMethods({ orm, transaction }: StoreContext): SessionsMet
   };
 
   /**
-   * 这个会话下的全部子表行。删会话与删产品级联都要删它们;删产品那一侧在自己的域里,
-   * 共用件 `deleteAgentSessionRows` 仍是 shim 的那一份(#455 迁完之后两份收成一份)。
-   */
-  const deleteChildRows = async (sessionId: number): Promise<void> => {
-    await orm.delete(agentSessionEntry).where(eq(agentSessionEntry.sessionId, sessionId));
-    await orm.delete(agentSessionMessage).where(eq(agentSessionMessage.sessionId, sessionId));
-    await orm.delete(agentSessionImage).where(eq(agentSessionImage.sessionId, sessionId));
-    await orm
-      .delete(agentSessionPendingMessage)
-      .where(eq(agentSessionPendingMessage.sessionId, sessionId));
-  };
-
-  /**
    * 事务里先把这个会话那一行锁住(ADR 0036)。序号是 `MAX + 1`、排队消息是「先读后删」,
    * 两处都要在同一条会话上串起来——SQLite 那一版靠的是单写者锁。
    */
@@ -280,7 +298,7 @@ export function sessionsMethods({ orm, transaction }: StoreContext): SessionsMet
     async deleteAgentSession(sessionId) {
       return transaction("deferred", async () => {
         // 记录、受理过的消息 id、图片与排队消息只属于这个会话,跟着它走(issue #333、#336)。
-        await deleteChildRows(sessionId);
+        await deleteAgentSessionRows(orm, [sessionId]);
         const removed = await orm
           .delete(agentSession)
           .where(eq(agentSession.id, sessionId))

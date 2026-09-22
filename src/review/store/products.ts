@@ -2,8 +2,8 @@
  * 产品域的持久化(spec #445 第二段):产品、仓库归属与职责、产品知识(术语、仓库关系、
  * 决策)与产品 tracker(spec、票、阻塞边、评论、认领)。
  *
- * 这一域已经迁到 Drizzle:读写用 builder,行类型从 schema 推导,不再有手抄的列名字符串。
- * 迁法见 `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
+ * 读写用 builder,行类型从 schema 推导,不再有手抄的列名字符串。写法见 `src/AGENTS.md`
+ * 的「域文件的分工与写法」。
  */
 import { and, asc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 
@@ -30,7 +30,8 @@ import type {
   ProductTrackerState,
   Store,
 } from "./index.ts";
-import { deleteAgentSessionRows, type StoreContext } from "./shared.ts";
+import { deleteAgentSessionRows } from "./sessions.ts";
+import type { StoreContext } from "./shared.ts";
 
 /**
  * 产品连同它的仓库集合的那几列。一个产品没有仓库也要读得出来(刚建的产品就是这样),所以
@@ -190,7 +191,7 @@ type ProductsMethods = Pick<
   | "removeProductTicketBlock"
 >;
 
-export function productsMethods({ db, orm, transaction }: StoreContext): ProductsMethods {
+export function productsMethods({ orm, transaction }: StoreContext): ProductsMethods {
   const productQuery = (where: SQL | undefined, order: SQL[]): Promise<ProductRow[]> =>
     orm
       .select(PRODUCT_COLUMNS)
@@ -313,7 +314,7 @@ export function productsMethods({ db, orm, transaction }: StoreContext): Product
             .from(agentSession)
             .where(eq(agentSession.productId, productId))
         ).map((row) => row.id);
-        await deleteAgentSessionRows(db, sessionIds);
+        await deleteAgentSessionRows(orm, sessionIds);
         const sessions = await orm
           .delete(agentSession)
           .where(eq(agentSession.productId, productId))

@@ -79,8 +79,8 @@ export const ruleExploration = pgTable(
 );
 
 /**
- * 知识整理(issue #284)。与基点探索同形,分表的理由见 STORE_SCHEMA 原注释:那张表的
- * baselineSha 是探索独有的输入,互斥判的是两张表里有没有 running。
+ * 知识整理(issue #284)。与基点探索同形而另成一张表:`rule_exploration` 的 `baselineSha`
+ * 是探索独有的输入,互斥判的是两张表里有没有 running。
  */
 export const ruleConsolidation = pgTable(
   "rule_consolidation",

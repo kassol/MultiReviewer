@@ -119,9 +119,6 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     purpose: "requirement-breakdown",
     createdAt: AT,
   });
-  // 全局模型组合代表升级前已存在的状态,与 harness 同一做法:运行期写要走设置页的门禁。
-  await putGlobalSettings(store, { reviewersJson: JSON.stringify([HARNESS_SPEC]) });
-  await store.close();
   await seedAvailableModelService(
     { db: { url: databaseUrl } },
     HARNESS_SPEC.provider,
@@ -129,6 +126,10 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     {},
     stub.baseUrl,
   );
+  // 全局模型组合代表升级前已存在的状态,与 harness 同一做法:运行期写要走设置页的门禁。
+  // **排在模型服务播种之后**:那道门禁要这一组此刻跑得动,服务还没落库时它整份不写。
+  assert.equal(await putGlobalSettings(store, { reviewersJson: JSON.stringify([HARNESS_SPEC]) }), true);
+  await store.close();
   const port = await freePort();
   const env = {
     ...process.env,

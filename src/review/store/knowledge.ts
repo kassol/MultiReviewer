@@ -2,8 +2,8 @@
  * 知识域的持久化(spec #445 第二段):知识集(评审规则、项目事实与版本)、知识草案、基点
  * 探索、知识整理、修订提案与它的出处附注、修订意图,以及知识轨迹。
  *
- * 这一域已经迁到 Drizzle:读写用 builder,行类型从 schema 推导,不再有手抄的列名字符串。
- * 迁法见 `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
+ * 读写用 builder,行类型从 schema 推导,不再有手抄的列名字符串。写法见 `src/AGENTS.md`
+ * 的「域文件的分工与写法」。
  *
  * 只被这一域用到的那几个闭包(条目、提案与版本推进的写入原语)也在这个文件里——它们本来
  * 长在 `openStore` 里,搬过来是为了让 `store/shared.ts` 只留跨域共用件。
@@ -60,9 +60,8 @@ export type PlannedAcceptance = {
 };
 
 /**
- * 一条 Finding 所在的审查阶段标识(与评审记录同一个字面形状)。`shared.ts` 的
- * `STAGE_ID_FROM_RUN` 是旧 SQL 那一份,这里是同一段的 builder 写法:列对象取自 schema,
- * 表名与列名不再手抄。
+ * 一条 Finding 所在的审查阶段标识(issue #296)。`range:` 与 `pr:` 两个字面形状与评审记录
+ * 那一侧(`stages.ts`)逐字相同;轮次是 LEFT JOIN 进来的那一档回 NULL。
  */
 const stageIdFromRun = sql<string | null>`CASE
   WHEN ${reviewRun.id} IS NULL THEN NULL

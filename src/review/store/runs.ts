@@ -2,8 +2,8 @@
  * Review Run 域的持久化(spec #445 第二段,issue #452):轮次、Reviewer 结果、批次中间态、
  * Finding 与归属、承接说法、复核结论、同根因组与审查轨迹。
  *
- * 这一域已经迁到 Drizzle:读写走 builder,builder 表达不了的(CTE、`identityKey` 拼出来的
- * 折叠键、行值赋值)用 `sql` 模板。迁法见 `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
+ * 读写走 builder,builder 表达不了的(CTE、`identityKey` 拼出来的折叠键、行值赋值)用
+ * `sql` 模板。写法见 `src/AGENTS.md` 的「域文件的分工与写法」。
  */
 import { matchesGlob } from "node:path";
 
@@ -46,7 +46,7 @@ import {
   readMinReportSeverity,
   readTriggerSource,
   representativeSegment,
-  stageScope,
+  stageScopeFilter,
   type StoreContext,
 } from "./shared.ts";
 
@@ -214,12 +214,7 @@ type RunsMethods = Pick<
 export function runsMethods(ctx: StoreContext): RunsMethods {
   const { orm, transaction, store, parseAuxiliaryModel } = ctx;
 
-  /**
-   * 这些 Finding 各自承接来的历史说法(issue #267),按 finding id 归组、段内按落库顺序。
-   *
-   * ponytail:`shared.ts` 里还有一份走 shim 的 `carriedByFinding`,阶段汇总(#453)在用。
-   * 两处合成一份要等那一票也迁完,由合并方收口。
-   */
+  /** 这些 Finding 各自承接来的历史说法(issue #267),按 finding id 归组、段内按落库顺序。 */
   const carriedFor = async (
     findingIds: readonly number[],
   ): Promise<Map<number, CarriedAttribution[]>> => {
@@ -271,18 +266,6 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
                         WHERE latest.file = s.file AND latest.fp = s.fp)
            AND s.disposition <> 'continued'
            ${extra ?? sql``}`;
-
-  /** 阶段范围条件(`stageScope` 给的是带 `?` 的旧写法,这里换成 Drizzle 的参数化片段)。 */
-  const scopeCondition = (scope: Parameters<typeof stageScope>[0]): SQL => {
-    const [text, params] = stageScope(scope);
-    // `stageScope` 的 `?` 按出现顺序绑 `params`;拆开逐段拼回 Drizzle 的参数占位。
-    const pieces = text.split("?");
-    const parts: SQL[] = [sql.raw(pieces[0]!)];
-    for (const [index, value] of params.entries()) {
-      parts.push(sql`${value}`, sql.raw(pieces[index + 1]!));
-    }
-    return sql.join(parts, sql``);
-  };
 
   return {
     async startRun(meta) {
@@ -733,7 +716,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
                 f.severity AS severity, f.category AS category,
                 f.description AS description, f.disposition AS disposition,
                 f.disposition_note AS note`,
-            scopeCondition(scope),
+            stageScopeFilter(scope, "run"),
             undefined,
           )} ORDER BY s.id`,
         )
@@ -771,7 +754,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
             sql`f.id AS id, f.file AS file,
                 COALESCE(f.placed_line, f.line) AS line,
                 f.fingerprint AS fingerprint, f.disposition AS disposition`,
-            scopeCondition(scope),
+            stageScopeFilter(scope, "run"),
             sql`AND s.fingerprint IS NOT NULL`,
           )} ORDER BY s.id`,
         )
@@ -835,7 +818,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
           sql`SELECT f.id AS id, run.head_sha AS head_sha, f.file AS file, f.line AS line
                 FROM ${finding} f
                 JOIN ${reviewRun} run ON f.run_id = run.id
-               WHERE ${scopeCondition(scope)} AND f.line_author_sha IS NULL
+               WHERE ${stageScopeFilter(scope, "run")} AND f.line_author_sha IS NULL
                ORDER BY f.id`,
         )
       ).rows as Record<string, unknown>[];

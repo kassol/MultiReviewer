@@ -4,8 +4,8 @@
  * 装的是四件事:范围审查那一串写入与读取(含每日增量的定时检查)、评审记录的阶段列表
  * 与阶段详情、一个阶段的汇总,以及处置率 / 参与条数 / token 用量与库体量。
  *
- * 这一域已经迁到 Drizzle:简单读写走 builder,UNION、CTE 与四段聚合那几条走 `sql` 模板
- * 并引 schema 的列对象。迁法见 `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
+ * 简单读写走 builder,UNION、CTE 与四段聚合那几条走 `sql` 模板并引 schema 的列对象。
+ * 写法见 `src/AGENTS.md` 的「域文件的分工与写法」。
  */
 import { and, asc, eq, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -45,65 +45,24 @@ import type {
   RangeReviewRecord,
   ScheduledCheckResult,
   StageRowEntry,
-  StageScope,
   Store,
 } from "./index.ts";
 import { UNRECORDED_RUN_FAILURE } from "./runs.ts";
 import {
   carriedAttribution,
   identityKey,
+  isoTime,
   readTriggerSource,
   recordedAttribution,
+  repoPairFilter,
   representativeSegment,
+  stageScopeFilter,
   STATS_IDENTITY_CTE,
   type StoreContext,
 } from "./shared.ts";
 
 /** 一行 finding 属于哪条 Finding Identity。列名按 Drizzle 渲染的表限定写法取。 */
 const FINDING_IDENTITY = sql.raw(identityKey('"finding".'));
-
-/**
- * 一个审查阶段的范围(CONTEXT.md 审查阶段)。与 `shared.ts` 的 `stageScope` 是同一条判据
- * 的 Drizzle 写法:pull request 阶段是「owner + repo + pull number 且不属于任何范围审查」
- * 的全部轮次,范围审查阶段是它名下的全部轮次。
- */
-function scopeCondition(scope: StageScope): SQL {
-  return "rangeReviewId" in scope
-    ? sql`${reviewRun.rangeReviewId} = ${scope.rangeReviewId}`
-    : sql`${reviewRun.owner} = ${scope.owner} AND ${reviewRun.repo} = ${scope.repo}
-            AND ${reviewRun.pullNumber} = ${scope.pullNumber}
-            AND ${reviewRun.rangeReviewId} IS NULL`;
-}
-
-/**
- * 一组 owner/repo 对的过滤条件(CONTEXT.md 仓库分配)。省略即不限,空数组即一个都不给;
- * `prefix` 是这两列在查询里的表别名前缀。与 `shared.ts` 的 `repoPairCondition` 同一条
- * 规则,这里回的是 Drizzle 的 `SQL` 片段。
- */
-function repoPairFilter(
-  pairs: readonly { owner: string; repo: string }[] | undefined,
-  prefix: string,
-): SQL {
-  if (pairs === undefined) return sql`true`;
-  if (pairs.length === 0) return sql`false`;
-  const at = sql.raw(prefix);
-  return sql`(${sql.join(
-    pairs.map((pair) => sql`(${at}owner = ${pair.owner} AND ${at}repo = ${pair.repo})`),
-    sql` OR `,
-  )})`;
-}
-
-/**
- * 走 `orm.execute` 的原始查询取回来的一格时刻。
- *
- * `store/pg.ts` 装的全局解析器把 `timestamptz` 读成 ISO 字符串,而 Drizzle 对自己发出的
- * 每一条查询都把这个类型改回「原样的 PostgreSQL 文本」(它自己按列类型再映)——builder
- * 的结果因此是 ISO,`execute` 的结果是 `2026-08-03 00:00:00+00` 这种写法。这一格在这里
- * 归一,面板与用例看到的仍是 ISO。
- */
-function isoTime(value: string | null): string | null {
-  return value === null ? null : new Date(value).toISOString();
-}
 
 /** 阶段行查询回来的一行。两段 SELECT 的列名与顺序逐字对齐。 */
 type StageQueryRow = {
@@ -391,7 +350,7 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
 
   return {
     async stageSummary(scope) {
-      const where = scopeCondition(scope);
+      const where = stageScopeFilter(scope);
       const runRows = await orm
         .select({
           id: reviewRun.id,

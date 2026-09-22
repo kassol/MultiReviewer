@@ -225,6 +225,49 @@ test("梳理会话:产品可见者都读得到,只有创建者发得了消息", 
   assert.deepEqual(await hidden.json(), { error: "没有这个 Agent 会话" });
 });
 
+test("系统开的那几场梳理:系统管理员停得下、删得掉,别人一样只读", async () => {
+  const h = await startReadyPanelHarness({ registerRepo: true });
+  const two = await product(h, [GITEA_REPO.id, ALPHA]);
+  // 创建者是 `system`:升级前由系统开的那一档,没有哪个人续得了它。
+  const session = await seedSurveySession(h, two.id, "system");
+
+  // 看得到产品、有 agent:chat 的普通人:读得到,停不下也删不掉——他不是创建者。
+  const member = await scopedUser(h, "member", PASSWORD, AT, [ALPHA], ["agent:chat"]);
+  const asMember = (method: string, path: string): Promise<Response> =>
+    fetch(`${h.serverUrl}/api/agent-sessions/${session.id}${path}`, {
+      method,
+      headers: { cookie: member },
+    });
+  for (const [method, path] of [
+    ["POST", "/stop"],
+    ["DELETE", ""],
+  ] as const) {
+    const refused = await asMember(method, path);
+    assert.equal(refused.status, 403);
+    assert.deepEqual(await refused.json(), { error: "只有会话的创建者能做" });
+  }
+
+  // 一个仓库都没分到的人连这一场在不在都问不出来。
+  const stranger = await seedRepo(h, 505, "acme", "epsilon");
+  const nobody = await scopedUser(h, "nobody", PASSWORD, AT, [stranger], ["agent:chat"]);
+  const hidden = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}/stop`, {
+    method: "POST",
+    headers: { cookie: nobody },
+  });
+  assert.equal(hidden.status, 404);
+  assert.deepEqual(await hidden.json(), { error: "没有这个 Agent 会话" });
+
+  // 系统管理员停得下:没有人类创建者的梳理,跑飞了只有他停得了(issue #346)。
+  const stopped = await h.api("POST", `/agent-sessions/${session.id}/stop`);
+  const stoppedText = await stopped.text();
+  assert.equal(stopped.status, 200, stoppedText);
+  assert.deepEqual(JSON.parse(stoppedText), { stopped: false, queue: [] });
+
+  // 也删得掉:交完卷的那一场不该谁都清不走。
+  assert.equal((await h.api("DELETE", `/agent-sessions/${session.id}`)).status, 204);
+  assert.deepEqual(await sessionsOf(h, two.id, h.cookie), []);
+});
+
 test("建会话端点不收产品梳理:那一种从产品页上的「梳理」开", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);

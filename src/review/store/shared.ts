@@ -1,14 +1,12 @@
 /**
- * 各域共用的库层构件(spec #445 第二段):跨域的 SQL 片段、行读法,与开库时建出来的那一批
- * 闭包。
+ * 各域共用的库层构件:跨域的 SQL 片段与行读法,加各域方法工厂拿到的那份装配件。
  *
- * **它存在是为了让 #451–#457 六票并行**:各域把自己的方法搬进 `store/<域>.ts` 时,共用件从
- * 这里引,不各抽一份;`store/index.ts` 上每票只加自己那一行 `...xMethods(ctx)`。
- * 只被一个域用到的东西不在这里——它跟着那一域的方法一起搬走。
+ * 只被一个域用到的东西不在这里——它住在那一域自己的文件里(`store/<域>.ts`)。
  *
  * 这个文件**不引 `./index.ts` 的运行时值**(只 `import type`):两边互引运行时值会成环。
  */
 import { createHash } from "node:crypto";
+import { sql, type SQL } from "drizzle-orm";
 
 import { assertReviewerSpecs, type ReviewerSpec } from "../../config.ts";
 import type {
@@ -19,14 +17,9 @@ import type {
 } from "../finding.ts";
 import type { RecordedFindingAttribution } from "../../contracts/finding.ts";
 import { normalizeModelServiceBaseUrl } from "../../reviewer/model-service-runtime.ts";
-import type { Db, Orm, StoreTransaction, TransactionMode } from "./pg.ts";
-import type {
-  AgentSessionEntryRecord,
-  ModelSupplementSource,
-  AgentSessionPendingMessage,
-  StageScope,
-  Store,
-} from "./index.ts";
+import type { Orm, StoreTransaction, TransactionMode } from "./pg.ts";
+export type { Orm } from "./pg.ts";
+import type { ModelSupplementSource, StageScope, Store } from "./index.ts";
 
 export const MIN_REPORT_SEVERITIES: readonly Severity[] = ["P0", "P1", "P2"];
 
@@ -91,22 +84,6 @@ export const STATS_IDENTITY_CTE = `WITH src AS (
               GROUP BY owner, repo, pull_number, file, fp
            )`;
 
-/**
- * 一组 owner/repo 对的过滤条件(CONTEXT.md 仓库分配)。省略即不限,空数组即一个都不
- * 给;`prefix` 是这两列在查询里的表别名前缀。
- */
-export function repoPairCondition(
-  pairs: readonly { owner: string; repo: string }[] | undefined,
-  prefix: string,
-): { sql: string; params: string[] } {
-  if (pairs === undefined) return { sql: "true", params: [] };
-  if (pairs.length === 0) return { sql: "false", params: [] };
-  return {
-    sql: `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`,
-    params: pairs.flatMap((pair) => [pair.owner, pair.repo]),
-  };
-}
-
 /** 一行 finding_attribution 读成面板要的归属(issue #266)。两段的 NULL 原样透出。 */
 export function recordedAttribution(row: Record<string, unknown>): RecordedFindingAttribution {
   return {
@@ -167,91 +144,50 @@ export function carriedAttribution(row: Record<string, unknown>): CarriedAttribu
   };
 }
 
-/** 这几个会话底下的全部行。调用方自己开事务:两处都要与删会话行本身同进同退。 */
-export async function deleteAgentSessionRows(db: Db, sessionIds: readonly number[]): Promise<void> {
-  for (const table of AGENT_SESSION_CHILD_TABLES) {
-    const statement = db.prepare(`DELETE FROM ${table} WHERE session_id = ?`);
-    for (const sessionId of sessionIds) await statement.run(sessionId);
-  }
-}
-
-/** 这个会话落库的排队消息,按当初写下的顺序。只读与「取出即删」共用这一句查询。 */
-export async function agentSessionPendingMessages(
-  db: Db,
-  sessionId: number,
-): Promise<AgentSessionPendingMessage[]> {
-  return (await db
-    .prepare(
-      `SELECT mode, text, images FROM agent_session_pending_message
-        WHERE session_id = ? ORDER BY seq`,
-    )
-    .all(sessionId))
-    .map((row) => ({
-      mode: String(row["mode"]),
-      text: String(row["text"]),
-      ...(typeof row["images"] === "string" ? { images: row["images"] } : {}),
-    }));
-}
-
-/** 这些 Finding 各自承接来的历史说法(issue #267),按 finding id 归组、段内按落库顺序。 */
-export async function carriedByFinding(
-  db: Db,
-  findingSql: string,
-  params: readonly (string | number)[],
-): Promise<Map<number, CarriedAttribution[]>> {
-  const rows = await db
-    .prepare(
-      `SELECT c.finding_id AS finding_id, c.model AS model, c.run_id AS run_id,
-              c.description AS description, c.impact AS impact, c.suggestion AS suggestion,
-              origin.head_sha AS head_sha
-         FROM finding_carried_attribution c
-         JOIN review_run origin ON origin.id = c.run_id
-        WHERE c.finding_id IN (${findingSql})
-        ORDER BY c.finding_id, c.position`,
-    )
-    .all(...params);
-  const grouped = Map.groupBy(rows, (row) => Number(row["finding_id"]));
-  return new Map([...grouped].map(([id, group]) => [id, group.map(carriedAttribution)]));
-}
-
-export function agentSessionEntry(row: Record<string, unknown>): AgentSessionEntryRecord {
-  return {
-    sessionId: Number(row["session_id"]),
-    seq: Number(row["seq"]),
-    type: String(row["type"]),
-    at: String(row["at"]),
-    entry: JSON.parse(String(row["entry"])) as unknown,
-    usage: {
-      inputTokens: Number(row["input_tokens"]),
-      outputTokens: Number(row["output_tokens"]),
-      cacheReadTokens: Number(row["cache_read_tokens"]),
-      cacheWriteTokens: Number(row["cache_write_tokens"]),
-      totalTokens: Number(row["total_tokens"]),
-    },
-  };
-}
-
-export function stageScope(scope: StageScope): [string, (string | number)[]] {
+/**
+ * 一个审查阶段的范围(CONTEXT.md 审查阶段):pull request 阶段是「owner + repo + pull number
+ * 且不属于任何范围审查」的全部轮次,范围审查阶段是它名下的全部轮次。历史注入与阶段汇总读的
+ * 是同一个阶段,判据因此只定这一次。
+ *
+ * `alias` 是 `review_run` 在这条查询里的名字:builder 不起别名时就是表名,`sql` 模板里
+ * `JOIN review_run run` 那种写法传 `"run"`。
+ */
+export function stageScopeFilter(scope: StageScope, alias = "review_run"): SQL {
+  const at = sql.raw(`${alias}.`);
   return "rangeReviewId" in scope
-    ? ["run.range_review_id = ?", [scope.rangeReviewId]]
-    : [
-        `run.owner = ? AND run.repo = ? AND run.pull_number = ?
-           AND run.range_review_id IS NULL`,
-        [scope.owner, scope.repo, scope.pullNumber],
-      ];
+    ? sql`${at}range_review_id = ${scope.rangeReviewId}`
+    : sql`${at}owner = ${scope.owner} AND ${at}repo = ${scope.repo}
+            AND ${at}pull_number = ${scope.pullNumber} AND ${at}range_review_id IS NULL`;
 }
 
 /**
- * 一行轮次 → 它所在阶段的标识(issue #296)。`run` 这个别名下的一行,`range:` 与 `pr:` 两个
- * 字面形状与评审记录那一侧逐字相同;两处查询共用,抄第二遍就会在其中一处漂移。轮次是
- * LEFT JOIN 进来的那一档回 NULL。
+ * 一组 owner/repo 对的过滤条件(CONTEXT.md 仓库分配)。省略即不限,空数组即一个都不给;
+ * `prefix` 是这两列在查询里的表别名前缀(含点号,空串即不限定)。
  */
-export const STAGE_ID_FROM_RUN = `CASE
-                             WHEN run.id IS NULL THEN NULL
-                             WHEN run.range_review_id IS NOT NULL
-                               THEN 'range:' || run.range_review_id
-                             ELSE 'pr:' || run.owner || '/' || run.repo || '/' || run.pull_number
-                           END`;
+export function repoPairFilter(
+  pairs: readonly { owner: string; repo: string }[] | undefined,
+  prefix: string,
+): SQL {
+  if (pairs === undefined) return sql`true`;
+  if (pairs.length === 0) return sql`false`;
+  const at = sql.raw(prefix);
+  return sql`(${sql.join(
+    pairs.map((pair) => sql`(${at}owner = ${pair.owner} AND ${at}repo = ${pair.repo})`),
+    sql` OR `,
+  )})`;
+}
+
+/**
+ * 走 `orm.execute` 的原始查询取回来的一格时刻。
+ *
+ * `store/pg.ts` 装的全局解析器把 `timestamptz` 读成 ISO 字符串,而 Drizzle 对自己发出的
+ * 每一条查询都把这个类型改回「原样的 PostgreSQL 文本」(它自己按列类型再映)——builder
+ * 的结果因此是 ISO,`execute` 的结果是 `2026-08-03 00:00:00+00` 这种写法。这一格在这里
+ * 归一,面板与用例看到的仍是 ISO。
+ */
+export function isoTime(value: string | null): string | null {
+  return value === null ? null : new Date(value).toISOString();
+}
 
 /**
  * 各域方法拿到的装配件。`openStore` 建一份传给每个域的工厂:
@@ -260,35 +196,20 @@ export const STAGE_ID_FROM_RUN = `CASE
  * export function runsMethods(ctx: StoreContext): Pick<Store, "startRun" | …> { … }
  * ```
  *
- * `index.ts` 里接进去的是一行 `...runsMethods(ctx)`,六票各改各的那一行。
+ * `index.ts` 里接进去的是一行 `...runsMethods(ctx)`。
  *
- * - `db` 是旧 SQL 的通道(`store/pg.ts` 的方言 shim),`orm` 是 Drizzle;两者在事务里落在
- *   同一条连接上,混用没有问题。
+ * - `orm` 是 Drizzle 的句柄,读写一律经它。
  * - `transaction(mode, async tx => …)` 见 `store/pg.ts`。
  * - `store()` 惰性取整份 store:方法之间互相调用时用它(装配那一刻 store 还没拼好)。
- * - 其余是开库时建出来的共用闭包。只被一个域用到的那些已各自随域票搬走(仓库域 6 个进 `repos.ts`,
- *   知识域 13 个进 `knowledge.ts`,阶段域 1 个进 `stages.ts`);留在这里的是两个以上域共用的。
+ * - 其余是开库时建出来的共用闭包。
  */
 export type StoreContext = StoreHelpers & {
-  db: Db;
   orm: Orm;
   transaction<T>(mode: TransactionMode, run: (tx: StoreTransaction) => Promise<T>): Promise<T>;
   store: () => Store;
 };
 
 export type StoreHelpers = ReturnType<typeof storeHelpers>;
-
-/** 开库时建出这一批闭包。它们闭在 `db` 上,因此不能是模块级函数。 */
-/**
- * 挂在一个 Agent 会话上的那几张表(issue #333、#336)。删会话与删产品级联都照这一份
- * 清单删:两处当初各写一份逐字相同的清单,新增一张挂会话的表会漏掉一处。
- */
-export const AGENT_SESSION_CHILD_TABLES = [
-  "agent_session_entry",
-  "agent_session_message",
-  "agent_session_image",
-  "agent_session_pending_message",
-] as const;
 
 /**
  * 模型服务目标(地址 + 协议)的指纹。手动补录绑定它:只轮换凭据时可沿用,地址或协议
