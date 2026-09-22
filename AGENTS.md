@@ -119,7 +119,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 2. 备份:`cp` 出那个 SQLite 库文件,另把 `./data` 整个打包。**两样都要**——图片附件不在库里。
 3. 改 `.env`:`MULTIREVIEWER_IMAGE` 换成新版的 sha tag、加 `MULTIREVIEWER_DATABASE_URL`、**删掉 `MULTIREVIEWER_DB`**(留着服务拒绝启动);`MULTIREVIEWER_DATA_DIR` 不必写,镜像里就是 `/data`。
 4. `docker compose up -d` 起新容器,它在开始监听之前把 `drizzle/` 下的迁移跑完,建出空表。
-5. 跑搬迁脚本(`scripts/migrate-sqlite-to-pg.ts`,收两个参数:旧库路径与目标连接串),把旧库文件搬进新库,核它打印的逐表行数对照表——有一行对不上就停下来查,别往下走。**它不在镜像里**(`Dockerfile` 只拷 `src` / `vendor` / `drizzle` / `web/dist`),所以要么从开发机连过去跑,要么把它绑进容器跑;窗口开始之前先把这一步演一遍。
+5. 跑搬迁脚本(`scripts/migrate-sqlite-to-pg.ts`,收两个参数:旧库路径与目标连接串),把旧库文件搬进新库,核它打印的逐表行数对照表——有一行对不上就停下来查,别往下走。它随这一版镜像走(`Dockerfile` 单独拷了这一个文件),在服务器上这样跑:`docker compose run --rm -T --entrypoint node multireviewer scripts/migrate-sqlite-to-pg.ts /data/multireviewer.db "$MULTIREVIEWER_DATABASE_URL"`(旧库文件在 `./data` 里,容器里就是 `/data`);切完即删脚本,下一版镜像不再带。
 6. 面板登录,翻一个迁库前的历史阶段(轮次 diff、审查轨迹、Finding 处置记录都要打得开),再投一个真实 PR 跑一轮、推进一次范围审查、续谈一次 Agent 会话。
 
 **回滚窗口。**窗口内出问题就把 `.env` 的 `MULTIREVIEWER_IMAGE` 改回上一个 sha tag、把 `MULTIREVIEWER_DATABASE_URL` 换回 `MULTIREVIEWER_DB`,再 `docker compose up -d` 即回到 SQLite——旧库文件一直没动过。代价是 **PG 上这段时间的写入全部丢掉**(新跑的轮次、新做的处置、新写的会话),所以窗口要短、要事先讲清。窗口一过不再回滚,旧库文件归档留存,搬迁脚本从仓库删除。

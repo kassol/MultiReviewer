@@ -193,7 +193,7 @@ export type ReviewRunDeps = {
   reviewers: readonly Reviewer[];
   /** 工作副本的缓存根目录,按仓库分子目录。 */
   cacheDir: string;
-  /** SQLite 数据库文件的位置。 */
+  /** 数据库连接串。 */
   databaseUrl: string;
   /**
    * 这一轮的注册表仓库 id(issue #273)。给了它才取得到仓库级的最低报告等级覆盖;

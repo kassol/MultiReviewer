@@ -971,7 +971,7 @@ async function materializeReviewerPlans(
 }
 
 /**
- * 自动投递与手动重跑共用的唯一启动入口。一次 SQLite 读事务固定生效组合、批次上限、引用
+ * 自动投递与手动重跑共用的唯一启动入口。一次读事务固定生效组合、批次上限、引用
  * 服务版本及其密文；事务外只解析这份快照并各解密一次，第一批开始后不再读当前配置。
  */
 async function buildRunPlan(
