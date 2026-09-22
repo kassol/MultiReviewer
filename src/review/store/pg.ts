@@ -259,5 +259,15 @@ export function storeDb(pool: PgPool, tablesWithId: ReadonlySet<string>): StoreD
  */
 export function createPool(databaseUrl: string): PgPool {
   const max = Number(process.env["MULTIREVIEWER_DB_POOL_MAX"] ?? 10);
-  return new Pool({ connectionString: databaseUrl, max: Number.isFinite(max) && max > 0 ? max : 10 });
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    max: Number.isFinite(max) && max > 0 ? max : 10,
+  });
+  // 池里**空闲**连接上的错误(PostgreSQL 重启、管理员踢连接、库被删掉)以 `error` 事件抛到
+  // 池上,而不是抛给某一次查询。没有监听者时 Node 把它当未捕获异常,整个进程当场倒下——
+  // 一次数据库重启不该带走服务。记一行就够:出错的那条连接已经被池丢掉,下次取连接新建一条。
+  pool.on("error", (error: Error) => {
+    console.error("[db] 连接池里一条空闲连接出错:", error.message);
+  });
+  return pool;
 }
