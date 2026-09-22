@@ -7,7 +7,6 @@
  * 规则 agent 仍用脚本化实现注入,与 issue #205 / #207 / #208 同一个位置。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
@@ -18,7 +17,12 @@ import {
   type RuleProposalSourceInput,
 } from "../src/review/store/index.ts";
 import type { ConsolidationProposal, RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
+import {
+  confirmEmptyRuleSet,
+  makeTestDatabase,
+  testCleanups,
+  withTestDb,
+} from "./support/git-fixture.ts";
 import { scriptedReviewer, scriptedRuleAgent } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
@@ -628,14 +632,15 @@ test("整理用生效的辅助模型;它跑不了时发起回 409,指向审查�
   // 这一处模型跑不起来之后再发起:整次不做,那句话说得出去哪里改。
   // 让这一处跑不起来:凭据降级成待重验。**不走删凭据那条路**——辅助模型如今计入模型引用,
   // 删凭据会被引用保护挡下(它正是被这一处引用着)。
-  const downgrade = new DatabaseSync(h.db.url);
-  downgrade.prepare(
-    `UPDATE model_service_credential
-        SET state = 'pending-reverification', verified_at = NULL,
-            validation_model = NULL, verification_source = NULL
-      WHERE provider = ?`,
-  ).run("think");
-  downgrade.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      `UPDATE model_service_credential
+          SET state = 'pending-reverification', verified_at = NULL,
+              validation_model = NULL, verification_source = NULL
+        WHERE provider = $1`,
+      "think",
+    );
+  });
   const blocked = await launch(h, cookie);
   assert.equal(blocked.status, 409);
   assert.match(((await blocked.json()) as { error: string }).error, /审查策略/);

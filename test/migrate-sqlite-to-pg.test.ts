@@ -84,16 +84,17 @@ test("时刻、布尔与 JSON 三类列按目标类型落库", async () => {
     assert.equal(findings?.["adjacent"], false);
     assert.equal(findings?.["two"], null);
 
-    // JSON 文本变成 jsonb,而且查得动内容——这正是换列类型的由来。
-    const [repo] = await sql(
-      `SELECT reviewers->0->>'model' AS model, jsonb_typeof(reviewers) AS shape
-         FROM repo WHERE id = $1`,
+    // JSON 文本变成 jsonb,而且查得动内容——这正是换列类型的由来。(`repo.reviewers` 按文本比
+    // 「换没换组合」,留 text,issue #451;这里取的是轮次上冻结的辅助模型与批次计划。)
+    const [frozen] = await sql(
+      `SELECT auxiliary_model->>'model' AS model, jsonb_typeof(batch_plan_json) AS shape
+         FROM review_run WHERE id = $1`,
       1,
     );
-    assert.equal(repo?.["model"], "deepseek-flash");
-    assert.equal(repo?.["shape"], "array");
-    const [empty] = await sql(`SELECT reviewers FROM repo WHERE id = $1`, 2);
-    assert.equal(empty?.["reviewers"], null);
+    assert.equal(frozen?.["model"], "deepseek-flash");
+    assert.equal(frozen?.["shape"], "array");
+    const [empty] = await sql(`SELECT auxiliary_model FROM review_run WHERE id = $1`, 2);
+    assert.equal(empty?.["auxiliary_model"], null);
 
     // 自引用往后指的那一行(条目 1 被条目 2 顶掉):插入顺序排不出来,得补回去。
     const [entry] = await sql(

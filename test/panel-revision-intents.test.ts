@@ -7,12 +7,16 @@
  * 回调,不猜时序。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem, RuleAgentRequest } from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
+import {
+  confirmEmptyRuleSet,
+  makeTestDatabase,
+  testCleanups,
+  withTestDb,
+} from "./support/git-fixture.ts";
 import { scriptedReviewer, scriptedRuleAgent as scriptedRuleAgentRow } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
@@ -114,22 +118,21 @@ async function submitAndSettle(h: PanelHarness, text = INTENT): Promise<number> 
 }
 
 /** 这个仓库知识轨迹上的事件,按落库顺序。没有列表端点,直接读库。 */
-function ruleTraceRows(h: PanelHarness): { source: string; kind: string; payload: string }[] {
-  const db = new DatabaseSync(h.db.url, { readOnly: true });
-  try {
-    return db
-      .prepare(
-        "SELECT source, kind, payload FROM rule_trace WHERE repo_id = ? ORDER BY task_id, seq",
+async function ruleTraceRows(
+  h: PanelHarness,
+): Promise<{ source: string; kind: string; payload: string }[]> {
+  return await withTestDb(h.db.url, async (sql) =>
+    (
+      await sql(
+        "SELECT source, kind, payload FROM rule_trace WHERE repo_id = $1 ORDER BY task_id, seq",
+        GITEA_REPO.id,
       )
-      .all(GITEA_REPO.id)
-      .map((row) => ({
-        source: String(row["source"]),
-        kind: String(row["kind"]),
-        payload: String(row["payload"]),
-      }));
-  } finally {
-    db.close();
-  }
+    ).map((row) => ({
+      source: String(row["source"]),
+      kind: String(row["kind"]),
+      payload: String(row["payload"]),
+    })),
+  );
 }
 
 test("无目标意图:agent 拿到意图与现集,产出入队并带人工提议附注", async () => {
@@ -203,7 +206,7 @@ test("无目标意图:agent 拿到意图与现集,产出入队并带人工提议
   // 轨迹来源同样是人工提议,附注与意图行指向同一条。
   assert.notEqual(intent.traceTaskId, null);
   assert.equal(proposal.sources[0]!.traceTaskId, intent.traceTaskId);
-  const trace = ruleTraceRows(h);
+  const trace = await ruleTraceRows(h);
   assert.ok(trace.length > 0);
   assert.ok(trace.every((row) => row.source === "manual-proposal"));
   assert.deepEqual(
@@ -377,12 +380,9 @@ test("未确认仓库上的处置反哺:产出排进提案队列,草案一字不
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
-  const db = new DatabaseSync(h.db.url);
-  try {
-    db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(GITEA_REPO.id);
-  } finally {
-    db.close();
-  }
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("DELETE FROM rule_set_version WHERE repo_id = $1", GITEA_REPO.id);
+  });
 
   const store = openStore(h.db.url);
   try {
@@ -447,7 +447,7 @@ test("陈述超过 100 字的产出被丢弃并记轨迹,意图仍完成", async
     ["留得下的那一条"],
   );
   assert.equal(view.intents.find((row) => row.id === intentId)!.state, "completed");
-  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  const dropped = (await ruleTraceRows(h)).filter((row) => row.kind === "rule_proposal_dropped");
   assert.equal(dropped.length, 1);
   assert.match(dropped[0]!.payload, /陈述超过 100 字/);
 });
@@ -503,12 +503,9 @@ test("选不出辅助模型时提交回 409,那句话指向两处配置", async 
   // 没有辅助模型、也没有全局模型组合:解析三级都给不出。注册要过「审查配置就绪」那道
   // 门禁,组合因此在注册之后才清掉。
   const h = await harnessWithRepo(scriptedRuleAgent(() => ({ items: [] })));
-  const raw = new DatabaseSync(h.db.url);
-  try {
-    raw.prepare("DELETE FROM global_setting WHERE key = ?").run("reviewers");
-  } finally {
-    raw.close();
-  }
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("DELETE FROM global_setting WHERE key = $1", "reviewers");
+  });
 
   const response = await submit(h, { text: INTENT });
   assert.equal(response.status, 409);
@@ -903,7 +900,7 @@ test("没有指向目标的产出:全部丢弃并记轨迹,意图零产出完成
     proposalIds: [proposalId],
     draftItemIds: [],
   });
-  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  const dropped = (await ruleTraceRows(h)).filter((row) => row.kind === "rule_proposal_dropped");
   assert.equal(dropped.length, 2);
 });
 
@@ -1345,7 +1342,7 @@ test("目标为知识条目:指向它的废止型提案不作并入候选,指名
   const intent = view.intents.find((row) => row.id === submitted.id)!;
   assert.equal(intent.state, "completed");
   assert.deepEqual(intent.produced, { proposalIds: [], draftItemIds: [] });
-  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  const dropped = (await ruleTraceRows(h)).filter((row) => row.kind === "rule_proposal_dropped");
   assert.equal(dropped.length, 1);
   assert.match(dropped[0]!.payload, /知识条目/);
 });
@@ -1392,7 +1389,7 @@ test("目标为知识条目:不指向它的产出丢弃并记轨迹,意图仍完
     proposalIds: [landed[0]!.id],
     draftItemIds: [],
   });
-  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  const dropped = (await ruleTraceRows(h)).filter((row) => row.kind === "rule_proposal_dropped");
   assert.equal(dropped.length, 4);
   assert.match(dropped[0]!.payload, /知识条目/);
 });
@@ -1558,7 +1555,7 @@ test("目标为草案条目:陈述超过 100 字的产出被丢弃,意图完成�
   const intent = view.intents.find((row) => row.id === submitted.id)!;
   assert.equal(intent.state, "completed");
   assert.deepEqual(intent.produced, { proposalIds: [], draftItemIds: [] });
-  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  const dropped = (await ruleTraceRows(h)).filter((row) => row.kind === "rule_proposal_dropped");
   assert.equal(dropped.length, 1);
   assert.match(dropped[0]!.payload, /陈述超过 100 字/);
 });
@@ -1591,7 +1588,7 @@ test("目标为草案条目:不指向它的产出丢弃并记轨迹,意图零产
   const intent = view.intents.find((row) => row.id === submitted.id)!;
   assert.equal(intent.state, "completed");
   assert.deepEqual(intent.produced, { proposalIds: [], draftItemIds: [] });
-  const dropped = ruleTraceRows(h).filter((row) => row.kind === "rule_proposal_dropped");
+  const dropped = (await ruleTraceRows(h)).filter((row) => row.kind === "rule_proposal_dropped");
   assert.equal(dropped.length, 3);
   assert.match(dropped[0]!.payload, /草案条目/);
 });
@@ -1873,12 +1870,9 @@ test("重试:辅助模型跑不了 409 且那一行仍失败,没有 knowledge:wr
   );
   assert.equal(forbidden.status, 403);
 
-  const raw = new DatabaseSync(h.db.url);
-  try {
-    raw.prepare("DELETE FROM global_setting WHERE key = ?").run("reviewers");
-  } finally {
-    raw.close();
-  }
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("DELETE FROM global_setting WHERE key = $1", "reviewers");
+  });
   const response = await retry(h, failedId);
   assert.equal(response.status, 409);
   const error = ((await response.json()) as { error: string }).error;

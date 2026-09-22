@@ -357,18 +357,25 @@ export async function startRuleTrace(
 
   const recorder = (taskId: number | null): RuleTraceRecorder => {
     if (taskId !== null) beginTrace(ruleChannel(taskId));
+    // 落库排成一条链,与 `createTraceRecorder` 同一写法(issue #447):事件一多半来自
+    // `onEvent` 这类同步回调,它们 await 不了;不串起来的话 seq 与 SSE 发出的顺序都会
+    // 跟着调度走。
+    let tail: Promise<void> = Promise.resolve();
     return {
       taskId,
-      record: async (kind, payload) => {
-        if (taskId === null) return;
-        try {
-          publishTrace(
-            ruleChannel(taskId),
-            await withStore((store) => store.appendRuleTrace(taskId, { kind, payload })),
-          );
-        } catch (error) {
-          failed(error);
-        }
+      record: (kind, payload) => {
+        if (taskId === null) return tail;
+        tail = tail.then(async () => {
+          try {
+            publishTrace(
+              ruleChannel(taskId),
+              await withStore((store) => store.appendRuleTrace(taskId, { kind, payload })),
+            );
+          } catch (error) {
+            failed(error);
+          }
+        });
+        return tail;
       },
       end: () => {
         if (taskId !== null) endTrace(ruleChannel(taskId));

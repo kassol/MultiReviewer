@@ -1,5 +1,5 @@
 {
-  "id": "344fdeb8-104e-4147-84b8-a9968716e567",
+  "id": "910c5320-e82e-47a5-8d25-98999ebf89b5",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1209,7 +1209,18 @@
           "name": "task_id",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "identity": {
+            "type": "byDefault",
+            "name": "rule_trace_task_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "2147483647",
+            "cache": "1",
+            "cycle": false
+          }
         },
         "repo_id": {
           "name": "repo_id",
@@ -2501,7 +2512,7 @@
         },
         "reviewers": {
           "name": "reviewers",
-          "type": "jsonb",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -2531,7 +2542,7 @@
         },
         "auxiliary_model": {
           "name": "auxiliary_model",
-          "type": "jsonb",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

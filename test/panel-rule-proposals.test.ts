@@ -9,7 +9,6 @@
  * 采纳只按队列里那份落(issue #299,ADR 0028):改后采纳已经撤掉,采纳端点连正文都不读。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
@@ -20,7 +19,7 @@ import {
   type RuleProposalSourceInput,
 } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups, withTestDb } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   scopedUser as scopedUserRow,
@@ -91,30 +90,23 @@ function source(
 }
 
 /** 库里现存的出处附注行数。取代与级联要看得出「附注跟着提案走」。 */
-function proposalSourceRows(databaseUrl: string): number {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    return Number(db.prepare("SELECT COUNT(*) AS rows FROM rule_proposal_source").get()!["rows"]);
-  } finally {
-    db.close();
-  }
+async function proposalSourceRows(databaseUrl: string): Promise<number> {
+  return await withTestDb(databaseUrl, async (sql) =>
+    Number((await sql("SELECT COUNT(*) AS rows FROM rule_proposal_source"))[0]!["rows"]),
+  );
 }
 
 /** 每条知识条目的生效版本与废止版本。合并要看得出「一起废止于新版、新行生效于同一版」。 */
-function ruleVersions(databaseUrl: string): (number | null)[][] {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    return db
-      .prepare("SELECT id, effective_version, retired_version FROM review_rule ORDER BY id")
-      .all()
-      .map((row) => [
-        Number(row["id"]),
-        Number(row["effective_version"]),
-        row["retired_version"] === null ? null : Number(row["retired_version"]),
-      ]);
-  } finally {
-    db.close();
-  }
+async function ruleVersions(databaseUrl: string): Promise<(number | null)[][]> {
+  return await withTestDb(databaseUrl, async (sql) =>
+    (
+      await sql("SELECT id, effective_version, retired_version FROM review_rule ORDER BY id")
+    ).map((row) => [
+      Number(row["id"]),
+      Number(row["effective_version"]),
+      row["retired_version"] === null ? null : Number(row["retired_version"]),
+    ]),
+  );
 }
 
 async function scopedUser(
@@ -344,7 +336,7 @@ test("合并型采纳:目标全部废止于新版、合成的那条生效于新�
       [first!.id, second!.id].sort(),
     );
     // 两条目标废止于新版,合成的那一条生效于同一版:合并在版本轴上是一格。
-    assert.deepEqual(ruleVersions(db.url), [
+    assert.deepEqual(await ruleVersions(db.url), [
       [first!.id, 1, 4],
       [second!.id, 2, 4],
       [other!.id, 3, null],
@@ -749,7 +741,7 @@ test("重探索只取代附注全部为基点探索的待裁决提案:带反哺�
       rows.find((row) => row.id === mixedId)!.sources.map((entry) => entry.note),
       [null, "又一条处置备注"],
     );
-    assert.equal(proposalSourceRows(db.url), 6);
+    assert.equal(await proposalSourceRows(db.url), 6);
   } finally {
     await store.close();
   }

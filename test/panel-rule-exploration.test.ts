@@ -10,14 +10,13 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import type { KnowledgeEntry } from "../src/review/finding.ts";
 import { openStore, type ReviewRuleInput } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups, withTestDb } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   scopedUser as scopedUserRow,
@@ -718,14 +717,15 @@ test("生效的辅助模型跑不了时发起回 409,那句话指向审查策略
   await setGlobalAuxiliaryModel(h, { provider: "think", model: "deep" });
   // 让这一处跑不起来:凭据降级成待重验。**不走删凭据那条路**——辅助模型如今计入模型引用,
   // 删凭据会被引用保护挡下(它正是被这一处引用着)。
-  const downgrade = new DatabaseSync(h.db.url);
-  downgrade.prepare(
-    `UPDATE model_service_credential
-        SET state = 'pending-reverification', verified_at = NULL,
-            validation_model = NULL, verification_source = NULL
-      WHERE provider = ?`,
-  ).run("think");
-  downgrade.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      `UPDATE model_service_credential
+          SET state = 'pending-reverification', verified_at = NULL,
+              validation_model = NULL, verification_source = NULL
+        WHERE provider = $1`,
+      "think",
+    );
+  });
 
   const blocked = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
     baseline: h.repo.baseSha,
