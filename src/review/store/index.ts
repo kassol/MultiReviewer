@@ -1264,7 +1264,7 @@ function repoPairCondition(
   prefix: string,
 ): { sql: string; params: string[] } {
   if (pairs === undefined) return { sql: "1", params: [] };
-  if (pairs.length === 0) return { sql: "0", params: [] };
+  if (pairs.length === 0) return { sql: "false", params: [] };
   return {
     sql: `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`,
     params: pairs.flatMap((pair) => [pair.owner, pair.repo]),
@@ -4197,27 +4197,28 @@ function pullStageQuery(filter: string): string {
    * 每个 pull request 取 id 最大的那一轮——id 即落库顺序,与开跑时间同序,那一轮带着
    * 这个阶段当前的标题与关闭标记(关闭标记落在该 PR 的全部轮次上)。
    *
-   * 标题、状态与两个时刻直接从这一句 GROUP BY 里取:SQLite 保证与 `MAX()` 同行的裸列
-   * 读的就是取到最大值的那一行(https://sqlite.org/lang_select.html#bareagg)。不这样
-   * 写就要再 join 回 `review_run` 按 id 取一遍,每个阶段多一次随机取行。
+   * 标题、状态与两个时刻取的就是那一行:`DISTINCT ON (owner, repo, pull_number)` 加
+   * `ORDER BY … id DESC` 让 PostgreSQL 每组只留 id 最大的那一行(ADR 0036)。SQLite 那一版
+   * 靠的是「与 `MAX()` 同行的裸列」,PostgreSQL 的 `ONLY_FULL_GROUP_BY` 不认这种写法。
    */
-  return `SELECT 'pull-request' AS source,
+  return `SELECT DISTINCT ON (owner, repo, pull_number)
+                 'pull-request' AS source,
                  'pr:' || owner || '/' || repo || '/' || pull_number AS stage_id,
                  owner, repo, pull_number,
-                 NULL AS range_review_id, title,
+                 NULL::integer AS range_review_id, title,
                  CASE WHEN pr_state = 'closed' THEN 'closed' ELSE 'active' END AS status,
-                 MAX(id) AS latest_run_id, started_at AS latest_run_at,
+                 id AS latest_run_id, started_at AS latest_run_at,
                  finished_at AS latest_run_finished_at, started_at AS activity_at
             FROM review_run
            WHERE range_review_id IS NULL${filter === "" ? "" : ` AND ${filter}`}
-           GROUP BY owner, repo, pull_number`;
+           ORDER BY owner, repo, pull_number, id DESC`;
 }
 
 /** 见 `pullStageQuery`。一轮都还没跑的范围审查也是一个阶段,因此从 `range_review` 出发。 */
 function rangeStageQuery(filter: string): string {
   return `SELECT 'range-review' AS source,
                  'range:' || rr.id AS stage_id,
-                 rr.owner AS owner, rr.repo AS repo, NULL AS pull_number,
+                 rr.owner AS owner, rr.repo AS repo, NULL::integer AS pull_number,
                  rr.id AS range_review_id, rr.title AS title,
                  CASE WHEN rr.state = 'in-progress' THEN 'active' ELSE 'closed' END AS status,
                  latest.id AS latest_run_id, latest.started_at AS latest_run_at,
@@ -4578,12 +4579,12 @@ export function openStore(databaseUrl: string): Store {
                 service.targets_json IS NULL
                 OR (automatic.api IS NOT NULL AND automatic.base_url IS NOT NULL
                     AND EXISTS (
-                      SELECT 1 FROM json_each(service.targets_json) bound
-                       WHERE json_extract(bound.value, '$.api') = automatic.api
-                         AND json_extract(bound.value, '$.baseUrl') = rtrim(automatic.base_url, '/')
+                      SELECT 1 FROM jsonb_array_elements(service.targets_json) bound
+                       WHERE bound.value->>'api' = automatic.api
+                         AND bound.value->>'baseUrl' = rtrim(automatic.base_url, '/')
                     ))
                 OR ((automatic.api IS NULL OR automatic.base_url IS NULL)
-                    AND json_array_length(service.targets_json) = 1)
+                    AND jsonb_array_length(service.targets_json) = 1)
               )
          )
          OR EXISTS (
@@ -4593,14 +4594,14 @@ export function openStore(databaseUrl: string): Store {
               AND (
                 (supplement.source = 'migration-retention'
                   AND (service.targets_json IS NULL
-                       OR json_array_length(service.targets_json) = 1))
+                       OR jsonb_array_length(service.targets_json) = 1))
                 OR (supplement.source = 'manual'
                     AND (
                       (service.targets_json IS NULL
                         AND supplement.target_fingerprint = service.target_fingerprint)
                       OR EXISTS (
-                        SELECT 1 FROM json_each(service.targets_json) bound
-                         WHERE json_extract(bound.value, '$.fingerprint') = supplement.target_fingerprint
+                        SELECT 1 FROM jsonb_array_elements(service.targets_json) bound
+                         WHERE bound.value->>'fingerprint' = supplement.target_fingerprint
                       )
                     ))
               )
@@ -5775,17 +5776,21 @@ export function openStore(databaseUrl: string): Store {
       // started_at 是 ISO 字符串,MAX 按字典序即时间序。
       const rows = (await db
         .prepare(
-          `SELECT r.id, r.owner, r.repo, r.reviewers, r.auxiliary_model,
+          // PostgreSQL 的 ORDER BY 里,输出列名只能单独出现,不能嵌在表达式里
+          // (`(last_activity IS NULL)` 就是),因此排序放到外层。
+          `WITH rows AS (
+             SELECT r.id, r.owner, r.repo, r.reviewers, r.auxiliary_model,
                   r.min_report_severity, r.default_branch, r.settings_version,
-                  r.worktree_state, r.worktree_failure, r.worktree_checked_at,
+                  r.worktree_state, r.worktree_failure, r.worktree_checked_at, r.registered_at,
                   (SELECT COUNT(*) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS run_count,
                   (SELECT COUNT(*) FROM finding f JOIN review_run run ON f.run_id = run.id
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS finding_count,
                   (SELECT MAX(run.started_at) FROM review_run run
                     WHERE run.owner = r.owner AND run.repo = r.repo) AS last_activity
-             FROM repo r
-            ORDER BY (last_activity IS NULL), COALESCE(last_activity, r.registered_at) DESC`,
+             FROM repo r)
+           SELECT * FROM rows
+            ORDER BY (last_activity IS NULL), COALESCE(last_activity, registered_at) DESC`,
         )
         .all());
       return rows.map((row) => ({
@@ -8623,7 +8628,7 @@ export function openStore(databaseUrl: string): Store {
         pairs === undefined
           ? ""
           : pairs.length === 0
-            ? "0"
+            ? "false"
             : `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`;
       const pairParams = (pairs ?? []).flatMap((pair) => [pair.owner, pair.repo]);
       const params: (string | number)[] = [...pairParams, ...pairParams];
@@ -8639,9 +8644,11 @@ export function openStore(databaseUrl: string): Store {
       params.push(opts.limit, opts.offset);
       const rows = (await db
         .prepare(
-          `SELECT * FROM (${pullStageQuery(repoFilter(""))}
+          // 两段各自加括号:pull 那一段带自己的 `ORDER BY`(DISTINCT ON 要它),
+          // 不括起来 PostgreSQL 会把它读成整个 UNION 的排序而在 `UNION` 处报语法错。
+          `SELECT * FROM ((${pullStageQuery(repoFilter(""))})
                           UNION ALL
-                          ${rangeStageQuery(repoFilter("rr."))})
+                          (${rangeStageQuery(repoFilter("rr."))}))
             ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
             -- 最近有动静的排在前面。时刻相同的按阶段标识兜底,翻页才不会漂。
             ORDER BY activity_at DESC, stage_id DESC

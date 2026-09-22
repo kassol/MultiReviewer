@@ -13,7 +13,7 @@ import { test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
 import { openStore } from "../src/review/store/index.ts";
-import { testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
@@ -21,6 +21,7 @@ const BOOT_TIMEOUT_MS = 30_000;
 
 /** 宿主机上导出过的凭据会让「没配」这一档根本测不出来,逐个剥掉。 */
 const CLEARED = [
+  "MULTIREVIEWER_DB",
   "MULTIREVIEWER_GITEA_URL",
   "MULTIREVIEWER_GITEA_TOKEN",
   "MULTIREVIEWER_GITHUB_APP_ID",
@@ -39,7 +40,9 @@ async function boot(
 ): Promise<Boot> {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-boot-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const databaseUrl = join(dir, "multireviewer.db");
+  const database = await makeTestDatabase();
+  cleanups.push(database.cleanup);
+  const databaseUrl = database.url;
   const cacheDir = join(dir, "worktrees");
   const seed = openStore(databaseUrl);
   await putGlobalSettings(seed, {
@@ -53,7 +56,8 @@ async function boot(
     if (value !== undefined && !CLEARED.includes(name)) env[name] = value;
   }
   Object.assign(env, {
-    MULTIREVIEWER_DB: databaseUrl,
+    MULTIREVIEWER_DATABASE_URL: databaseUrl,
+    MULTIREVIEWER_DATA_DIR: dir,
     MULTIREVIEWER_CACHE_DIR: cacheDir,
     MULTIREVIEWER_ADMIN_TOKEN: "boot-test-admin-token",
     // 明文 http 但 localhost:基地址校验要放行本机调试。
@@ -124,4 +128,18 @@ test("基地址不是 http(s) 时启动失败", async () => {
   });
   assert.equal(result.listening, false);
   assert.match(result.output, /http/);
+});
+
+/**
+ * `MULTIREVIEWER_DB` 随 ADR 0036 废弃。旧 `.env` 原样带上来时服务会连到别处(或者根本连不
+ * 上),而库里空空如也看着像「数据没了」——当场拦掉并指向新变量。
+ */
+test("还设着 MULTIREVIEWER_DB 时拒绝启动并指向新变量", async () => {
+  const result = await boot({
+    GITHUB_TOKEN: "ghp-stub",
+    MULTIREVIEWER_DB: "/data/multireviewer.db",
+  });
+  assert.equal(result.listening, false);
+  assert.match(result.output, /MULTIREVIEWER_DB 已废弃/);
+  assert.match(result.output, /MULTIREVIEWER_DATABASE_URL/);
 });
