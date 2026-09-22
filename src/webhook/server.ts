@@ -6,7 +6,7 @@
  * `Forge` 接口里也没有这类方法:审查是建议,不是门禁,人保留最终判断权。
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { readFile } from "node:fs/promises";
 import {
@@ -8250,7 +8250,7 @@ async function handleStats(
   //
   // Agent 会话的用量单列一行,不混进 Review Run(spec #329):两类花费分得清。它挂在产品上
   // 而不是仓库上,收窄因此按创建者——看得到哪些会话的人就看得到那些会话的花费。
-  const { cells: allCells, models, usage, agentSessions, tables } = await withStore(
+  const { cells: allCells, models, usage, agentSessions, tables, fileBytes } = await withStore(
     deps.databaseUrl,
     async (store) => ({
       cells: await store.dispositionStats(from, to),
@@ -8260,14 +8260,10 @@ async function handleStats(
         await store.agentSessionUsageStats(from, to, caller.isSystemAdmin ? null : caller.username) ??
         null,
       tables: await store.tableCounts(),
+      // 库体量问 PostgreSQL 自己(`pg_database_size`):库不再是一个文件,stat 不出来。
+      fileBytes: await store.databaseSize(),
     }),
   );
-  let fileBytes = 0;
-  try {
-    fileBytes = statSync(deps.databaseUrl).size;
-  } catch {
-    // 库文件还没建出来:没有一次投递的全新部署,体量就是 0。
-  }
   // 矩阵一行一个仓库,分配外的那些直接不给:页面上的数字要与人看得到的列表对得上。
   const cells = allCells.filter((cell) => assignment.allows(cell.owner, cell.repo));
   return sendJson(res, 200, {

@@ -9,12 +9,11 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import { openStore, type Store } from "../src/review/store/index.ts";
-import { seedRun as seedRunRow } from "./support/git-fixture.ts";
+import { seedRun as seedRunRow, withTestDb } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -392,11 +391,12 @@ test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issu
     await store.close();
   }
   // 升级前落的归属行两列是 NULL:当时没存,与模型没给的空串分开。
-  const sqlite = new DatabaseSync(h.db.url);
-  sqlite
-    .prepare("UPDATE finding_attribution SET impact = NULL, suggestion = NULL WHERE finding_id = ?")
-    .run(legacyId);
-  sqlite.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      "UPDATE finding_attribution SET impact = NULL, suggestion = NULL WHERE finding_id = $1",
+      legacyId,
+    );
+  });
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
 
@@ -518,11 +518,9 @@ test("阶段汇总带代表段的影响与建议,升级前落的行按规则现�
     await store.close();
   }
   // 升级前落的行:两列是 NULL,前两段还是按旧规则(严重度最高那条)存下来的那份。
-  const sqlite = new DatabaseSync(h.db.url);
-  sqlite
-    .prepare("UPDATE finding SET impact = NULL, suggestion = NULL WHERE id = ?")
-    .run(legacyId);
-  sqlite.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("UPDATE finding SET impact = NULL, suggestion = NULL WHERE id = $1", legacyId);
+  });
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
 
@@ -732,26 +730,21 @@ test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async
 type StoredLineAuthor = { sha: unknown; name: unknown; email: unknown; at: unknown };
 
 /** 库里落着的行作者四列,按落库顺序。补录写没写回只能从库里看。 */
-function storedLineAuthors(databaseUrl: string): StoredLineAuthor[] {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    const rows = db
-      .prepare(
-        `SELECT line_author_sha AS sha, line_author_name AS name,
-                line_author_email AS email, line_author_at AS at
-           FROM finding ORDER BY id`,
-      )
-      .all() as unknown as Record<string, unknown>[];
-    // node:sqlite 的行是无原型对象,`deepEqual` 会拿它跟字面量比出差异。
+async function storedLineAuthors(databaseUrl: string): Promise<StoredLineAuthor[]> {
+  return await withTestDb(databaseUrl, async (sql) => {
+    const rows = await sql(
+      `SELECT line_author_sha AS sha, line_author_name AS name,
+              line_author_email AS email, line_author_at AS at
+         FROM finding ORDER BY id`,
+    );
+    // 驱动给的行直接比会带上原型之外的东西,逐格取出来。
     return rows.map((row) => ({
       sha: row["sha"],
       name: row["name"],
       email: row["email"],
       at: row["at"],
     }));
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /** 把夹具仓库克隆成这个仓库的缓存副本:补录在它上面按 revision 判定。 */
@@ -802,7 +795,7 @@ test("阶段汇总给升级前的 Finding 补录行作者并写回,之后不再�
   assert.match(lineAuthor!.authoredAt, /^\d{4}-\d{2}-\d{2}T/);
 
   // 库里已经写回,不只是这一次响应算出来的。
-  assert.deepEqual(storedLineAuthors(h.db.url), [
+  assert.deepEqual(await storedLineAuthors(h.db.url), [
     {
       sha: headSha,
       name: "Alice Lin",
@@ -841,7 +834,7 @@ test("阶段汇总补录不了行作者时照常 200,那几条留空等下次读
 
   const body = await summaryOf(h, PR_QUERY);
   assert.equal(body.findings[0]!.lineAuthor, null);
-  assert.deepEqual(storedLineAuthors(h.db.url), [
+  assert.deepEqual(await storedLineAuthors(h.db.url), [
     { sha: null, name: null, email: null, at: null },
   ]);
 });

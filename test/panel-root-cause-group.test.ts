@@ -2,15 +2,15 @@
  * 阶段详情里的同根因组(CONTEXT.md 同根因组,ADR 0030,issue #309):按组折叠展示要的那
  * 份投影,加组级处置那个端点。
  *
- * 打在面板 API 的真实 HTTP 缝上:阶段的轮次、Finding 与组直接落临时 SQLite(这几条用例要
+ * 打在面板 API 的真实 HTTP 缝上:阶段的轮次、Finding 与组直接落临时库(这几条用例要
  * 的是投影与处置的行为,不是合并 agent 怎么提出的组——那是 issue #308 的用例),内存 Forge
  * 记下 resolve 收到的评论 id,处置结果由 `GET /stage-summary` 读回。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -115,15 +115,10 @@ async function seedRun(
       verdicts: [],
       ...(rootCauses.length === 0 ? {} : { rootCauses }),
     });
-    const findingIds = new DatabaseSync(h.db.url, { readOnly: true });
-    try {
-      const rows = findingIds
-        .prepare("SELECT id FROM finding WHERE run_id = ? ORDER BY group_index")
-        .all(runId) as unknown as { id: number }[];
-      return { runId, findingIds: rows.map((row) => Number(row.id)), groupIds };
-    } finally {
-      findingIds.close();
-    }
+    const rows = await withTestDb(h.db.url, async (sql) =>
+      await sql("SELECT id FROM finding WHERE run_id = $1 ORDER BY group_index", runId),
+    );
+    return { runId, findingIds: rows.map((row) => Number(row["id"])), groupIds };
   } finally {
     await store.close();
   }
@@ -280,14 +275,9 @@ test("成员映完只剩一条:整组不出现,剩下那条按未入组列出", 
     [{ reason: REASON, members: [0, 1] }],
   );
   // a 那条整条交接掉而没有承接者:它映不到当前列表里的任何一行,组只剩 b 一个成员。
-  const db = new DatabaseSync(h.db.url);
-  try {
-    db.prepare("UPDATE finding SET disposition = 'continued' WHERE id = ?").run(
-      seeded.findingIds[0]!,
-    );
-  } finally {
-    db.close();
-  }
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("UPDATE finding SET disposition = 'continued' WHERE id = $1", seeded.findingIds[0]!);
+  });
 
   const body = await summary(h);
   assert.deepEqual(body.rootCauseGroups, []);

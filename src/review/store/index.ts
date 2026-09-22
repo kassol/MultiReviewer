@@ -17,6 +17,7 @@ import { PgTable } from "drizzle-orm/pg-core";
 
 import * as schema from "../schema/index.ts";
 import { accountsMethods } from "./accounts.ts";
+import { stagesMethods } from "./stages.ts";
 import {
   agentSessionEntry,
   agentSessionPendingMessages,
@@ -34,12 +35,8 @@ import {
   representativeSegment,
   modelServiceTargetSetFingerprint,
   normalizeModelServiceTargets,
-  pullStageQuery,
-  rangeStageQuery,
   STAGE_ID_FROM_RUN,
-  stageRowEntry,
   stageScope,
-  STATS_IDENTITY_CTE,
   storeHelpers,
   usageColumns,
   type ModelServiceBoundTarget,
@@ -47,7 +44,7 @@ import {
   type StoreContext,
 } from "./shared.ts";
 export * from "./shared.ts";
-import { createPool, storeDb, type Db, type PgPool } from "./pg.ts";
+import { createPool, storeDb, type PgPool } from "./pg.ts";
 export type { StoreTransaction, TransactionMode } from "./pg.ts";
 
 import {
@@ -87,7 +84,7 @@ import { DEFAULT_MIN_REPORT_SEVERITY } from "../finding.ts";
 import type { RunProjection } from "../../contracts/runs.ts";
 // 只取类型:`batch.ts` 反过来引用本模块的 `sumUsage`,类型导入在运行时被抹掉,不成环。
 import type { TimedOutcome } from "../batch.ts";
-import { containerBranches, type RangeReviewState } from "../range-review.ts";
+import type { RangeReviewState } from "../range-review.ts";
 import type {
   RuleTraceEvent,
   RuleTraceEventInput,
@@ -2727,54 +2724,6 @@ function failureExcerpt(raw: unknown): string | null {
     : text;
 }
 
-function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
-  return {
-    id: Number(row["id"]),
-    repoId: Number(row["repo_id"]),
-    owner: String(row["owner"]),
-    repo: String(row["repo"]),
-    title: row["title"] === null ? null : String(row["title"]),
-    baseSha: String(row["base_sha"]),
-    comparisonSha: String(row["comparison_sha"]),
-    comparisonSource: row["comparison_source_kind"] === null || row["comparison_source_kind"] === undefined
-      ? null
-      : {
-          kind: String(row["comparison_source_kind"]) as ComparisonSource["kind"],
-          name: String(row["comparison_source_name"] ?? ""),
-        },
-    state: String(row["state"]) as RangeReviewState,
-    containerPullNumber:
-      row["container_pull_number"] === null ? null : Number(row["container_pull_number"]),
-    baseBranch: String(row["base_branch"]),
-    headBranch: String(row["head_branch"]),
-    createdBy: String(row["created_by"]),
-    createdAt: String(row["created_at"]),
-    completedBy: row["completed_by"] === null ? null : String(row["completed_by"]),
-    completedAt: row["completed_at"] === null ? null : String(row["completed_at"]),
-    lastForgeFailure:
-      row["last_forge_failure"] === null ? null : String(row["last_forge_failure"]),
-    dailyIncrementEnabled: Number(row["daily_increment_enabled"] ?? 0) === 1,
-    dailyIncrementBranch:
-      row["daily_increment_branch"] === null || row["daily_increment_branch"] === undefined
-        ? null
-        : String(row["daily_increment_branch"]),
-    dailyIncrementEnabledAt:
-      row["daily_increment_enabled_at"] === null || row["daily_increment_enabled_at"] === undefined
-        ? null
-        : String(row["daily_increment_enabled_at"]),
-    scheduledCheckAt:
-      row["scheduled_check_at"] === null || row["scheduled_check_at"] === undefined
-        ? null
-        : String(row["scheduled_check_at"]),
-    scheduledCheckResult:
-      row["scheduled_check_result"] === null || row["scheduled_check_result"] === undefined
-        ? null
-        : (String(row["scheduled_check_result"]) as ScheduledCheckResult),
-    scheduledCheckTime: String(row["scheduled_check_time"] ?? "00:00"),
-    scheduledCheckMode: row["scheduled_check_mode"] === "full" ? "full" : "verdict-only",
-  };
-}
-
 /**
  * 181 个方法的签名写在这里,一律写成同步形状——对外的 `Store` 是它的映射类型,每个方法
  * 返回 `Promise`(spec #445)。这样写只是免得逐个手抄一遍 `Promise<…>`;实现按 `Store` 写。
@@ -3697,6 +3646,8 @@ type SyncStore = {
   }): number;
   /** 每张表的行数,给面板展示库体量。不做清理,数字只会涨(ADR 0006 的留存决策)。 */
   tableCounts(): { name: string; rows: number }[];
+  /** 这个库此刻占多少字节(`pg_database_size`)。库不再是文件,体量只有它说得出来。 */
+  databaseSize(): number;
   /**
    * 领走一次 webhook 投递。同一个「仓库 + head commit」只有第一次返回 true。
    *
@@ -3889,7 +3840,7 @@ export type StageRowEntry = {
  * 轮次级失败原因(ADR 0026)去掉首尾空白后为空时落的那句话。写入侧与读取侧共用一处:
  * 两边各写一遍字面量,哪天改文案就会剩下一处没改。
  */
-const UNRECORDED_RUN_FAILURE = "未记录原因";
+export const UNRECORDED_RUN_FAILURE = "未记录原因";
 
 /**
  * 轮次级失败原因在这里定形(issue #432、#436):通篇空白的原因换成一句话。「非空即
@@ -3902,114 +3853,6 @@ const UNRECORDED_RUN_FAILURE = "未记录原因";
  */
 export function runFailureText(failure: string): string {
   return failure.trim() === "" ? UNRECORDED_RUN_FAILURE : failure;
-}
-
-/**
- * 给定这几轮的警示(issue #421、#424):哪几轮有模型整轮没跑成、哪几轮有模型的某几批
- * 没跑成、哪几轮没有正常收尾。
- *
- * 一条查询算完这一页:逐行回查会让翻一页多发几十次。没有警示的那几轮不在结果里,
- * 调用方取不到即 null——四段各自只在那一档成立时出行,一档都不成立的轮次因此落不进
- * `GROUP BY`。
- *
- * 调用方只把**跑完的**那几轮交进来:警示说的是这一轮跑出来的结论不完整,而还在跑的
- * 那一轮还没有结论。今天这两张表都只在收尾那一笔事务里写,交进来也问不出东西;由
- * 调用方筛是为了让这条规则读得见,而不是靠写入时机碰巧成立。
- */
-async function stageRunAlerts(
-  db: Db,
-  runIds: readonly number[],
-): Promise<Map<number, StageRunAlert>> {
-  const alerts = new Map<number, StageRunAlert>();
-  if (runIds.length === 0) return alerts;
-  const marks = runIds.map(() => "?").join(",");
-  const rows = await db
-    .prepare(
-      `SELECT run_id, MAX(batch_failed) AS batch_failed, MAX(model_failed) AS model_failed,
-              MAX(failure) AS failure
-         FROM (SELECT run_id, 1 AS batch_failed, 0 AS model_failed, NULL AS failure
-                 FROM finding_verdict
-                WHERE run_id IN (${marks}) AND missing_reason = 'batch-failed'
-                UNION ALL
-               SELECT run_id, 1 AS batch_failed, 0 AS model_failed, NULL AS failure
-                 FROM review_trace t
-                WHERE run_id IN (${marks}) AND kind = 'reviewer_batch_finished'
-                  AND payload->>'failed' = 'true'
-                  AND NOT EXISTS (SELECT 1 FROM reviewer_outcome o
-                                   WHERE o.run_id = t.run_id AND o.model = t.reviewer
-                                     AND o.failure IS NOT NULL)
-                UNION ALL
-               SELECT run_id, 0 AS batch_failed, 1 AS model_failed, NULL AS failure
-                 FROM reviewer_outcome
-                WHERE run_id IN (${marks}) AND failure IS NOT NULL
-                UNION ALL
-               -- 一轮至多一行,MAX() 因此取的就是它自己那句话。
-               SELECT id AS run_id, 0 AS batch_failed, 0 AS model_failed, failure
-                 FROM review_run
-                WHERE id IN (${marks}) AND failure IS NOT NULL)
-        GROUP BY run_id`,
-    )
-    .all(...runIds, ...runIds, ...runIds, ...runIds);
-  for (const row of rows) {
-    const failure = row["failure"];
-    alerts.set(Number(row["run_id"]), {
-      modelFailed: Number(row["model_failed"]) === 1,
-      batchFailed: Number(row["batch_failed"]) === 1,
-      // 第一行去掉首尾空白(issue #428):这一格是面板直接读给人看的,空原因会让悬停
-      // 说明停在一个「:」上。取不出东西时的那道回落只为写入侧收口(issue #432)之前
-      // 落下的旧行留着——新落的行整篇空白已经换成了同一句话。
-      closingFailure:
-        failure === null
-          ? null
-          : (String(failure)
-              .split("\n")
-              .map((line) => line.trim())
-              .find((line) => line !== "") ?? UNRECORDED_RUN_FAILURE),
-    });
-  }
-  return alerts;
-}
-
-/** 这一行要问警示的那一轮:最新一轮跑完了才问(见 `stageRunAlerts`)。 */
-function alertRunId(item: StageRowEntry["item"]): number | null {
-  return item.latestRunFinishedAt === null ? null : item.latestRunId;
-}
-
-/**
- * 时间线分组(issue #175):一组是一次代码推进。范围审查按比较项分,pull request 没有
- * 比较项这张表,按 head commit 分——两边的分组键都是轮次的 head。
- *
- * 比较项在前,顺序就是推进顺序;head 认不出比较项的轮次仍按自己的 head 单独成一组,
- * 而不是被丢掉——它是真跑过的一轮,时间线上不能没有它。组与组内的轮次都是新的在前。
- */
-function groupStageRuns(
-  timeline: readonly StageTimelineEntry[],
-  comparisons: readonly RangeReviewComparison[],
-): StageRunGroup[] {
-  // 时间线本身按轮次落库顺序升序,这里的每一组因此也是升序。
-  const byHead = new Map<string, StageTimelineEntry[]>();
-  for (const entry of timeline) {
-    byHead.set(entry.headSha, [...(byHead.get(entry.headSha) ?? []), entry]);
-  }
-  const ascending: StageRunGroup[] = [];
-  for (const comparison of comparisons) {
-    ascending.push({
-      sha: comparison.sha,
-      recordedBy: comparison.recordedBy,
-      recordedAt: comparison.recordedAt,
-      runs: byHead.get(comparison.sha) ?? [],
-    });
-    byHead.delete(comparison.sha);
-  }
-  const rest = [...byHead.entries()].sort(
-    (a, b) => a[1].at(-1)!.runId - b[1].at(-1)!.runId,
-  );
-  for (const [sha, runs] of rest) {
-    ascending.push({ sha, recordedBy: null, recordedAt: null, runs });
-  }
-  return ascending
-    .reverse()
-    .map((group) => ({ ...group, runs: [...group.runs].reverse() }));
 }
 
 /** 历史 Finding 查询的三个条件(issue #338)。仓库必填,另两项缺席即不按它过滤。 */
@@ -4153,7 +3996,6 @@ export function openStore(databaseUrl: string): Store {
     auxiliaryModelAvailable,
     referencedModels,
     recordSupportsCurrentReferences,
-    stageRowById,
     repoExists,
     activeRule,
     insertReviewRule,
@@ -4179,7 +4021,7 @@ export function openStore(databaseUrl: string): Store {
     ...accountsMethods(ctx),
     // #451 仓库 / 审查策略 / 模型服务 / 凭据:...reposMethods(ctx),
     // #452 Review Run / Finding / 轨迹:...runsMethods(ctx),
-    // #453 范围审查 / 阶段 / 统计:...stagesMethods(ctx),
+    ...stagesMethods(ctx),
     // #454 知识集 / 探索 / 提案 / 意图:...knowledgeMethods(ctx),
     // #455 产品 / 产品知识 / tracker:...productsMethods(ctx),
     // #456 Agent 会话:...sessionsMethods(ctx),
@@ -7006,361 +6848,6 @@ export function openStore(databaseUrl: string): Store {
       });
     },
 
-    async stageSummary(scope) {
-      const [where, params] = stageScope(scope);
-      const runRows = (await db
-        .prepare(
-          `SELECT run.id AS id, run.head_sha AS head_sha, run.started_at AS started_at,
-                  run.finished_at AS finished_at, run.failed AS failed, run.failure AS failure,
-                  run.mode AS mode, run.trigger_source AS trigger_source
-             FROM review_run run
-            WHERE ${where}
-            ORDER BY run.id`,
-        )
-        .all(...params));
-      if (runRows.length === 0) {
-        return {
-          findings: [],
-          counts: { pending: 0, resolved: 0, fixed: 0 },
-          timeline: [],
-          rootCauseGroups: [],
-        };
-      }
-      // 一个阶段的行数有界(轮次 × 每轮的 Finding),折叠在这里用 JS 做:延续要把两个
-      // 指纹接成同一条 Identity,写成 SQL 只会让这一步看不出在做什么。
-      const findingRows = (await db
-        .prepare(
-          `SELECT f.id AS id, f.run_id AS run_id, f.file AS file, f.line AS line,
-                  f.title AS title, f.severity AS severity, f.category AS category,
-                  f.description AS description, f.impact AS impact,
-                  f.suggestion AS suggestion, f.disposition AS disposition,
-                  f.placement AS placement, f.comment_id AS comment_id,
-                  f.comment_html_url AS comment_html_url, f.disposed_by AS disposed_by,
-                  f.disposed_at AS disposed_at, f.disposition_note AS note,
-                  f.continued_from AS continued_from, f.handoff_pending AS handoff_pending,
-                  f.line_author_sha AS line_author_sha, f.line_author_name AS line_author_name,
-                  f.line_author_email AS line_author_email, f.line_author_at AS line_author_at,
-                  f.line_author_adjacent AS line_author_adjacent,
-                  f.placed_line AS placed_line, f.placed_run_id AS placed_run_id,
-                  ${identityKey("f.")} AS fp
-             FROM finding f
-             JOIN review_run run ON f.run_id = run.id
-            WHERE ${where}
-            ORDER BY f.id`,
-        )
-        .all(...params));
-      const attributionRows = (await db
-        .prepare(
-          `SELECT a.finding_id AS finding_id, a.model AS model, a.severity AS severity,
-                  a.category AS category, a.description AS description,
-                  a.impact AS impact, a.suggestion AS suggestion
-             FROM finding_attribution a
-             JOIN finding f ON f.id = a.finding_id
-             JOIN review_run run ON f.run_id = run.id
-            WHERE ${where}
-            ORDER BY a.finding_id, a.position`,
-        )
-        .all(...params));
-      const carried = (await carriedByFinding(
-        db,
-        `SELECT f.id FROM finding f JOIN review_run run ON f.run_id = run.id WHERE ${where}`,
-        params,
-      ));
-      const verdictRows = (await db
-        .prepare(
-          `SELECT v.run_id AS run_id, v.finding_id AS finding_id, v.verdict AS verdict,
-                  v.missing AS missing, v.missing_reason AS missing_reason
-             FROM finding_verdict v
-             JOIN review_run run ON v.run_id = run.id
-            WHERE ${where}`,
-        )
-        .all(...params));
-
-      const models = new Map<number, string[]>();
-      const attributions = new Map<number, RecordedFindingAttribution[]>();
-      for (const row of attributionRows) {
-        const id = Number(row["finding_id"]);
-        const list = models.get(id) ?? [];
-        const model = String(row["model"]);
-        // 同一模型的多条归属只算一枚(ADR 0015 修订),口径同轮次列表那份。
-        if (!list.includes(model)) list.push(model);
-        models.set(id, list);
-        const said = attributions.get(id) ?? [];
-        said.push(recordedAttribution(row));
-        attributions.set(id, said);
-      }
-
-      type StageRow = {
-        id: number;
-        runId: number;
-        file: string;
-        fp: string;
-        disposition: Disposition;
-        commentHtmlUrl: string | null;
-        continuedFrom: string | null;
-        handoffPending: boolean;
-        row: Record<string, unknown>;
-      };
-      type Identity = { rows: StageRow[]; firstRow: StageRow };
-      // 折叠键见 `identityKey`:承载它的那条 Forge 评论,没有载体的退回文件 + 指纹。
-      // 同一「文件 + 指纹」下因此可以有两条 Identity(ADR 0030):同一处未改动代码上
-      // 的两个不同问题各挂各的评论,各算一条。行按 id 升序,每组的最后一行就是最新那
-      // 一轮的。
-      const byKey = new Map<string, Identity>();
-      for (const row of findingRows) {
-        const entry: StageRow = {
-          id: Number(row["id"]),
-          runId: Number(row["run_id"]),
-          file: String(row["file"]),
-          fp: String(row["fp"]),
-          disposition: String(row["disposition"]) as Disposition,
-          commentHtmlUrl:
-            row["comment_html_url"] === null ? null : String(row["comment_html_url"]),
-          continuedFrom: row["continued_from"] === null ? null : String(row["continued_from"]),
-          handoffPending: row["handoff_pending"] === true,
-          row,
-        };
-        const key = `${entry.file}\n${entry.fp}`;
-        const identity = byKey.get(key);
-        if (identity === undefined) byKey.set(key, { rows: [entry], firstRow: entry });
-        else identity.rows.push(entry);
-      }
-      const identities = [...byKey.values()];
-
-      // 延续把同一条 Finding Identity 交接到新位置(CONTEXT.md 已延续):新位置那一行
-      // 记着旧评论的地址。首见轮次跟着 Identity 走,否则「活了多久」会从交接那一轮
-      // 重新算。按交接发生的先后处理,链条上更早的那一段先把首见轮次传下去。
-      const successors = new Map<string, Identity>();
-      for (const identity of identities) {
-        for (const row of identity.rows) {
-          if (row.continuedFrom !== null) successors.set(row.continuedFrom, identity);
-        }
-      }
-      const latestOf = (identity: Identity): StageRow => identity.rows.at(-1)!;
-      // 交接未完成(ADR 0025)同样跟着链条走:旧行不在汇总里,标记要落到承接它的那条
-      // 上;链上更早那一段没关掉的旧评论,一路传到最后可见的那条。
-      const pendingHandoff = new Set<Identity>();
-      for (const identity of [...identities].sort((a, b) => latestOf(a).id - latestOf(b).id)) {
-        const latest = latestOf(identity);
-        if (latest.disposition !== "continued" || latest.commentHtmlUrl === null) continue;
-        const successor = successors.get(latest.commentHtmlUrl);
-        if (successor === undefined) continue;
-        if (identity.firstRow.id < successor.firstRow.id) successor.firstRow = identity.firstRow;
-        if (pendingHandoff.has(identity) || identity.rows.some((row) => row.handoffPending)) {
-          pendingHandoff.add(successor);
-        }
-      }
-
-      // 同根因组(CONTEXT.md 同根因组,ADR 0030,issue #309):组属于轮次、每轮重新提,
-      // 阶段详情因此只取最新一轮的那一批。成员记的是落库当时那一行,后面的轮次可能已经
-      // 把它折叠或延续到别的位置,所以逐个映到此刻列表里的那一条;映不过去的(整条已交接
-      // 而没有承接者)不进组——组是多一层视图,少一个成员不该让这一页读不出来。
-      const identityOfRow = new Map<number, Identity>();
-      for (const identity of identities) {
-        for (const row of identity.rows) identityOfRow.set(row.id, identity);
-      }
-      const currentRowOf = (findingId: number): number | undefined => {
-        let identity = identityOfRow.get(findingId);
-        // 链长以 Identity 数为界:交接一次只把一条并到后一条,走不完即数据成环,停住。
-        for (let hop = 0; identity !== undefined && hop <= identities.length; hop += 1) {
-          const latest = latestOf(identity);
-          if (latest.disposition !== "continued") return latest.id;
-          identity =
-            latest.commentHtmlUrl === null ? undefined : successors.get(latest.commentHtmlUrl);
-        }
-        return undefined;
-      };
-      const rootCauseGroups: StageRootCauseGroup[] = [];
-      const rootCauseOfRow = new Map<number, StageRootCauseRef>();
-      // 「最新一轮」要往前找到最近一轮完整审查、没失败、且落下过 Finding 行的:只复核那一
-      // 轮不报新的、从不提组(CONTEXT.md 只复核),失败那一轮压根没走到合并,一条都没报出
-      // 的那一轮走不到合并 agent、什么也没判过。拿它们当最新一轮会让整个阶段的组凭空消失
-      // ——头一轮之后的安静轮次是常态,组卡不该在作者正要组级处置时消失。找到的那一轮报出
-      // 过 Finding 却没有组(合并 agent 缺席)就是没有组。
-      const runsWithFindings = new Set(findingRows.map((row) => Number(row["run_id"])));
-      const groupRun = runRows.findLast(
-        (run) =>
-          run["mode"] !== "verdict-only" &&
-          Number(run["failed"] ?? 0) !== 1 &&
-          runsWithFindings.has(Number(run["id"])),
-      );
-      for (const group of groupRun === undefined
-        ? []
-        : (await store.rootCauseGroups(Number(groupRun["id"])))) {
-        const findingIds: number[] = [];
-        for (const memberId of group.findingIds) {
-          const current = currentRowOf(memberId);
-          // 一条 Finding 至多属于一个组(ADR 0030):两个成员折到同一行时只留头一份。
-          if (current === undefined || rootCauseOfRow.has(current) || findingIds.includes(current)) {
-            continue;
-          }
-          findingIds.push(current);
-        }
-        // 映完不足两条的整组不出现:同根因组没有单成员这一档(ADR 0030),剩一条时它与
-        // 一条普通 Finding 没有分别,组卡只是白占一层。
-        if (findingIds.length < 2) continue;
-        rootCauseGroups.push({ id: group.id, reason: group.reason, findingIds });
-        for (const [position, findingId] of findingIds.entries()) {
-          rootCauseOfRow.set(findingId, {
-            id: group.id,
-            reason: group.reason,
-            memberCount: findingIds.length,
-            position,
-          });
-        }
-      }
-
-      const startedAt = new Map(
-        runRows.map((run) => [Number(run["id"]), String(run["started_at"])] as const),
-      );
-      const findings: StageSummaryFinding[] = identities
-        .filter((identity) => latestOf(identity).disposition !== "continued")
-        .map((identity) => {
-          const latest = latestOf(identity);
-          const row = latest.row;
-          const said = attributions.get(latest.id) ?? [];
-          // 代表段(issue #278):升级前落的行两列为 NULL,按同一规则从归属现算。
-          const representative = representativeSegment(row, said);
-          // 当前位置(issue #368):重定位过的按 placed_*,没有的退回报出它的那一行与
-          // 那一轮。两格一起取——行号与它成立的那个 head 分开取就是这一票要修的病。
-          const placedLine = row["placed_line"];
-          const rawPlacedRunId = row["placed_run_id"];
-          const placedRunId = rawPlacedRunId === null ? latest.runId : Number(rawPlacedRunId);
-          return {
-            id: latest.id,
-            file: latest.file,
-            line: placedLine === null ? Number(row["line"]) : Number(placedLine),
-            placedRunId,
-            reportedLine: Number(row["line"]),
-            title: representative.title,
-            severity: String(row["severity"]) as Severity,
-            category: String(row["category"]) as Category,
-            description: representative.description,
-            impact: representative.impact,
-            suggestion: representative.suggestion,
-            models: models.get(latest.id) ?? [],
-            attributions: said,
-            carried: carried.get(latest.id) ?? [],
-            disposition: latest.disposition as Exclude<Disposition, "continued">,
-            placement: String(row["placement"]) as FindingPlacement,
-            commentId: row["comment_id"] === null ? null : String(row["comment_id"]),
-            commentHtmlUrl: latest.commentHtmlUrl,
-            disposedBy: row["disposed_by"] === null ? null : String(row["disposed_by"]),
-            disposedAt: row["disposed_at"] === null ? null : String(row["disposed_at"]),
-            note: row["note"] === null ? null : String(row["note"]),
-            // 「延续自」是这条 Identity 的事实,不是某一轮的:交接只发生一次,之后的
-            // 轮次折叠出来的新行不再带它,取整条上第一条带着它的那一行。
-            continuedFrom:
-              identity.rows.find((entry) => entry.continuedFrom !== null)?.continuedFrom ?? null,
-            handoffPending: pendingHandoff.has(identity),
-            // 四列同 NULL 即未判定:取最新那一轮的判定结果,每轮各算各的。
-            lineAuthor:
-              row["line_author_sha"] === null
-                ? null
-                : {
-                    sha: String(row["line_author_sha"]),
-                    name: String(row["line_author_name"]),
-                    email: String(row["line_author_email"]),
-                    authoredAt: String(row["line_author_at"]),
-                    // 升级前的行与补录路径写的那些是 NULL:那时判的就是落点自己那一行。
-                    adjacent: row["line_author_adjacent"] === true,
-                  },
-            firstRunId: identity.firstRow.runId,
-            firstReportedAt: startedAt.get(identity.firstRow.runId)!,
-            lastRunId: latest.runId,
-            lastReportedAt: startedAt.get(latest.runId)!,
-            rootCause: rootCauseOfRow.get(latest.id) ?? null,
-          };
-        });
-      // 排序在服务端定一次:待处置在前(这一页要回答「还剩什么没处置」),再按严重度,
-      // 同档按文件与行号,读的人在 diff 里找得到同样的先后。
-      const severityRank: Record<Severity, number> = { P0: 0, P1: 1, P2: 2 };
-      const pending = (finding: StageSummaryFinding): boolean =>
-        finding.disposition === "unknown" || finding.disposition === "unresolved";
-      findings.sort(
-        (a, b) =>
-          Number(pending(b)) - Number(pending(a)) ||
-          severityRank[a.severity] - severityRank[b.severity] ||
-          a.file.localeCompare(b.file) ||
-          a.line - b.line ||
-          a.id - b.id,
-      );
-
-      const counts = { pending: 0, resolved: 0, fixed: 0 };
-      for (const finding of findings) {
-        if (finding.disposition === "fixed") counts.fixed += 1;
-        else if (finding.disposition === "resolved") counts.resolved += 1;
-        else counts.pending += 1;
-      }
-
-      const timeline = new Map<number, StageTimelineEntry>(
-        runRows.map((run) => [
-          Number(run["id"]),
-          {
-            runId: Number(run["id"]),
-            headSha: String(run["head_sha"]),
-            startedAt: String(run["started_at"]),
-            finishedAt: run["finished_at"] === null ? null : String(run["finished_at"]),
-            failed: Number(run["failed"] ?? 0) === 1,
-            failure: run["failure"] === null ? null : String(run["failure"]),
-            // 时间线上要分得出哪一轮是只复核:看到「新报 0」时那不是审查空跑。
-            mode: run["mode"] === "verdict-only" ? "verdict-only" : "full",
-            // 时间线上要分得出哪一轮是自己跑起来的(issue #312)。
-            triggerSource: readTriggerSource(run["trigger_source"]),
-            reported: 0,
-            folded: 0,
-            fixed: 0,
-            continued: 0,
-            missedVerdicts: 0,
-            batchFailedVerdicts: 0,
-            uncoveredVerdicts: 0,
-          },
-        ]),
-      );
-      for (const identity of identities) {
-        for (const row of identity.rows) {
-          const entry = timeline.get(row.runId);
-          if (entry === undefined) continue;
-          // 三类互斥:承接旧位置的算已延续,这条 Identity 更早出现过的算折叠,
-          // 其余是本轮新报出。
-          if (row.continuedFrom !== null) entry.continued += 1;
-          else if (row.id !== identity.rows[0]!.id) entry.folded += 1;
-          else entry.reported += 1;
-        }
-      }
-      // 本轮的自动处置:合成规则与 `run.ts` 的 `fixedFindingIds` 同源——全部结论都判
-      // 已修才是已修。落到「已修复」上的才计数,写 Forge 没成或人事后改回来的不算。
-      const nowFixed = new Set(
-        identities
-          .filter((identity) => latestOf(identity).disposition === "fixed")
-          .flatMap((identity) => identity.rows.map((row) => row.id)),
-      );
-      const allFixed = new Map<string, boolean>();
-      for (const row of verdictRows) {
-        const runId = Number(row["run_id"]);
-        const entry = timeline.get(runId);
-        if (entry === undefined) continue;
-        // 没给结论的按由来分三档(issue #412、#413)。升级前的行没有由来这一列,归进
-        // 漏复核——那正是它当初被数进去的那一档,旧轮次因此只显示一个总数。
-        if (Number(row["missing"]) === 1) {
-          const reason = row["missing_reason"];
-          if (reason === "batch-failed") entry.batchFailedVerdicts += 1;
-          else if (reason === "no-batch") entry.uncoveredVerdicts += 1;
-          else entry.missedVerdicts += 1;
-        }
-        const key = `${runId}\n${Number(row["finding_id"])}`;
-        allFixed.set(key, (allFixed.get(key) ?? true) && String(row["verdict"]) === "fixed");
-      }
-      for (const [key, fixed] of allFixed) {
-        if (!fixed) continue;
-        const [runIdText, findingIdText] = key.split("\n") as [string, string];
-        if (!nowFixed.has(Number(findingIdText))) continue;
-        timeline.get(Number(runIdText))!.fixed += 1;
-      }
-
-      return { findings, counts, timeline: [...timeline.values()], rootCauseGroups };
-    },
-
     async pendingLineAuthors(scope) {
       const [where, params] = stageScope(scope);
       const rows = (await db
@@ -7523,103 +7010,6 @@ export function openStore(databaseUrl: string): Store {
     async setRuleConsolidationTrace(repoId, taskId) {
       (await db.prepare("UPDATE rule_consolidation SET trace_task_id = ? WHERE repo_id = ?")
         .run(taskId, repoId));
-    },
-
-    async dispositionStats(from, to) {
-      // 接在共同的 identity 折叠之后:labeled 给每条 Identity 取它首次报出那一行的
-      // category(不进折叠键,跨轮改口不挪格,与时间窗归属同一轮)。
-      const rows = (await db
-        .prepare(
-          `${STATS_IDENTITY_CTE},
-           labeled AS (
-             SELECT identity.*,
-                    (SELECT s.category FROM src s
-                      WHERE s.owner = identity.owner
-                        AND s.repo = identity.repo AND s.pull_number = identity.pull_number
-                        AND s.file = identity.file AND s.fp = identity.fp
-                      ORDER BY s.started_at, s.id LIMIT 1) AS category
-               FROM identity
-           )
-           SELECT owner, repo, category,
-                  SUM(CASE WHEN disp = 3 THEN 1 ELSE 0 END) AS resolved,
-                  SUM(CASE WHEN disp = 2 THEN 1 ELSE 0 END) AS fixed,
-                  SUM(CASE WHEN disp = 1 THEN 1 ELSE 0 END) AS unresolved,
-                  SUM(CASE WHEN disp = 0 AND closed = 1 THEN 1 ELSE 0 END) AS unknown_closed,
-                  SUM(CASE WHEN disp = 0 AND closed = 0 THEN 1 ELSE 0 END) AS unknown_open
-             FROM labeled
-            WHERE continued = 0 AND first_seen >= ? AND first_seen <= ?
-            GROUP BY owner, repo, category
-            ORDER BY owner, repo, category`,
-        )
-        .all(from, to));
-      // 逐字段取出:驱动返回的行对象直接外传会让调用方拿到
-      // 一个没有 Object 方法的怪东西。
-      return rows.map((row) => ({
-        owner: String(row["owner"]),
-        repo: String(row["repo"]),
-        category: String(row["category"]),
-        resolved: Number(row["resolved"]),
-        fixed: Number(row["fixed"]),
-        unresolved: Number(row["unresolved"]),
-        unknownClosed: Number(row["unknown_closed"]),
-        unknownOpen: Number(row["unknown_open"]),
-      }));
-    },
-
-    async modelParticipation(from, to, repos) {
-      const filter = repoPairCondition(repos, "s.");
-      // 先摊成「模型 × Identity」再去重:一条 Identity 在一个阶段里有好几行,同一个
-      // 模型在其中几行上都报过也只算这条一次;不同模型报同一条则各算一次。
-      const rows = (await db
-        .prepare(
-          `${STATS_IDENTITY_CTE}
-           SELECT model, COUNT(*) AS findings
-             FROM (
-               SELECT DISTINCT a.model, s.owner, s.repo, s.pull_number, s.file, s.fp
-                 FROM src s
-                 JOIN finding_attribution a ON a.finding_id = s.id
-                 JOIN identity i
-                   ON i.owner = s.owner AND i.repo = s.repo
-                  AND i.pull_number = s.pull_number AND i.file = s.file AND i.fp = s.fp
-                WHERE i.continued = 0 AND i.first_seen >= ? AND i.first_seen <= ?
-                  AND ${filter.sql}
-             )
-            GROUP BY model
-            ORDER BY model`,
-        )
-        .all(from, to, ...filter.params));
-      return rows.map((row) => ({
-        model: String(row["model"]),
-        findings: Number(row["findings"]),
-      }));
-    },
-
-    async usageStats(from, to, repos) {
-      const filter = repoPairCondition(repos, "");
-      const row = (await db
-        .prepare(
-          `SELECT COUNT(*) AS usage_rows,
-                  SUM(input_tokens) AS input_tokens,
-                  SUM(output_tokens) AS output_tokens,
-                  SUM(cache_read_tokens) AS cache_read_tokens,
-                  SUM(cache_write_tokens) AS cache_write_tokens,
-                  SUM(total_tokens) AS total_tokens
-             FROM review_run
-            WHERE total_tokens IS NOT NULL AND started_at >= ? AND started_at <= ?
-              AND ${filter.sql}`,
-        )
-        .get(from, to, ...filter.params))!;
-      const runs = Number(row["usage_rows"]);
-      if (runs === 0) return undefined;
-
-      return {
-        runs,
-        inputTokens: Number(row["input_tokens"] ?? 0),
-        outputTokens: Number(row["output_tokens"] ?? 0),
-        cacheReadTokens: Number(row["cache_read_tokens"] ?? 0),
-        cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
-        totalTokens: Number(row["total_tokens"] ?? 0),
-      };
     },
 
     async listRuns(opts) {
@@ -7886,249 +7276,6 @@ export function openStore(databaseUrl: string): Store {
       });
     },
 
-    async listStages(opts) {
-      // 归并、筛选、排序与切页都在这一条查询里:回到 JS 的只有这一页的那几行。
-      const scoped = opts.owner !== undefined && opts.repo !== undefined;
-      // 仓库过滤先合成一组 owner/repo 对:请求给的那一对与账号可见的那些是同一个维度。
-      const pairs =
-        opts.repos === undefined
-          ? scoped
-            ? [{ owner: opts.owner!, repo: opts.repo! }]
-            : undefined
-          : opts.repos.filter(
-              (pair) => !scoped || (pair.owner === opts.owner && pair.repo === opts.repo),
-            );
-      const repoFilter = (prefix: string): string =>
-        pairs === undefined
-          ? ""
-          : pairs.length === 0
-            ? "false"
-            : `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`;
-      const pairParams = (pairs ?? []).flatMap((pair) => [pair.owner, pair.repo]);
-      const params: (string | number)[] = [...pairParams, ...pairParams];
-      const conditions: string[] = [];
-      if (opts.status !== undefined) {
-        conditions.push("status = ?");
-        params.push(opts.status);
-      }
-      if (opts.source !== undefined) {
-        conditions.push("source = ?");
-        params.push(opts.source);
-      }
-      params.push(opts.limit, opts.offset);
-      const rows = (await db
-        .prepare(
-          // 两段各自加括号:pull 那一段带自己的 `ORDER BY`(DISTINCT ON 要它),
-          // 不括起来 PostgreSQL 会把它读成整个 UNION 的排序而在 `UNION` 处报语法错。
-          `SELECT * FROM ((${pullStageQuery(repoFilter(""))})
-                          UNION ALL
-                          (${rangeStageQuery(repoFilter("rr."))}))
-            ${conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""}
-            -- 最近有动静的排在前面。时刻相同的按阶段标识兜底,翻页才不会漂。
-            ORDER BY activity_at DESC, stage_id DESC
-            LIMIT ? OFFSET ?`,
-        )
-        .all(...params))
-        .map(stageRowEntry);
-      // 警示也只为这一页算,而且一条查询算完这几轮,不跟着行数涨(issue #421)。
-      const alerts = (await stageRunAlerts(
-        db,
-        rows.map((row) => alertRunId(row.item)).filter((id) => id !== null),
-      ));
-      // 三个计数只为这一页算:每一行都要读一遍它整个阶段的 Finding。
-      const stages: StageListItem[] = [];
-      for (const row of rows) {
-        const runId = alertRunId(row.item);
-        stages.push({
-          ...row.item,
-          counts: (await store.stageSummary(row.scope)).counts,
-          latestRunAlert: runId === null ? null : alerts.get(runId) ?? null,
-        });
-      }
-      return stages;
-    },
-
-    async stageDetail(stageId) {
-      const row = (await stageRowById(stageId));
-      if (row === undefined) return undefined;
-      // 一次 `stageSummary` 同时给出这一行的三个计数与它的时间线:详情页上的汇总与
-      // 时间线本来就是同一个阶段的两种看法,算两遍只会让两者有机会对不上。
-      const summary = (await store.stageSummary(row.scope));
-      const comparisons =
-        row.item.rangeReviewId === null
-          ? []
-          : (await store.listRangeReviewComparisons(row.item.rangeReviewId));
-      // 阶段那一行在详情里与列表里是同一份形状,警示因此照样带上(issue #421)。
-      const runId = alertRunId(row.item);
-      return {
-        stage: {
-          ...row.item,
-          counts: summary.counts,
-          latestRunAlert: runId === null ? null : (await stageRunAlerts(db, [runId])).get(runId) ?? null,
-        },
-        groups: groupStageRuns(summary.timeline, comparisons),
-      };
-    },
-
-    async createRangeReview(record) {
-      // 分支名要跟着记录一起可见:插入拿到 id 之后立刻补上,失败时整笔回滚。
-      // 发起时的比较项同时进历史表:它是这个阶段审过的第一个 commit。
-      return transaction("deferred", async () => {
-        const result = (await db
-          .prepare(
-            `INSERT INTO range_review
-               (repo_id, owner, repo, title, base_sha, comparison_sha,
-                comparison_source_kind, comparison_source_name, state,
-                base_branch, head_branch, created_by, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in-progress', '', '', ?, ?)`,
-          )
-          .run(
-            record.repoId,
-            record.owner,
-            record.repo,
-            record.title,
-            record.baseSha,
-            record.comparisonSha,
-            record.comparisonSource?.kind ?? null,
-            record.comparisonSource?.name ?? null,
-            record.createdBy,
-            record.createdAt,
-          ));
-        const id = Number(result.lastInsertRowid);
-        const branches = containerBranches(id);
-        (await db.prepare(
-          "UPDATE range_review SET base_branch = ?, head_branch = ? WHERE id = ?",
-        ).run(branches.base, branches.head, id));
-        (await db.prepare(
-          `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
-           VALUES (?, ?, ?, ?)`,
-        ).run(id, record.comparisonSha, record.createdBy, record.createdAt));
-        return id;
-      });
-    },
-
-    async attachRangeReviewContainer(id, containerPullNumber) {
-      (await db.prepare(
-        `UPDATE range_review
-            SET container_pull_number = ?, last_forge_failure = NULL
-          WHERE id = ?`,
-      ).run(containerPullNumber, id));
-    },
-
-    async failRangeReview(id, failure) {
-      (await db.prepare(
-        "UPDATE range_review SET state = 'failed', last_forge_failure = ? WHERE id = ?",
-      ).run(failure, id));
-    },
-
-    async recordRangeReviewForgeFailure(id, failure) {
-      (await db.prepare("UPDATE range_review SET last_forge_failure = ? WHERE id = ?").run(
-        failure,
-        id,
-      ));
-    },
-
-    async advanceRangeReview(record) {
-      await transaction("deferred", async () => {
-        (await db.prepare(
-          `UPDATE range_review
-              SET comparison_sha = ?, comparison_source_kind = ?,
-                  comparison_source_name = ?, last_forge_failure = NULL
-            WHERE id = ?`,
-        ).run(
-          record.comparisonSha,
-          record.comparisonSource?.kind ?? null,
-          record.comparisonSource?.name ?? null,
-          record.id,
-        ));
-        (await db.prepare(
-          `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
-           VALUES (?, ?, ?, ?)`,
-        ).run(record.id, record.comparisonSha, record.advancedBy, record.advancedAt));
-      });
-    },
-
-    async completeRangeReview(record) {
-      // 每日增量随阶段一起关掉(CONTEXT.md 每日增量):完成后的记录不该还写着「开着」。
-      (await db.prepare(
-        `UPDATE range_review
-            SET state = 'completed', completed_by = ?, completed_at = ?,
-                last_forge_failure = NULL,
-                daily_increment_enabled = false, daily_increment_branch = NULL,
-                daily_increment_enabled_at = NULL,
-                scheduled_check_time = '00:00', scheduled_check_mode = 'verdict-only'
-          WHERE id = ?`,
-      ).run(record.completedBy, record.completedAt, record.id));
-    },
-
-    async setRangeReviewDailyIncrement({ id, branch, time, mode, at }) {
-      (await db.prepare(
-        `UPDATE range_review
-            SET daily_increment_enabled = ?, daily_increment_branch = ?,
-                daily_increment_enabled_at = ?, scheduled_check_time = ?, scheduled_check_mode = ?
-          WHERE id = ?`,
-      ).run(
-        branch === null ? 0 : 1,
-        branch,
-        branch === null ? null : at,
-        branch === null ? "00:00" : time,
-        branch === null ? "verdict-only" : mode,
-        id,
-      ));
-    },
-
-    async recordRangeReviewScheduledCheck({ id, at, result }) {
-      (await db.prepare(
-        `UPDATE range_review
-            SET scheduled_check_at = ?, scheduled_check_result = ?
-          WHERE id = ?`,
-      ).run(at, result, id));
-    },
-
-    async listRangeReviewComparisons(rangeReviewId) {
-      return (await db
-        .prepare(
-          `SELECT id, sha, recorded_by, recorded_at
-             FROM range_review_comparison
-            WHERE range_review_id = ?
-            ORDER BY id`,
-        )
-        .all(rangeReviewId))
-        .map((row) => ({
-          id: Number(row["id"]),
-          sha: String(row["sha"]),
-          recordedBy: String(row["recorded_by"]),
-          recordedAt: String(row["recorded_at"]),
-        }));
-    },
-
-    async getRangeReview(id) {
-      const row = (await db.prepare("SELECT * FROM range_review WHERE id = ?").get(id));
-      return row === undefined ? undefined : rangeReviewRecord(row);
-    },
-
-    async listRangeReviews(opts) {
-      const conditions: string[] = [];
-      const params: (number | string)[] = [];
-      if (opts.owner !== undefined && opts.repo !== undefined) {
-        conditions.push("owner = ? AND repo = ?");
-        params.push(opts.owner, opts.repo);
-      }
-      if (opts.baseSha !== undefined) {
-        conditions.push("base_sha = ?");
-        params.push(opts.baseSha);
-      }
-      if (opts.state !== undefined) {
-        conditions.push("state = ?");
-        params.push(opts.state);
-      }
-      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-      return (await db
-        .prepare(`SELECT * FROM range_review ${where} ORDER BY id DESC`)
-        .all(...params))
-        .map(rangeReviewRecord);
-    },
-
     async getRunRange(id) {
       const row = (await db
         .prepare(
@@ -8198,25 +7345,6 @@ export function openStore(databaseUrl: string): Store {
           input.repo,
         ));
       return Number(result.changes);
-    },
-
-    async tableCounts() {
-      const tables = (await db
-        .prepare(
-          `SELECT table_name AS name FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-            ORDER BY table_name`,
-        )
-        .all());
-      const counts: { name: string; rows: number }[] = [];
-      for (const table of tables) {
-        const name = String(table["name"]);
-        const count = (await db.prepare(`SELECT COUNT(*) AS c FROM "${name}"`).get()) as {
-          c: number;
-        };
-        counts.push({ name, rows: Number(count.c) });
-      }
-      return counts;
     },
 
     async pendingAutoDispositions(findingIds) {

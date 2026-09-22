@@ -10,7 +10,6 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
@@ -594,44 +593,4 @@ test("tick 处理前一条期间人工推进了后一条:后一条开检查前�
     writeFileSync(join(signals, "release"), "");
     rmSync(signals, { recursive: true, force: true });
   }
-});
-
-test("升级前的旧库:开库补上每日增量那几列,开关照常能开", async () => {
-  const clock = makeClock();
-  const recorded: Recorded = { ranges: [], historyEntries: [] };
-  const h = await startedHarness(recorded, clock, REPORTED_FINDINGS);
-  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
-
-  // 把库退回升级之前的样子:那时这五列还不存在。改名而不是 DROP——SQLite 丢一张表的
-  // 最后一列时要重写建表语句,而 `range_review` 的建表语句里有中文注释,重写会截断并
-  // 报 `incomplete input`。改名之后 `pragma_table_info` 同样查不到这几个名字,补列那段
-  // 走的是同一条路。
-  const db = new DatabaseSync(h.db.url);
-  for (const column of [
-    "daily_increment_enabled",
-    "daily_increment_branch",
-    "daily_increment_enabled_at",
-    "scheduled_check_at",
-    "scheduled_check_result",
-    "scheduled_check_time",
-    "scheduled_check_mode",
-  ]) {
-    db.exec(`ALTER TABLE range_review RENAME COLUMN ${column} TO before_upgrade_${column}`);
-  }
-  db.close();
-
-  // 下一次打开补列:读得回来,值是「开关没开过、也没检查过」。
-  const detail = await detailRangeReview(h, rangeReview.id);
-  assert.equal(detail.dailyIncrementEnabled, false);
-  assert.equal(detail.dailyIncrementBranch, null);
-  assert.equal(detail.dailyIncrementEnabledAt, null);
-  assert.equal(detail.scheduledCheckAt, null);
-  assert.equal(detail.scheduledCheckResult, null);
-  assert.equal(detail.scheduledCheckTime, "00:00");
-  assert.equal(detail.scheduledCheckMode, "verdict-only");
-
-  await enableDailyIncrement(h, rangeReview.id, "feature");
-  const opened = await detailRangeReview(h, rangeReview.id);
-  assert.equal(opened.dailyIncrementEnabled, true);
-  assert.equal(opened.dailyIncrementBranch, "feature");
 });
