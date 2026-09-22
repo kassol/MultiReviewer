@@ -8,11 +8,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DatabaseSync } from "node:sqlite";
-
-import { openStore } from "../src/review/store/index.ts";
 import type { RunProjection } from "../src/contracts/runs.ts";
-import { confirmEmptyRuleSet, seedRun } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -91,47 +88,4 @@ test("发起范围审查与推进比较项开出的轮次都是面板", async ()
   assert.equal(h.settled[1]!.error, undefined);
 
   assert.deepEqual(await timelineSources(h, `range:${rangeReview.id}`), ["panel", "panel"]);
-});
-
-test("升级前的旧库:没有这一列,打开时按调用者用户名快照回填", async () => {
-  const h = await registeredHarness();
-  const store = openStore(h.db.url);
-  const delivered = await seedRun(
-    store,
-    {
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      pullNumber: HARNESS_PR.number,
-      headSha: "old-delivery-head",
-      startedAt: "2026-08-01T00:00:00.000Z",
-    },
-    [],
-  );
-  const manual = await seedRun(
-    store,
-    {
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      pullNumber: HARNESS_PR.number,
-      headSha: "old-rerun-head",
-      startedAt: "2026-08-02T00:00:00.000Z",
-      triggeredBy: "someone",
-    },
-    [],
-  );
-  await store.close();
-
-  // 把库退回升级之前的样子:那时这一列还不存在。
-  const db = new DatabaseSync(h.db.url);
-  db.exec("ALTER TABLE review_run DROP COLUMN trigger_source");
-  db.close();
-
-  // 下一次打开补列并回填,接口读到的就是回填的结果。
-  const sources = new Map(
-    (await (await h.api("GET", "/runs")).json() as { runs: RunRow[] }).runs.map(
-      (run) => [run.id, run.triggerSource] as const,
-    ),
-  );
-  assert.equal(sources.get(delivered), "delivery");
-  assert.equal(sources.get(manual), "panel");
 });

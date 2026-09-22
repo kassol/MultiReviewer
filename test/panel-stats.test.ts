@@ -1,12 +1,12 @@
 /**
- * 统计 API(issue #36):口径与 store 同源,库体量与实际文件一致。口径本身的表格
- * 驱动测试在 `disposition-stats.test.ts`,这里验 HTTP 缝上的打包与默认窗口。
+ * 统计 API(issue #36):口径与 store 同源,库体量与 `pg_database_size` 说的一致。口径本身
+ * 的表格驱动测试在 `disposition-stats.test.ts`,这里验 HTTP 缝上的打包与默认窗口。
  */
 import assert from "node:assert/strict";
-import { statSync } from "node:fs";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 import { startPanelHarness } from "./support/panel-harness.ts";
 
 test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
@@ -195,8 +195,11 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
     totalTokens: 35,
   });
 
-  // 库体量与实际文件一致;行数与刚种进去的数据对得上。
-  assert.equal(body.database.fileBytes, statSync(h.db.url).size);
+  // 库体量与 PostgreSQL 自己报的一致;行数与刚种进去的数据对得上。
+  const dbBytes = await withTestDb(h.db.url, async (sql) =>
+    Number((await sql("SELECT pg_database_size(current_database()) AS bytes"))[0]!["bytes"]),
+  );
+  assert.equal(body.database.fileBytes, dbBytes);
   const rows = new Map(body.database.tables.map((table) => [table.name, table.rows]));
   assert.equal(rows.get("finding"), 2);
   assert.equal(rows.get("review_run"), 2);

@@ -20,7 +20,6 @@ import type {
   Severity,
 } from "../finding.ts";
 import type { RecordedFindingAttribution } from "../../contracts/finding.ts";
-import type { StageSource, StageStatus } from "../../contracts/stages.ts";
 import { normalizeModelServiceBaseUrl } from "../../reviewer/model-service-runtime.ts";
 import type { Db, Orm, StoreTransaction, TransactionMode } from "./pg.ts";
 import type {
@@ -31,7 +30,6 @@ import type {
   RuleProposal,
   RuleProposalInput,
   RuleProposalSourceInput,
-  StageRowEntry,
   StageScope,
   Store,
 } from "./index.ts";
@@ -344,80 +342,6 @@ export const AGENT_SESSION_CHILD_TABLES = [
 ] as const;
 
 /**
- * 评审记录一行的两条来源各一段 SELECT(issue #174,归并与排序在 issue #183 搬进 SQL)。
- *
- * 两段的列名与顺序逐字对齐:列表把它们 UNION 起来,在 SQL 里筛、排序、切页;详情按阶段
- * 标识只跑其中一段,直接查那一个阶段。行的形状因此仍然只定义这一处,两边看到同一份行。
- *
- * `activity_at` 是排序键:最近有动静的排在前面,范围审查还没有轮次时用它的发起时刻。
- * `filter` 由调用方给——列表给仓库过滤,详情给这一个阶段的键;省掉即不过滤。
- */
-export function pullStageQuery(filter: string): string {
-  /*
-   * 每个 pull request 取 id 最大的那一轮——id 即落库顺序,与开跑时间同序,那一轮带着
-   * 这个阶段当前的标题与关闭标记(关闭标记落在该 PR 的全部轮次上)。
-   *
-   * 标题、状态与两个时刻取的就是那一行:`DISTINCT ON (owner, repo, pull_number)` 加
-   * `ORDER BY … id DESC` 让 PostgreSQL 每组只留 id 最大的那一行(ADR 0036)。SQLite 那一版
-   * 靠的是「与 `MAX()` 同行的裸列」,PostgreSQL 的 `ONLY_FULL_GROUP_BY` 不认这种写法。
-   */
-  return `SELECT DISTINCT ON (owner, repo, pull_number)
-                 'pull-request' AS source,
-                 'pr:' || owner || '/' || repo || '/' || pull_number AS stage_id,
-                 owner, repo, pull_number,
-                 NULL::integer AS range_review_id, title,
-                 CASE WHEN pr_state = 'closed' THEN 'closed' ELSE 'active' END AS status,
-                 id AS latest_run_id, started_at AS latest_run_at,
-                 finished_at AS latest_run_finished_at, started_at AS activity_at
-            FROM review_run
-           WHERE range_review_id IS NULL${filter === "" ? "" : ` AND ${filter}`}
-           ORDER BY owner, repo, pull_number, id DESC`;
-}
-
-/** 见 `pullStageQuery`。一轮都还没跑的范围审查也是一个阶段,因此从 `range_review` 出发。 */
-export function rangeStageQuery(filter: string): string {
-  return `SELECT 'range-review' AS source,
-                 'range:' || rr.id AS stage_id,
-                 rr.owner AS owner, rr.repo AS repo, NULL::integer AS pull_number,
-                 rr.id AS range_review_id, rr.title AS title,
-                 CASE WHEN rr.state = 'in-progress' THEN 'active' ELSE 'closed' END AS status,
-                 latest.id AS latest_run_id, latest.started_at AS latest_run_at,
-                 latest.finished_at AS latest_run_finished_at,
-                 COALESCE(latest.started_at, rr.created_at) AS activity_at
-            FROM range_review rr
-            LEFT JOIN review_run latest
-              ON latest.id = (SELECT MAX(run.id) FROM review_run run
-                               WHERE run.range_review_id = rr.id)
-           ${filter === "" ? "" : `WHERE ${filter}`}`;
-}
-
-/** 把阶段行查询的一行读成评审记录里的那一行,加上算计数与时间线要用的范围。 */
-export function stageRowEntry(row: Record<string, unknown>): StageRowEntry {
-  const owner = String(row["owner"]);
-  const repo = String(row["repo"]);
-  const pullNumber = row["pull_number"] === null ? null : Number(row["pull_number"]);
-  const rangeReviewId = row["range_review_id"] === null ? null : Number(row["range_review_id"]);
-  return {
-    item: {
-      stageId: String(row["stage_id"]),
-      source: String(row["source"]) as StageSource,
-      owner,
-      repo,
-      pullNumber,
-      rangeReviewId,
-      title: row["title"] === null ? null : String(row["title"]),
-      status: String(row["status"]) as StageStatus,
-      latestRunId: row["latest_run_id"] === null ? null : Number(row["latest_run_id"]),
-      latestRunAt: row["latest_run_at"] === null ? null : String(row["latest_run_at"]),
-      latestRunFinishedAt:
-        row["latest_run_finished_at"] === null ? null : String(row["latest_run_finished_at"]),
-    },
-    scope:
-      rangeReviewId === null ? { owner, repo, pullNumber: pullNumber! } : { rangeReviewId },
-  };
-}
-
-/**
  * 模型服务目标(地址 + 协议)的指纹。手动补录绑定它:只轮换凭据时可沿用,地址或协议
  * 变了就是另一个目标,补录必须逐项重录。
  */
@@ -542,35 +466,6 @@ export function storeHelpers(base: {
     } catch {
       return null;
     }
-  };
-
-  /**
-   * 评审记录里的一个阶段:按阶段标识直接查它那一行(issue #175,查询在 issue #183 收进
-   * SQL)。认不出的标识、以及查不到的阶段都是 undefined,调用方一律按「没有这个阶段」处理。
-   *
-   * 标识由行自己拼出(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),因此拿回来的行要与
-   * 请求的标识逐字相同才算命中——`pr:o/r/007` 解析出的是 7 号,那是另一个标识。
-   */
-  const stageRowById = async (stageId: string): Promise<StageRowEntry | undefined> => {
-    let row: unknown;
-    if (stageId.startsWith("range:")) {
-      const rangeReviewId = Number(stageId.slice("range:".length));
-      if (!Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) return undefined;
-      row = (await db.prepare(rangeStageQuery("rr.id = ?")).get(rangeReviewId));
-    } else if (stageId.startsWith("pr:")) {
-      const parts = stageId.slice("pr:".length).split("/");
-      if (parts.length !== 3) return undefined;
-      const pullNumber = Number(parts[2]);
-      if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) return undefined;
-      row = (await db
-        .prepare(pullStageQuery("owner = ? AND repo = ? AND pull_number = ?"))
-        .get(parts[0]!, parts[1]!, pullNumber));
-    } else {
-      return undefined;
-    }
-    if (row === undefined) return undefined;
-    const entry = stageRowEntry(row as Record<string, unknown>);
-    return entry.item.stageId === stageId ? entry : undefined;
   };
 
   const repoExists = async (repoId: number): Promise<boolean> =>
@@ -776,7 +671,6 @@ export function storeHelpers(base: {
   return {
     parseStoredReviewers,
     parseAuxiliaryModel,
-    stageRowById,
     repoExists,
     activeRule,
     insertReviewRule,
