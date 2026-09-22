@@ -17,6 +17,7 @@ import {
 } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
 
+import { isThenable } from "../async.ts";
 import {
   assertReviewerSpecs,
   GLOBAL_REVIEWERS_CONTEXT,
@@ -663,14 +664,25 @@ function describeRepo(payload: unknown, repoId: number): string {
   return tag === "" ? `id=${repoId}` : `${tag}(id=${repoId})`;
 }
 
-/** 开库执行一段读写,用完即关——webhook 层用库的既有约定,短开短关。 */
+/**
+ * 开库执行一段读写,用完即关——webhook 层用库的既有约定,短开短关。
+ *
+ * 回调可同步可异步(issue #459):返回 Promise 时这里也返回 Promise,库等它跑完才关。
+ */
 function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
   const store = openStore(dbPath);
+  let result: T;
   try {
-    return fn(store);
-  } finally {
+    result = fn(store);
+  } catch (error) {
     store.close();
+    throw error;
   }
+  if (!isThenable(result)) {
+    store.close();
+    return result;
+  }
+  return Promise.resolve(result).finally(() => store.close()) as T;
 }
 
 /** 审查策略。模型组合与分批上限与批次并发数都在库里,用时读一次。 */

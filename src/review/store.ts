@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { matchesGlob } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { isThenable } from "../async.ts";
 import {
   assertReviewerSpecs,
   GLOBAL_REVIEWERS_CONTEXT,
@@ -4040,6 +4041,64 @@ export type Store = {
   close(): void;
 };
 
+/**
+ * `Store` 的异步门面(issue #459,spec #445 的扩张那一步):方法同名、参数相同,返回值
+ * 裹一层 Promise。同名是有意的——调用点迁过来时只多一个 `await`,收缩那一步(#449)把
+ * 同步那一份连同这个映射一起删掉,调用点一个字都不用再改。
+ */
+export type AsyncStore = {
+  [K in keyof Store]: Store[K] extends (...args: infer A) => infer R
+    ? (...args: A) => Promise<R>
+    : Store[K];
+};
+
+/**
+ * 把一份 `Store` 包成异步门面。底下仍是同一条连接、同一次同步调用,只把返回值裹进
+ * Promise:方法在微任务里 resolve,抛出的错变成 reject,SQL 一个字没动。
+ */
+export function asyncStore(store: Store): AsyncStore {
+  return new Proxy(store, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      const method = value as (...args: unknown[]) => unknown;
+      return async (...args: unknown[]) => method.apply(target, args);
+    },
+  }) as unknown as AsyncStore;
+}
+
+/**
+ * 事务内按业务判定回滚的内部信号(issue #459):`transaction` 捕获它,回滚之后把 `value`
+ * 当作这次事务的返回值交给调用方。它不是错误,不往方法外抛——手写 `ROLLBACK` 之后
+ * `return` 的那 22 处表达的正是这件事。
+ */
+class RollbackSignal {
+  value: unknown;
+  constructor(value: unknown) {
+    this.value = value;
+  }
+}
+
+/**
+ * 一次事务的句柄:读写经它进行,`rollback` 中途回滚并把给它的值交回去。
+ *
+ * **事务回调里不许 await I/O。**底下是同步驱动,回调里的 `await` 只能等 Store 自己的
+ * 方法(它们同步跑完、只在微任务里 resolve);等一次网络或文件,别的请求就会插进这个
+ * 还没提交的事务中间。
+ */
+export type StoreTransaction = {
+  prepare: DatabaseSync["prepare"];
+  exec: DatabaseSync["exec"];
+  rollback(value?: unknown): never;
+};
+
+/**
+ * 事务的取锁方式。`immediate` 一开头就拿写锁,给「先读后判再写」那几处用——延迟取锁
+ * 要在读完之后升级成写锁,别的连接正等着提交时 SQLite 当场报 database is locked
+ * (issue #401)。`deferred` 是其余各处。
+ */
+export type TransactionMode = "deferred" | "immediate";
+
 function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
   if (usage === undefined) return Array.from({ length: 5 }, () => null);
   return [
@@ -4587,6 +4646,47 @@ export function openStore(dbPath: string): Store {
     ).run(GLOBAL_SETTINGS_VERSION_KEY);
   }
 
+  const tx: StoreTransaction = {
+    prepare: db.prepare.bind(db),
+    exec: db.exec.bind(db),
+    rollback(value) {
+      throw new RollbackSignal(value);
+    },
+  };
+
+  /** 回滚,再把中途回滚那一档的值交回去;别的错原样往外抛。 */
+  const rolledBack = (error: unknown): unknown => {
+    db.exec("ROLLBACK");
+    if (error instanceof RollbackSignal) return error.value;
+    throw error;
+  };
+
+  /**
+   * 回调式事务(issue #459):开事务 → 跑回调 → 提交,回调抛错即回滚后重抛,调
+   * `tx.rollback(值)` 即回滚后把那个值当返回值。
+   *
+   * 回调可同步可异步:回调返回 Promise 时 `T` 就是那个 Promise,提交排在它后面。异步
+   * 那一路的约束写在 `StoreTransaction` 上——回调里不许等 I/O。
+   */
+  function transaction<T>(mode: TransactionMode, run: (tx: StoreTransaction) => T): T {
+    db.exec(mode === "immediate" ? "BEGIN IMMEDIATE" : "BEGIN");
+    let result: T;
+    try {
+      result = run(tx);
+    } catch (error) {
+      // 中途回滚那一档给回的就是调用方传给 `tx.rollback` 的那个值。
+      return rolledBack(error) as T;
+    }
+    if (!isThenable(result)) {
+      db.exec("COMMIT");
+      return result;
+    }
+    return Promise.resolve(result).then((value) => {
+      db.exec("COMMIT");
+      return value;
+    }, rolledBack) as T;
+  }
+
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
   const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
     db.prepare(
@@ -4957,8 +5057,7 @@ export function openStore(dbPath: string): Store {
    * 变更必须一起落:落了版本没落规则,那一版的快照就是错的。
    */
   const inRuleSetVersion = <T>(repoId: number, write: (version: number, at: string) => T): T => {
-    db.exec("BEGIN");
-    try {
+    return transaction("deferred", () => {
       const current = db
         .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
         .get(repoId)?.["version"];
@@ -4968,12 +5067,8 @@ export function openStore(dbPath: string): Store {
         "INSERT INTO rule_set_version (repo_id, version, created_at) VALUES (?, ?, ?)",
       ).run(repoId, version, at);
       const result = write(version, at);
-      db.exec("COMMIT");
       return result;
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   };
 
   const store: Store = {
@@ -5002,8 +5097,7 @@ export function openStore(dbPath: string): Store {
     },
 
     createPanelRole(record) {
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         const result = db.prepare("INSERT INTO panel_role (name, created_at) VALUES (?, ?)").run(
           record.name,
           record.createdAt,
@@ -5012,28 +5106,19 @@ export function openStore(dbPath: string): Store {
         for (const permission of record.permissions) {
           db.prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)").run(id, permission);
         }
-        db.exec("COMMIT");
         return { id, ...record, permissions: [...record.permissions] };
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     updatePanelRole(id, record) {
       if (db.prepare("SELECT 1 FROM panel_role WHERE id = ?").get(id) === undefined) return undefined;
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         db.prepare("UPDATE panel_role SET name = ? WHERE id = ?").run(record.name, id);
         db.prepare("DELETE FROM panel_role_permission WHERE role_id = ?").run(id);
         for (const permission of record.permissions) {
           db.prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)").run(id, permission);
         }
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
       return store.listPanelRoles().find((role) => role.id === id);
     },
 
@@ -5043,16 +5128,11 @@ export function openStore(dbPath: string): Store {
         .all(id)
         .map((row) => String(row["username"]));
       if (usernames.length > 0) return { removed: false, usernames };
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         db.prepare("DELETE FROM panel_role_permission WHERE role_id = ?").run(id);
         const result = db.prepare("DELETE FROM panel_role WHERE id = ?").run(id);
-        db.exec("COMMIT");
         return { removed: Number(result.changes) > 0, usernames: [] };
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     listPanelUsers() {
@@ -5085,54 +5165,38 @@ export function openStore(dbPath: string): Store {
     },
 
     setPanelUserAssignment(username, repoIds) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         db.prepare("DELETE FROM panel_user_repo WHERE username = ?").run(username);
         const insert = db.prepare(
           "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",
         );
         for (const repoId of repoIds) insert.run(username, repoId);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     updatePanelUser(username, record) {
       const prior = store.getPanelUser(username);
       if (prior === undefined) return "missing";
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", (tx) => {
         db.prepare(
           "UPDATE panel_user SET display_name = ?, role_id = ?, is_system_admin = ? WHERE username = ?",
         ).run(record.displayName, record.roleId, record.isSystemAdmin ? 1 : 0, username);
         const admins = Number((db.prepare("SELECT COUNT(*) AS c FROM panel_user WHERE is_system_admin = 1").get()?.["c"] ?? 0));
         if (admins === 0) {
-          db.exec("ROLLBACK");
-          return "last-system-admin";
+          return tx.rollback("last-system-admin");
         }
-        db.exec("COMMIT");
         return "updated";
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     resetPanelPassword(username, passwordHash) {
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         const result = db.prepare(
           "UPDATE panel_user SET password_hash = ?, must_change_password = 1 WHERE username = ?",
         ).run(passwordHash, username);
         db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
-        db.exec("COMMIT");
         return Number(result.changes) > 0;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     countPanelUsers() {
@@ -5171,21 +5235,15 @@ export function openStore(dbPath: string): Store {
     registerFirstPanelUser(record) {
       // argon2 在调用方 await 完后才进这里;下面没有 await,Node 单线程不会在 COUNT 与
       // INSERT 之间插进另一个请求。事务表达「查与插是一个决定」,不是额外的并发保证。
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         const countRow = db.prepare("SELECT COUNT(*) AS c FROM panel_user").get();
         const count = Number(countRow?.["c"] ?? 0);
         if (count !== 0) {
-          db.exec("ROLLBACK");
-          return false;
+          return tx.rollback(false);
         }
         writePanelUser(record);
-        db.exec("COMMIT");
         return true;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     createPanelUser(record) {
@@ -5248,26 +5306,19 @@ export function openStore(dbPath: string): Store {
     },
 
     removePanelUser(username) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
         db.prepare("DELETE FROM panel_user_repo WHERE username = ?").run(username);
         db.prepare("DELETE FROM panel_user WHERE username = ?").run(username);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
     registerRepo(record) {
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         if (
           record.reviewersJson !== undefined &&
           !modelCombinationAvailable(record.reviewersJson, `仓库 ${record.repoId} 的模型覆盖`)
         ) {
-          db.exec("ROLLBACK");
-          return false;
+          return tx.rollback(false);
         }
         db.prepare(
           "INSERT INTO repo (id, owner, repo, reviewers, registered_at) VALUES (?, ?, ?, ?, ?)",
@@ -5288,12 +5339,8 @@ export function openStore(dbPath: string): Store {
             "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",
           ).run(record.assignTo, record.repoId);
         }
-        db.exec("COMMIT");
         return true;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     addRepoKey(repoId, generation, key) {
@@ -5361,18 +5408,15 @@ export function openStore(dbPath: string): Store {
     },
 
     putRepoSettings(repoId, expectedVersion, settings) {
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         const row = db
           .prepare("SELECT settings_version, reviewers, auxiliary_model FROM repo WHERE id = ?")
           .get(repoId);
         if (row === undefined) {
-          db.exec("ROLLBACK");
-          return { ok: false, reason: "missing" };
+          return tx.rollback({ ok: false, reason: "missing" });
         }
         if (Number(row["settings_version"]) !== expectedVersion) {
-          db.exec("ROLLBACK");
-          return { ok: false, reason: "stale" };
+          return tx.rollback({ ok: false, reason: "stale" });
         }
         // 可用性在同一事务里再判一次:浏览器里的候选状态与落库那一刻之间,模型服务
         // 可能已经变了。清成跟随全局永远可做。**换了才判**(判据与 `replaceGlobalSettings`
@@ -5383,8 +5427,7 @@ export function openStore(dbPath: string): Store {
           settings.reviewersJson !== storedReviewers &&
           !modelCombinationAvailable(settings.reviewersJson, `仓库 ${repoId} 的模型覆盖`)
         ) {
-          db.exec("ROLLBACK");
-          return { ok: false, reason: "unavailable" };
+          return tx.rollback({ ok: false, reason: "unavailable" });
         }
         // 辅助模型覆盖与组合并列同一道兜底(issue #303),同样只在换了的时候判。
         const storedAuxiliary =
@@ -5394,8 +5437,7 @@ export function openStore(dbPath: string): Store {
           settings.auxiliaryModelJson !== storedAuxiliary &&
           !auxiliaryModelAvailable(settings.auxiliaryModelJson)
         ) {
-          db.exec("ROLLBACK");
-          return { ok: false, reason: "unavailable" };
+          return tx.rollback({ ok: false, reason: "unavailable" });
         }
         const version = expectedVersion + 1;
         db.prepare(
@@ -5411,17 +5453,12 @@ export function openStore(dbPath: string): Store {
           version,
           repoId,
         );
-        db.exec("COMMIT");
         return { ok: true, version };
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     removeRepo(repoId) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM panel_user_repo WHERE repo_id = ?").run(repoId);
         // 产品归属跟着仓库走(issue #331):留下来产品就挂着一个已经不存在的仓库。
@@ -5439,11 +5476,7 @@ export function openStore(dbPath: string): Store {
         db.prepare("DELETE FROM rule_proposal WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM rule_trace WHERE repo_id = ?").run(repoId);
         db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     listProducts() {
@@ -5508,8 +5541,7 @@ export function openStore(dbPath: string): Store {
     },
 
     deleteProduct(productId) {
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
         // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。
         db.prepare("DELETE FROM product_knowledge_entry WHERE product_id = ?").run(productId);
@@ -5539,12 +5571,8 @@ export function openStore(dbPath: string): Store {
         );
         const removed =
           Number(db.prepare("DELETE FROM product WHERE id = ?").run(productId).changes) > 0;
-        db.exec("COMMIT");
         return removed ? { sessions } : undefined;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     listProductKnowledge(productId) {
@@ -5569,9 +5597,8 @@ export function openStore(dbPath: string): Store {
       const avoided = JSON.stringify([...record.avoided]);
       const annotations = JSON.stringify([...record.annotations]);
       // 写这一条与「那一条被它取代」是一件事的两半,同一个事务里落。
-      db.exec("BEGIN");
-      let id: number;
-      try {
+      const id = transaction("deferred", () => {
+        let id: number;
         if (record.id === undefined) {
           id = Number(
             db
@@ -5622,11 +5649,8 @@ export function openStore(dbPath: string): Store {
             record.supersedes,
           );
         }
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+        return id;
+      });
       return productKnowledge(row(id)!);
     },
 
@@ -5916,18 +5940,13 @@ export function openStore(dbPath: string): Store {
     },
 
     deleteAgentSession(sessionId) {
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         // 记录、受理过的消息 id、图片与产出只属于这个会话,跟着它走(issue #333、#336、#337)。
         deleteAgentSessionRows(db, [sessionId]);
         const removed =
           Number(db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId).changes) > 0;
-        db.exec("COMMIT");
         return removed;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     addAgentSessionImage(record) {
@@ -5953,8 +5972,7 @@ export function openStore(dbPath: string): Store {
     },
 
     appendAgentSessionEntry(sessionId, input) {
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         const seq =
           Number(
             db
@@ -5994,12 +6012,8 @@ export function openStore(dbPath: string): Store {
           input.usage.totalTokens,
           sessionId,
         );
-        db.exec("COMMIT");
         return { sessionId, seq, type: input.type, at: input.at, entry: input.entry, usage: input.usage };
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     listAgentSessionEntries(sessionId, afterSeq = 0) {
@@ -6065,8 +6079,7 @@ export function openStore(dbPath: string): Store {
     },
 
     putAgentSessionPendingMessages(sessionId, messages) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
         const insert = db.prepare(
           `INSERT INTO agent_session_pending_message (session_id, seq, mode, text, images)
@@ -6075,26 +6088,17 @@ export function openStore(dbPath: string): Store {
         messages.forEach((message, index) => {
           insert.run(sessionId, index + 1, message.mode, message.text, message.images ?? null);
         });
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     takeAgentSessionPendingMessages(sessionId) {
       // 先读后删:延迟 BEGIN 要在读完之后升级成写锁,别的连接正等着提交时 SQLite 不走
       // busy timeout、当场报 database is locked(issue #401)。一开头就拿写锁才等得起。
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", () => {
         const messages = agentSessionPendingMessages(db, sessionId);
         db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
-        db.exec("COMMIT");
         return messages;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     listAgentSessionPendingMessages(sessionId) {
@@ -6300,8 +6304,7 @@ export function openStore(dbPath: string): Store {
     },
 
     finishRuleExploration(repoId, items, at) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         // 整组覆盖:草案每仓库至多一份,重探索的产出取代未确认的旧草案(含人手加的条目)。
         db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
         const insert = db.prepare(
@@ -6319,16 +6322,11 @@ export function openStore(dbPath: string): Store {
           );
         }
         completeRuleExploration(repoId, at);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     finishRuleExplorationAsProposals(repoId, proposals, at) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         // 与草案同一条覆盖语义:一次基点探索是对照当前知识集的完整推导,新一次的未裁决
         // 产出取代上一次的,不是追加。只覆盖出处附注全部来自基点探索的待裁决行(issue
         // #281):已裁决的留作历史;带处置反哺或知识整理附注的那些里有人写下的意见,
@@ -6344,11 +6342,7 @@ export function openStore(dbPath: string): Store {
         db.prepare(`DELETE FROM rule_proposal WHERE id IN (${replaced})`).run(repoId);
         for (const item of proposals) insertRuleProposal(repoId, item, at);
         completeRuleExploration(repoId, at);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     failRuleExploration(repoId, failure, at) {
@@ -6563,19 +6557,14 @@ export function openStore(dbPath: string): Store {
       const keep = Math.min(...unique);
       const dropped = unique.filter((id) => id !== keep);
       const holes = dropped.map(() => "?").join(", ");
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         // 附注并入保留行:一条提案的出处是它被哪几件事提过,合并不该把其中几件丢掉。
         db.prepare(
           `UPDATE rule_proposal_source SET proposal_id = ? WHERE proposal_id IN (${holes})`,
         ).run(keep, ...dropped);
         db.prepare(`DELETE FROM rule_proposal WHERE id IN (${holes})`).run(...dropped);
         db.prepare("UPDATE rule_proposal SET statement = ? WHERE id = ?").run(merged, keep);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
       return true;
     },
 
@@ -6737,8 +6726,7 @@ export function openStore(dbPath: string): Store {
         merge.type !== undefined && merge.type !== queued.type && queued.change === "modify"
           ? "merge"
           : queued.change;
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         // 陈述与附注必须一起落:换了陈述没留下附注,队列里那一条就说不出它是被哪两次
         // 备注合起来的。
         db.prepare(
@@ -6751,11 +6739,7 @@ export function openStore(dbPath: string): Store {
           proposalId,
         );
         insertRuleProposalSource(proposalId, merge.source, at);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
       return true;
     },
 
@@ -6804,14 +6788,9 @@ export function openStore(dbPath: string): Store {
       if (proposalIds.some((id) => pendingProposal(repoId, id) === undefined)) return false;
       const at = new Date().toISOString();
       // 一组状态一起落:「一条都不改」这句话要成立,中途出错时已经改掉的那几条得退回去。
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         for (const id of proposalIds) rejectProposalRow(id, at);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
       return true;
     },
 
@@ -6835,8 +6814,7 @@ export function openStore(dbPath: string): Store {
     },
 
     getReviewRunSnapshot(repoId) {
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         const repo = store.getRepo(repoId);
         if (repo === undefined) throw new Error(`仓库 ${repoId} 不在注册表里`);
         const settings = store.getGlobalSettings();
@@ -6853,7 +6831,6 @@ export function openStore(dbPath: string): Store {
           return service === undefined ? [] : [service];
         });
         const ruleSet = store.getRuleSet(repoId);
-        db.exec("COMMIT");
         return {
           reviewers: Object.freeze([...reviewers]),
           maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
@@ -6871,10 +6848,7 @@ export function openStore(dbPath: string): Store {
             (ruleSet?.rules ?? []).filter((entry) => entry.type === "fact").map(toProjectFact),
           ),
         };
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     replaceGlobalSettings(expectedVersion, next) {
@@ -6888,8 +6862,7 @@ export function openStore(dbPath: string): Store {
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
         ).run(key, value);
       };
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
           .get(GLOBAL_SETTINGS_VERSION_KEY)?.["value"];
         const version = versionRow === undefined ? 1 : Number(versionRow);
@@ -6912,8 +6885,7 @@ export function openStore(dbPath: string): Store {
           next.auxiliaryModelJson === (storedAuxiliary === undefined ? null : String(storedAuxiliary)) ||
           auxiliaryModelAvailable(next.auxiliaryModelJson);
         if (version !== expectedVersion || !reviewersOk || !auxiliaryOk) {
-          db.exec("ROLLBACK");
-          return false;
+          return tx.rollback(false);
         }
         write(GLOBAL_REVIEWERS_KEY, next.reviewersJson);
         write(GLOBAL_AUXILIARY_MODEL_KEY, next.auxiliaryModelJson);
@@ -6923,12 +6895,8 @@ export function openStore(dbPath: string): Store {
         }
         write(GLOBAL_MIN_REPORT_SEVERITY_KEY, next.minReportSeverity);
         write(GLOBAL_SETTINGS_VERSION_KEY, String(version + 1));
-        db.exec("COMMIT");
         return true;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     commitModelServiceVersion(expectedVersion, record) {
@@ -6971,11 +6939,9 @@ export function openStore(dbPath: string): Store {
       }
       const targetsJson = targets === null ? null : JSON.stringify(targets);
 
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         if (!recordSupportsCurrentReferences(record)) {
-          db.exec("ROLLBACK");
-          return undefined;
+          return tx.rollback(undefined);
         }
         let version: number;
         if (expectedVersion === null) {
@@ -6983,8 +6949,7 @@ export function openStore(dbPath: string): Store {
             db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(record.provider) !==
             undefined
           ) {
-            db.exec("ROLLBACK");
-            return undefined;
+            return tx.rollback(undefined);
           }
           version = 1;
           db.prepare(
@@ -7022,8 +6987,7 @@ export function openStore(dbPath: string): Store {
             expectedVersion,
           );
           if (Number(changed.changes) === 0) {
-            db.exec("ROLLBACK");
-            return undefined;
+            return tx.rollback(undefined);
           }
           version = expectedVersion + 1;
         }
@@ -7100,39 +7064,30 @@ export function openStore(dbPath: string): Store {
             supplement.createdAt,
           );
         }
-        db.exec("COMMIT");
         return version;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     renameConflictingCustomModelService(provider, newProvider, expectedVersion, updatedAt) {
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         if (!CUSTOM_PROVIDER_NAME_PATTERN.test(newProvider)) {
-          db.exec("ROLLBACK");
-          return { status: "invalid-provider" };
+          return tx.rollback({ status: "invalid-provider" });
         }
         const current = db.prepare(
           `SELECT version, service_type, disabled_reason
              FROM model_service WHERE provider = ?`,
         ).get(provider);
         if (current === undefined || Number(current["version"]) !== expectedVersion) {
-          db.exec("ROLLBACK");
-          return { status: "version-conflict" };
+          return tx.rollback({ status: "version-conflict" });
         }
         if (
           current["service_type"] !== "custom" ||
           current["disabled_reason"] !== "name-conflict"
         ) {
-          db.exec("ROLLBACK");
-          return { status: "not-conflicting" };
+          return tx.rollback({ status: "not-conflicting" });
         }
         if (db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(newProvider) !== undefined) {
-          db.exec("ROLLBACK");
-          return { status: "provider-conflict" };
+          return tx.rollback({ status: "provider-conflict" });
         }
 
         const references = store.listModelReferences().filter(
@@ -7143,8 +7098,7 @@ export function openStore(dbPath: string): Store {
             availableModel.get(provider, reference.model, reference.model, reference.model) === undefined,
         );
         if (missing.length > 0) {
-          db.exec("ROLLBACK");
-          return { status: "missing-models", references: missing };
+          return tx.rollback({ status: "missing-models", references: missing });
         }
 
         const rewrite = (
@@ -7246,17 +7200,12 @@ export function openStore(dbPath: string): Store {
               SET provider = ?, version = ?, disabled_reason = NULL, updated_at = ?
             WHERE provider = ? AND version = ?`,
         ).run(newProvider, nextVersion, updatedAt, provider, expectedVersion);
-        db.exec("COMMIT");
         return { status: "renamed", version: nextVersion };
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     removeCustomModelService(provider, expectedVersion) {
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         const current = db
           .prepare(
             `SELECT 1 FROM model_service
@@ -7264,12 +7213,10 @@ export function openStore(dbPath: string): Store {
           )
           .get(provider, expectedVersion);
         if (current === undefined) {
-          db.exec("ROLLBACK");
-          return false;
+          return tx.rollback(false);
         }
         if (referencedModels(provider).size > 0) {
-          db.exec("ROLLBACK");
-          return false;
+          return tx.rollback(false);
         }
         db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(provider);
         db.prepare("DELETE FROM model_directory WHERE provider = ?").run(provider);
@@ -7283,15 +7230,10 @@ export function openStore(dbPath: string): Store {
           )
           .run(provider, expectedVersion);
         if (Number(removed.changes) !== 1) {
-          db.exec("ROLLBACK");
-          return false;
+          return tx.rollback(false);
         }
-        db.exec("COMMIT");
         return true;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     getModelService(provider) {
@@ -7534,14 +7476,12 @@ export function openStore(dbPath: string): Store {
       if (requested.some((model) => model === "")) {
         throw new Error("模型标识不能为空");
       }
-      db.exec("BEGIN IMMEDIATE");
-      try {
+      return transaction("immediate", (tx) => {
         const service = db.prepare(
           "SELECT version FROM model_service WHERE provider = ?",
         ).get(provider);
         if (service === undefined || Number(service["version"]) !== expectedVersion) {
-          db.exec("ROLLBACK");
-          return { status: "version-conflict" } as const;
+          return tx.rollback({ status: "version-conflict" } as const);
         }
         const knownRows = db.prepare(
           `SELECT model FROM model_directory_model WHERE provider = ? AND service_version = ?
@@ -7550,16 +7490,14 @@ export function openStore(dbPath: string): Store {
         const known = new Set(knownRows.map((row) => String(row["model"])));
         const unknownModels = requested.filter((model) => !known.has(model));
         if (unknownModels.length > 0) {
-          db.exec("ROLLBACK");
-          return { status: "unknown-models", models: unknownModels } as const;
+          return tx.rollback({ status: "unknown-models", models: unknownModels } as const);
         }
         if (!enabled) {
           const blocked = store.listModelReferences().filter(
             (reference) => reference.provider === provider && requested.includes(reference.model),
           );
           if (blocked.length > 0) {
-            db.exec("ROLLBACK");
-            return { status: "referenced", references: blocked } as const;
+            return tx.rollback({ status: "referenced", references: blocked } as const);
           }
         }
         const upsert = db.prepare(
@@ -7570,12 +7508,8 @@ export function openStore(dbPath: string): Store {
              updated_at = excluded.updated_at`,
         );
         for (const model of requested) upsert.run(provider, model, enabled ? 1 : 0, updatedAt);
-        db.exec("COMMIT");
         return { status: "updated", updated: requested.length } as const;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     listModelSupplements(provider) {
@@ -7600,8 +7534,7 @@ export function openStore(dbPath: string): Store {
 
 
     startRun(meta) {
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         const rangeReviewId = meta.rangeReviewId ?? null;
         // PR 状态属于整个审查阶段。closed/reopened 会改写该 PR 的全部历史行;新轮次在
         // 同一事务里继承当前值,手动重跑已关闭 PR 时不能凭一行 NULL 把阶段改回进行中。
@@ -7678,12 +7611,8 @@ export function openStore(dbPath: string): Store {
             pin.thinkingLevel,
           );
         }
-        db.exec("COMMIT");
         return runId;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     failInterruptedRuns(failure, at, runIds) {
@@ -7705,8 +7634,7 @@ export function openStore(dbPath: string): Store {
       // 一句原因落两处,先定形再写(issue #436):轮次那一列与借来的 outcome 行说的是
       // 同一件事,兜底只在其中一处时两边会说不一样的话。
       const text = runFailureText(failure);
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         // 失败原因借 Reviewer 指定各写一行 outcome:计数与耗时都归零,这一轮它们
         // 什么都没跑完。
         const insertOutcome = db.prepare(
@@ -7733,11 +7661,7 @@ export function openStore(dbPath: string): Store {
         // 改判掉的那些轮次不会再被续跑,中间态的批次结果一并清掉(issue #248)。
         const deleteBatches = db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?");
         for (const row of rows) deleteBatches.run(row["id"] as number);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
       return rows.map((row) => ({
         runId: Number(row["id"]),
         owner: String(row["owner"]),
@@ -7845,8 +7769,7 @@ export function openStore(dbPath: string): Store {
       const rootCauseGroupIds: number[] = [];
       // 一次 Review Run 的收尾要么整体可见,要么整体不可见:半张表的 Finding
       // 会让事后的处置率统计算出偏低的分母。
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         // 本轮总量含合并 agent(issue #228):面板的花费数字要覆盖这一轮真的花掉的全部
         // token,而逐 Reviewer 那几行仍只有各自的会话——差额就是合并 agent。
         const runUsage = sumUsage([
@@ -8025,11 +7948,7 @@ export function openStore(dbPath: string): Store {
                              AND prior.run_id <> finding.run_id
                              AND prior.disposed_at IS NOT NULL)`,
         ).run(runId);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
       return rootCauseGroupIds;
     },
 
@@ -9155,8 +9074,7 @@ export function openStore(dbPath: string): Store {
     createRangeReview(record) {
       // 分支名要跟着记录一起可见:插入拿到 id 之后立刻补上,失败时整笔回滚。
       // 发起时的比较项同时进历史表:它是这个阶段审过的第一个 commit。
-      db.exec("BEGIN");
-      try {
+      return transaction("deferred", () => {
         const result = db
           .prepare(
             `INSERT INTO range_review
@@ -9186,12 +9104,8 @@ export function openStore(dbPath: string): Store {
           `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
            VALUES (?, ?, ?, ?)`,
         ).run(id, record.comparisonSha, record.createdBy, record.createdAt);
-        db.exec("COMMIT");
         return id;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     attachRangeReviewContainer(id, containerPullNumber) {
@@ -9216,8 +9130,7 @@ export function openStore(dbPath: string): Store {
     },
 
     advanceRangeReview(record) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         db.prepare(
           `UPDATE range_review
               SET comparison_sha = ?, comparison_source_kind = ?,
@@ -9233,11 +9146,7 @@ export function openStore(dbPath: string): Store {
           `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
            VALUES (?, ?, ?, ?)`,
         ).run(record.id, record.comparisonSha, record.advancedBy, record.advancedAt);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     completeRangeReview(record) {
@@ -9513,8 +9422,7 @@ export function openStore(dbPath: string): Store {
     },
 
     recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate, handoffPending }) {
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         // 先把旧行的三列抄到新行上,再改旧行的处置值:两条语句都只碰自己那一侧,
         // 顺序其实无关,写成这样是让「谁继承谁」一眼看得出来。
         db.prepare(
@@ -9535,11 +9443,7 @@ export function openStore(dbPath: string): Store {
               AND disposition IN ('unknown', 'unresolved')
               AND ${PULL_REQUEST_SCOPE}`,
         ).run(handoffPending ? 1 : null, candidate.findingId, owner, repo, pullNumber);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     pendingHandoffs(owner, repo, pullNumber) {
@@ -9596,8 +9500,7 @@ export function openStore(dbPath: string): Store {
           WHERE ${BACKFILL_TARGET} AND disposition = 'continued'
             AND handoff_pending = 1 AND ${PULL_REQUEST_SCOPE}`,
       );
-      db.exec("BEGIN");
-      try {
+      transaction("deferred", () => {
         for (const entry of updates) {
           // 三个参数一组,顺序与 `BACKFILL_TARGET` 里的三个 `?` 对齐。
           const target = [entry.commentId ?? null, entry.file, entry.fingerprint] as const;
@@ -9612,11 +9515,7 @@ export function openStore(dbPath: string): Store {
             }
           }
         }
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+      });
     },
 
     markPullRequestState(owner, repo, pullNumber, state) {

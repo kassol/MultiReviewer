@@ -10,6 +10,7 @@
  */
 import { EventEmitter } from "node:events";
 
+import { relay } from "../async.ts";
 import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store.ts";
 
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
@@ -306,10 +307,16 @@ export function createTraceRecorder(store: Store, runId: number): TraceRecorder 
   };
 }
 
-/** 一条知识轨迹的写入口(issue #214)。`taskId` 为 null 即这条轨迹没起来,写入是空操作。 */
-export type RuleTraceRecorder = {
+/**
+ * 一条知识轨迹的写入口(issue #214)。`taskId` 为 null 即这条轨迹没起来,写入是空操作。
+ *
+ * `R` 是 `record` 的返回类型:开它的那个 `withStore` 是同步的即 `void`(与异步化之前
+ * 逐字一致),是异步的即 `Promise<void>`——调用方 `await` 它就能把几条事件排成落库顺序
+ * (issue #459)。
+ */
+export type RuleTraceRecorder<R = void> = {
   taskId: number | null;
-  record(kind: RuleTraceKind, payload: unknown): void;
+  record(kind: RuleTraceKind, payload: unknown): R;
   end(): void;
 };
 
@@ -326,38 +333,56 @@ export function startRuleTrace(
   repoId: number,
   source: RuleTraceSource,
   startedPayload: unknown,
-): RuleTraceRecorder {
+): RuleTraceRecorder;
+/** 开库那一步是异步的(issue #459):这里跟着返回 Promise,`record` 也一样。 */
+export function startRuleTrace(
+  withStore: <T>(use: (store: Store) => Promise<T>) => Promise<T>,
+  repoId: number,
+  source: RuleTraceSource,
+  startedPayload: unknown,
+): Promise<RuleTraceRecorder<Promise<void>>>;
+export function startRuleTrace(
+  withStore: (use: (store: Store) => never) => unknown,
+  repoId: number,
+  source: RuleTraceSource,
+  startedPayload: unknown,
+): RuleTraceRecorder<void | Promise<void>> | Promise<RuleTraceRecorder<void | Promise<void>>> {
   const failed = (error: unknown): void => {
     console.error(
       "[review] 知识轨迹落库失败,任务照常:",
       error instanceof Error ? error.message : String(error),
     );
   };
+  /** 开一次库做一件事。同步与异步两种 `withStore` 都从这里走。 */
+  const once = <T>(use: (store: Store) => T): T | PromiseLike<T> =>
+    withStore(use as (store: Store) => never) as T | PromiseLike<T>;
 
-  let taskId: number | null;
-  try {
-    taskId = withStore((store) => store.startRuleTrace(repoId, source, startedPayload));
-  } catch (error) {
-    failed(error);
-    taskId = null;
-  }
-  if (taskId !== null) beginTrace(ruleChannel(taskId));
-
-  return {
-    taskId,
-    record: (kind, payload) => {
-      if (taskId === null) return;
-      try {
-        publishTrace(
-          ruleChannel(taskId),
-          withStore((store) => store.appendRuleTrace(taskId!, { kind, payload })),
+  const recorder = (taskId: number | null): RuleTraceRecorder<void | Promise<void>> => {
+    if (taskId !== null) beginTrace(ruleChannel(taskId));
+    return {
+      taskId,
+      record: (kind, payload) => {
+        if (taskId === null) return;
+        return relay(
+          () => once((store) => store.appendRuleTrace(taskId, { kind, payload })),
+          (event) => {
+            publishTrace(ruleChannel(taskId), event);
+          },
+          failed,
         );
-      } catch (error) {
-        failed(error);
-      }
-    },
-    end: () => {
-      if (taskId !== null) endTrace(ruleChannel(taskId));
-    },
+      },
+      end: () => {
+        if (taskId !== null) endTrace(ruleChannel(taskId));
+      },
+    };
   };
+
+  return relay(
+    () => once((store) => store.startRuleTrace(repoId, source, startedPayload)),
+    recorder,
+    (error) => {
+      failed(error);
+      return recorder(null);
+    },
+  );
 }
