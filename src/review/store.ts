@@ -4085,9 +4085,8 @@ class RollbackSignal {
 /**
  * 一次事务的句柄:读写经它进行,`rollback` 中途回滚并把给它的值交回去。
  *
- * **事务回调里不许 await I/O。**底下是同步驱动,回调里的 `await` 只能等 Store 自己的
- * 方法(它们同步跑完、只在微任务里 resolve);等一次网络或文件,别的请求就会插进这个
- * 还没提交的事务中间。
+ * **事务回调是同步的,里面不能 await。**它跑在门面底下那份同步实现里,`transaction` 跑完
+ * 回调就 COMMIT;回调若是 async,第一个 `await` 之前就已经提交,之后的写全落在事务外。
  */
 export type StoreTransaction = {
   prepare: DatabaseSync["prepare"];

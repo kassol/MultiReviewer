@@ -43,7 +43,9 @@ fi
 
 TAGS=(--tag "$IMAGE")
 if [[ -n "$SHA" ]]; then
-  SHA_IMAGE="${IMAGE%:*}:$SHA"
+  # 只在最后一段(镜像名)带冒号时才把它当 tag 切掉:`registry:5000/team/app` 那种端口
+  # 里的冒号不是 tag。
+  if [[ "${IMAGE##*/}" == *:* ]]; then SHA_IMAGE="${IMAGE%:*}:$SHA"; else SHA_IMAGE="$IMAGE:$SHA"; fi
   TAGS+=(--tag "$SHA_IMAGE")
   echo "构建 $IMAGE 与 $SHA_IMAGE ($PLATFORM)"
 else

@@ -669,7 +669,7 @@ function describeRepo(payload: unknown, repoId: number): string {
  *
  * 库等回调跑完才关,因此回调里的每一次 `await` 都还在这次开库之内。
  */
-async function withStore<T>(dbPath: string, fn: (store: Store) => T | Promise<T>): Promise<T> {
+async function withStore<T>(dbPath: string, fn: (store: Store) => Promise<T>): Promise<T> {
   const store = openStore(dbPath);
   try {
     return await fn(store);

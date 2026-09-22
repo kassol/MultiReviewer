@@ -45,8 +45,7 @@ export function createPiReviewer(config: PiReviewerConfig): Reviewer {
  *
  * 查询回调缺席时也回一条:那时子进程本不该注册这件工具,回一句比让它挂着强。
  *
- * 回调可同步可异步(issue #447):同步那一份当场回音(与异步化之前逐字一致),异步那一
- * 份查完再回,失败的那一档两路同形。
+ * 回调是异步的(issue #447、#449):查完再回音,失败的那一档同形。
  */
 async function answerKnowledgeQuery(
   requestId: string,

@@ -525,6 +525,11 @@ function modelKey(model: AgentSessionModel): string {
  * 由主进程自己落而不是交给子进程:这三下的子进程正要没了,再等一次镜像往返就是赌时序。
  * `custom` 条目不进模型上下文,这正是要的——它是给人看的。
  */
+/** 不等落库的那几条系统消息:写不进去只记日志,不让一次 unhandled rejection 带走进程。 */
+function logSystemMessageFailure(error: unknown): void {
+  console.error("[agent-session] 系统消息落库失败:", error);
+}
+
 async function recordSystemMessage(
   deps: AgentSessionRecordDeps,
   sessionId: number,
@@ -722,10 +727,12 @@ async function reclaimIdle(sessionId: number, entry: RuntimeEntry): Promise<void
 function silenceDeath(sessionId: number, entry: RuntimeEntry): void {
   const minutes = SILENCE_TIMEOUT_MS / 60_000;
   console.error(`[agent-session] 会话 ${sessionId} 执行中连续 ${minutes} 分钟静默,判死`);
-  reclaim(sessionId, entry);
+  void reclaim(sessionId, entry);
   // 接在这个会话还没落完的条目后面:这一条的 `parentId` 指的是最后一条记录,插到它们前面
   // 会让重建时算出一段旁支。
-  void entry.recording.then(() => recordSystemMessage(entry.deps, sessionId, SILENCE_ABORTED));
+  void entry.recording
+    .then(() => recordSystemMessage(entry.deps, sessionId, SILENCE_ABORTED))
+    .catch(logSystemMessageFailure);
 }
 
 /**
@@ -1212,7 +1219,9 @@ async function boot(
         return;
       }
       case "survey-complete":
-        void completeProductSurvey(deps, session);
+        void completeProductSurvey(deps, session).catch((error: unknown) =>
+          console.error(`[agent-session] 会话 ${session.id} 记完成时刻失败:`, error),
+        );
         return;
       case "queue":
         if (message.seq < entry.queueSeq) {
@@ -1463,7 +1472,11 @@ export function deliverAgentSessionMessage(
       // 以系统消息记下这一条(与静默判死同一个写法):接口早在 202 那一刻就回了,失败原因
       // 只进日志的话,人看到的是一条发出去却永远没有回音的消息。**排空那一路不记**:那一下
       // 起不来是收拢本身,「被排空中止」已经说了同一件事。
-      if (!entry.disposed) void recordSystemMessage(deps, session.id, `${BOOT_FAILED}${reason}`);
+      if (!entry.disposed) {
+        void recordSystemMessage(deps, session.id, `${BOOT_FAILED}${reason}`).catch(
+          logSystemMessageFailure,
+        );
+      }
     });
 }
 
