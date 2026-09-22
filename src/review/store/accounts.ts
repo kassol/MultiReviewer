@@ -5,7 +5,7 @@
  * 其余各域仍走 `store/pg.ts` 的方言 shim(旧 SQL 原样跑在 PostgreSQL 上),迁法见
  * `src/AGENTS.md` 的「各域迁 Drizzle 的施工指南」。
  */
-import { and, asc, count, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, ne, sql } from "drizzle-orm";
 
 import { isPanelPermission, type PanelPermission } from "../../panel/permissions.ts";
 import {
@@ -17,15 +17,7 @@ import {
 } from "../schema/accounts.ts";
 import { reviewRun } from "../schema/runs.ts";
 import type { PanelRoleRecord, PanelSessionRecord, PanelUserRecord, Store } from "./index.ts";
-import type { Orm, TransactionMode } from "./pg.ts";
-
-/** 这一域用得到的那几样装配件。事务与 `store` 由 `openStore` 传进来。 */
-export type AccountsContext = {
-  orm: Orm;
-  transaction<T>(mode: TransactionMode, run: (tx: { rollback(value?: unknown): never }) => Promise<T>): Promise<T>;
-  /** 惰性取 store:`openStore` 把各域拼成 store 的那一刻它还没定义好。 */
-  store: () => Store;
-};
+import type { StoreContext } from "./shared.ts";
 
 type UserRow = typeof panelUser.$inferSelect;
 
@@ -66,7 +58,7 @@ type AccountsMethods = Pick<
   | "removePanelUser"
 >;
 
-export function accountsMethods({ orm, transaction, store }: AccountsContext): AccountsMethods {
+export function accountsMethods({ orm, transaction, store }: StoreContext): AccountsMethods {
   /** 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。 */
   const writeUser = async (record: Omit<PanelUserRecord, "lastLoginAt">): Promise<void> => {
     await orm.insert(panelUser).values({
@@ -333,8 +325,3 @@ export function accountsMethods({ orm, transaction, store }: AccountsContext): A
   };
 }
 
-/** 删仓库时把它的仓库分配一并摘掉(与 `removeRepo` 同一笔事务)。 */
-export async function deleteRepoAssignments(orm: Orm, repoIds: readonly number[]): Promise<void> {
-  if (repoIds.length === 0) return;
-  await orm.delete(panelUserRepo).where(inArray(panelUserRepo.repoId, [...repoIds]));
-}

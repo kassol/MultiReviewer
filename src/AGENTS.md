@@ -24,6 +24,9 @@
 `node:sqlite` 与「不为持久化再引入驱动」那条规范一并作废。库的位置经
 `ReviewRunDeps.databaseUrl`(一条连接串)传入,会话图片附件的目录另经 `dataDir` 传入——库不再
 是文件,推不出那个目录。
+- **`review/store/` 的分工**:`index.ts` 是装配处(连接池、迁移、`openStore`、各域接入点)与
+还没搬走的那六域方法,`pg.ts` 是连接池 / 事务 / 旧 SQL 的方言 shim,`shared.ts` 是跨域共用的
+SQL 片段、行读法与 `StoreContext`,`accounts.ts` 是迁完 Drizzle 的面板账号域。
 - **表的声明在 `review/schema/`,按域一个文件**(`accounts` / `repos` / `runs` / `stages` /
 `knowledge` / `products` / `sessions`),`schema/index.ts` 汇总给 drizzle-kit 与运行时。改 schema
 就是改这里:改完跑 `pnpm exec drizzle-kit generate` 生成一份进版本库的迁移 SQL(`drizzle/`),
@@ -41,10 +44,30 @@
 当前事务的连接,Drizzle 的 `orm` 走同一条判断。嵌套 `transaction` 并进外层,不再 `BEGIN`。
 `mode` 的 `"immediate"` 在 PostgreSQL 上不起作用,留着是九处「这里要拿写锁」的记号。
 - **各域迁 Drizzle 的施工指南**(#451–#457)。账号域(`store/accounts.ts`)是迁完的那一份,照它写:
-  - **先把自己这一域的方法从 `store/index.ts` 搬进 `store/<域>.ts`**,导出一个收 context 的工厂
-    (`accountsMethods({ orm, transaction, store })`),`index.ts` 里一行 `...xMethods(ctx)`。
-    七票各碰各的文件,`index.ts` 上只冲突那一行。类型从 `./index.ts` 一律 `import type`(运行时
-    擦掉,不成环);要用的运行时常量先抽进 `store/shared.ts` 再两边引。
+  - **共用件已经在 `store/shared.ts` 里,域票不再自己抽**。跨域的 SQL 片段与行读法
+    (`identityKey`、`PULL_REQUEST_SCOPE`、`AUTO_DISPOSABLE`、`BACKFILL_TARGET`、
+    `STATS_IDENTITY_CTE`、`STAGE_ID_FROM_RUN`、`repoPairCondition`、`stageScope`、
+    `pullStageQuery` / `rangeStageQuery` / `stageRowEntry`、`readMinReportSeverity`、
+    `readTriggerSource`、`recordedAttribution` / `representativeSegment` / `carriedAttribution` /
+    `carriedByFinding`、`usageColumns` / `recordedUsage`、`agentSessionEntry` /
+    `deleteAgentSessionRows` / `agentSessionPendingMessages`、模型调用目标那四件)全在那里,
+    引它、别再复制一份。
+  - **域文件的入口形状**:`export function runsMethods(ctx: StoreContext): Pick<Store, "startRun" | …>`,
+    `accounts.ts` 是样板。`ctx`(`shared.ts` 的 `StoreContext`)里有:`db`(旧 SQL 的方言 shim
+    通道)、`orm`(Drizzle)、`transaction(mode, async tx => …)`、`store()`(惰性取整份 store,
+    方法互调用它),以及开库时建出来的那 22 个闭包——`parseStoredReviewers` /
+    `parseAuxiliaryModel` / `availableModel` / `specAvailable` / `modelCombinationAvailable` /
+    `auxiliaryModelAvailable` / `referencedModels` / `recordSupportsCurrentReferences` /
+    `stageRowById` / `repoExists` / `activeRule` / `insertReviewRule` / `ruleTaskRunning` /
+    `completeRuleExploration` / `insertRuleProposalSource` / `insertRuleProposal` /
+    `pendingProposal` / `plannedAcceptance` / `applyAcceptance` / `rejectProposalRow` /
+    `retireRuleRow` / `inRuleSetVersion`。它们本来长在 `openStore` 里,放进 `ctx` 是为了让六票
+    不必都去改那一段;哪一票把自己那一域搬走,顺手把只有它用的那几个也从 `shared.ts` 搬走。
+  - **接进 `index.ts` 只改一行**:`openStore` 的 `const store: Store = { … }` 顶上已经排好六行
+    注释占位,按域一行(`// #452 Review Run / Finding / 轨迹:...runsMethods(ctx),`)。把自己
+    那一行的注释换成真的 `...runsMethods(ctx),`,别动别人的行,顺序不要改——六票合并时
+    `index.ts` 上就只有各自那一行相邻处有改动。类型从 `./index.ts` 一律 `import type`(运行时
+    擦掉,不成环);`shared.ts` 不引 `./index.ts` 的运行时值,新加的共用件也守这一条。
   - **读写优先 Drizzle builder**,行类型由 `typeof 表.$inferSelect` 推导,不再手抄列名字符串。
     builder 表达不了的(CTE、窗口、复杂聚合)用 `sql` 模板,**模板里仍引 schema 的列对象**
     (`sql\`${t.owner} = ${owner}\``),别写裸字符串。
