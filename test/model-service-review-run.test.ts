@@ -16,7 +16,7 @@ import {
 import { scriptedReviewer } from "./support/memory-forge.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
-function commitRunService(
+async function commitRunService(
   h: PanelHarness,
   expectedVersion: number | null,
   options: {
@@ -28,12 +28,12 @@ function commitRunService(
     fields?: TrustedModelFields;
     disabledReason?: "name-conflict" | null;
   },
-): number {
+): Promise<number> {
   const provider = options.provider ?? "test";
   const at = `2026-08-20T12:0${expectedVersion ?? 0}:00.000Z`;
   const store = openStore(h.db.path);
   try {
-    const version = store.commitModelServiceVersion(expectedVersion, {
+    const version = await store.commitModelServiceVersion(expectedVersion, {
       provider,
       type: "custom",
       baseUrl: options.baseUrl,
@@ -73,15 +73,15 @@ function commitRunService(
     assert.ok(version !== undefined, "模型服务版本提交失败");
     return version;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
 test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计", async () => {
   const h = await startPanelHarness({ buildReviewers });
-  const historicalHook = seedHistoricalRepo(h);
+  const historicalHook = await seedHistoricalRepo(h);
   assert.equal(
-    commitRunService(h, null, {
+    await commitRunService(h, null, {
       model: "global-model",
       baseUrl: "https://missing-credential.example.test/v1",
       api: "openai-completions",
@@ -94,8 +94,8 @@ test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计"
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
   const store = openStore(h.db.path);
-  const run = store.listRuns({ limit: 1 })[0]!;
-  store.close();
+  const run = (await store.listRuns({ limit: 1 }))[0]!;
+  await store.close();
   assert.equal(run.failed, true);
   assert.match(run.models[0]!.failure ?? "", /没有配置 test 的模型凭据/);
   assert.equal(run.reviewerPins[0]!.modelServiceVersion, 1);
@@ -108,10 +108,10 @@ test("旧版内置目标证明不了时不解密凭据，也不生成可执行 R
     reviewers: [spec],
     buildReviewers: (plans) => plans.map((plan) => scriptedReviewer(plan.spec.model, [])),
   });
-  const historicalHook = seedHistoricalRepo(h);
+  const historicalHook = await seedHistoricalRepo(h);
   const at = "2026-08-20T12:30:00.000Z";
   const store = openStore(h.db.path);
-  assert.equal(store.commitModelServiceVersion(null, {
+  assert.equal(await store.commitModelServiceVersion(null, {
     provider: spec.provider,
     type: "builtin",
     baseUrl: null,
@@ -143,7 +143,7 @@ test("旧版内置目标证明不了时不解密凭据，也不生成可执行 R
     }],
     supplements: [],
   }), 1);
-  store.close();
+  await store.close();
 
   assert.equal((await h.deliverViaHook("sha-builtin-target-drift", historicalHook)).status, 200);
   await h.settledAtLeast(1);
@@ -162,8 +162,8 @@ test("迁移遗留的冲突标记不阻止当前已无撞名的自定义服务�
     reviewers: [spec],
     buildReviewers: (plans) => plans.map((plan) => scriptedReviewer(plan.spec.model, [])),
   });
-  const historicalHook = seedHistoricalRepo(h);
-  assert.equal(commitRunService(h, null, {
+  const historicalHook = await seedHistoricalRepo(h);
+  assert.equal(await commitRunService(h, null, {
     provider: spec.provider,
     model: spec.model,
     baseUrl: "https://recovered-custom.example/v1",
@@ -200,8 +200,8 @@ test("模型来源消失只失败该 Reviewer,同轮可用同伴照常完成", a
         };
       }),
   });
-  const historicalHook = seedHistoricalRepo(h);
-  commitRunService(h, null, {
+  const historicalHook = await seedHistoricalRepo(h);
+  await commitRunService(h, null, {
     model: available.model,
     baseUrl: "https://partly-available.example.test/v1",
     api: "openai-completions",
@@ -211,8 +211,8 @@ test("模型来源消失只失败该 Reviewer,同轮可用同伴照常完成", a
   assert.equal((await h.deliverViaHook("sha-one-model-missing", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   const store = openStore(h.db.path);
-  const run = store.listRuns({ limit: 1 })[0]!;
-  store.close();
+  const run = (await store.listRuns({ limit: 1 }))[0]!;
+  await store.close();
   assert.equal(run.failed, false);
   assert.equal(run.models.find((row) => row.model === modelIdentity(available))?.failure, null);
   assert.match(
@@ -268,9 +268,9 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
       }));
     },
   });
-  const historicalHook = seedHistoricalRepo(h);
+  const historicalHook = await seedHistoricalRepo(h);
   assert.equal(
-    commitRunService(h, null, {
+    await commitRunService(h, null, {
       model: "global-model",
       baseUrl: "https://service-v1.example.test/v1",
       api: "openai-completions",
@@ -280,7 +280,7 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     1,
   );
   assert.equal(
-    commitRunService(h, null, {
+    await commitRunService(h, null, {
       provider: "unreferenced",
       model: "other",
       baseUrl: "https://unused.example.test/v1",
@@ -290,17 +290,17 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     1,
   );
   const settings = openStore(h.db.path);
-  putGlobalSettings(settings, {
+  await putGlobalSettings(settings, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: 1,
   });
-  settings.close();
+  await settings.close();
 
   assert.equal((await h.deliverViaHook("sha-v1", historicalHook)).status, 200);
   await entered.promise;
 
   assert.equal(
-    commitRunService(h, 1, {
+    await commitRunService(h, 1, {
       model: "global-model",
       baseUrl: "https://service-v2.example.test/v2",
       api: "openai-responses",
@@ -310,11 +310,11 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     2,
   );
   const changedSettings = openStore(h.db.path);
-  putGlobalSettings(changedSettings, {
+  await putGlobalSettings(changedSettings, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: 999,
   });
-  changedSettings.close();
+  await changedSettings.close();
   release.resolve();
   await h.settledAtLeast(1);
 
@@ -340,8 +340,8 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
   assert.equal(JSON.stringify(h.runtimePlans[0]).includes("secret-never-selected"), false);
 
   const firstStored = openStore(h.db.path);
-  const firstRun = firstStored.listRuns({ limit: 1 })[0]!;
-  firstStored.close();
+  const firstRun = (await firstStored.listRuns({ limit: 1 }))[0]!;
+  await firstStored.close();
   assert.equal(firstRun.reviewerPins[0]!.modelServiceVersion, 1);
   assert.equal(firstRun.reviewerPins[0]!.runtimeModel?.baseUrl, "https://service-v1.example.test/v1");
   assert.equal(JSON.stringify(firstRun.reviewerPins).includes("key-one"), false);

@@ -102,7 +102,7 @@ async function startHarness(options: HarnessOptions = {}) {
 
   // 种入注册表:准入凭仓库的 key,不再有全局 secret。
   const seed = openStore(db.path);
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: REPO_ID,
     owner: PR.owner,
     repo: PR.repo,
@@ -110,21 +110,21 @@ async function startHarness(options: HarnessOptions = {}) {
     key: KEY,
   });
   // 全局模型组合在库里(issue #66)。
-  putGlobalSettings(seed, {
+  await putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "stub-model" }]),
     maxChangedLinesPerBatch: null,
   });
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: REPO_B_ID,
     owner: "acme",
     repo: "gadgets",
     generation: GENERATION,
     key: KEY_B,
   });
-  seed.close();
+  await seed.close();
   // 这两个仓库播种成升级前那一代:门禁分代(issue #206)只挡新注册且未确认知识集的仓库。
-  if (options.ruleSetUnconfirmed !== true) confirmEmptyRuleSet(db.path, REPO_ID);
-  confirmEmptyRuleSet(db.path, REPO_B_ID);
+  if (options.ruleSetUnconfirmed !== true) await confirmEmptyRuleSet(db.path, REPO_ID);
+  await confirmEmptyRuleSet(db.path, REPO_B_ID);
 
   const base = memoryForge({
     pullRequest: {
@@ -209,7 +209,7 @@ async function startHarness(options: HarnessOptions = {}) {
     });
   }
 
-  function deliver(
+  async function deliver(
     platform: Platform,
     action: string,
     delivery: { headSha: string; draft?: boolean },
@@ -220,7 +220,7 @@ async function startHarness(options: HarnessOptions = {}) {
       platform === "gitea"
         ? { "x-gitea-event": "pull_request", "x-github-event": "pull_request" }
         : { "x-github-event": "pull_request" };
-    return post(body, { ...eventHeaders, "x-hub-signature-256": sign(body) });
+    return await post(body, { ...eventHeaders, "x-hub-signature-256": sign(body) });
   }
 
   return {
@@ -268,16 +268,16 @@ test("知识集还没确认的仓库:投递照常受理但不跑 Run,知识确�
   const store = openStore(h.db.path);
   try {
     assert.equal(
-      store.appendRuleDraftItems(
+      (await store.appendRuleDraftItems(
         REPO_ID,
         [{ type: "rule", scope: "", statement: "公开函数要有类型标注" }],
         "2026-08-28T00:00:00.000Z",
-      ).length,
+      )).length,
       1,
     );
-    assert.equal(store.confirmRuleDraft(REPO_ID), 1);
+    assert.equal(await store.confirmRuleDraft(REPO_ID), 1);
   } finally {
-    store.close();
+    await store.close();
   }
 
   // 不重启,下一次投递即放行。
@@ -825,7 +825,7 @@ test("签名不过的投递不进日志——否则日志由外人写", async ()
 test("容器 PR 的事件按分支前缀丢弃,不触发审查也不进幂等表", async () => {
   const h = await startHarness();
   // 容器 PR 的两条分支都带固定前缀(ADR 0012),增量评审会投一次 synchronized。
-  const container = (action: string): Promise<Response> => {
+  const container = async (action: string): Promise<Response> => {
     const body = JSON.stringify({
       action,
       number: 101,
@@ -836,7 +836,7 @@ test("容器 PR 的事件按分支前缀丢弃,不触发审查也不进幂等表
       },
       repository: { id: REPO_ID, name: PR.repo, owner: { login: PR.owner } },
     });
-    return h.post(body, {
+    return await h.post(body, {
       "x-gitea-event": "pull_request",
       "x-hub-signature-256": sign(body),
     });

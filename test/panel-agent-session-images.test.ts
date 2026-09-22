@@ -92,8 +92,8 @@ async function startImageHarness(
   input: readonly ("text" | "image")[] = ["text", "image"],
 ): Promise<{ h: PanelHarness; cookie: string; productId: number; sessionId: number }> {
   const h = await startPanelHarness();
-  seedModelService(h, HARNESS_SPEC.provider, HARNESS_SPEC.model, input);
-  seedRepo(h, REPO_ID, "acme", "widgets");
+  await seedModelService(h, HARNESS_SPEC.provider, HARNESS_SPEC.model, input);
+  await seedRepo(h, REPO_ID, "acme", "widgets");
   const created = await h.api("POST", "/products", { name: "报销系统" });
   assert.equal(created.status, 201);
   const { product } = (await created.json()) as { product: { id: number } };
@@ -104,13 +104,13 @@ async function startImageHarness(
 }
 
 /** 播一家模型服务,目录里的输入能力由用例给定。 */
-function seedModelService(
+async function seedModelService(
   h: PanelHarness,
   provider: string,
   model: string,
   input: readonly ("text" | "image")[],
-): void {
-  seedAvailableModelService(h, provider, [model], { input: [...input] });
+): Promise<void> {
+  await seedAvailableModelService(h, provider, [model], { input: [...input] });
 }
 
 async function createSession(
@@ -152,13 +152,13 @@ test("传一张图:文件落 data 目录,库里只有路径与 mimeType,取图�
   // 库里只有路径与 mimeType:base64 一个字节都不进库。
   const store = openStore(h.db.path);
   try {
-    const row = store.getAgentSessionImage(sessionId, image.imageId);
+    const row = await store.getAgentSessionImage(sessionId, image.imageId);
     assert.deepEqual(
       { path: row?.path, mimeType: row?.mimeType },
       { path, mimeType: "image/png" },
     );
   } finally {
-    store.close();
+    await store.close();
   }
 
   // 取图:创建者拿得到字节,content type 是库里那一份。
@@ -224,15 +224,15 @@ test("目录能力不含 image 时上传被拒、读会话回 imageInput=false,�
   assert.equal(await imageInput(h, cookie, sessionId), false);
 
   // 审查策略里把辅助模型换成看得了图的那一处(ADR 0029),下一次读会话就跟上。
-  seedAvailableModelService(h, VISION.provider, [VISION.model], { input: ["text", "image"] });
+  await seedAvailableModelService(h, VISION.provider, [VISION.model], { input: ["text", "image"] });
   const store = openStore(h.db.path);
   try {
     assert.equal(
-      putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(VISION) }),
+      await putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(VISION) }),
       true,
     );
   } finally {
-    store.close();
+    await store.close();
   }
   assert.equal(await imageInput(h, cookie, sessionId), true);
   assert.equal((await upload(h, cookie, sessionId, pngBytes(8, 8))).status, 201);
@@ -284,9 +284,9 @@ test("删会话与删产品都连图片文件一起删", async () => {
   // 库里的行跟着会话走。
   const store = openStore(h.db.path);
   try {
-    assert.equal(store.getAgentSessionImage(sessionId, "any"), undefined);
+    assert.equal(await store.getAgentSessionImage(sessionId, "any"), undefined);
   } finally {
-    store.close();
+    await store.close();
   }
 
   // 删产品级联:它下面剩下的那个会话的图也没了。

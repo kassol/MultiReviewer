@@ -10,13 +10,7 @@
  */
 import { EventEmitter } from "node:events";
 
-import { isThenable, relay } from "../async.ts";
-import type {
-  AgentSessionEntryRecord,
-  AsyncStore,
-  RuleTraceSource,
-  Store,
-} from "./store.ts";
+import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store.ts";
 
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
 export type TraceScope = "run" | "reviewer";
@@ -280,17 +274,16 @@ export function endTrace(channel: string): void {
 /**
  * 一轮的轨迹写入口。落库与广播是同一个动作,不可能只做一半。
  *
- * 三个方法的返回值是 `void | Promise<void>`(issue #447):库是同步的那一路当场落完
- * (与异步化之前逐字一致),是异步门面的那一路给回这一条的落库承诺。调用方不 await
- * 也不乱序——落库排在写入口自己的那条链上,见 `createTraceRecorder`。
+ * 三个方法各给回这一条的落库承诺。调用方不 await 也不乱序——落库排在写入口自己的那
+ * 条链上,见 `createTraceRecorder`。
  */
 export type TraceRecorder = {
   /** 轮次级的编排事件。 */
-  run(kind: RunTraceKind, payload: unknown): void | Promise<void>;
+  run(kind: RunTraceKind, payload: unknown): Promise<void>;
   /** 某个 Reviewer 的事件。`reviewer` 是模型标识。 */
-  reviewer(reviewer: string, kind: ReviewerTraceKind, payload: unknown): void | Promise<void>;
+  reviewer(reviewer: string, kind: ReviewerTraceKind, payload: unknown): Promise<void>;
   /** 排在前面的事件都落完了。关库与 `endTrace` 之前等它,否则会把还没落的那几条丢掉。 */
-  settle(): void | Promise<void>;
+  settle(): Promise<void>;
 };
 
 /**
@@ -298,10 +291,9 @@ export type TraceRecorder = {
  * 不是——轨迹记的是过程,处置与统计不读它。
  *
  * 落库排成一条链(issue #447):下一条等上一条落完再写。事件流一多半来自 `onEvent`
- * 这类同步回调,它们 await 不了;不串起来的话异步那一路的 seq 与 SSE 发出的顺序都会
- * 跟着调度走。同步那一路链上恒是空的,每一条当场落完。
+ * 这类同步回调,它们 await 不了;不串起来的话 seq 与 SSE 发出的顺序都会跟着调度走。
  */
-export function createTraceRecorder(store: Store | AsyncStore, runId: number): TraceRecorder {
+export function createTraceRecorder(store: Store, runId: number): TraceRecorder {
   const channel = runChannel(runId);
   const failed = (error: unknown): void => {
     console.error(
@@ -310,17 +302,16 @@ export function createTraceRecorder(store: Store | AsyncStore, runId: number): T
     );
   };
 
-  let tail: void | Promise<void>;
-  const append = (input: TraceEventInput): void | Promise<void> => {
-    const write = (): void | Promise<void> =>
-      relay(
-        () => store.appendTrace(runId, input),
-        (event: TraceEvent) => {
-          publishTrace(channel, event);
-        },
-        failed,
-      );
-    tail = isThenable(tail) ? tail.then(write) : write();
+  let tail: Promise<void> = Promise.resolve();
+  const append = (input: TraceEventInput): Promise<void> => {
+    // 落库与广播是一件事的两半,原先一个 try 包住两句,那个口径在这里保留。
+    tail = tail.then(async () => {
+      try {
+        publishTrace(channel, await store.appendTrace(runId, input));
+      } catch (error) {
+        failed(error);
+      }
+    });
     return tail;
   };
 
@@ -335,13 +326,11 @@ export function createTraceRecorder(store: Store | AsyncStore, runId: number): T
 /**
  * 一条知识轨迹的写入口(issue #214)。`taskId` 为 null 即这条轨迹没起来,写入是空操作。
  *
- * `R` 是 `record` 的返回类型:开它的那个 `withStore` 是同步的即 `void`(与异步化之前
- * 逐字一致),是异步的即 `Promise<void>`——调用方 `await` 它就能把几条事件排成落库顺序
- * (issue #459)。
+ * `record` 给回这一条的落库承诺:调用方 `await` 它就能把几条事件排成落库顺序。
  */
-export type RuleTraceRecorder<R = void> = {
+export type RuleTraceRecorder = {
   taskId: number | null;
-  record(kind: RuleTraceKind, payload: unknown): R;
+  record(kind: RuleTraceKind, payload: unknown): Promise<void>;
   end(): void;
 };
 
@@ -352,49 +341,34 @@ export type RuleTraceRecorder<R = void> = {
  * 落库失败(起头那一条也算)只记日志:轨迹记的是过程,规则条目与提案不读它,少一条
  * 过程记录不该让一次探索或一次反哺白跑。
  */
-export function startRuleTrace(
+export async function startRuleTrace(
   /** 开一次库做一件事。规则 agent 的两条链路都跑在后台,没有一份长活的 `Store`。 */
-  withStore: <T>(use: (store: Store) => T) => T,
-  repoId: number,
-  source: RuleTraceSource,
-  startedPayload: unknown,
-): RuleTraceRecorder;
-/** 开库那一步是异步的(issue #459):这里跟着返回 Promise,`record` 也一样。 */
-export function startRuleTrace(
   withStore: <T>(use: (store: Store) => Promise<T>) => Promise<T>,
   repoId: number,
   source: RuleTraceSource,
   startedPayload: unknown,
-): Promise<RuleTraceRecorder<Promise<void>>>;
-export function startRuleTrace(
-  withStore: (use: (store: Store) => never) => unknown,
-  repoId: number,
-  source: RuleTraceSource,
-  startedPayload: unknown,
-): RuleTraceRecorder<void | Promise<void>> | Promise<RuleTraceRecorder<void | Promise<void>>> {
+): Promise<RuleTraceRecorder> {
   const failed = (error: unknown): void => {
     console.error(
       "[review] 知识轨迹落库失败,任务照常:",
       error instanceof Error ? error.message : String(error),
     );
   };
-  /** 开一次库做一件事。同步与异步两种 `withStore` 都从这里走。 */
-  const once = <T>(use: (store: Store) => T): T | PromiseLike<T> =>
-    withStore(use as (store: Store) => never) as T | PromiseLike<T>;
 
-  const recorder = (taskId: number | null): RuleTraceRecorder<void | Promise<void>> => {
+  const recorder = (taskId: number | null): RuleTraceRecorder => {
     if (taskId !== null) beginTrace(ruleChannel(taskId));
     return {
       taskId,
-      record: (kind, payload) => {
+      record: async (kind, payload) => {
         if (taskId === null) return;
-        return relay(
-          () => once((store) => store.appendRuleTrace(taskId, { kind, payload })),
-          (event) => {
-            publishTrace(ruleChannel(taskId), event);
-          },
-          failed,
-        );
+        try {
+          publishTrace(
+            ruleChannel(taskId),
+            await withStore((store) => store.appendRuleTrace(taskId, { kind, payload })),
+          );
+        } catch (error) {
+          failed(error);
+        }
       },
       end: () => {
         if (taskId !== null) endTrace(ruleChannel(taskId));
@@ -402,12 +376,10 @@ export function startRuleTrace(
     };
   };
 
-  return relay(
-    () => once((store) => store.startRuleTrace(repoId, source, startedPayload)),
-    recorder,
-    (error) => {
-      failed(error);
-      return recorder(null);
-    },
-  );
+  try {
+    return recorder(await withStore((store) => store.startRuleTrace(repoId, source, startedPayload)));
+  } catch (error) {
+    failed(error);
+    return recorder(null);
+  }
 }

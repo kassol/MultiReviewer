@@ -28,12 +28,12 @@ import { verdictReviewer } from "./support/memory-forge.ts";
 
 const SCOPE: StageScope = { owner: EVENT.owner, repo: EVENT.repo, pullNumber: EVENT.number };
 
-function summaryOf(dbPath: string): StageSummary {
+async function summaryOf(dbPath: string): Promise<StageSummary> {
   const store = openStore(dbPath);
   try {
-    return store.stageSummary(SCOPE);
+    return await store.stageSummary(SCOPE);
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -78,35 +78,35 @@ function findingRow(line: number, fingerprint: string, commentId: string) {
 }
 
 /** 两轮各落一行、同属一条 Identity 的阶段。返回两轮的 id。 */
-function seedTwoRounds(dbPath: string): { first: number; second: number } {
+async function seedTwoRounds(dbPath: string): Promise<{ first: number; second: number }> {
   const store = openStore(dbPath);
   try {
-    const first = seedRun(
+    const first = await seedRun(
       store,
       { ...EVENT, pullNumber: EVENT.number, headSha: "a".repeat(40), startedAt: "2026-09-18T00:00:00.000Z" },
       [findingRow(6, "f".repeat(64), "c-1")],
     );
-    const second = seedRun(
+    const second = await seedRun(
       store,
       { ...EVENT, pullNumber: EVENT.number, headSha: "b".repeat(40), startedAt: "2026-09-18T01:00:00.000Z" },
       [findingRow(6, "f".repeat(64), "c-1")],
     );
     return { first, second };
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
-test("重定位候选只有每条 Identity 的最新一行,已处置的照样在里面", () => {
+test("重定位候选只有每条 Identity 的最新一行,已处置的照样在里面", async () => {
   const db = makeDbPath();
   testCleanups().push(db.cleanup);
-  const { second } = seedTwoRounds(db.path);
+  const { second } = await seedTwoRounds(db.path);
   // 已处置的既进不了复核也进不了延续,不在这里挪位置就永远停在报出它的那一轮上。
-  disposeInPanel(db.path, "c-1", "resolved");
+  await disposeInPanel(db.path, "c-1", "resolved");
 
   const store = openStore(db.path);
-  const candidates = store.relocationCandidates(SCOPE);
-  store.close();
+  const candidates = await store.relocationCandidates(SCOPE);
+  await store.close();
 
   const rows = query(db.path, "SELECT id, run_id FROM finding ORDER BY id");
   assert.equal(rows.length, 2);
@@ -121,10 +121,10 @@ test("重定位候选只有每条 Identity 的最新一行,已处置的照样在
   assert.equal(Number(rows[1]!["run_id"]), second);
 });
 
-test("重定位只写 placed_line / placed_run_id,报出位置、归属与评论载体一格不动", () => {
+test("重定位只写 placed_line / placed_run_id,报出位置、归属与评论载体一格不动", async () => {
   const db = makeDbPath();
   testCleanups().push(db.cleanup);
-  const { first, second } = seedTwoRounds(db.path);
+  const { first, second } = await seedTwoRounds(db.path);
   const before = query(
     db.path,
     "SELECT id, run_id, line, comment_id FROM finding ORDER BY id",
@@ -136,8 +136,8 @@ test("重定位只写 placed_line / placed_run_id,报出位置、归属与评论
   const latestId = Number(before[1]!["id"]);
 
   const store = openStore(db.path);
-  store.recordFindingRelocations(second, [{ findingId: latestId, line: 16 }]);
-  store.close();
+  await store.recordFindingRelocations(second, [{ findingId: latestId, line: 16 }]);
+  await store.close();
 
   // 报出位置、所属轮次与评论载体逐字不动:归属、首次报出与指纹窗口都按那一份算。
   assert.deepEqual(
@@ -157,7 +157,7 @@ test("重定位只写 placed_line / placed_run_id,报出位置、归属与评论
     { line: 16, runId: second },
   ]);
 
-  const summary = summaryOf(db.path);
+  const summary = await summaryOf(db.path);
   assert.equal(summary.findings.length, 1);
   const [finding] = summary.findings;
   assert.equal(finding!.line, 16);
@@ -186,7 +186,7 @@ test("只复核那一轮:代码只是下移时位置跟到本轮,不落新行、
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": PADDED });
   await runReview(EVENT, { ...deps, reviewers: SILENT, mode: "verdict-only" });
 
-  const summary = summaryOf(db.path);
+  const summary = await summaryOf(db.path);
   const [first, second] = summary.timeline;
   assert.notEqual(second, undefined, "第二轮没有开出来");
   assert.equal(summary.findings.length, 1);
@@ -218,13 +218,13 @@ test("已处置的那条同样跟着本轮走", async () => {
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, true));
-  disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved");
+  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved");
   // 已处置之后这个阶段没有未处置历史,只复核那一轮开不起来(CONTEXT.md 只复核),
   // 这一档因此跑完整审查:两种模式都做重定位。
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": PADDED });
   await runReview(EVENT, { ...deps, reviewers: SILENT });
 
-  const summary = summaryOf(db.path);
+  const summary = await summaryOf(db.path);
   const [finding] = summary.findings;
   assert.equal(finding!.line, SHIFTED_LINE);
   assert.equal(finding!.reportedLine, 6);
@@ -247,7 +247,7 @@ test("那处代码被改写、复核又判无法判断时,位置与所属轮次�
     mode: "verdict-only",
   });
 
-  const summary = summaryOf(db.path);
+  const summary = await summaryOf(db.path);
   const [finding] = summary.findings;
   assert.equal(finding!.line, 6);
   assert.equal(finding!.placedRunId, summary.timeline[0]!.runId);

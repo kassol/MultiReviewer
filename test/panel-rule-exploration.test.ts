@@ -113,13 +113,13 @@ function scriptedRuleAgent(
   return Object.assign(agent, { calls });
 }
 
-function scopedUser(
+async function scopedUser(
   h: PanelHarness,
   username: string,
   repoIds: readonly number[],
   permissions: readonly PanelPermission[] = [],
 ): Promise<string> {
-  return scopedUserRow(h, username, PASSWORD, AT, repoIds, permissions);
+  return await scopedUserRow(h, username, PASSWORD, AT, repoIds, permissions);
 }
 
 function get(h: PanelHarness, cookie: string, path: string): Promise<Response> {
@@ -174,110 +174,110 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
 /**
  * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
  */
-function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): void {
+async function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): Promise<void> {
   const store = openStore(h.db.path);
   try {
     for (const entry of entries) {
       assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, entry), undefined);
     }
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
-test("探索状态机:运行中不重入,失败留原因可重试,完成落草案", () => {
+test("探索状态机:运行中不重入,失败留原因可重试,完成落草案", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
     assert.equal(
-      store.registerRepo({ repoId: 70, owner: "acme", repo: "explored", generation: 1, key: "k" }),
+      await store.registerRepo({ repoId: 70, owner: "acme", repo: "explored", generation: 1, key: "k" }),
       true,
     );
-    assert.equal(store.getRuleExploration(70), null);
+    assert.equal(await store.getRuleExploration(70), null);
 
     assert.equal(
-      store.startRuleExploration(70, { baselineSha: "abc1234", model: "test:m", startedAt: AT }),
+      await store.startRuleExploration(70, { baselineSha: "abc1234", model: "test:m", startedAt: AT }),
       true,
     );
-    assert.equal(store.getRuleExploration(70)?.state, "running");
+    assert.equal((await store.getRuleExploration(70))?.state, "running");
     // 同仓库同时只跑一个。
     assert.equal(
-      store.startRuleExploration(70, { baselineSha: "def5678", model: "test:m", startedAt: AT }),
+      await store.startRuleExploration(70, { baselineSha: "def5678", model: "test:m", startedAt: AT }),
       false,
     );
 
-    store.failRuleExploration(70, "取不回代码", AT);
-    const failed = store.getRuleExploration(70);
+    await store.failRuleExploration(70, "取不回代码", AT);
+    const failed = await store.getRuleExploration(70);
     assert.equal(failed?.state, "failed");
     assert.equal(failed?.failure, "取不回代码");
 
     // 失败之后可重试:同一个仓库再发起一次,原因清掉。
     assert.equal(
-      store.startRuleExploration(70, { baselineSha: "def5678", model: "test:m2", startedAt: AT }),
+      await store.startRuleExploration(70, { baselineSha: "def5678", model: "test:m2", startedAt: AT }),
       true,
     );
-    assert.equal(store.getRuleExploration(70)?.failure, null);
-    assert.equal(store.getRuleExploration(70)?.model, "test:m2");
+    assert.equal((await store.getRuleExploration(70))?.failure, null);
+    assert.equal((await store.getRuleExploration(70))?.model, "test:m2");
 
-    store.finishRuleExploration(70, [item("公开函数要有类型标注")], AT);
-    assert.equal(store.getRuleExploration(70)?.state, "completed");
+    await store.finishRuleExploration(70, [item("公开函数要有类型标注")], AT);
+    assert.equal((await store.getRuleExploration(70))?.state, "completed");
     assert.deepEqual(
-      store.getRuleDraft(70).map((row) => [row.statement, row.origin]),
+      (await store.getRuleDraft(70)).map((row) => [row.statement, row.origin]),
       [["公开函数要有类型标注", "baseline-exploration"]],
     );
     // 没注册的仓库发起不了。
     assert.equal(
-      store.startRuleExploration(999, { baselineSha: "abc1234", model: "t:m", startedAt: AT }),
+      await store.startRuleExploration(999, { baselineSha: "abc1234", model: "t:m", startedAt: AT }),
       false,
     );
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("重探索覆盖未确认的旧草案,意图补进来的那条一并被覆盖", () => {
+test("重探索覆盖未确认的旧草案,意图补进来的那条一并被覆盖", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 71, owner: "acme", repo: "redone", generation: 1, key: "k" });
-    store.startRuleExploration(71, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
-    store.finishRuleExploration(71, [item("第一次探索的规则")], AT);
-    assert.equal(store.appendRuleDraftItems(71, [item("意图补进来的一条")], AT).length, 1);
-    assert.equal(store.getRuleDraft(71).length, 2);
+    await store.registerRepo({ repoId: 71, owner: "acme", repo: "redone", generation: 1, key: "k" });
+    await store.startRuleExploration(71, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    await store.finishRuleExploration(71, [item("第一次探索的规则")], AT);
+    assert.equal((await store.appendRuleDraftItems(71, [item("意图补进来的一条")], AT)).length, 1);
+    assert.equal((await store.getRuleDraft(71)).length, 2);
 
-    store.startRuleExploration(71, { baselineSha: "def5678", model: "test:m", startedAt: AT });
+    await store.startRuleExploration(71, { baselineSha: "def5678", model: "test:m", startedAt: AT });
     // 发起时草案还在:探索没跑出结果之前不该先把人手上那份删掉。
-    assert.equal(store.getRuleDraft(71).length, 2);
-    store.finishRuleExploration(71, [item("第二次探索的规则")], AT);
+    assert.equal((await store.getRuleDraft(71)).length, 2);
+    await store.finishRuleExploration(71, [item("第二次探索的规则")], AT);
     assert.deepEqual(
-      store.getRuleDraft(71).map((row) => row.statement),
+      (await store.getRuleDraft(71)).map((row) => row.statement),
       ["第二次探索的规则"],
     );
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("知识确认整组生效:草案成为生效规则、推进一版、草案清空", () => {
+test("知识确认整组生效:草案成为生效规则、推进一版、草案清空", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 72, owner: "acme", repo: "confirmed", generation: 1, key: "k" });
+    await store.registerRepo({ repoId: 72, owner: "acme", repo: "confirmed", generation: 1, key: "k" });
     // 仓库不在注册表里时确认不动任何东西。
-    assert.equal(store.confirmRuleDraft(999), undefined);
+    assert.equal(await store.confirmRuleDraft(999), undefined);
 
-    store.startRuleExploration(72, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
-    store.finishRuleExploration(72, [item("公开函数要有类型标注", "src/**")], AT);
-    const [appended] = store.appendRuleDraftItems(72, [item("入参要在边界上校验")], AT);
+    await store.startRuleExploration(72, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    await store.finishRuleExploration(72, [item("公开函数要有类型标注", "src/**")], AT);
+    const [appended] = await store.appendRuleDraftItems(72, [item("入参要在边界上校验")], AT);
     // 意图改写那一条(issue #298):型、陈述与作用范围原地换,出处沿旧值。
-    assert.equal(store.updateRuleDraftItem(72, appended!, item("入参要在边界上校验并给原因")), true);
+    assert.equal(await store.updateRuleDraftItem(72, appended!, item("入参要在边界上校验并给原因")), true);
 
     // 知识确认产生这个仓库的第一个知识集版本(issue #206:注册不再落版本)。
-    assert.equal(store.confirmRuleDraft(72), 1);
-    const confirmed = store.getRuleSet(72)!;
+    assert.equal(await store.confirmRuleDraft(72), 1);
+    const confirmed = (await store.getRuleSet(72))!;
     assert.equal(confirmed.version, 1);
     assert.deepEqual(
       confirmed.rules.map((rule) => [rule.scope, rule.statement, rule.origin]),
@@ -286,51 +286,51 @@ test("知识确认整组生效:草案成为生效规则、推进一版、草案�
         ["", "入参要在边界上校验并给原因", "manual-proposal"],
       ],
     );
-    assert.deepEqual(store.getRuleDraft(72), []);
+    assert.deepEqual(await store.getRuleDraft(72), []);
     // 确认之后不留第二份可确认的草案:已确认的仓库拿空草案再确认一版都不推进。
-    assert.equal(store.confirmRuleDraft(72), undefined);
-    assert.equal(store.getRuleSet(72)!.version, 1);
+    assert.equal(await store.confirmRuleDraft(72), undefined);
+    assert.equal((await store.getRuleSet(72))!.version, 1);
     // 探索记录本身留着:后续反哺要沿用这个仓库最近一次探索所用的模型。
-    assert.equal(store.getRuleExploration(72)?.model, "test:m");
+    assert.equal((await store.getRuleExploration(72))?.model, "test:m");
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("草案条目逐条删除,移除仓库把探索与草案一并摘掉", () => {
+test("草案条目逐条删除,移除仓库把探索与草案一并摘掉", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 73, owner: "acme", repo: "pruned", generation: 1, key: "k" });
-    store.startRuleExploration(73, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
-    store.finishRuleExploration(73, [item("留下的"), item("要删的")], AT);
-    const draft = store.getRuleDraft(73);
-    assert.equal(store.deleteRuleDraftItem(73, draft[1]!.id), true);
-    assert.equal(store.deleteRuleDraftItem(73, draft[1]!.id), false);
-    assert.deepEqual(store.getRuleDraft(73).map((row) => row.statement), ["留下的"]);
+    await store.registerRepo({ repoId: 73, owner: "acme", repo: "pruned", generation: 1, key: "k" });
+    await store.startRuleExploration(73, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    await store.finishRuleExploration(73, [item("留下的"), item("要删的")], AT);
+    const draft = await store.getRuleDraft(73);
+    assert.equal(await store.deleteRuleDraftItem(73, draft[1]!.id), true);
+    assert.equal(await store.deleteRuleDraftItem(73, draft[1]!.id), false);
+    assert.deepEqual((await store.getRuleDraft(73)).map((row) => row.statement), ["留下的"]);
 
-    store.removeRepo(73);
-    assert.equal(store.getRuleExploration(73), null);
-    assert.deepEqual(store.getRuleDraft(73), []);
+    await store.removeRepo(73);
+    assert.equal(await store.getRuleExploration(73), null);
+    assert.deepEqual(await store.getRuleDraft(73), []);
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("重启时把停在运行中的探索改判失败,面板因此给得出重试入口", () => {
+test("重启时把停在运行中的探索改判失败,面板因此给得出重试入口", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 74, owner: "acme", repo: "restarted", generation: 1, key: "k" });
-    store.startRuleExploration(74, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
-    store.failInterruptedRuleExplorations("服务重启,上一次探索没跑完", AT);
-    const row = store.getRuleExploration(74);
+    await store.registerRepo({ repoId: 74, owner: "acme", repo: "restarted", generation: 1, key: "k" });
+    await store.startRuleExploration(74, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    await store.failInterruptedRuleExplorations("服务重启,上一次探索没跑完", AT);
+    const row = await store.getRuleExploration(74);
     assert.equal(row?.state, "failed");
     assert.equal(row?.failure, "服务重启,上一次探索没跑完");
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -418,7 +418,7 @@ test("重探索交给 agent 的现有知识集两型都在,各带标识与自己
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
 
-  seedActiveEntries(h, [
+  await seedActiveEntries(h, [
     { type: "rule", scope: "", statement: "改动要带测试" },
     { type: "fact", scope: "", statement: "这个服务只跑在内网" },
   ]);
@@ -541,7 +541,7 @@ test("知识集非空时不再走草案:产出排进修订提案队列(issue #20
   });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
-  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "已经生效的规则" }]);
+  await seedActiveEntries(h, [{ type: "rule", scope: "", statement: "已经生效的规则" }]);
 
   const started = await send(h, cookie, "POST", `${path}/rule-exploration`, {
     baseline: h.repo.baseSha,
@@ -569,7 +569,7 @@ test("探索产出超过 100 字的陈述:那一条不入队,轨迹里留下超�
   });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   const path = `/repos/${GITEA_REPO.id}`;
-  seedActiveEntries(h, [{ type: "rule", scope: "", statement: "已经生效的规则" }]);
+  await seedActiveEntries(h, [{ type: "rule", scope: "", statement: "已经生效的规则" }]);
 
   assert.equal(
     (await send(h, cookie, "POST", `${path}/rule-exploration`, {
@@ -635,40 +635,40 @@ test("发起只收基点:带模型字段一律 400,列可选模型的端点已�
   assert.deepEqual(await models.json(), { error: "没有这个端点" });
 });
 
-test("知识集未确认的仓库确认得了空知识集:生成第一版,草案一条都不需要", () => {
+test("知识集未确认的仓库确认得了空知识集:生成第一版,草案一条都不需要", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 73, owner: "acme", repo: "empty", generation: 1, key: "k" });
-    assert.equal(store.getRuleSet(73)!.version, null);
+    await store.registerRepo({ repoId: 73, owner: "acme", repo: "empty", generation: 1, key: "k" });
+    assert.equal((await store.getRuleSet(73))!.version, null);
 
     // 空知识集是合法状态(issue #200):没探索过、草案为空,确认的就是一个空集。
-    assert.equal(store.confirmRuleDraft(73), 1);
-    const confirmed = store.getRuleSet(73)!;
+    assert.equal(await store.confirmRuleDraft(73), 1);
+    const confirmed = (await store.getRuleSet(73))!;
     assert.equal(confirmed.version, 1);
     assert.deepEqual(confirmed.rules, []);
 
     // 已经确认过了,再确认一次不推进版本。
-    assert.equal(store.confirmRuleDraft(73), undefined);
-    assert.equal(store.getRuleSet(73)!.version, 1);
+    assert.equal(await store.confirmRuleDraft(73), undefined);
+    assert.equal((await store.getRuleSet(73))!.version, 1);
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("探索记下这一次选的思考档位,没选即留空", () => {
+test("探索记下这一次选的思考档位,没选即留空", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 75, owner: "acme", repo: "leveled", generation: 1, key: "k" });
-    store.startRuleExploration(75, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
-    assert.equal(store.getRuleExploration(75)?.thinkingLevel, null);
-    store.finishRuleExploration(75, [], AT);
+    await store.registerRepo({ repoId: 75, owner: "acme", repo: "leveled", generation: 1, key: "k" });
+    await store.startRuleExploration(75, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    assert.equal((await store.getRuleExploration(75))?.thinkingLevel, null);
+    await store.finishRuleExploration(75, [], AT);
 
     assert.equal(
-      store.startRuleExploration(75, {
+      await store.startRuleExploration(75, {
         baselineSha: "abc1234",
         model: "test:m",
         thinkingLevel: "high",
@@ -676,14 +676,14 @@ test("探索记下这一次选的思考档位,没选即留空", () => {
       }),
       true,
     );
-    assert.equal(store.getRuleExploration(75)?.thinkingLevel, "high");
-    store.finishRuleExploration(75, [], AT);
+    assert.equal((await store.getRuleExploration(75))?.thinkingLevel, "high");
+    await store.finishRuleExploration(75, [], AT);
 
     // 重探索不选档位即回到没选:上一次那一档不该悄悄跟着这一次跑。
-    store.startRuleExploration(75, { baselineSha: "def5678", model: "test:m", startedAt: AT });
-    assert.equal(store.getRuleExploration(75)?.thinkingLevel, null);
+    await store.startRuleExploration(75, { baselineSha: "def5678", model: "test:m", startedAt: AT });
+    assert.equal((await store.getRuleExploration(75))?.thinkingLevel, null);
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -691,7 +691,7 @@ test("发起用生效的辅助模型:模型与档位进 agent、落进探索记�
   const agent = scriptedRuleAgent({ items: [item("探索出来的一条")] });
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
   // 思考得起来的那个模型另开一条服务:harness 自带的那个什么都不声明,只支持「关闭」。
-  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+  await seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
   await setGlobalAuxiliaryModel(h, { provider: "think", model: "deep", thinkingLevel: "medium" });
 
   const started = await send(h, cookie, "POST", `/repos/${GITEA_REPO.id}/rule-exploration`, {
@@ -714,7 +714,7 @@ test("生效的辅助模型跑不了时发起回 409,那句话指向审查策略
   const { h, cookie } = await registeredHarness({ ruleAgent: agent });
 
   // 审查策略里设一处辅助模型,再把那家服务的凭据拿掉:解析得出、却跑不起来。
-  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+  await seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
   await setGlobalAuxiliaryModel(h, { provider: "think", model: "deep" });
   // 让这一处跑不起来:凭据降级成待重验。**不走删凭据那条路**——辅助模型如今计入模型引用,
   // 删凭据会被引用保护挡下(它正是被这一处引用着)。
@@ -735,38 +735,38 @@ test("生效的辅助模型跑不了时发起回 409,那句话指向审查策略
   assert.equal(agent.calls.length, 0);
 });
 
-test("批量确认只落勾选的那几条,没勾的随草案一并丢弃,一次推一版", () => {
+test("批量确认只落勾选的那几条,没勾的随草案一并丢弃,一次推一版", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 76, owner: "acme", repo: "picked", generation: 1, key: "k" });
-    store.startRuleExploration(76, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
-    store.finishRuleExploration(
+    await store.registerRepo({ repoId: 76, owner: "acme", repo: "picked", generation: 1, key: "k" });
+    await store.startRuleExploration(76, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
+    await store.finishRuleExploration(
       76,
       [item("留下的第一条"), item("不要的那条"), item("留下的第二条")],
       AT,
     );
-    const draft = store.getRuleDraft(76);
+    const draft = await store.getRuleDraft(76);
     const keep = [draft[0]!.id, draft[2]!.id];
 
     // 一份过期的勾选不该悄悄确认成另一组条目:有一条不在草案里就整次不做。
-    assert.equal(store.confirmRuleDraft(76, [...keep, 4242]), undefined);
-    assert.equal(store.getRuleDraft(76).length, 3);
-    assert.equal(store.getRuleSet(76)!.version, null);
+    assert.equal(await store.confirmRuleDraft(76, [...keep, 4242]), undefined);
+    assert.equal((await store.getRuleDraft(76)).length, 3);
+    assert.equal((await store.getRuleSet(76))!.version, null);
 
-    assert.equal(store.confirmRuleDraft(76, keep), 1);
-    const confirmed = store.getRuleSet(76)!;
+    assert.equal(await store.confirmRuleDraft(76, keep), 1);
+    const confirmed = (await store.getRuleSet(76))!;
     assert.equal(confirmed.version, 1);
     assert.deepEqual(confirmed.rules.map((entry) => entry.statement), [
       "留下的第一条",
       "留下的第二条",
     ]);
     // 没勾的随草案一并丢弃:草案是一次性的那一份,确认完就不剩什么了。
-    assert.deepEqual(store.getRuleDraft(76), []);
+    assert.deepEqual(await store.getRuleDraft(76), []);
     assert.deepEqual(confirmed.retired, []);
   } finally {
-    store.close();
+    await store.close();
   }
 });
 

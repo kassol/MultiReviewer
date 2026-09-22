@@ -87,7 +87,7 @@ async function putSettings(
 
 test("审查策略整页一次保存,版本加一;陈旧写入 409 并带回当前整份对象", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "corp-deepseek", ["deepseek-v4-flash"]);
+  await seedAvailableModelService(h, "corp-deepseek", ["deepseek-v4-flash"]);
   assert.deepEqual(await readSettings(h), {
     reviewers: SEEDED_REVIEWERS,
     ...UNSET_SETTINGS,
@@ -123,7 +123,7 @@ test("审查策略整页一次保存,版本加一;陈旧写入 409 并带回当�
 
 test("整份写入里任一项校验不过,整页一项都不写", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "test", ["global-model"]);
 
   const badLimit = await putSettings(h, { maxParallelBatches: 5, maxFilesPerBatch: 0 });
   assert.equal(badLimit.status, 400);
@@ -148,11 +148,11 @@ test("整份写入里任一项校验不过,整页一项都不写", async () => {
 test("四项上限与报告等级一次写全,留空即回系统默认", async () => {
   const h = await startPanelHarness();
   // 整页一起校验,保存要求组合里的模型当前可用:先把 harness 播种的那一个坐实。
-  seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "test", ["global-model"]);
   // harness 的库这几格从没写过,与升级前的库同一形态:读出来全是 null。
   const store = openStore(h.db.path);
   try {
-    const stored = store.getGlobalSettings();
+    const stored = await store.getGlobalSettings();
     assert.deepEqual(
       {
         auxiliaryModel: stored.auxiliaryModelJson,
@@ -165,7 +165,7 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
       UNSET_SETTINGS,
     );
   } finally {
-    store.close();
+    await store.close();
   }
 
   const saved = await putSettings(h, {
@@ -232,7 +232,7 @@ test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失
   for (const pass of [1, 2]) {
     const store = openStore(h.db.path);
     try {
-      assert.deepEqual(store.getGlobalSettings(), {
+      assert.deepEqual(await store.getGlobalSettings(), {
         reviewersJson: JSON.stringify(SEEDED_REVIEWERS),
         auxiliaryModelJson: null,
         maxChangedLinesPerBatch: 777,
@@ -243,7 +243,7 @@ test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失
         version: 1,
       }, `第 ${pass} 遍`);
     } finally {
-      store.close();
+      await store.close();
     }
   }
 
@@ -326,7 +326,7 @@ test("组合首次配置后非空:配过之前空组合照收,配过非空之后
   });
 
   // 配过一份非空的之后不再收空:要停掉审查不走这一格。
-  seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await putSettings(h, { reviewers: SEEDED_REVIEWERS })).status, 200);
   const cleared = await putSettings(h, { reviewers: [] });
   assert.equal(cleared.status, 400);
@@ -341,8 +341,8 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
     { provider: "vanished-service", model: "missing" },
   ];
   const h = await startPanelHarness({ reviewers: selected });
-  seedAvailableModelService(h, "healthy-service", ["keep"]);
-  seedAvailableModelService(h, "recovering-service", ["saved"]);
+  await seedAvailableModelService(h, "healthy-service", ["keep"]);
+  await seedAvailableModelService(h, "recovering-service", ["saved"]);
 
   const setRecoveringCredential = (state: "verified" | "pending-reverification"): void => {
     const sqlite = new DatabaseSync(h.db.path);
@@ -370,15 +370,15 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
       sqlite.close();
     }
   };
-  const serviceState = () => {
+  const serviceState = async () => {
     const store = openStore(h.db.path);
     try {
       return {
-        services: store.listModelServices(),
-        supplements: store.listModelSupplements(),
+        services: await store.listModelServices(),
+        supplements: await store.listModelSupplements(),
       };
     } finally {
-      store.close();
+      await store.close();
     }
   };
 
@@ -416,7 +416,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   );
 
   // 往这份组合里再添一个模型即算改了组合:候选校验当场拒收,两类原因都写明。
-  const beforeBlockedWrites = serviceState();
+  const beforeBlockedWrites = await serviceState();
   const blocked = await putSettings(h, {
     reviewers: [...selected, { provider: "another-vanished-service", model: "gone" }],
   });
@@ -433,7 +433,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
     version: 2,
     defaults: DEFAULTS,
   });
-  assert.deepEqual(serviceState(), beforeBlockedWrites, "组合与上限写入不应改服务或模型来源");
+  assert.deepEqual(await serviceState(), beforeBlockedWrites, "组合与上限写入不应改服务或模型来源");
 
   setRecoveringCredential("verified");
   const recoveredResponse = await h.api("GET", "/model-services");
@@ -447,7 +447,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   assert.deepEqual((await readSettings(h)).reviewers, selected);
 
   // 去掉那个来源消失的,剩下两个都可用:组合与上限在同一次保存里一起落地。
-  const beforeMissingRemoval = serviceState();
+  const beforeMissingRemoval = await serviceState();
   const withoutMissing = selected.slice(0, 2);
   const removedMissing = await putSettings(h, { reviewers: withoutMissing });
   assert.equal(removedMissing.status, 200);
@@ -458,10 +458,10 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
     version: 3,
     defaults: DEFAULTS,
   });
-  assert.deepEqual(serviceState(), beforeMissingRemoval);
+  assert.deepEqual(await serviceState(), beforeMissingRemoval);
 
   setRecoveringCredential("pending-reverification");
-  const beforeUnavailableRemoval = serviceState();
+  const beforeUnavailableRemoval = await serviceState();
   const removedUnavailable = await putSettings(h, { reviewers: [selected[0]!] });
   assert.equal(removedUnavailable.status, 200);
   assert.deepEqual(await removedUnavailable.json(), {
@@ -471,7 +471,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
     version: 4,
     defaults: DEFAULTS,
   });
-  assert.deepEqual(serviceState(), beforeUnavailableRemoval);
+  assert.deepEqual(await serviceState(), beforeUnavailableRemoval);
 });
 
 test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这一层", async () => {
@@ -502,7 +502,7 @@ test("非法的 reviewers 被既有校验拒绝,报错标注来源是全局这�
 test("组合里的模型已经失效:只改上限照常保存,改组合仍被拒", async () => {
   const stale = [{ provider: "vanished-service", model: "missing" }];
   const h = await startPanelHarness({ reviewers: stale });
-  seedAvailableModelService(h, "healthy-service", ["keep"]);
+  await seedAvailableModelService(h, "healthy-service", ["keep"]);
 
   // 失效模型门禁的是组合本身的写入:组合原样未动,上限不被连坐。
   const limitOnly = await putSettings(h, { maxParallelBatches: 6 });
@@ -562,8 +562,8 @@ test("四项上限与最低报告等级取值不合法时整份拒收", async ()
 
 test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置不影响本轮", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model"]);
-  seedHistoricalRepo(h);
+  await seedAvailableModelService(h, "test", ["global-model"]);
+  await seedHistoricalRepo(h);
   assert.equal(
     (await putSettings(h, {
       maxParallelBatches: 5,
@@ -575,7 +575,7 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
 
   const store = openStore(h.db.path);
   try {
-    const frozen = store.getReviewRunSnapshot(GITEA_REPO.id);
+    const frozen = await store.getReviewRunSnapshot(GITEA_REPO.id);
     assert.equal(frozen.maxParallelBatches, 5);
     assert.equal(frozen.maxFilesPerBatch, 12);
     assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
@@ -583,12 +583,12 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
     // 取证上限也是这一轮的:快照取出之后再改,已经开跑的这一轮读到的还是 4。
     assert.equal((await putSettings(h, { maxEvidenceCallsPerBatch: 1 })).status, 200);
     assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
-    assert.equal(store.getReviewRunSnapshot(GITEA_REPO.id).maxEvidenceCallsPerBatch, 1);
+    assert.equal((await store.getReviewRunSnapshot(GITEA_REPO.id)).maxEvidenceCallsPerBatch, 1);
 
     // 这一轮已经拿到快照;之后改设置只影响下一次取快照。
     assert.equal((await putSettings(h, { maxFilesPerBatch: 1 })).status, 200);
     assert.equal(frozen.maxFilesPerBatch, 12);
-    assert.equal(store.getReviewRunSnapshot(GITEA_REPO.id).maxFilesPerBatch, 1);
+    assert.equal((await store.getReviewRunSnapshot(GITEA_REPO.id)).maxFilesPerBatch, 1);
 
     // 留空即跟随系统默认(issue #301):快照里是 null,编排层照它自己的默认值开跑。
     assert.equal(
@@ -599,7 +599,7 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
       })).status,
       200,
     );
-    const cleared = store.getReviewRunSnapshot(GITEA_REPO.id);
+    const cleared = await store.getReviewRunSnapshot(GITEA_REPO.id);
     assert.deepEqual(
       {
         maxParallelBatches: cleared.maxParallelBatches,
@@ -609,13 +609,13 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
       { maxParallelBatches: null, maxFilesPerBatch: null, maxEvidenceCallsPerBatch: null },
     );
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
 test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "test", ["global-model"]);
   const empty = await putSettings(h, { reviewers: [] });
   assert.equal(empty.status, 400);
   assert.match(await empty.text(), /至少要选一个模型/);
@@ -640,12 +640,12 @@ test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
 
 test("改过的全局组合下一次投递就生效", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
+  await seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal(
     (
       await putSettings(h, { reviewers: [{ provider: "test", model: "swapped-model" }] })
@@ -663,15 +663,15 @@ test("改过的全局组合下一次投递就生效", async () => {
 test("空库、没配模型组合时投递留下一条失败的 Review Run,原因可读", async () => {
   // 真组装:组合为空,零 Reviewer 的 Run 既不失败也不报错,人看到的会是「投了没反应」。
   const h = await startPanelHarness({ reviewers: [], buildReviewers });
-  const historicalHook = seedHistoricalRepo(h);
+  const historicalHook = await seedHistoricalRepo(h);
 
   assert.equal((await h.deliverViaHook("sha-1", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30 });
-  store.close();
+  const runs = await store.listRuns({ limit: 30 });
+  await store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.failed, true);
 
@@ -706,7 +706,7 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
   });
   // 只为撞名那一家提交模型服务；另一家完全缺服务，作为独立失败原因的对照。
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, {
+  assert.equal(await seed.commitModelServiceVersion(null, {
     provider: collided.provider,
     type: "custom",
     baseUrl: "https://collided.example/v1",
@@ -733,16 +733,16 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
     automaticModels: [],
     supplements: [],
   }), 1);
-  seed.close();
-  const historicalHook = seedHistoricalRepo(h);
+  await seed.close();
+  const historicalHook = await seedHistoricalRepo(h);
 
   assert.equal((await h.deliverViaHook("sha-1", historicalHook)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 
   const store = openStore(h.db.path);
-  const models = store.listRuns({ limit: 1 })[0]!.models;
-  store.close();
+  const models = (await store.listRuns({ limit: 1 }))[0]!.models;
+  await store.close();
   const failure = (model: string): string =>
     models.find((row) => row.model === model)?.failure ?? "";
   assert.match(failure("openrouter:corp-qwen3-max"), /名字/, "撞名那一个没写明是名字冲突");
@@ -755,9 +755,9 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
 
 test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或模型不支持时整组拒收", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model", "second-model"], { reasoning: true });
+  await seedAvailableModelService(h, "test", ["global-model", "second-model"], { reasoning: true });
   // adaptive 模型:`thinkingLevelMap.off` 为 null 即它关不掉思考,「关闭」不是它的一档。
-  seedAvailableModelService(h, "always", ["adaptive-model"], {
+  await seedAvailableModelService(h, "always", ["adaptive-model"], {
     reasoning: true,
     thinkingLevelMap: { off: null },
   });
@@ -833,8 +833,8 @@ test("思考档位随模型组合与仓库覆盖一起读写,取值不认得或�
 
 test("辅助模型随整页读写:不可用模型与它不支持的档位被拒,整份一项都不写", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model"]);
-  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+  await seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
 
   // 辅助模型与别的项一次写完:它是整份对象里的一项,没有自己的保存按钮。
   const saved = await putSettings(h, {

@@ -38,24 +38,24 @@ async function registeredHarness(
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }
 
 /** 发起一个范围审查并等第一轮跑完。 */
-function startRangeReview(h: PanelHarness): Promise<RangeReview> {
-  return startRangeReviewRow<RangeReview>(h);
+async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
+  return await startRangeReviewRow<RangeReview>(h);
 }
 
 /** 登录一个自定义权限的用户,拿它的会话 cookie。仓库一并分给他:可见才能操作。 */
-function userCookie(h: PanelHarness, username: string, permissions: string[]): Promise<string> {
+async function userCookie(h: PanelHarness, username: string, permissions: string[]): Promise<string> {
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: `${username}-角色`,
     permissions: permissions as Parameters<typeof store.createPanelRole>[0]["permissions"],
     createdAt: "2026-08-25T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username,
     displayName: null,
     passwordHash: HASH,
@@ -64,8 +64,8 @@ function userCookie(h: PanelHarness, username: string, permissions: string[]): P
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.setPanelUserAssignment(username, [GITEA_REPO.id]);
-  store.close();
+  await store.setPanelUserAssignment(username, [GITEA_REPO.id]);
+  await store.close();
   return userCookieRow(h.serverUrl, username, PASSWORD);
 }
 
@@ -96,9 +96,9 @@ test("范围审查重跑:在当前比较项上多跑一轮,归入同一个阶段
   assert.equal(h.settled[1]!.error, undefined);
 
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  const record = store.getRangeReview(rangeReview.id)!;
-  store.close();
+  const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
+  const record = (await store.getRangeReview(rangeReview.id))!;
+  await store.close();
   assert.equal(runs.length, 2);
   assert.deepEqual(
     runs.map((run) => run.headSha),
@@ -166,8 +166,8 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
   await h.settledAtLeast(2);
 
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  store.close();
+  const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
+  await store.close();
   assert.equal(runs.length, 2);
   // 触发人记的是点重跑的那个账号。
   assert.equal(runs[0]!.triggeredBy, "range-rerunner");
@@ -184,15 +184,15 @@ const reportingReviewers: NonNullable<
   );
 
 /** 库里每一轮的模式,按开跑先后。 */
-function modes(h: PanelHarness, rangeReviewId: number): string[] {
+async function modes(h: PanelHarness, rangeReviewId: number): Promise<string[]> {
   const store = openStore(h.db.path);
   try {
-    return store
-      .listRuns({ limit: 30, rangeReviewId })
+    return (await store
+      .listRuns({ limit: 30, rangeReviewId }))
       .map((run) => run.mode)
       .reverse();
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -221,7 +221,7 @@ test("范围审查重跑默认只复核,`full` 才是完整审查,非法取值 4
   assert.equal(h.settled.length, 3);
 
   // 发起触发的首轮永远是完整审查。
-  assert.deepEqual(modes(h, rangeReview.id), ["full", "verdict-only", "full"]);
+  assert.deepEqual(await modes(h, rangeReview.id), ["full", "verdict-only", "full"]);
 });
 
 test("未处置历史全落在本轮没改的文件上:只复核重跑同样 409,不先答已触发", async () => {
@@ -245,7 +245,7 @@ test("未处置历史全落在本轮没改的文件上:只复核重跑同样 409
   assert.equal(denied.status, 409);
   assert.match(((await denied.json()) as { error: string }).error, /未处置/);
   assert.equal(h.settled.length, 1);
-  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+  assert.deepEqual(await modes(h, rangeReview.id), ["full"]);
 });
 
 test("承载历史的文件在容器 PR 上是删除或改名:只复核重跑 409,不先答已触发(issue #251)", async () => {
@@ -278,7 +278,7 @@ test("承载历史的文件在容器 PR 上是删除或改名:只复核重跑 40
   assert.match(((await renamed.json()) as { error: string }).error, /未处置/);
 
   assert.equal(h.settled.length, 1);
-  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+  assert.deepEqual(await modes(h, rangeReview.id), ["full"]);
 });
 
 test("未处置历史全落在回退文件上:只复核重跑先自动处置再 409,文案带条数(issue #276)", async () => {
@@ -309,17 +309,17 @@ test("未处置历史全落在回退文件上:只复核重跑先自动处置再 
   // 处置写回了容器 PR 上那条评论,库里那一条记「已修复」并带上回退那句备注。
   assert.deepEqual(h.memory.resolvedIds, [carried.id]);
   const store = openStore(h.db.path);
-  const history = store
-    .stageHistory({ rangeReviewId: rangeReview.id })
+  const history = (await store
+    .stageHistory({ rangeReviewId: rangeReview.id }))
     .map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null }));
-  store.close();
+  await store.close();
   assert.deepEqual(history, [
     { file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" },
   ]);
 
   // 被拒的那一次不开轮次:重跑本来就不动比较项与分支,这里只需确认没有多出一轮。
   assert.equal(h.settled.length, 1);
-  assert.deepEqual(modes(h, rangeReview.id), ["full"]);
+  assert.deepEqual(await modes(h, rangeReview.id), ["full"]);
 });
 
 test("没有未处置历史的阶段:只复核重跑 409 并说明,一轮不开", async () => {
@@ -337,5 +337,5 @@ test("没有未处置历史的阶段:只复核重跑 409 并说明,一轮不开"
     202,
   );
   await h.settledAtLeast(2);
-  assert.deepEqual(modes(h, rangeReview.id), ["full", "full"]);
+  assert.deepEqual(await modes(h, rangeReview.id), ["full", "full"]);
 });

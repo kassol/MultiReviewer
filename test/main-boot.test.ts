@@ -42,11 +42,11 @@ async function boot(
   const dbPath = join(dir, "multireviewer.db");
   const cacheDir = join(dir, "worktrees");
   const seed = openStore(dbPath);
-  putGlobalSettings(seed, {
+  await putGlobalSettings(seed, {
     reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
     maxChangedLinesPerBatch: null,
   });
-  seed.close();
+  await seed.close();
 
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {

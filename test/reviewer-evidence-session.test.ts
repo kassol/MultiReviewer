@@ -266,14 +266,14 @@ test("经 runReview 落库后,用量进所属 Reviewer 那一行与本轮总量"
   // 都是 84,只有一个 Reviewer、没有合并 agent 时两者相等。
   const store = openStore(db.path);
   try {
-    const [run] = store.listRuns({ limit: 1 });
+    const [run] = await store.listRuns({ limit: 1 });
     assert.ok(run);
     assert.equal(run.models.length, 1);
     assert.equal(run.models[0]!.model, "stub:stub-model");
     assert.deepEqual(run.models[0]!.usage, sum(PLAIN_USAGE));
     assert.deepEqual(run.usage, sum(PLAIN_USAGE));
   } finally {
-    store.close();
+    await store.close();
   }
 });
 

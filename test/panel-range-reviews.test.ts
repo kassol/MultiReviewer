@@ -51,7 +51,7 @@ async function registeredHarness(
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   // 注册后工作副本在后台备(issue #184)。等它跑完再开测:范围审查读的是这份已经在的
   // 副本,而这一步自己也要读一次仓库,混进来会让「读了几次仓库」数不清。
   await harness.worktreesPreparedAtLeast(1);
@@ -118,8 +118,8 @@ test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属
   assert.equal(h.memory.createdReviews[0]!.comments[0]!.path, "src/answer.ts");
 
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30 });
-  store.close();
+  const runs = await store.listRuns({ limit: 30 });
+  await store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.rangeReviewId, rangeReview.id);
   assert.equal(runs[0]!.pullNumber, container.number);
@@ -144,8 +144,8 @@ test("标题必填:不给与只给空白都被拒,一条分支都不建", async 
   assert.deepEqual(h.memory.createdBranches, []);
   assert.deepEqual(h.memory.createdPullRequests, []);
   const store = openStore(h.db.path);
-  assert.deepEqual(store.listRangeReviews({}), []);
-  store.close();
+  assert.deepEqual(await store.listRangeReviews({}), []);
+  await store.close();
 });
 
 test("base 预填:取同仓库最近一个审查完成的范围审查的最终比较项,没有则为空", async () => {
@@ -204,8 +204,8 @@ test("比较项不是 base 的后代:拒绝,一条分支都不建", async () => 
   assert.deepEqual(h.memory.createdPullRequests, []);
 
   const store = openStore(h.db.path);
-  assert.deepEqual(store.listRangeReviews({}), []);
-  store.close();
+  assert.deepEqual(await store.listRangeReviews({}), []);
+  await store.close();
 });
 
 test("同一 base 已有进行中的:先提醒,带确认标志重发即成功,两条记录并存", async () => {
@@ -267,8 +267,8 @@ test("建容器 PR 失败:记下失败原因,已建的两条分支被清理", as
   const { rangeReviewId } = (await response.json()) as { rangeReviewId: number };
 
   const store = openStore(h.db.path);
-  const record = store.getRangeReview(rangeReviewId)!;
-  store.close();
+  const record = (await store.getRangeReview(rangeReviewId))!;
+  await store.close();
   assert.equal(record.state, "failed");
   assert.equal(record.containerPullNumber, null);
   assert.match(record.lastForgeFailure!, /branch protection/);
@@ -334,8 +334,8 @@ test("发起范围审查不收模式:带上只复核照样是完整审查(issue 
   assert.equal(h.settled[0]!.error, undefined);
 
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  store.close();
+  const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
+  await store.close();
   assert.deepEqual(
     runs.map((run) => run.mode),
     ["full"],
@@ -389,12 +389,12 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
   const h = await registeredHarness();
   const store = openStore(h.db.path);
   // 升级前就存在的角色:它拿到的是当时的全部评审权限,不含新增的 review:create。
-  const legacy = store.createPanelRole({
+  const legacy = await store.createPanelRole({
     name: "老的评审角色",
     permissions: ["review:rerun"],
     createdAt: "2026-08-20T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username: "range-reader",
     displayName: null,
     passwordHash: HASH,
@@ -403,7 +403,7 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
     isSystemAdmin: false,
     roleId: legacy.id,
   });
-  store.close();
+  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -526,10 +526,10 @@ test("发起带来源:落库并回给面板,不带时是 null(issue #234)", asyn
   assert.equal(plain.comparisonSource, null);
 
   const store = openStore(h.db.path);
-  assert.deepEqual(store.getRangeReview(sourced.id)!.comparisonSource, {
+  assert.deepEqual((await store.getRangeReview(sourced.id))!.comparisonSource, {
     kind: "tag",
     name: "v1.0.0",
   });
-  assert.equal(store.getRangeReview(plain.id)!.comparisonSource, null);
-  store.close();
+  assert.equal((await store.getRangeReview(plain.id))!.comparisonSource, null);
+  await store.close();
 });

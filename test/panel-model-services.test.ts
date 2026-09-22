@@ -28,14 +28,14 @@ const PASSWORD_HASH = await hashTestPassword(PASSWORD);
  * 把这个仓库的模型覆盖换成这一份(null 即清成跟随全局)。写入口只有整块那一个
  * (issue #302),这里读当前版本、别的两项原样带过去。
  */
-function putRepoReviewers(store: Store, repoId: number, reviewersJson: string | null): boolean {
-  const repo = store.getRepo(repoId)!;
-  return store.putRepoSettings(repoId, repo.settingsVersion, {
+async function putRepoReviewers(store: Store, repoId: number, reviewersJson: string | null): Promise<boolean> {
+  const repo = (await store.getRepo(repoId))!;
+  return (await store.putRepoSettings(repoId, repo.settingsVersion, {
     reviewersJson,
     auxiliaryModelJson: repo.auxiliaryModelJson,
     minReportSeverity: repo.minReportSeverity,
     defaultBranch: repo.defaultBranch,
-  }).ok;
+  })).ok;
 }
 
 function service(
@@ -80,7 +80,7 @@ function service(
   };
 }
 
-function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: string[] } {
+async function seedServices(h: PanelHarness): Promise<{ ciphertexts: string[]; plaintexts: string[] }> {
   const store = openStore(h.db.path);
   const plaintexts = [
     "secret-corp-gateway-1212",
@@ -95,7 +95,7 @@ function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: str
   );
 
   assert.equal(
-    store.commitModelServiceVersion(
+    await store.commitModelServiceVersion(
       null,
       service("corp-gateway", {
         type: "custom",
@@ -157,7 +157,7 @@ function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: str
     1,
   );
   assert.equal(
-    store.commitModelServiceVersion(
+    await store.commitModelServiceVersion(
       null,
       service("openrouter", {
         credential: {
@@ -204,7 +204,7 @@ function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: str
     1,
   );
   assert.equal(
-    store.commitModelServiceVersion(
+    await store.commitModelServiceVersion(
       null,
       service("openai", {
         type: "custom",
@@ -237,7 +237,7 @@ function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: str
     "openai-completions",
   );
   assert.equal(
-    store.commitModelServiceVersion(
+    await store.commitModelServiceVersion(
       null,
       service("deepseek", {
         targetFingerprint: deepseekTargetFingerprint,
@@ -281,7 +281,7 @@ function seedServices(h: PanelHarness): { ciphertexts: string[]; plaintexts: str
     ),
     1,
   );
-  store.close();
+  await store.close();
   return { ciphertexts, plaintexts };
 }
 
@@ -291,12 +291,12 @@ async function cookieFor(
   permissions: readonly PanelPermission[],
 ): Promise<string> {
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: `role-${username}`,
     permissions,
     createdAt: "2026-08-20T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username,
     displayName: null,
     passwordHash: PASSWORD_HASH,
@@ -305,7 +305,7 @@ async function cookieFor(
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.close();
+  await store.close();
   const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -452,8 +452,8 @@ test("内置候选预览只凭凭据写权限发现并脱敏，且不创建服�
     assert.ok(body.models.every((model) => model.provider === "deepseek"));
 
     const store = openStore(h.db.path);
-    assert.equal(store.getModelService("deepseek"), undefined);
-    store.close();
+    assert.equal(await store.getModelService("deepseek"), undefined);
+    await store.close();
   } finally {
     stub.restore();
     if (priorOffline === undefined) delete process.env["PI_OFFLINE"];
@@ -497,8 +497,8 @@ test("内置预览失败只返回安全摘要与 request id，日志用同一 id
     assert.equal(logs.some((line) => line.includes(body.requestId) && line.includes(upstreamDetail)), true);
     assert.equal(logs.some((line) => line.includes(credential)), false);
     const store = openStore(h.db.path);
-    assert.equal(store.getModelService(provider), undefined);
-    store.close();
+    assert.equal(await store.getModelService(provider), undefined);
+    await store.close();
   } finally {
     console.error = priorError;
   }
@@ -554,8 +554,8 @@ test("最终提交重新发现并真实推理后原子写入加密凭据、目�
     assert.equal(credentialCalls[0]!.body?.["model"], validationModel);
 
     const store = openStore(h.db.path);
-    const record = store.getModelService("deepseek")!;
-    store.close();
+    const record = (await store.getModelService("deepseek"))!;
+    await store.close();
     assert.equal(record.version, 1);
     assert.equal(record.baseUrl, null);
     assert.equal(record.api, null);
@@ -635,8 +635,8 @@ test("预览与最终目录漂移后验证模型没有自己的目标：混合�
     const inferenceCalls = stub.calls.filter((call) => call.auth === `Bearer ${credential}`);
     assert.equal(inferenceCalls.length, 0);
     const store = openStore(h.db.path);
-    assert.equal(store.getModelService("openrouter"), undefined);
-    store.close();
+    assert.equal(await store.getModelService("openrouter"), undefined);
+    await store.close();
   } finally {
     stub.restore();
     if (priorOffline === undefined) delete process.env["PI_OFFLINE"];
@@ -674,8 +674,8 @@ test("最终目录失败后仍真实验证所选模型，成功则只提交失�
     assert.equal(text.includes(credential), false);
 
     const store = openStore(h.db.path);
-    const record = store.getModelService("deepseek")!;
-    store.close();
+    const record = (await store.getModelService("deepseek"))!;
+    await store.close();
     assert.equal(record.directory.state, "discovery-failed");
     assert.equal(record.directory.failure, "目录上游失败");
     assert.deepEqual(record.automaticModels, []);
@@ -699,9 +699,9 @@ test("真实推理失败不创建新服务，凭据轮换失败也完整保留�
   const newCookie = await cookieFor(newHarness, "builtin-new-failure", ["credential:write"]);
   const existingCookie = await cookieFor(existingHarness, "builtin-rotation-failure", ["credential:write"]);
   const oldStore = openStore(existingHarness.db.path);
-  assert.equal(oldStore.commitModelServiceVersion(null, service("deepseek")), 1);
-  const before = oldStore.getModelService("deepseek")!;
-  oldStore.close();
+  assert.equal(await oldStore.commitModelServiceVersion(null, service("deepseek")), 1);
+  const before = (await oldStore.getModelService("deepseek"))!;
+  await oldStore.close();
 
   const priorOffline = process.env["PI_OFFLINE"];
   process.env["PI_OFFLINE"] = "1";
@@ -749,8 +749,8 @@ test("真实推理失败不创建新服务，凭据轮换失败也完整保留�
     assert.equal("failure" in newFailure, false);
     assert.equal(logs.some((line) => line.includes(newFailure.requestId)), true);
     const newAfter = openStore(newHarness.db.path);
-    assert.equal(newAfter.getModelService("deepseek"), undefined);
-    newAfter.close();
+    assert.equal(await newAfter.getModelService("deepseek"), undefined);
+    await newAfter.close();
 
     const rotationResponse = await mutation(
       existingHarness,
@@ -763,8 +763,8 @@ test("真实推理失败不创建新服务，凭据轮换失败也完整保留�
     assert.equal(rotationResponse.status, 422);
     assert.equal(rotationText.includes(rotatedSecret), false);
     const existingAfter = openStore(existingHarness.db.path);
-    assert.deepEqual(existingAfter.getModelService("deepseek"), before);
-    existingAfter.close();
+    assert.deepEqual(await existingAfter.getModelService("deepseek"), before);
+    await existingAfter.close();
     for (const material of [newSecret, rotatedSecret, before.credential.apiKeyEncrypted!]) {
       assert.equal(logs.some((line) => line.includes(material)), false, "日志泄露了凭据材料");
     }
@@ -819,8 +819,8 @@ test("并发旧候选只有一个能推进版本，后到提交与旧预览都�
     assert.equal(secondText.includes(secondSecret), false);
 
     const store = openStore(h.db.path);
-    const record = store.getModelService("deepseek")!;
-    store.close();
+    const record = (await store.getModelService("deepseek"))!;
+    await store.close();
     assert.equal(record.version, 1);
     assert.equal(
       decryptCredential(PANEL_CREDENTIAL_MASTER_KEY, record.credential.apiKeyEncrypted!),
@@ -859,7 +859,7 @@ test("同目标重验解密已存待重验凭据，真实推理成功后原子�
     "openai-completions",
   );
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service("deepseek", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("deepseek", {
     targetFingerprint,
     credential: {
       state: "pending-reverification",
@@ -870,8 +870,8 @@ test("同目标重验解密已存待重验凭据，真实推理成功后原子�
       verificationSource: null,
     },
   })), 1);
-  const ciphertext = seed.getModelService("deepseek")!.credential.apiKeyEncrypted!;
-  seed.close();
+  const ciphertext = (await seed.getModelService("deepseek"))!.credential.apiKeyEncrypted!;
+  await seed.close();
 
   const priorOffline = process.env["PI_OFFLINE"];
   process.env["PI_OFFLINE"] = "1";
@@ -903,8 +903,8 @@ test("同目标重验解密已存待重验凭据，真实推理成功后原子�
     assert.equal(inferenceCalls.length, 1);
 
     const store = openStore(h.db.path);
-    const record = store.getModelService("deepseek")!;
-    store.close();
+    const record = (await store.getModelService("deepseek"))!;
+    await store.close();
     assert.equal(record.version, 2);
     assert.equal(record.credential.state, "verified");
     assert.equal(record.credential.updatedAt, credentialUpdatedAt);
@@ -930,7 +930,7 @@ test("凭据写用户可用自定义服务同目标的已存凭据重新验证",
   const credential = "custom-pending-stored-secret";
   const credentialUpdatedAt = "2026-08-19T06:00:00.000Z";
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl,
     api,
@@ -950,8 +950,8 @@ test("凭据写用户可用自定义服务同目标的已存凭据重新验证",
       createdAt: "2026-08-19T05:00:00.000Z",
     }],
   })), 1);
-  const ciphertext = seed.getModelService(provider)!.credential.apiKeyEncrypted!;
-  seed.close();
+  const ciphertext = (await seed.getModelService(provider))!.credential.apiKeyEncrypted!;
+  await seed.close();
 
   const stub = stubModelFetch((call) =>
     call.url.pathname.endsWith("/models")
@@ -972,8 +972,8 @@ test("凭据写用户可用自定义服务同目标的已存凭据重新验证",
     assert.ok(stub.calls.every((call) => call.auth === `Bearer ${credential}`));
 
     const store = openStore(h.db.path);
-    const record = store.getModelService(provider)!;
-    store.close();
+    const record = (await store.getModelService(provider))!;
+    await store.close();
     assert.equal(record.version, 2);
     assert.equal(record.targetFingerprint, fingerprint);
     assert.equal(record.credential.state, "verified");
@@ -991,7 +991,7 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
   const writerCookie = await cookieFor(h, "builtin-delete-writer", ["credential:write"]);
   const wrongCookie = await cookieFor(h, "builtin-delete-model-writer", ["model:write"]);
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service("deepseek", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("deepseek", {
     credential: {
       state: "pending-reverification",
       apiKeyEncrypted: encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, "pending-delete-secret"),
@@ -1001,22 +1001,22 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
       verificationSource: null,
     },
   })), 1);
-  const ciphertext = seed.getModelService("deepseek")!.credential.apiKeyEncrypted!;
-  assert.equal(seed.registerRepo({
+  const ciphertext = (await seed.getModelService("deepseek"))!.credential.apiKeyEncrypted!;
+  assert.equal(await seed.registerRepo({
     repoId: 1351,
     owner: "acme",
     repo: "follows-global",
     generation: 1,
     key: "follow-key",
   }), true);
-  assert.equal(seed.registerRepo({
+  assert.equal(await seed.registerRepo({
     repoId: 1352,
     owner: "acme",
     repo: "explicit",
     generation: 1,
     key: "explicit-key",
   }), true);
-  seed.close();
+  await seed.close();
   const legacyReferences = new DatabaseSync(h.db.path);
   legacyReferences.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
     "reviewers",
@@ -1070,10 +1070,10 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
   ]);
 
   const clear = openStore(h.db.path);
-  putGlobalSettings(clear, { reviewersJson: null, maxChangedLinesPerBatch: null });
-  clear.removeRepo(1351);
-  clear.removeRepo(1352);
-  clear.close();
+  await putGlobalSettings(clear, { reviewersJson: null, maxChangedLinesPerBatch: null });
+  await clear.removeRepo(1351);
+  await clear.removeRepo(1352);
+  await clear.close();
   const deleted = await mutation(
     h,
     writerCookie,
@@ -1090,8 +1090,8 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
     credential: { state: "unconfigured" },
   });
   const store = openStore(h.db.path);
-  const record = store.getModelService("deepseek")!;
-  store.close();
+  const record = (await store.getModelService("deepseek"))!;
+  await store.close();
   assert.equal(record.version, 2);
   assert.deepEqual(record.credential, {
     state: "unconfigured",
@@ -1119,15 +1119,15 @@ test("辅助模型与模型组合同等受引用保护:两处位置进引用清�
   const h = await startPanelHarness({ reviewers: [] });
   const writerCookie = await cookieFor(h, "auxiliary-reference-writer", ["credential:write"]);
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service("aux-service")), 1);
-  assert.equal(seed.registerRepo({
+  assert.equal(await seed.commitModelServiceVersion(null, service("aux-service")), 1);
+  assert.equal(await seed.registerRepo({
     repoId: 1361,
     owner: "acme",
     repo: "aux-repo",
     generation: 1,
     key: "aux-key",
   }), true);
-  seed.close();
+  await seed.close();
   // 两处辅助模型,谁都不在任何模型组合里:引用保护认它们,与组合那两处同等(issue #303)。
   const fixture = new DatabaseSync(h.db.path);
   fixture.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
@@ -1194,13 +1194,13 @@ test("凭据写用户可删除自定义模型服务凭据并保留目标与模�
   const api = "openai-completions" as const;
   const targetFingerprint = modelServiceTargetFingerprint(baseUrl, api);
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl,
     api,
     targetFingerprint,
   })), 1);
-  seed.close();
+  await seed.close();
 
   const response = await mutation(
     h,
@@ -1211,8 +1211,8 @@ test("凭据写用户可删除自定义模型服务凭据并保留目标与模�
   );
   assert.equal(response.status, 200, await response.text());
   const store = openStore(h.db.path);
-  const record = store.getModelService(provider)!;
-  store.close();
+  const record = (await store.getModelService(provider))!;
+  await store.close();
   assert.equal(record.version, 2);
   assert.equal(record.type, "custom");
   assert.equal(record.baseUrl, baseUrl);
@@ -1225,7 +1225,7 @@ test("凭据写用户可删除自定义模型服务凭据并保留目标与模�
 
 test("模型服务读取按模型与凭据权限独立裁剪，合并来源并保留运行基线", async () => {
   const h = await startPanelHarness();
-  const secrets = seedServices(h);
+  const secrets = await seedServices(h);
   const modelCookie = await cookieFor(h, "model-reader", ["model:read"]);
   const credentialCookie = await cookieFor(h, "credential-reader", ["credential:read"]);
   const bothCookie = await cookieFor(h, "combined-reader", ["model:read", "credential:read"]);
@@ -1593,7 +1593,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
 
 test("模型目录支持批量停用与重新启用，并拒绝未知模型", async () => {
   const h = await startPanelHarness({ reviewers: [] });
-  seedServices(h);
+  await seedServices(h);
   const modelWriter = await cookieFor(h, "model-state-writer", ["model:write"]);
 
   const initial = (await h.api("GET", "/model-services").then((response) => response.json())) as {
@@ -1634,11 +1634,11 @@ test("模型目录支持批量停用与重新启用，并拒绝未知模型", as
   });
   assert.equal(reenabled.status, 200);
   const store = openStore(h.db.path);
-  assert.equal(putGlobalSettings(store, {
+  assert.equal(await putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "corp-gateway", model: "automatic-model" }]),
     maxChangedLinesPerBatch: null,
   }), true);
-  store.close();
+  await store.close();
   const blocked = await mutation(h, modelWriter, "PUT", "/model-services/corp-gateway/model-states", {
     models: ["automatic-model"],
     expectedVersion: corp.version,
@@ -1657,7 +1657,7 @@ test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", asy
   const api = "openai-completions" as const;
   const targetFingerprint = modelServiceTargetFingerprint(baseUrl, api);
   const store = openStore(h.db.path);
-  assert.equal(store.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await store.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl,
     api,
@@ -1694,7 +1694,7 @@ test("自定义服务中与 Pi 同 model id 的信息来源按字段投影", asy
       },
     }],
   })), 1);
-  store.close();
+  await store.close();
 
   const response = await h.api("GET", "/model-services");
   assert.equal(response.status, 200);
@@ -1740,7 +1740,7 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
   const store = openStore(h.db.path);
   const baseUrl = "https://runtime-gateway.example/v1";
   const targetFingerprint = modelServiceTargetFingerprint(baseUrl, "openai-completions");
-  assert.equal(store.commitModelServiceVersion(null, service("runtime-gateway", {
+  assert.equal(await store.commitModelServiceVersion(null, service("runtime-gateway", {
     type: "custom",
     baseUrl,
     api: "openai-completions",
@@ -1760,7 +1760,7 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
       createdAt: "2026-08-20T01:10:00.000Z",
     }],
   })), 1);
-  assert.equal(store.commitModelServiceVersion(null, service("openrouter", {
+  assert.equal(await store.commitModelServiceVersion(null, service("openrouter", {
     credential: {
       state: "unconfigured",
       apiKeyEncrypted: null,
@@ -1779,18 +1779,18 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
     automaticModels: [],
     supplements: [],
   })), 1);
-  putGlobalSettings(store, {
+  await putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "runtime-gateway", model: "manual-model" }]),
     maxChangedLinesPerBatch: null,
   });
-  store.registerRepo({
+  await store.registerRepo({
     repoId: 81,
     owner: "acme",
     repo: "follows-global",
     generation: 1,
     key: "follow-key",
   });
-  store.registerRepo({
+  await store.registerRepo({
     repoId: 82,
     owner: "acme",
     repo: "explicit",
@@ -1798,7 +1798,7 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
     key: "explicit-key",
     reviewersJson: JSON.stringify([{ provider: "runtime-gateway", model: "manual-model" }]),
   });
-  store.close();
+  await store.close();
 
   const cookie = await cookieFor(h, "runtime-reader", ["model:read"]);
   const first = await request(h, cookie, "/model-services");
@@ -1839,7 +1839,7 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
     reviewers: [{ provider: "openrouter", model: "missing" }],
   });
   const referencedStore = openStore(referencedHarness.db.path);
-  assert.equal(referencedStore.commitModelServiceVersion(null, service("openrouter", {
+  assert.equal(await referencedStore.commitModelServiceVersion(null, service("openrouter", {
     credential: {
       state: "unconfigured",
       apiKeyEncrypted: null,
@@ -1858,14 +1858,14 @@ test("模型服务投影给出运行能力与引用位置，并隐藏没有管�
     automaticModels: [],
     supplements: [],
   })), 1);
-  referencedStore.registerRepo({
+  await referencedStore.registerRepo({
     repoId: 91,
     owner: "acme",
     repo: "references-empty-provider",
     generation: 1,
     key: "reference-key",
   });
-  referencedStore.close();
+  await referencedStore.close();
   const referencedCookie = await cookieFor(referencedHarness, "reference-reader", ["model:read"]);
   const second = await request(referencedHarness, referencedCookie, "/model-services");
   const secondBody = (await second.json()) as ModelServicesBody;
@@ -1894,7 +1894,7 @@ test("组合候选只含可用模型与已选失效模型，内置目标漂移�
   ];
   const h = await startPanelHarness({ reviewers: selected });
   const store = openStore(h.db.path);
-  assert.equal(store.commitModelServiceVersion(null, service("openai", {
+  assert.equal(await store.commitModelServiceVersion(null, service("openai", {
     targetFingerprint: "stale-openai-target",
     automaticModels: [{
       identity: "openai:selected-drift",
@@ -1905,7 +1905,7 @@ test("组合候选只含可用模型与已选失效模型，内置目标漂移�
   })), 1);
   const customBaseUrl = "https://candidate-custom.example/v1";
   const customFingerprint = modelServiceTargetFingerprint(customBaseUrl, "openai-completions");
-  assert.equal(store.commitModelServiceVersion(null, service("candidate-custom", {
+  assert.equal(await store.commitModelServiceVersion(null, service("candidate-custom", {
     type: "custom",
     baseUrl: customBaseUrl,
     api: "openai-completions",
@@ -1923,7 +1923,7 @@ test("组合候选只含可用模型与已选失效模型，内置目标漂移�
       createdAt: "2026-08-20T01:10:00.000Z",
     }],
   })), 1);
-  store.close();
+  await store.close();
 
   const cookie = await cookieFor(h, "candidate-reader", ["model:read", "credential:read"]);
   const response = await request(h, cookie, "/model-services");
@@ -1943,7 +1943,7 @@ test("组合候选只含可用模型与已选失效模型，内置目标漂移�
 
 test("Pi 内置 provider 搜索接受任一相关读写权限并标出已配置与名字冲突", async () => {
   const h = await startPanelHarness();
-  const secrets = seedServices(h);
+  const secrets = await seedServices(h);
   const permissions: PanelPermission[] = [
     "model:read",
     "model:write",
@@ -2053,8 +2053,8 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
       ignoredModelCount: 0,
     });
     const afterPreview = openStore(h.db.path);
-    assert.equal(afterPreview.getModelService("corp-create"), undefined);
-    afterPreview.close();
+    assert.equal(await afterPreview.getModelService("corp-create"), undefined);
+    await afterPreview.close();
 
     const commitResponse = await mutation(
       h,
@@ -2069,8 +2069,8 @@ test("自定义候选预览无草稿，最终重新发现与真实推理后原�
     assert.equal(discoveryCalls, 2, "最终提交必须重新发现，不能复用预览快照");
 
     const store = openStore(h.db.path);
-    const record = store.getModelService("corp-create")!;
-    store.close();
+    const record = (await store.getModelService("corp-create"))!;
+    await store.close();
     assert.deepEqual(JSON.parse(commitText), {
       provider: "corp-create",
       version: 1,
@@ -2136,8 +2136,8 @@ test("自定义模型发现失败无需验证模型，返回 request id 且候�
     assert.equal(logs.some((line) => line.includes(body.requestId) && line.includes("upstream body")), true);
     assert.equal(logs.some((line) => line.includes(credential)), false);
     const store = openStore(h.db.path);
-    assert.equal(store.getModelService("corp-preview-failure"), undefined);
-    store.close();
+    assert.equal(await store.getModelService("corp-preview-failure"), undefined);
+    await store.close();
   } finally {
     console.error = priorError;
   }
@@ -2246,8 +2246,8 @@ test("自定义最终发现失败可由真实推理提交，推理失败不留�
       assert.equal(fallbackText.includes(material), false);
     }
     const committedStore = openStore(successHarness.db.path);
-    const committed = committedStore.getModelService("corp-fallback")!;
-    committedStore.close();
+    const committed = (await committedStore.getModelService("corp-fallback"))!;
+    await committedStore.close();
     assert.equal(committed.directory.state, "discovery-failed");
     assert.equal(committed.directory.failure!.includes(discoveryCredential), false);
     assert.equal(committed.directory.failure!.includes(PANEL_CREDENTIAL_MASTER_KEY), false);
@@ -2288,8 +2288,8 @@ test("自定义最终发现失败可由真实推理提交，推理失败不留�
       assert.equal(logs.some((line) => line.includes(material)), false, `日志泄露了 ${material}`);
     }
     const rejectedStore = openStore(failureHarness.db.path);
-    assert.equal(rejectedStore.getModelService("corp-rejected"), undefined);
-    rejectedStore.close();
+    assert.equal(await rejectedStore.getModelService("corp-rejected"), undefined);
+    await rejectedStore.close();
   } finally {
     console.log = priorConsole.log;
     console.warn = priorConsole.warn;
@@ -2309,7 +2309,7 @@ test("自定义凭据轮换失败保留完整旧版本，同目标成功轮换�
   const rejectedCredential = "custom-rejected-rotation-secret";
   const acceptedCredential = "custom-accepted-rotation-secret";
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl,
     api,
@@ -2337,8 +2337,8 @@ test("自定义凭据轮换失败保留完整旧版本，同目标成功轮换�
       },
     ],
   })), 1);
-  const before = seed.getModelService(provider)!;
-  seed.close();
+  const before = (await seed.getModelService(provider))!;
+  await seed.close();
 
   const stub = stubModelFetch((call) => {
     if (call.url.pathname.endsWith("/models")) {
@@ -2379,8 +2379,8 @@ test("自定义凭据轮换失败保留完整旧版本，同目标成功轮换�
     });
     assert.equal(rejected.status, 422, await rejected.text());
     const afterRejectedStore = openStore(h.db.path);
-    assert.deepEqual(afterRejectedStore.getModelService(provider), before);
-    afterRejectedStore.close();
+    assert.deepEqual(await afterRejectedStore.getModelService(provider), before);
+    await afterRejectedStore.close();
 
     const accepted = await mutation(h, cookie, "POST", "/model-services/custom/commit", {
       provider,
@@ -2394,8 +2394,8 @@ test("自定义凭据轮换失败保留完整旧版本，同目标成功轮换�
     const acceptedText = await accepted.text();
     assert.equal(accepted.status, 200, acceptedText);
     const finalStore = openStore(h.db.path);
-    const final = finalStore.getModelService(provider)!;
-    finalStore.close();
+    const final = (await finalStore.getModelService(provider))!;
+    await finalStore.close();
     assert.equal(final.version, 2);
     assert.equal(final.baseUrl, baseUrl);
     assert.equal(final.api, api);
@@ -2426,7 +2426,7 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
   const oldCredential = "custom-switch-old-secret";
   const newCredential = "custom-switch-new-secret";
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl: oldBaseUrl,
     api,
@@ -2472,18 +2472,18 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
       },
     ],
   })), 1);
-  assert.equal(putGlobalSettings(seed, {
+  assert.equal(await putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider, model: "blocked-global" }]),
     maxChangedLinesPerBatch: null,
   }), true);
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: 8101,
     owner: "acme",
     repo: "follows-global",
     generation: 1,
     key: "following-key",
   });
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: 8102,
     owner: "acme",
     repo: "explicit-models",
@@ -2491,8 +2491,8 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
     key: "explicit-key",
     reviewersJson: JSON.stringify([{ provider, model: "blocked-repo" }]),
   });
-  const before = seed.getModelService(provider)!;
-  seed.close();
+  const before = (await seed.getModelService(provider))!;
+  await seed.close();
 
   const candidate = {
     provider,
@@ -2564,13 +2564,13 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
       },
     ]);
     const afterBlockedStore = openStore(h.db.path);
-    assert.deepEqual(afterBlockedStore.getModelService(provider), before);
-    assert.equal(putGlobalSettings(afterBlockedStore, {
+    assert.deepEqual(await afterBlockedStore.getModelService(provider), before);
+    assert.equal(await putGlobalSettings(afterBlockedStore, {
       reviewersJson: null,
       maxChangedLinesPerBatch: null,
     }), true);
-    assert.equal(putRepoReviewers(afterBlockedStore, 8102, null), true);
-    afterBlockedStore.close();
+    assert.equal(await putRepoReviewers(afterBlockedStore, 8102, null), true);
+    await afterBlockedStore.close();
 
     const committedResponse = await mutation(
       h,
@@ -2582,8 +2582,8 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
     const committedText = await committedResponse.text();
     assert.equal(committedResponse.status, 200, committedText);
     const finalStore = openStore(h.db.path);
-    const final = finalStore.getModelService(provider)!;
-    assert.equal(putGlobalSettings(finalStore, {
+    const final = (await finalStore.getModelService(provider))!;
+    assert.equal(await putGlobalSettings(finalStore, {
       reviewersJson: JSON.stringify([
         { provider, model: "newly-discovered" },
         { provider, model: "manual-reconfirm" },
@@ -2592,10 +2592,10 @@ test("自定义目标切换只带入新发现与明确重录来源，并返回�
       maxChangedLinesPerBatch: null,
     }), true);
     assert.equal(
-      putRepoReviewers(finalStore, 8102, JSON.stringify([{ provider, model: "newly-discovered" }])),
+      await putRepoReviewers(finalStore, 8102, JSON.stringify([{ provider, model: "newly-discovered" }])),
       true,
     );
-    finalStore.close();
+    await finalStore.close();
     assert.equal(final.version, 2);
     assert.equal(final.baseUrl, newBaseUrl);
     assert.equal(final.targetFingerprint, newFingerprint);
@@ -2642,21 +2642,21 @@ test("Pi 内置名称后来冲突时自定义服务自动停用，冲突消失�
   const recoveryBaseUrl = "https://recovered.example/v1";
   const api = "openai-completions";
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service("openai", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("openai", {
     type: "custom",
     baseUrl: collisionBaseUrl,
     api,
     targetFingerprint: modelServiceTargetFingerprint(collisionBaseUrl, api),
     disabledReason: null,
   })), 1);
-  assert.equal(seed.commitModelServiceVersion(null, service("recovered-custom", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("recovered-custom", {
     type: "custom",
     baseUrl: recoveryBaseUrl,
     api,
     targetFingerprint: modelServiceTargetFingerprint(recoveryBaseUrl, api),
     disabledReason: "name-conflict",
   })), 1);
-  seed.close();
+  await seed.close();
   const cookie = await cookieFor(h, "collision-reader", ["model:read"]);
   const writerCookie = await cookieFor(h, "collision-model-writer", ["model:write"]);
   const stub = stubModelFetch((call) => successfulInference(String(call.body?.["model"])));
@@ -2716,13 +2716,13 @@ test("Pi 内置名称后来冲突时自定义服务自动停用，冲突消失�
   assert.ok(recovered.models.every(({ available }) => available));
 
   const persistedStore = openStore(h.db.path);
-  assert.equal(persistedStore.getModelService("openai")!.disabledReason, null);
-  assert.equal(persistedStore.getModelService("recovered-custom")!.disabledReason, null);
+  assert.equal((await persistedStore.getModelService("openai"))!.disabledReason, null);
+  assert.equal((await persistedStore.getModelService("recovered-custom"))!.disabledReason, null);
   assert.deepEqual(
-    persistedStore.getModelService("recovered-custom")!.supplements.map(({ model }) => model),
+    (await persistedStore.getModelService("recovered-custom"))!.supplements.map(({ model }) => model),
     ["recovered-supplement"],
   );
-  persistedStore.close();
+  await persistedStore.close();
 });
 
 test("冲突自定义 provider 通过维护端点改名并立即刷新模型服务投影", async () => {
@@ -2733,7 +2733,7 @@ test("冲突自定义 provider 通过维护端点改名并立即刷新模型服�
     "credential:write",
   ]);
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service("openai", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("openai", {
     type: "custom",
     baseUrl: "https://rename.example/v1",
     api: "openai-completions",
@@ -2743,7 +2743,7 @@ test("冲突自定义 provider 通过维护端点改名并立即刷新模型服�
     ),
     disabledReason: "name-conflict",
   })), 1);
-  seed.close();
+  await seed.close();
 
   const stale = await mutation(
     h,
@@ -2782,13 +2782,13 @@ test("冲突自定义 provider 通过维护端点改名并立即刷新模型服�
   assert.equal(body.services.find(({ provider }) => provider === "corp-openai")?.version, 2);
 
   const ordinary = openStore(h.db.path);
-  assert.equal(ordinary.commitModelServiceVersion(null, service("ordinary", {
+  assert.equal(await ordinary.commitModelServiceVersion(null, service("ordinary", {
     type: "custom",
     baseUrl: "https://ordinary.example/v1",
     api: "openai-completions",
     disabledReason: null,
   })), 1);
-  ordinary.close();
+  await ordinary.close();
   const rejectedOrdinary = await mutation(
     h,
     cookie,
@@ -2807,7 +2807,7 @@ test("冲突 provider 改名同事务重写辅助模型引用:全局与仓库覆
     "credential:write",
   ]);
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service("openai", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("openai", {
     type: "custom",
     baseUrl: "https://rename-auxiliary.example/v1",
     api: "openai-completions",
@@ -2817,14 +2817,14 @@ test("冲突 provider 改名同事务重写辅助模型引用:全局与仓库覆
     ),
     disabledReason: "name-conflict",
   })), 1);
-  assert.equal(seed.registerRepo({
+  assert.equal(await seed.registerRepo({
     repoId: 1371,
     owner: "acme",
     repo: "auxiliary-rename",
     generation: 1,
     key: "auxiliary-rename-key",
   }), true);
-  seed.close();
+  await seed.close();
   // 两处辅助模型引用这家服务,模型组合一处都没有:改名要连它们一起换,不然引用指向一个
   // 不存在的 provider(CONTEXT.md 自定义 provider)。
   const fixture = new DatabaseSync(h.db.path);
@@ -2849,25 +2849,25 @@ test("冲突 provider 改名同事务重写辅助模型引用:全局与仓库覆
   const after = openStore(h.db.path);
   try {
     assert.equal(
-      after.getGlobalSettings().auxiliaryModelJson,
+      (await after.getGlobalSettings()).auxiliaryModelJson,
       JSON.stringify({ provider: "corp-openai", model: "automatic-model" }),
     );
     assert.equal(
-      after.getRepo(1371)!.auxiliaryModelJson,
+      (await after.getRepo(1371))!.auxiliaryModelJson,
       JSON.stringify({ provider: "corp-openai", model: "automatic-model", thinkingLevel: "high" }),
     );
     // 改名之后这两处仍是可用引用:解析得出的就是新名字下的同一个模型。
-    assert.deepEqual(after.resolveAuxiliaryModel(1371), {
+    assert.deepEqual(await after.resolveAuxiliaryModel(1371), {
       spec: { provider: "corp-openai", model: "automatic-model", thinkingLevel: "high" },
       source: "repo",
     });
     // 引用清单里不再有旧 provider。
     assert.deepEqual(
-      after.listModelReferences().map((entry) => entry.identity),
+      (await after.listModelReferences()).map((entry) => entry.identity),
       ["corp-openai:automatic-model"],
     );
   } finally {
-    after.close();
+    await after.close();
   }
 });
 
@@ -2878,7 +2878,7 @@ test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数�
     "credential:write",
   ]);
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service("openai", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("openai", {
     type: "custom",
     baseUrl: "https://rename-blocked.example/v1",
     api: "openai-completions",
@@ -2888,7 +2888,7 @@ test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数�
     ),
     disabledReason: "name-conflict",
   })), 1);
-  seed.close();
+  await seed.close();
   const sqlite = new DatabaseSync(h.db.path);
   sqlite.prepare(
     "INSERT INTO global_setting (key, value) VALUES ('reviewers', ?)",
@@ -2952,7 +2952,7 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   const targetFingerprint = modelServiceTargetFingerprint(baseUrl, api);
   const credential = "custom-delete-secret";
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl,
     api,
@@ -2977,18 +2977,18 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
       createdAt: "2026-08-20T01:59:30.000Z",
     }],
   })), 1);
-  putGlobalSettings(seed, {
+  await putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider, model: "delete-global" }]),
     maxChangedLinesPerBatch: null,
   });
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: 8201,
     owner: "acme",
     repo: "delete-follower",
     generation: 1,
     key: "delete-follow-key",
   });
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: 8202,
     owner: "acme",
     repo: "delete-explicit",
@@ -2996,7 +2996,7 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
     key: "delete-explicit-key",
     reviewersJson: JSON.stringify([{ provider, model: "delete-repo" }]),
   });
-  const historicalRunId = seed.startRun({
+  const historicalRunId = await seed.startRun({
     owner: "acme",
     repo: "historical-review",
     pullNumber: 136,
@@ -3007,7 +3007,7 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
     startedAt: "2026-08-20T02:02:00.000Z",
     reviewerPins: [],
   });
-  seed.finishRun(historicalRunId, {
+  await seed.finishRun(historicalRunId, {
     finishedAt: "2026-08-20T02:02:01.000Z",
     durationMs: 1_000,
     failed: false,
@@ -3021,8 +3021,8 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
     }],
     findings: [],
   });
-  const before = seed.getModelService(provider)!;
-  seed.close();
+  const before = (await seed.getModelService(provider))!;
+  await seed.close();
 
   const blockedResponse = await mutation(
     h,
@@ -3060,9 +3060,9 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   ]);
 
   const unlink = openStore(h.db.path);
-  assert.equal(putGlobalSettings(unlink, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
-  assert.equal(putRepoReviewers(unlink, 8202, null), true);
-  unlink.close();
+  assert.equal(await putGlobalSettings(unlink, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
+  assert.equal(await putRepoReviewers(unlink, 8202, null), true);
+  await unlink.close();
   const sqlite = new DatabaseSync(h.db.path);
   sqlite.exec(`
     CREATE TRIGGER reject_corp_delete
@@ -3083,8 +3083,8 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   assert.equal(failedResponse.status, 500, failedText);
   assert.equal(failedText.includes(credential), false);
   const afterFailure = openStore(h.db.path);
-  assert.deepEqual(afterFailure.getModelService(provider), before);
-  afterFailure.close();
+  assert.deepEqual(await afterFailure.getModelService(provider), before);
+  await afterFailure.close();
   sqlite.exec("DROP TRIGGER reject_corp_delete");
 
   const staleResponse = await mutation(
@@ -3119,8 +3119,8 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   }
   sqlite.close();
   const historyStore = openStore(h.db.path);
-  const history = historyStore.listRuns({ limit: 10 });
-  historyStore.close();
+  const history = await historyStore.listRuns({ limit: 10 });
+  await historyStore.close();
   assert.equal(
     history.find(({ id }) => id === historicalRunId)!.models[0]!.model,
     `${provider}:automatic-model`,
@@ -3178,8 +3178,8 @@ test("并发同名创建与同版本修改都只有先提交者成功，旧版�
     assert.equal(secondText.includes(secondCredential), false);
 
     const store = openStore(h.db.path);
-    const record = store.getModelService(provider)!;
-    store.close();
+    const record = (await store.getModelService(provider))!;
+    await store.close();
     assert.equal(record.version, 1);
     assert.equal(
       decryptCredential(PANEL_CREDENTIAL_MASTER_KEY, record.credential.apiKeyEncrypted!),
@@ -3218,8 +3218,8 @@ test("并发同名创建与同版本修改都只有先提交者成功，旧版�
     assert.equal(fourth.status, 409, fourthText);
     assert.equal(fourthText.includes(fourthCredential), false);
     const finalStore = openStore(h.db.path);
-    const final = finalStore.getModelService(provider)!;
-    finalStore.close();
+    const final = (await finalStore.getModelService(provider))!;
+    await finalStore.close();
     assert.equal(final.version, 2);
     assert.equal(
       decryptCredential(PANEL_CREDENTIAL_MASTER_KEY, final.credential.apiKeyEncrypted!),
@@ -3261,8 +3261,8 @@ test("新建自定义服务不能占用当前 Pi 内置名称且不会发候选�
     assert.equal(text.includes("must-not-be-sent"), false);
     assert.deepEqual(stub.calls, []);
     const store = openStore(h.db.path);
-    assert.equal(store.getModelService("openai"), undefined);
-    store.close();
+    assert.equal(await store.getModelService("openai"), undefined);
+    await store.close();
   } finally {
     stub.restore();
   }
@@ -3316,7 +3316,7 @@ test("手动刷新成功整批替换自动快照，失败推进版本并保留�
     "openai-completions",
   );
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl: "https://refresh.example/v1",
     api: "openai-completions",
@@ -3342,7 +3342,7 @@ test("手动刷新成功整批替换自动快照，失败推进版本并保留�
       createdAt: "2026-08-20T01:02:00.000Z",
     }],
   })), 1);
-  seed.close();
+  await seed.close();
 
   assert.equal(
     (await mutation(h, credentialWriter, "POST", `/model-services/${provider}/refresh`, {
@@ -3373,8 +3373,8 @@ test("手动刷新成功整批替换自动快照，失败推进版本并保留�
     },
   });
   const afterSuccessStore = openStore(h.db.path);
-  const afterSuccess = afterSuccessStore.getModelService(provider)!;
-  afterSuccessStore.close();
+  const afterSuccess = (await afterSuccessStore.getModelService(provider))!;
+  await afterSuccessStore.close();
   assert.deepEqual(afterSuccess.automaticModels.map(({ id }) => id), ["new-a", "new-b"]);
   assert.deepEqual(afterSuccess.supplements.map(({ model }) => model), ["supplement-kept"]);
   assert.equal(afterSuccess.directory.state, "available");
@@ -3398,8 +3398,8 @@ test("手动刷新成功整批替换自动快照，失败推进版本并保留�
     assert.equal(failedText.includes(material), false, `刷新响应泄露了 ${material}`);
   }
   const afterFailureStore = openStore(h.db.path);
-  const afterFailure = afterFailureStore.getModelService(provider)!;
-  afterFailureStore.close();
+  const afterFailure = (await afterFailureStore.getModelService(provider))!;
+  await afterFailureStore.close();
   assert.equal(afterFailure.version, 3);
   assert.equal(afterFailure.directory.state, "refresh-failed");
   assert.equal(afterFailure.directory.lastSuccessAt, afterSuccess.directory.lastSuccessAt);
@@ -3423,7 +3423,7 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
   const modelWriter = await cookieFor(h, "supplement-model-writer", ["model:write"]);
   const credentialWriter = await cookieFor(h, "supplement-credential-writer", ["credential:write"]);
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl,
     api,
@@ -3437,7 +3437,7 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
       verificationSource: "inference",
     },
   })), 1);
-  assert.equal(seed.commitModelServiceVersion(null, service("corp-stale-target", {
+  assert.equal(await seed.commitModelServiceVersion(null, service("corp-stale-target", {
     type: "custom",
     baseUrl: "https://stale-target.example/v1",
     api,
@@ -3451,7 +3451,7 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
       verificationSource: "inference",
     },
   })), 1);
-  seed.close();
+  await seed.close();
 
   let inferenceSucceeds = true;
   const stub = stubModelFetch((call) => {
@@ -3536,8 +3536,8 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
     assert.equal(stub.calls[0]!.auth, `Bearer ${credential}`);
     assert.equal(stub.calls[0]!.body?.["model"], "manual/only");
     const stored = openStore(h.db.path);
-    const afterAdd = stored.getModelService(provider)!;
-    stored.close();
+    const afterAdd = (await stored.getModelService(provider))!;
+    await stored.close();
     assert.equal(afterAdd.version, 2);
     assert.deepEqual(afterAdd.supplements, [{
       provider,
@@ -3629,8 +3629,8 @@ test("模型补录只做一次真实推理并绑定当前目标，失败与旧�
     }
     assert.equal(stub.calls.length, callsBeforeStale + 1, "失败补录也只能执行一次真实推理");
     const afterFailureStore = openStore(h.db.path);
-    assert.deepEqual(afterFailureStore.getModelService(provider), beforeFailure);
-    afterFailureStore.close();
+    assert.deepEqual(await afterFailureStore.getModelService(provider), beforeFailure);
+    await afterFailureStore.close();
   } finally {
     stub.restore();
   }
@@ -3649,7 +3649,7 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
     ["credential:write"],
   );
   const seed = openStore(h.db.path);
-  assert.equal(seed.commitModelServiceVersion(null, service(provider, {
+  assert.equal(await seed.commitModelServiceVersion(null, service(provider, {
     type: "custom",
     baseUrl,
     api,
@@ -3694,21 +3694,21 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
       },
     ],
   })), 1);
-  putGlobalSettings(seed, {
+  await putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([
       { provider, model: "shared" },
       { provider, model: "blocked-global" },
     ]),
     maxChangedLinesPerBatch: null,
   });
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: 8301,
     owner: "acme",
     repo: "follows-global",
     generation: 1,
     key: "supplement-follow-key",
   });
-  seed.registerRepo({
+  await seed.registerRepo({
     repoId: 8302,
     owner: "acme",
     repo: "explicit-models",
@@ -3716,7 +3716,7 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
     key: "supplement-explicit-key",
     reviewersJson: JSON.stringify([{ provider, model: "blocked-repo" }]),
   });
-  seed.close();
+  await seed.close();
 
   const sharedInput = { model: "shared", expectedVersion: 1 };
   assert.equal(
@@ -3747,9 +3747,9 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
     version: 2,
   });
   const afterShared = openStore(h.db.path);
-  assert.deepEqual(afterShared.getModelService(provider)!.automaticModels.map(({ id }) => id), ["shared"]);
-  assert.equal(afterShared.listModelSupplements(provider).some(({ model }) => model === "shared"), false);
-  afterShared.close();
+  assert.deepEqual((await afterShared.getModelService(provider))!.automaticModels.map(({ id }) => id), ["shared"]);
+  assert.equal((await afterShared.listModelSupplements(provider)).some(({ model }) => model === "shared"), false);
+  await afterShared.close();
 
   const globalBlocked = await mutation(
     h,
@@ -3797,12 +3797,12 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
     },
   ]);
   const afterBlocked = openStore(h.db.path);
-  assert.equal(afterBlocked.getModelService(provider)!.version, 2);
+  assert.equal((await afterBlocked.getModelService(provider))!.version, 2);
   assert.deepEqual(
-    afterBlocked.listModelSupplements(provider).map(({ model }) => model),
+    (await afterBlocked.listModelSupplements(provider)).map(({ model }) => model),
     ["blocked-global", "blocked-repo", "unreferenced"],
   );
-  afterBlocked.close();
+  await afterBlocked.close();
 
   assert.equal(
     (await mutation(
@@ -3825,9 +3825,9 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
   assert.equal((await h.api("GET", "/model-services").then((response) => response.text())).includes("unreferenced"), false);
 
   const unlink = openStore(h.db.path);
-  assert.equal(putGlobalSettings(unlink, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
-  assert.equal(putRepoReviewers(unlink, 8302, null), true);
-  unlink.close();
+  assert.equal(await putGlobalSettings(unlink, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
+  assert.equal(await putRepoReviewers(unlink, 8302, null), true);
+  await unlink.close();
   const removedGlobal = await mutation(
     h,
     modelWriter,
@@ -3845,8 +3845,8 @@ test("删除补录在自动来源仍在时成功，仅唯一来源按完整标�
   );
   assert.equal(removedRepo.status, 200, await removedRepo.text());
   const finalStore = openStore(h.db.path);
-  const final = finalStore.getModelService(provider)!;
-  finalStore.close();
+  const final = (await finalStore.getModelService(provider))!;
+  await finalStore.close();
   assert.equal(final.version, 5);
   assert.deepEqual(final.automaticModels.map(({ id }) => id), ["shared"]);
   assert.deepEqual(final.supplements, []);

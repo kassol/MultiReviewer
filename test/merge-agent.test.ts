@@ -100,23 +100,23 @@ const AT = (line: number, title: string, description = title) => ({
 });
 
 /** 这一轮落库的全部轨迹事件。 */
-function trace(dbPath: string): {
+async function trace(dbPath: string): Promise<{
   scope: string;
   reviewer?: string;
   kind: string;
   payload: Record<string, unknown>;
-}[] {
+}[]> {
   const store = openStore(dbPath);
   try {
-    const runId = store.listRuns({ limit: 1 })[0]!.id;
-    return store.listTrace(runId).map((event) => ({
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    return (await store.listTrace(runId)).map((event) => ({
       scope: event.scope,
       ...(event.reviewer === undefined ? {} : { reviewer: event.reviewer }),
       kind: event.kind,
       payload: event.payload as Record<string, unknown>,
     }));
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -155,7 +155,7 @@ test("分组方案过验收即生效:同一行的两个问题被拆开,相邻的
   assert.equal(result.findings[1]!.title, "删除了类型校验");
   assert.equal(forge.createdReviews[0]!.comments.length, 2);
 
-  const events = trace(db.path);
+  const events = await trace(db.path);
   // 真的合并了的那一组发一条事件,判据是 agent 档,带它给的那句理由。
   const merged = events.filter((event) => event.kind === "finding_merged");
   assert.equal(merged.length, 1);
@@ -195,7 +195,7 @@ test("单成员组不产生合并事件", async () => {
   });
 
   assert.equal(result.findings.length, 2);
-  assert.equal(trace(db.path).filter((event) => event.kind === "finding_merged").length, 0);
+  assert.equal((await trace(db.path)).filter((event) => event.kind === "finding_merged").length, 0);
 });
 
 test("同一个模型逐字重复报的两条,合进同一组后仍折叠成一段归属", async () => {
@@ -235,7 +235,7 @@ async function assertFallback(
     mergeAgent: scriptedMergeAgent(groups, extra),
   });
 
-  const fallbacks = trace(db.path).filter((event) => event.kind === "merge_fallback");
+  const fallbacks = (await trace(db.path)).filter((event) => event.kind === "merge_fallback");
   assert.equal(fallbacks.length, 1, "回退该在轨迹里留一条记录");
   return { reason: String(fallbacks[0]!.payload["reason"]), count: result.findings.length };
 }
@@ -398,7 +398,7 @@ test("多归属组的综合说明成为正文,归属保留各模型原话", asyn
   assert.ok(!body.includes("sub 多减了 1"), "正文不该混进 model-a 的原话");
   assert.ok(!body.includes("返回值比正确结果少 1"), "正文不该混进 model-b 的原话");
 
-  assert.equal(trace(db.path).filter((e) => e.kind === "synthesis_fallback").length, 0);
+  assert.equal((await trace(db.path)).filter((e) => e.kind === "synthesis_fallback").length, 0);
 });
 
 test("缺综合的那一组退回代表段,其余组照用综合,轨迹记一条 synthesis_fallback", async () => {
@@ -437,12 +437,12 @@ test("缺综合的那一组退回代表段,其余组照用综合,轨迹记一条
   assert.equal(fallen.suggestion, "步长改回 1");
   assert.equal(fallen.attributions.length, 2, "分组照收,归属不因缺综合而少");
 
-  const events = trace(db.path).filter((e) => e.kind === "synthesis_fallback");
+  const events = (await trace(db.path)).filter((e) => e.kind === "synthesis_fallback");
   assert.equal(events.length, 1);
   assert.equal(events[0]!.payload["group"], 1, "组下标即方案里的次序");
   assert.match(String(events[0]!.payload["reason"]), /没有综合说明/);
   // 整轮的合并没有退回算法档:回退只落在那一组上。
-  assert.equal(trace(db.path).filter((e) => e.kind === "merge_fallback").length, 0);
+  assert.equal((await trace(db.path)).filter((e) => e.kind === "merge_fallback").length, 0);
 });
 
 test("综合的标题或问题说明空白的那一组同样退回代表段", async () => {
@@ -469,7 +469,7 @@ test("综合的标题或问题说明空白的那一组同样退回代表段", as
 
   assert.equal(result.findings[0]!.title, "off-by-one");
   assert.equal(result.findings[0]!.description, "返回值比正确结果少 1");
-  const events = trace(db.path).filter((e) => e.kind === "synthesis_fallback");
+  const events = (await trace(db.path)).filter((e) => e.kind === "synthesis_fallback");
   assert.equal(events.length, 1);
   assert.match(String(events[0]!.payload["reason"]), /问题说明是空的/);
 });
@@ -495,7 +495,7 @@ test("单归属组落库为原文,agent 给了综合也不用", async () => {
   assert.equal(result.findings[0]!.title, "减法越界");
   assert.equal(result.findings[0]!.description, "sub 多减了 1");
   // 归属只有一条的组不要求综合,缺不缺都不记回退。
-  assert.equal(trace(db.path).filter((e) => e.kind === "synthesis_fallback").length, 0);
+  assert.equal((await trace(db.path)).filter((e) => e.kind === "synthesis_fallback").length, 0);
 });
 
 test("agent 随综合给的严重度与分类不采用", async () => {
@@ -554,7 +554,7 @@ test("整轮退回算法合并时综合不生效,正文取代表段", async () =
   assert.equal(result.findings.length, 1);
   assert.equal(result.findings[0]!.title, "off-by-one", "算法档只认代表段");
   assert.equal(result.findings[0]!.description, "返回值比正确结果少 1");
-  const events = trace(db.path);
+  const events = await trace(db.path);
   assert.equal(events.filter((e) => e.kind === "merge_fallback").length, 1);
   assert.equal(events.filter((e) => e.kind === "synthesis_fallback").length, 0);
 });
@@ -568,10 +568,10 @@ test("整轮退回算法合并时综合不生效,正文取代表段", async () =
  */
 
 /** 人在面板上处置一条 Finding,Forge 上那条评论一并置为已 resolve。 */
-function dispose(dbPath: string, forge: MemoryForge, commentId: string): void {
+async function dispose(dbPath: string, forge: MemoryForge, commentId: string): Promise<void> {
   const store = openStore(dbPath);
   try {
-    store.recordDisposition({
+    await store.recordDisposition({
       owner: EVENT.owner,
       repo: EVENT.repo,
       commentId,
@@ -580,7 +580,7 @@ function dispose(dbPath: string, forge: MemoryForge, commentId: string): void {
       disposedAt: "2026-09-04T00:00:00.000Z",
     });
   } finally {
-    store.close();
+    await store.close();
   }
   for (const comment of forge.existingComments) {
     if (comment.id === commentId) comment.resolved = true;
@@ -645,7 +645,7 @@ test("合并请求里的历史只含本轮有 Finding 的文件,未处置与已�
     { ...AT(2, "inc 加错了"), file: "src/n.js" },
   ]);
   // 第一条被人处置掉:两档历史都要进合并请求。
-  dispose(ctx.db.path, ctx.forge, "comment-1");
+  await dispose(ctx.db.path, ctx.forge, "comment-1");
 
   const merge = scriptedMergeAgent((request) => [
     { members: [0], history: [request.history![0]!.id], reason: "还是那处余额校验" },
@@ -694,7 +694,7 @@ test("agent 把本轮一条与旧指纹仍在的历史分成一组:不发评论,
     continuedFrom: null,
   });
 
-  const folded = trace(ctx.db.path).filter((event) => event.kind === "finding_folded");
+  const folded = (await trace(ctx.db.path)).filter((event) => event.kind === "finding_folded");
   assert.equal(folded.length, 1);
   assert.deepEqual(folded[0]!.payload["criteria"], {
     kind: "agent",
@@ -704,15 +704,15 @@ test("agent 把本轮一条与旧指纹仍在的历史分成一组:不发评论,
   // 折叠进旧条的那一行带旧条的指纹:阶段汇总按「文件 + 指纹」归并,同一处问题只占一行,
   // 未处置计数不因换了说法再报一次而多一条。
   const store = openStore(ctx.db.path);
-  const summary = store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: EVENT.number });
-  store.close();
+  const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: EVENT.number });
+  await store.close();
   assert.equal(summary.findings.length, 1);
 });
 
 test("命中已处置的历史:本轮那条沉默,落库折叠到已处置", async () => {
   const ctx = setup();
   await firstRun(ctx, [AT(2, "余额校验被删掉")]);
-  dispose(ctx.db.path, ctx.forge, "comment-1");
+  await dispose(ctx.db.path, ctx.forge, "comment-1");
 
   const merge = scriptedMergeAgent((request) => [
     { members: [0], history: [request.history![0]!.id], reason: "这处已经处置过了" },
@@ -757,7 +757,7 @@ test("含历史成员的组行距超容差仍过验收", async () => {
     mergeAgent: merge,
   });
 
-  assert.equal(trace(ctx.db.path).filter((e) => e.kind === "merge_fallback").length, 0);
+  assert.equal((await trace(ctx.db.path)).filter((e) => e.kind === "merge_fallback").length, 0);
   assert.equal(result.findings.length, 1);
 });
 
@@ -780,7 +780,7 @@ test("同一条历史被分进两组的方案整体作废回退", async () => {
     mergeAgent: merge,
   });
 
-  const fallbacks = trace(ctx.db.path).filter((e) => e.kind === "merge_fallback");
+  const fallbacks = (await trace(ctx.db.path)).filter((e) => e.kind === "merge_fallback");
   assert.equal(fallbacks.length, 1);
   assert.match(String(fallbacks[0]!.payload["reason"]), /被分进了两组/);
   // 回退到算法档:相距 9 行的两条各自成条。
@@ -850,7 +850,7 @@ test("命中的历史所指代码已改写:走延续,旧评论 resolve,新评论
   );
   assert.match(ctx.forge.createdReviews[1]!.comments[0]!.body, /延续自 \[上一处评论\]/);
 
-  const continued = trace(ctx.db.path).filter((event) => event.kind === "finding_continued");
+  const continued = (await trace(ctx.db.path)).filter((event) => event.kind === "finding_continued");
   assert.equal(continued.length, 1);
   assert.deepEqual(continued[0]!.payload["criteria"], {
     kind: "agent",
@@ -882,7 +882,7 @@ test("命中的历史本轮已被全部 Reviewer 判已修:不延续,旧行留�
   assert.equal(rows[1]!.continuedFrom, null, "本轮那条是新 Finding,不承接已修的 Identity");
   assert.doesNotMatch(ctx.forge.createdReviews[1]!.comments[0]!.body, /延续自/);
   assert.equal(
-    trace(ctx.db.path).filter((event) => event.kind === "finding_continued").length,
+    (await trace(ctx.db.path)).filter((event) => event.kind === "finding_continued").length,
     0,
     "轨迹不记延续",
   );
@@ -953,7 +953,7 @@ test("同一处的另一个问题:agent 只把其中一条归给历史,另一条
   const ctx = setup();
   await firstRun(ctx, [AT(2, "余额校验被删掉")]);
   // 上一轮那条被人驳回:旧口径下它会把本轮同一行的新问题一并压掉,连评论都不发。
-  dispose(ctx.db.path, ctx.forge, "comment-1");
+  await dispose(ctx.db.path, ctx.forge, "comment-1");
 
   const merge = scriptedMergeAgent((request) => [
     { members: [0], history: [request.history![0]!.id], reason: "还是那处余额校验" },
@@ -987,22 +987,22 @@ test("同一处的另一个问题:agent 只把其中一条归给历史,另一条
 
   // 判据落轨迹:只记是哪条历史。组自己的合并理由说的是组内那几条为什么是一回事,它没
   // 解释过这一次为什么不折叠,摆进判据会读成 agent 给过这个说法(评审复核 2026-09-09)。
-  const notFolded = trace(ctx.db.path).filter((event) => event.kind === "finding_not_folded");
+  const notFolded = (await trace(ctx.db.path)).filter((event) => event.kind === "finding_not_folded");
   assert.equal(notFolded.length, 1);
   assert.deepEqual(notFolded[0]!.payload["criteria"], { kind: "agent_differs", history: 1 });
 
   // 同一「文件 + 指纹」下两条 Identity:阶段汇总与参与条数都各算一条。
   const store = openStore(ctx.db.path);
-  const summary = store.stageSummary({
+  const summary = await store.stageSummary({
     owner: EVENT.owner,
     repo: EVENT.repo,
     pullNumber: EVENT.number,
   });
-  const participation = store.modelParticipation(
+  const participation = await store.modelParticipation(
     "2000-01-01T00:00:00.000Z",
     "2999-01-01T00:00:00.000Z",
   );
-  store.close();
+  await store.close();
   assert.deepEqual(
     summary.findings.map((finding) => [finding.title, finding.disposition]),
     [
@@ -1039,7 +1039,7 @@ test("合并 agent 收到的位置提示只给指纹命中的那条历史", asyn
 test("合并 agent 不可用的那一轮:同一处的新问题仍按指纹并进旧条,轨迹记回退", async () => {
   const ctx = setup();
   await firstRun(ctx, [AT(2, "余额校验被删掉")]);
-  dispose(ctx.db.path, ctx.forge, "comment-1");
+  await dispose(ctx.db.path, ctx.forge, "comment-1");
 
   const merge = scriptedMergeAgent([], { failure: "合并 agent 跑挂了" });
   await runReview(EVENT, {
@@ -1053,7 +1053,7 @@ test("合并 agent 不可用的那一轮:同一处的新问题仍按指纹并进
   });
 
   assert.deepEqual(ctx.forge.createdReviews[1]!.comments, [], "退回指纹折叠:那一处不再打扰");
-  const events = trace(ctx.db.path);
+  const events = await trace(ctx.db.path);
   assert.equal(events.filter((event) => event.kind === "merge_fallback").length, 1);
   assert.equal(events.filter((event) => event.kind === "finding_not_folded").length, 0);
   assert.deepEqual(events.find((event) => event.kind === "finding_folded")!.payload["criteria"], {
@@ -1061,12 +1061,12 @@ test("合并 agent 不可用的那一轮:同一处的新问题仍按指纹并进
   });
 
   const store = openStore(ctx.db.path);
-  const summary = store.stageSummary({
+  const summary = await store.stageSummary({
     owner: EVENT.owner,
     repo: EVENT.repo,
     pullNumber: EVENT.number,
   });
-  store.close();
+  await store.close();
   assert.equal(summary.findings.length, 1, "回退档的 Identity 与这一票之前逐字一致");
 });
 
@@ -1087,7 +1087,7 @@ async function twoAtOneSpot(
   options: { disposeA?: boolean } = {},
 ): Promise<void> {
   await firstRun(ctx, [AT(2, "余额校验被删掉")]);
-  if (options.disposeA === true) dispose(ctx.db.path, ctx.forge, "comment-1");
+  if (options.disposeA === true) await dispose(ctx.db.path, ctx.forge, "comment-1");
   const merge = scriptedMergeAgent((request) => [
     { members: [0], history: [request.history![0]!.id], reason: "还是那处余额校验" },
     { members: [1], reason: "日志里打印密钥是另一个问题" },
@@ -1163,12 +1163,12 @@ test("第三轮回填:A 那条评论的已 resolve 不写到同一处 B 的行�
   );
 
   const store = openStore(ctx.db.path);
-  const summary = store.stageSummary({
+  const summary = await store.stageSummary({
     owner: EVENT.owner,
     repo: EVENT.repo,
     pullNumber: EVENT.number,
   });
-  store.close();
+  await store.close();
   assert.deepEqual(
     summary.findings.map((finding) => [finding.title, finding.disposition]),
     [
@@ -1226,7 +1226,7 @@ test("所在文件回退:同一处的两条各自自动处置,两条评论都 re
     ],
     "两条 Identity 都落在回退掉的文件上,各自被处置",
   );
-  const traced = trace(ctx.db.path).find((event) => event.kind === "history_auto_disposed");
+  const traced = (await trace(ctx.db.path)).find((event) => event.kind === "history_auto_disposed");
   assert.equal((traced!.payload["deleted"] as number[]).length, 0);
   assert.equal((traced!.payload["reverted"] as number[]).length, 2);
 });
@@ -1266,12 +1266,12 @@ test("延续 B:只 resolve B 的旧评论,同一处的 A 留在未处置", async
   assert.equal(findingRows(ctx.db.path)[3]!.continuedFrom, ctx.forge.publishedComments[1]!.htmlUrl);
 
   const store = openStore(ctx.db.path);
-  const summary = store.stageSummary({
+  const summary = await store.stageSummary({
     owner: EVENT.owner,
     repo: EVENT.repo,
     pullNumber: EVENT.number,
   });
-  store.close();
+  await store.close();
   assert.deepEqual(
     summary.findings.map((finding) => [finding.title, finding.disposition]),
     [
@@ -1402,9 +1402,9 @@ async function runOnceWithAuxiliary(
 ): Promise<{ builds: MergeBuild[]; frozen: unknown }> {
   const builds: MergeBuild[] = [];
   const h = await startPanelHarness({ buildMergeAgent: recordMergeBuilds(builds) });
-  seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
-  seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
-  const hook = seedHistoricalRepo(h);
+  await seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
+  await seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
+  const hook = await seedHistoricalRepo(h);
   if (auxiliary !== undefined) setGlobalAuxiliaryModel(h.db.path, auxiliary);
 
   assert.equal((await h.deliverViaHook(h.repo.headSha, hook)).status, 200);
@@ -1451,9 +1451,9 @@ test("开跑后改辅助模型不影响本轮:轮次落的是开跑时解析出�
         };
       }),
   });
-  seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
-  seedAvailableModelService(h, "second", ["other-model"]);
-  const hook = seedHistoricalRepo(h);
+  await seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
+  await seedAvailableModelService(h, "second", ["other-model"]);
+  const hook = await seedHistoricalRepo(h);
 
   assert.equal((await h.deliverViaHook(h.repo.headSha, hook)).status, 200);
   setGlobalAuxiliaryModel(h.db.path, { provider: "second", model: "other-model" });

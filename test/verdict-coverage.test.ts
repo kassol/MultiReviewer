@@ -20,14 +20,14 @@ import { EVENT, FILES, STUB, batchReviewer, query, setup as setupRepo } from "./
 const cleanups = testCleanups();
 
 /** 这一轮的三个数:时间线上一轮要说清没给结论的那些各自是怎么来的。 */
-function verdictCounts(dbPath: string) {
+async function verdictCounts(dbPath: string) {
   const store = openStore(dbPath);
   try {
-    const timeline = store.stageSummary({
+    const timeline = (await store.stageSummary({
       owner: EVENT.owner,
       repo: EVENT.repo,
       pullNumber: EVENT.number,
-    }).timeline;
+    })).timeline;
     const latest = timeline[timeline.length - 1]!;
     return {
       missedVerdicts: latest.missedVerdicts,
@@ -35,7 +35,7 @@ function verdictCounts(dbPath: string) {
       uncoveredVerdicts: latest.uncoveredVerdicts,
     };
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -83,14 +83,14 @@ test("跑了没给、批次跑不成与本轮没审到,三种由来各自记账"
   await runReview(EVENT, { ...common, reviewers: [perBatchReviewer("model-a")] });
 
   const store = openStore(fixture.db.path);
-  const runId = store.listRuns({ limit: 1 })[0]!.id;
-  store.close();
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  await store.close();
 
   assert.deepEqual(reasons(fixture.db.path, runId), {
     "no-verdict": 1,
     "batch-failed": 1,
   });
-  assert.deepEqual(verdictCounts(fixture.db.path), {
+  assert.deepEqual(await verdictCounts(fixture.db.path), {
     missedVerdicts: 1,
     batchFailedVerdicts: 1,
     uncoveredVerdicts: 0,
@@ -124,11 +124,11 @@ test("文件不在本轮任何批次里的那条历史记「没有批次覆盖�
   await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-b")] });
 
   const store = openStore(fixture.db.path);
-  const runId = store.listRuns({ limit: 1 })[0]!.id;
-  store.close();
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  await store.close();
 
   assert.deepEqual(reasons(fixture.db.path, runId), { "no-batch": 1 });
-  assert.deepEqual(verdictCounts(fixture.db.path), {
+  assert.deepEqual(await verdictCounts(fixture.db.path), {
     missedVerdicts: 0,
     batchFailedVerdicts: 0,
     uncoveredVerdicts: 1,
@@ -177,12 +177,12 @@ function failingBatchReviewer(model: string, verdict: "fixed" | "present", line?
 }
 
 /** 这一轮的 run id。 */
-function latestRunId(dbPath: string): number {
+async function latestRunId(dbPath: string): Promise<number> {
   const store = openStore(dbPath);
   try {
-    return store.listRuns({ limit: 1 })[0]!.id;
+    return (await store.listRuns({ limit: 1 }))[0]!.id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -212,7 +212,7 @@ test("失败批在倒下之前给出的「已修」不作自动处置的证据,�
   await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
   await runReview(EVENT, { ...common, reviewers: [failingBatchReviewer("model-a", "fixed")] });
 
-  assert.deepEqual(reasons(fixture.db.path, latestRunId(fixture.db.path)), { "batch-failed": 1 });
+  assert.deepEqual(reasons(fixture.db.path, await latestRunId(fixture.db.path)), { "batch-failed": 1 });
   assert.deepEqual(fixture.forge.resolvedIds, [], "失败批的「已修」却把 Forge 上的评论关掉了");
   assert.deepEqual(findingRows(fixture.db.path), UNTOUCHED);
 });
@@ -233,7 +233,7 @@ test("失败批带新位置的「仍在」不触发延续:旧评论不关,不合
     reviewers: [failingBatchReviewer("model-a", "present", 5)],
   });
 
-  assert.deepEqual(reasons(fixture.db.path, latestRunId(fixture.db.path)), { "batch-failed": 1 });
+  assert.deepEqual(reasons(fixture.db.path, await latestRunId(fixture.db.path)), { "batch-failed": 1 });
   assert.deepEqual(fixture.forge.resolvedIds, [], "延续把旧评论关掉了");
   assert.deepEqual(findingRows(fixture.db.path), UNTOUCHED);
 });

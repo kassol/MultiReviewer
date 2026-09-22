@@ -106,7 +106,7 @@ function stubModelEndpoints(): { calls: ModelCall[]; restore: () => void } {
 }
 
 /** 直接落一版内置服务。`targets` 给了就是绑定集合的新格式版本,省略即升级前的旧格式版本。 */
-function seedBuiltin(
+async function seedBuiltin(
   h: PanelHarness,
   input: {
     credential: string;
@@ -115,11 +115,11 @@ function seedBuiltin(
     automaticModels: readonly DiscoveredModel[];
     supplements?: ModelServiceVersionCommit["supplements"];
   },
-): void {
+): Promise<void> {
   const at = "2026-09-05T00:00:00.000Z";
   const store = openStore(h.db.path);
   try {
-    assert.equal(store.commitModelServiceVersion(null, {
+    assert.equal(await store.commitModelServiceVersion(null, {
       provider: PROVIDER,
       type: "builtin",
       baseUrl: null,
@@ -148,7 +148,7 @@ function seedBuiltin(
       supplements: input.supplements ?? [],
     }), 1);
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -189,7 +189,7 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
       return discovered(reversed ? rows.reverse() : rows);
     },
   });
-  const historicalHook = seedHistoricalRepo(h);
+  const historicalHook = await seedHistoricalRepo(h);
   const credential = "mixed-secret-never-returned";
   const stub = stubModelEndpoints();
   try {
@@ -221,8 +221,8 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
     const expectedTargets = [ANTHROPIC_TARGET, OPENAI_TARGET];
     const setFingerprint = modelServiceTargetSetFingerprint(expectedTargets);
     let store = openStore(h.db.path);
-    let record = store.getModelService(PROVIDER)!;
-    store.close();
+    let record = (await store.getModelService(PROVIDER))!;
+    await store.close();
     assert.equal(record.version, 1);
     assert.deepEqual(record.targets?.map(({ api, baseUrl }) => ({ api, baseUrl })), expectedTargets);
     assert.equal(record.targetFingerprint, setFingerprint);
@@ -241,8 +241,8 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
     assert.equal(stub.calls[1]!.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(stub.calls[1]!.bearer, `Bearer ${credential}`);
     store = openStore(h.db.path);
-    record = store.getModelService(PROVIDER)!;
-    store.close();
+    record = (await store.getModelService(PROVIDER))!;
+    await store.close();
     assert.equal(record.version, 2);
     assert.deepEqual(record.targets?.map(({ api, baseUrl }) => ({ api, baseUrl })), expectedTargets);
     assert.equal(record.targetFingerprint, setFingerprint);
@@ -297,8 +297,8 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
     reviewers: [{ provider: PROVIDER, model: OPENAI_MODEL }, { provider: PROVIDER, model: "manual/only" }],
     discoverModelServiceModels: async () => discovered([row(OPENAI_MODEL, OPENAI_TARGET), row(BARE_MODEL)]),
   });
-  const provenHook = seedHistoricalRepo(proven);
-  seedBuiltin(proven, {
+  const provenHook = await seedHistoricalRepo(proven);
+  await seedBuiltin(proven, {
     credential,
     targetFingerprint: provenFingerprint,
     automaticModels: [row(OPENAI_MODEL, OPENAI_TARGET), row(BARE_MODEL)],
@@ -308,8 +308,8 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
     ],
   });
   const store = openStore(proven.db.path);
-  assert.equal(store.getModelService(PROVIDER)!.targets, null, "夹具必须是没有目标集合的旧格式版本");
-  store.close();
+  assert.equal((await store.getModelService(PROVIDER))!.targets, null, "夹具必须是没有目标集合的旧格式版本");
+  await store.close();
 
   const projected = await projectedService(proven);
   assert.equal(projected.credential.state, "verified");
@@ -346,7 +346,7 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
     reviewers: [],
     discoverModelServiceModels: async () => discovered([row(OPENAI_MODEL, OPENAI_TARGET)]),
   });
-  seedBuiltin(blocked, {
+  await seedBuiltin(blocked, {
     credential,
     targetFingerprint: modelServiceTargetFingerprint("https://gone.example.test/v1", "openai-completions"),
     automaticModels: [row(OPENAI_MODEL, OPENAI_TARGET)],
@@ -389,7 +389,7 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
     // 发现结果已经变成混合协议:Claude 那一行改走 Anthropic Messages。
     discoverModelServiceModels: async () => discovered([row(ANTHROPIC_MODEL, ANTHROPIC_TARGET), row(OPENAI_MODEL, OPENAI_TARGET)]),
   });
-  seedBuiltin(h, {
+  await seedBuiltin(h, {
     credential,
     targetFingerprint: modelServiceTargetSetFingerprint([OPENAI_TARGET])!,
     targets: [OPENAI_TARGET],
@@ -413,18 +413,18 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
     // 组合写入的库内判据与投影同一口径:待验证目标的模型进不了组合,已绑目标的可以。
     const store = openStore(h.db.path);
     assert.equal(
-      putGlobalSettings(store, {
+      await putGlobalSettings(store, {
         reviewersJson: JSON.stringify([{ provider: PROVIDER, model: ANTHROPIC_MODEL }]),
       }),
       false,
     );
     assert.equal(
-      putGlobalSettings(store, {
+      await putGlobalSettings(store, {
         reviewersJson: JSON.stringify([{ provider: PROVIDER, model: OPENAI_MODEL }]),
       }),
       true,
     );
-    store.close();
+    await store.close();
 
     const reverify = await h.api("POST", `/model-services/${PROVIDER}/reverify`, {
       validationModel: ANTHROPIC_MODEL,
@@ -446,7 +446,7 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
 test("模型补录:优先该模型可确认的目标,单目标可沿用,混合协议下定不了目标就明确拒绝", async () => {
   const credential = "supplement-secret-never-returned";
   const mixed = await startPanelHarness({ reviewers: [] });
-  seedBuiltin(mixed, {
+  await seedBuiltin(mixed, {
     credential,
     targetFingerprint: modelServiceTargetSetFingerprint([ANTHROPIC_TARGET, OPENAI_TARGET])!,
     targets: [ANTHROPIC_TARGET, OPENAI_TARGET],
@@ -466,8 +466,8 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.match(error, /改用自定义模型服务/);
     assert.equal(stub.calls.length, 0);
     let store = openStore(mixed.db.path);
-    assert.equal(store.getModelService(PROVIDER)!.version, 1);
-    store.close();
+    assert.equal((await store.getModelService(PROVIDER))!.version, 1);
+    await store.close();
 
     // 目录里它自己那一行的目标:验证打到 Anthropic 端点,补录绑的就是那一个目标。
     const own = await mixed.api("POST", `/model-services/${PROVIDER}/supplements`, {
@@ -477,8 +477,8 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(own.status, 200, await own.text());
     assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages?beta=true");
     store = openStore(mixed.db.path);
-    let record = store.getModelService(PROVIDER)!;
-    store.close();
+    let record = (await store.getModelService(PROVIDER))!;
+    await store.close();
     assert.equal(record.version, 2);
     assert.equal(
       record.supplements.find((entry) => entry.model === ANTHROPIC_MODEL)!.targetFingerprint,
@@ -494,8 +494,8 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(stub.calls[1]!.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(stub.calls[1]!.body?.["model"], PI_TABLE_MODEL);
     store = openStore(mixed.db.path);
-    record = store.getModelService(PROVIDER)!;
-    store.close();
+    record = (await store.getModelService(PROVIDER))!;
+    await store.close();
     assert.equal(
       record.supplements.find((entry) => entry.model === PI_TABLE_MODEL)!.targetFingerprint,
       modelServiceTargetFingerprint(OPENAI_TARGET.baseUrl, OPENAI_TARGET.api),
@@ -509,7 +509,7 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
 
   // 只有一个已确认目标的内置服务:目录外的 model id 沿用它,行为与升级前一致。
   const single = await startPanelHarness({ reviewers: [] });
-  seedBuiltin(single, {
+  await seedBuiltin(single, {
     credential,
     targetFingerprint: modelServiceTargetSetFingerprint([OPENAI_TARGET])!,
     targets: [OPENAI_TARGET],
@@ -526,8 +526,8 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(singleStub.calls[0]!.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(singleStub.calls[0]!.body?.["model"], "unknown/model");
     const store = openStore(single.db.path);
-    const record = store.getModelService(PROVIDER)!;
-    store.close();
+    const record = (await store.getModelService(PROVIDER))!;
+    await store.close();
     assert.equal(
       record.supplements.find((entry) => entry.model === "unknown/model")!.targetFingerprint,
       modelServiceTargetFingerprint(OPENAI_TARGET.baseUrl, OPENAI_TARGET.api),
@@ -569,8 +569,8 @@ test("运行中重新验证换了目标,已开跑的轮次沿用原快照,下一
       }));
     },
   });
-  const historicalHook = seedHistoricalRepo(h);
-  seedBuiltin(h, {
+  const historicalHook = await seedHistoricalRepo(h);
+  await seedBuiltin(h, {
     credential,
     targetFingerprint: modelServiceTargetSetFingerprint([OPENAI_TARGET])!,
     targets: [OPENAI_TARGET],

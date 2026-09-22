@@ -54,7 +54,7 @@ type SeedFinding = {
  * 一轮 Review Run 加它落的这几条 Finding 与同根因组。返回落库的 Finding 行 id(与
  * `findings` 同序)和组 id,后面的用例按它们拼断言。
  */
-function seedRun(
+async function seedRun(
   h: PanelHarness,
   pullNumber: number,
   findings: readonly SeedFinding[],
@@ -62,10 +62,10 @@ function seedRun(
   startedAt = "2026-09-01T00:00:00.000Z",
   /** 这一轮的模式与收尾结果:只复核与失败那两档不提组,取「最新一轮」时要跳过它们。 */
   run: { mode?: "verdict-only"; failed?: boolean } = {},
-): { runId: number; findingIds: number[]; groupIds: number[] } {
+): Promise<{ runId: number; findingIds: number[]; groupIds: number[] }> {
   const store = openStore(h.db.path);
   try {
-    const runId = store.startRun({
+    const runId = await store.startRun({
       owner: HARNESS_PR.owner,
       repo: HARNESS_PR.repo,
       pullNumber,
@@ -77,7 +77,7 @@ function seedRun(
       reviewerPins: [],
       ...(run.mode === undefined ? {} : { mode: run.mode }),
     });
-    const groupIds = store.finishRun(runId, {
+    const groupIds = await store.finishRun(runId, {
       finishedAt: startedAt,
       durationMs: 1,
       failed: run.failed ?? false,
@@ -125,7 +125,7 @@ function seedRun(
       findingIds.close();
     }
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -159,8 +159,8 @@ async function harnessWithGroup(): Promise<{
   groupId: number;
 }> {
   const h = await startReadyPanelHarness();
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  const seeded = seedRun(
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const seeded = await seedRun(
     h,
     HARNESS_PR.number,
     [
@@ -194,8 +194,8 @@ test("阶段汇总:入组的三条各带组引用,组外那条为空,组列表�
 
 test("合并 agent 缺席的阶段:组列表为空,每条的组引用都是 null", async () => {
   const h = await startReadyPanelHarness();
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  seedRun(h, HARNESS_PR.number, [{ file: "src/a.ts" }, { file: "src/b.ts" }]);
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  await seedRun(h, HARNESS_PR.number, [{ file: "src/a.ts" }, { file: "src/b.ts" }]);
 
   const body = await summary(h);
   assert.deepEqual(body.rootCauseGroups, []);
@@ -207,16 +207,16 @@ test("合并 agent 缺席的阶段:组列表为空,每条的组引用都是 null
 
 test("只复核与失败的那几轮:上一轮完整审查的组照旧在", async () => {
   const h = await startReadyPanelHarness();
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  const full = seedRun(
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const full = await seedRun(
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts" }, { file: "src/b.ts" }],
     [{ reason: REASON, members: [0, 1] }],
   );
   // 只复核不报新的、从不提组;失败那一轮压根没走到合并。它们都不该被当成「最新一轮」。
-  seedRun(h, HARNESS_PR.number, [], [], "2026-09-02T00:00:00.000Z", { mode: "verdict-only" });
-  seedRun(h, HARNESS_PR.number, [], [], "2026-09-03T00:00:00.000Z", { failed: true });
+  await seedRun(h, HARNESS_PR.number, [], [], "2026-09-02T00:00:00.000Z", { mode: "verdict-only" });
+  await seedRun(h, HARNESS_PR.number, [], [], "2026-09-03T00:00:00.000Z", { failed: true });
 
   const body = await summary(h);
   assert.deepEqual(body.rootCauseGroups, [
@@ -227,15 +227,15 @@ test("只复核与失败的那几轮:上一轮完整审查的组照旧在", asyn
 
 test("之后一轮完整审查一条都没报出:上一轮的组照旧在,成员引用不变", async () => {
   const h = await startReadyPanelHarness();
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  const full = seedRun(
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const full = await seedRun(
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts" }, { file: "src/b.ts" }],
     [{ reason: REASON, members: [0, 1] }],
   );
   // 两个 Reviewer 都认了历史、零新报:这一轮走不到合并 agent,什么也没判过。
-  seedRun(h, HARNESS_PR.number, [], [], "2026-09-02T00:00:00.000Z");
+  await seedRun(h, HARNESS_PR.number, [], [], "2026-09-02T00:00:00.000Z");
 
   const body = await summary(h);
   assert.deepEqual(body.rootCauseGroups, [
@@ -253,14 +253,14 @@ test("之后一轮完整审查一条都没报出:上一轮的组照旧在,成员
 
 test("之后一轮完整审查报出了新的却没提组:组列表回空,每条的引用都是 null", async () => {
   const h = await startReadyPanelHarness();
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  seedRun(
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  await seedRun(
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts" }, { file: "src/b.ts" }],
     [{ reason: REASON, members: [0, 1] }],
   );
-  seedRun(h, HARNESS_PR.number, [{ file: "src/c.ts" }], [], "2026-09-02T00:00:00.000Z");
+  await seedRun(h, HARNESS_PR.number, [{ file: "src/c.ts" }], [], "2026-09-02T00:00:00.000Z");
 
   const body = await summary(h);
   assert.deepEqual(body.rootCauseGroups, []);
@@ -272,8 +272,8 @@ test("之后一轮完整审查报出了新的却没提组:组列表回空,每条
 
 test("成员映完只剩一条:整组不出现,剩下那条按未入组列出", async () => {
   const h = await startReadyPanelHarness();
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  const seeded = seedRun(
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const seeded = await seedRun(
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts" }, { file: "src/b.ts" }],
@@ -296,11 +296,11 @@ test("成员映完只剩一条:整组不出现,剩下那条按未入组列出", 
 
 test("成员折叠到历史评论:组引用挂在本轮那一行上,阶段汇总里仍只有一条", async () => {
   const h = await startReadyPanelHarness();
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  const first = seedRun(h, HARNESS_PR.number, [{ file: "src/a.ts" }]);
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  const first = await seedRun(h, HARNESS_PR.number, [{ file: "src/a.ts" }]);
   // 第二轮 a 那条折叠到上一轮的评论上:本轮同样落一行,它与那条历史在 `identityKey` 下
   // 是同一条 Finding Identity。组成员记的是本轮这一行(评审复核 2026-09-09)。
-  const second = seedRun(
+  const second = await seedRun(
     h,
     HARNESS_PR.number,
     [{ file: "src/a.ts", commentId: `comment-${first.runId}-0` }, { file: "src/b.ts" }],
@@ -406,7 +406,7 @@ test("没有 finding:dispose-batch 的用户被拒:一条都不动", async () =>
 
 test("仓库分配之外的阶段:有权限也回 404,一条都不动", async () => {
   const { h, groupId } = await harnessWithGroup();
-  seedRepo(h, 4243, "acme", "gadgets");
+  await seedRepo(h, 4243, "acme", "gadgets");
   const cookie = await scopedUser(
     h,
     "other-repo",
@@ -428,7 +428,7 @@ test("仓库分配之外的阶段:有权限也回 404,一条都不动", async ()
 
 test("别的阶段的组:回 404,一条都不动", async () => {
   const { h } = await harnessWithGroup();
-  const other = seedRun(
+  const other = await seedRun(
     h,
     HARNESS_PR.number + 1,
     [{ file: "src/x.ts" }, { file: "src/y.ts" }],

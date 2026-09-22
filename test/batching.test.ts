@@ -701,10 +701,10 @@ function batchesOf(reviewer: {
 }
 
 /** 人在面板上处置一条 Finding:落库这一步与面板 API 走同一段代码。 */
-function disposeInPanel(dbPath: string, commentId: string): void {
+async function disposeInPanel(dbPath: string, commentId: string): Promise<void> {
   const store = openStore(dbPath);
   try {
-    store.recordDisposition({
+    await store.recordDisposition({
       owner: EVENT.owner,
       repo: EVENT.repo,
       commentId,
@@ -713,7 +713,7 @@ function disposeInPanel(dbPath: string, commentId: string): void {
       disposedAt: "2026-09-04T00:00:00.000Z",
     });
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -744,7 +744,7 @@ test("三批时历史按所在文件路由:每条只进它所在文件的那一�
     ],
   });
   // 人处置了 c 那条:已处置的只作背景,路由与未处置的同一条规则。
-  disposeInPanel(db.path, forge.publishedComments.find((c) => c.path === "src/c.ts")!.id);
+  await disposeInPanel(db.path, forge.publishedComments.find((c) => c.path === "src/c.ts")!.id);
 
   const second = scriptedReviewer("model-b", []);
   await runReview(EVENT, { ...deps, reviewers: [second] });
@@ -898,17 +898,17 @@ test("只复核时判已修的历史照常自动处置为「已修复」", async
 });
 
 /** 这一轮落库的全部轨迹事件。 */
-function runTrace(dbPath: string): { scope: string; kind: string; payload: unknown }[] {
+async function runTrace(dbPath: string): Promise<{ scope: string; kind: string; payload: unknown }[]> {
   const store = openStore(dbPath);
   try {
-    const runId = store.listRuns({ limit: 1 })[0]!.id;
-    return store.listTrace(runId).map((event) => ({
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    return (await store.listTrace(runId)).map((event) => ({
       scope: event.scope,
       kind: event.kind,
       payload: event.payload,
     }));
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -942,7 +942,7 @@ test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一
   assert.deepEqual(review.comments.map((comment) => comment.path), ["src/a.ts"]);
   assert.doesNotMatch(review.body, /c 的收尾没有防护/);
 
-  const events = runTrace(db.path);
+  const events = await runTrace(db.path);
   // 两种丢弃在轨迹里是不同类型:排查时要认得出是哪一道拦下的。
   assert.equal(events.filter((event) => event.kind === "finding_discarded").length, 0);
   const outOfBatch = events.filter((event) => event.kind === "finding_out_of_batch");
@@ -979,7 +979,7 @@ test("分批时报在本轮范围外的文件上:仍按锚不进 diff 丢弃,不
     maxChangedLinesPerBatch: 100,
   });
 
-  const events = runTrace(db.path);
+  const events = await runTrace(db.path);
   assert.equal(events.filter((event) => event.kind === "finding_out_of_batch").length, 0);
   const discarded = events.filter((event) => event.kind === "finding_discarded");
   assert.equal(discarded.length, 1);
@@ -1006,7 +1006,7 @@ test("单批审查不过批外这一道:范围外文件的报出仍按锚不进 
     maxChangedLinesPerBatch: 100,
   });
 
-  const kinds = runTrace(db.path).map((event) => event.kind);
+  const kinds = (await runTrace(db.path)).map((event) => event.kind);
   assert.equal(kinds.filter((kind) => kind === "finding_discarded").length, 1);
   assert.equal(kinds.includes("finding_out_of_batch"), false);
 });

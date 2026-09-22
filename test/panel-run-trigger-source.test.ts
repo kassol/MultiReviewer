@@ -30,7 +30,7 @@ type StageDetailBody = {
 
 async function registeredHarness(): Promise<PanelHarness> {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   // 注册后工作副本在后台备(issue #184)。等它备完再开测,免得用例跑完了它还在写缓存目录。
   await h.worktreesPreparedAtLeast(1);
   return h;
@@ -96,7 +96,7 @@ test("发起范围审查与推进比较项开出的轮次都是面板", async ()
 test("升级前的旧库:没有这一列,打开时按调用者用户名快照回填", async () => {
   const h = await registeredHarness();
   const store = openStore(h.db.path);
-  const delivered = seedRun(
+  const delivered = await seedRun(
     store,
     {
       owner: HARNESS_PR.owner,
@@ -107,7 +107,7 @@ test("升级前的旧库:没有这一列,打开时按调用者用户名快照回
     },
     [],
   );
-  const manual = seedRun(
+  const manual = await seedRun(
     store,
     {
       owner: HARNESS_PR.owner,
@@ -119,7 +119,7 @@ test("升级前的旧库:没有这一列,打开时按调用者用户名快照回
     },
     [],
   );
-  store.close();
+  await store.close();
 
   // 把库退回升级之前的样子:那时这一列还不存在。
   const db = new DatabaseSync(h.db.path);

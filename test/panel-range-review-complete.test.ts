@@ -65,13 +65,13 @@ async function registeredHarness(
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }
 
 /** 发起一个范围审查并等第一轮跑完。 */
-function startRangeReview(h: PanelHarness): Promise<RangeReview> {
-  return startRangeReviewRow<RangeReview>(h);
+async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
+  return await startRangeReviewRow<RangeReview>(h);
 }
 
 test("审查完成:容器 PR 关闭、两条分支删除,记录进入终态", async () => {
@@ -194,8 +194,8 @@ test("Forge 步骤失败:记下失败原因,状态不变,改好之后重试成�
   const failed = await h.api("POST", `/range-reviews/${rangeReview.id}/complete`);
   assert.equal(failed.status, 502);
   const store = openStore(h.db.path);
-  const record = store.getRangeReview(rangeReview.id)!;
-  store.close();
+  const record = (await store.getRangeReview(rangeReview.id))!;
+  await store.close();
   assert.equal(record.state, "in-progress");
   assert.equal(record.completedAt, null);
   assert.match(record.lastForgeFailure!, /没有权限/);
@@ -220,12 +220,12 @@ test("没有 review:complete 的用户标记不了审查完成", async () => {
 
   const store = openStore(h.db.path);
   // 有发起权限、没有完成权限:两格互相独立。
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: "只发起的角色",
     permissions: ["review:create"],
     createdAt: "2026-08-20T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username: "range-starter",
     displayName: null,
     passwordHash: HASH,
@@ -234,7 +234,7 @@ test("没有 review:complete 的用户标记不了审查完成", async () => {
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.close();
+  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -264,12 +264,12 @@ test("持有旧格 finding:dispose 但没有 review:complete:标记不了审查�
 
   const store = openStore(h.db.path);
   // 拆格之后(ADR 0023)处置权限不再蕴含完成权限:两格互相独立。
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: "只处置的角色",
     permissions: ["finding:dispose"],
     createdAt: "2026-08-20T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username: "finding-disposer",
     displayName: null,
     passwordHash: HASH,
@@ -278,7 +278,7 @@ test("持有旧格 finding:dispose 但没有 review:complete:标记不了审查�
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.close();
+  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",

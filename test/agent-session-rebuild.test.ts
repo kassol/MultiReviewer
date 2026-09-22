@@ -98,12 +98,12 @@ test("辅助模型变了:落一条系统消息、用新模型重建,上下文照
     // 子进程还活着:这一刻把生效的辅助模型换成同一个服务上的另一个模型。
     const store = openStore(h.db.path);
     assert.equal(
-      putGlobalSettings(store, {
+      await putGlobalSettings(store, {
         auxiliaryModelJson: JSON.stringify({ provider: HARNESS_SPEC.provider, model: second }),
       }),
       true,
     );
-    store.close();
+    await store.close();
 
     assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
     await messagesAtLeast(h.db.path, sessionId, 4);

@@ -136,7 +136,7 @@ test("一个仓库归入第二个产品回 409,仓库移除后产品里不再有
 
 test("产品按仓库分配可见:零分配 404,有任一仓库分配即可读,系统管理员看全部", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   const expense = await createProduct(h, "报销系统");
   const attendance = await createProduct(h, "考勤系统");
   assert.equal((await h.api("PUT", `/products/${expense.id}/repos/${GITEA_REPO.id}`)).status, 204);

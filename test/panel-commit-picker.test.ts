@@ -40,8 +40,8 @@ type Tag = {
 
 const REPO_QUERY = `owner=${HARNESS_PR.owner}&repo=${HARNESS_PR.repo}`;
 
-function registeredHarness(): Promise<PanelHarness> {
-  return startReadyPanelHarness({ registerRepo: true });
+async function registeredHarness(): Promise<PanelHarness> {
+  return await startReadyPanelHarness({ registerRepo: true });
 }
 
 async function branchPage(

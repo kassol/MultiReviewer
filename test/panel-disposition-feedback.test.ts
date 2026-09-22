@@ -103,7 +103,7 @@ async function harnessWithFindings(ruleAgent: RuleAgent): Promise<PanelHarness> 
     201,
   );
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -114,15 +114,15 @@ async function harnessWithFindings(ruleAgent: RuleAgent): Promise<PanelHarness> 
  * 直接写审查策略里那一处辅助模型(issue #304)。夹具入口不设可用性门:面板写链只收当前
  * 可用的模型,而这几条用例要的正是「设了它、反哺就用它」这一件事。
  */
-function setGlobalAuxiliaryModel(
+async function setGlobalAuxiliaryModel(
   h: PanelHarness,
   spec: { provider: string; model: string; thinkingLevel?: string },
-): void {
+): Promise<void> {
   const store = openStore(h.db.path);
   try {
-    assert.equal(putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(spec) }), true);
+    assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(spec) }), true);
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -174,8 +174,8 @@ function ruleTraceDrops(h: PanelHarness): unknown[] {
   }
 }
 
-function dispose(h: PanelHarness, findingId: number, note?: string): Promise<Response> {
-  return h.api("POST", `/findings/${findingId}/resolve`, note === undefined ? {} : { note });
+async function dispose(h: PanelHarness, findingId: number, note?: string): Promise<Response> {
+  return await h.api("POST", `/findings/${findingId}/resolve`, note === undefined ? {} : { note });
 }
 
 test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,产出入队并标出处", async () => {
@@ -195,9 +195,9 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
       }),
       undefined,
     );
-    ruleId = store.getRuleSet(GITEA_REPO.id)!.rules[0]!.id;
+    ruleId = (await store.getRuleSet(GITEA_REPO.id))!.rules[0]!.id;
   } finally {
-    store.close();
+    await store.close();
   }
   items = [
     { type: "rule", scope: "src/**", statement: "边界上一次判空", reason: "  越界在三处都有  " },
@@ -292,17 +292,17 @@ test("描述性备注蒸馏为事实提案,采纳后进知识集并注入下一�
   const store = openStore(h.db.path);
   try {
     assert.deepEqual(
-      store.getRuleSet(GITEA_REPO.id)!.rules.map((entry) => [entry.type, entry.origin]),
+      (await store.getRuleSet(GITEA_REPO.id))!.rules.map((entry) => [entry.type, entry.origin]),
       [["fact", "disposition-feedback"]],
     );
-    const snapshot = store.getReviewRunSnapshot(GITEA_REPO.id);
+    const snapshot = await store.getReviewRunSnapshot(GITEA_REPO.id);
     assert.deepEqual(snapshot.rules, []);
     assert.deepEqual(
       snapshot.facts.map((fact) => [fact.scope, fact.statement]),
       [["src/api/**", "全局拦截器覆盖 /api 下的全部路由"]],
     );
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -347,7 +347,7 @@ test("无备注的处置不触发任何解读", async () => {
 test("反哺用这个仓库生效的辅助模型,探索记录里的模型不再影响它", async () => {
   const agent = scriptedRuleAgent(() => ({ items: [] }));
   const h = await harnessWithFindings(agent);
-  seedAvailableModelService(h, "second", ["other-model"]);
+  await seedAvailableModelService(h, "second", ["other-model"]);
   const findings = await inlineFindings(h);
 
   // 探索记录里的模型只作历史(issue #304):最近一次探索用的是另一家,两处配置都没设的
@@ -355,16 +355,16 @@ test("反哺用这个仓库生效的辅助模型,探索记录里的模型不再�
   const store = openStore(h.db.path);
   try {
     assert.equal(
-      store.startRuleExploration(GITEA_REPO.id, {
+      await store.startRuleExploration(GITEA_REPO.id, {
         baselineSha: h.repo.baseSha,
         model: "second:other-model",
         startedAt: "2026-08-29T00:00:00.000Z",
       }),
       true,
     );
-    store.finishRuleExploration(GITEA_REPO.id, [], "2026-08-29T00:00:00.000Z");
+    await store.finishRuleExploration(GITEA_REPO.id, [], "2026-08-29T00:00:00.000Z");
   } finally {
-    store.close();
+    await store.close();
   }
 
   assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
@@ -374,7 +374,7 @@ test("反哺用这个仓库生效的辅助模型,探索记录里的模型不再�
   assert.equal(agent.calls[0]!.runtimeModel.id, "global-model");
 
   // 审查策略里设了辅助模型:这才换得了模型。
-  setGlobalAuxiliaryModel(h, { provider: "second", model: "other-model" });
+  await setGlobalAuxiliaryModel(h, { provider: "second", model: "other-model" });
   assert.equal((await dispose(h, findings[1]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(2);
   assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
@@ -393,9 +393,9 @@ test("选不出辅助模型时:跳过解读留一行原因,零提案", async () 
   try {
     // 清成没配走夹具入口:面板写链在配过非空之后不再收空组合(spec #300),而「全局组合
     // 为空」是这条用例要的局面。
-    assert.equal(putGlobalSettings(store, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
+    assert.equal(await putGlobalSettings(store, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
   } finally {
-    store.close();
+    await store.close();
   }
 
   assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
@@ -444,10 +444,10 @@ test("反哺用辅助模型那一处的思考档位,没选档位时反哺也不�
   const agent = scriptedRuleAgent(() => ({ items: [] }));
   const h = await harnessWithFindings(agent);
   // 档位要这个模型自己支持得了才收得下(CONTEXT.md 思考档位)。
-  seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
+  await seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
   const findings = await inlineFindings(h);
 
-  setGlobalAuxiliaryModel(h, {
+  await setGlobalAuxiliaryModel(h, {
     provider: "second",
     model: "other-model",
     thinkingLevel: "high",
@@ -457,7 +457,7 @@ test("反哺用辅助模型那一处的思考档位,没选档位时反哺也不�
   assert.equal(h.dispositionFeedbacks[0]!.failure, undefined);
   assert.equal(agent.calls[0]!.thinkingLevel, "high");
 
-  setGlobalAuxiliaryModel(h, { provider: "second", model: "other-model" });
+  await setGlobalAuxiliaryModel(h, { provider: "second", model: "other-model" });
   assert.equal((await dispose(h, findings[1]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(2);
   assert.equal(h.dispositionFeedbacks[1]!.failure, undefined);
@@ -534,7 +534,7 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
   // 并入后的提案在下一次重探索中留下:它的附注不全是基点探索(issue #281)。
   const store = openStore(h.db.path);
   try {
-    store.finishRuleExplorationAsProposals(
+    await store.finishRuleExplorationAsProposals(
       GITEA_REPO.id,
       [
         {
@@ -557,7 +557,7 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
       "2026-09-08T00:00:00.000Z",
     );
   } finally {
-    store.close();
+    await store.close();
   }
   assert.deepEqual(
     (await proposals(h)).map((entry) => entry.statement),
@@ -736,7 +736,7 @@ test("重试失败的处置反哺:仍停在那条 Finding 报出时的 head,附�
   const store = openStore(h.db.path);
   try {
     assert.notEqual(
-      store.startRuleIntent(GITEA_REPO.id, {
+      await store.startRuleIntent(GITEA_REPO.id, {
         text: "同一条 Finding 上的另一条备注",
         submittedBy: PANEL_ADMIN_USERNAME,
         targetKind: "finding",
@@ -747,7 +747,7 @@ test("重试失败的处置反哺:仍停在那条 Finding 报出时的 head,附�
       undefined,
     );
   } finally {
-    store.close();
+    await store.close();
   }
 
   const response = await h.api(

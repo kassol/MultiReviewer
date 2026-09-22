@@ -32,8 +32,8 @@ function setup() {
   return { repo, cache };
 }
 
-function prepare(cacheDir: string, cloneUrl: string, sha: string): Promise<Worktree> {
-  return prepareWorktree({
+async function prepare(cacheDir: string, cloneUrl: string, sha: string): Promise<Worktree> {
+  return await prepareWorktree({
     cacheDir,
     ref: REF,
     cloneUrl,

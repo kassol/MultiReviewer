@@ -48,14 +48,14 @@ type SeedFinding = {
 };
 
 /** 一个 pull request 阶段:一轮 Review Run 加它报出的这几条 Finding。 */
-function seedStage(
+async function seedStage(
   h: PanelHarness,
   ref: { owner: string; repo: string; pullNumber: number },
   findings: readonly SeedFinding[],
-): void {
+): Promise<void> {
   const store = openStore(h.db.path);
   try {
-    const runId = store.startRun({
+    const runId = await store.startRun({
       owner: ref.owner,
       repo: ref.repo,
       pullNumber: ref.pullNumber,
@@ -66,7 +66,7 @@ function seedStage(
       batchCount: 1,
       reviewerPins: [],
     });
-    store.finishRun(runId, {
+    await store.finishRun(runId, {
       finishedAt: "2026-09-01T00:00:01.000Z",
       durationMs: 1,
       failed: false,
@@ -104,7 +104,7 @@ function seedStage(
       verdicts: [],
     });
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -146,8 +146,8 @@ const STAGE_FINDINGS: readonly SeedFinding[] = [
 
 async function harnessWithStage(options: PanelHarnessOptions = {}): Promise<PanelHarness> {
   const h = await startReadyPanelHarness(options);
-  seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
-  seedStage(h, { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: HARNESS_PR.number }, STAGE_FINDINGS);
+  await seedRepo(h, GITEA_REPO.id, GITEA_REPO.owner, GITEA_REPO.repo);
+  await seedStage(h, { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: HARNESS_PR.number }, STAGE_FINDINGS);
   return h;
 }
 
@@ -178,12 +178,12 @@ async function scopedCookie(
 ): Promise<string> {
   const store = openStore(h.db.path);
   try {
-    const role = store.createPanelRole({
+    const role = await store.createPanelRole({
       name: `角色-${username}`,
       permissions: [...permissions],
       createdAt: "2026-09-01T00:00:00.000Z",
     });
-    store.createPanelUser({
+    await store.createPanelUser({
       username,
       displayName: null,
       passwordHash: HASH,
@@ -192,9 +192,9 @@ async function scopedCookie(
       isSystemAdmin: false,
       roleId: role.id,
     });
-    if (repoIds !== undefined) store.setPanelUserAssignment(username, [...repoIds]);
+    if (repoIds !== undefined) await store.setPanelUserAssignment(username, [...repoIds]);
   } finally {
-    store.close();
+    await store.close();
   }
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -307,7 +307,7 @@ test("没有 finding:dispose-batch 的用户被拒:只有逐条处置那一格�
 test("仓库分配之外的阶段:有权限也回 404,一条都不动", async () => {
   const h = await harnessWithStage();
   await setThreshold(h, "P1");
-  seedRepo(h, 4243, "acme", "gadgets");
+  await seedRepo(h, 4243, "acme", "gadgets");
   const cookie = await scopedCookie(h, "other-repo", ["finding:dispose-batch"], [4243]);
 
   const denied = await fetch(`${h.serverUrl}/api${disposePath(STAGE_ID)}`, {

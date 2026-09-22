@@ -83,12 +83,12 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
 
   // 一个「已经在用」的实例:有这个人、有注册的仓库与它的分配、有产品与会话、有可用的模型服务。
   const store = openStore(dbPath);
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: "拆需求的人",
     permissions: ["agent:chat"],
     createdAt: AT,
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username: USERNAME,
     displayName: null,
     passwordHash: await hashTestPassword(PASSWORD),
@@ -98,7 +98,7 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     roleId: role.id,
   });
   assert.equal(
-    store.registerRepo({
+    await store.registerRepo({
       repoId: GITEA_REPO.id,
       owner: GITEA_REPO.owner,
       repo: GITEA_REPO.repo,
@@ -108,17 +108,17 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     true,
   );
   // 分配要在注册之后:外键指着注册表那一行。
-  store.setPanelUserAssignment(USERNAME, [GITEA_REPO.id]);
-  const product = store.createProduct({ name: "报销系统", createdAt: AT });
-  store.attachProductRepo(product.id, GITEA_REPO.id, AT);
-  const session = store.createAgentSession({
+  await store.setPanelUserAssignment(USERNAME, [GITEA_REPO.id]);
+  const product = await store.createProduct({ name: "报销系统", createdAt: AT });
+  await store.attachProductRepo(product.id, GITEA_REPO.id, AT);
+  const session = await store.createAgentSession({
     productId: product.id,
     createdBy: USERNAME,
     purpose: "requirement-breakdown",
     createdAt: AT,
   });
-  store.close();
-  seedAvailableModelService(
+  await store.close();
+  await seedAvailableModelService(
     { db: { path: dbPath } },
     HARNESS_SPEC.provider,
     [HARNESS_SPEC.model],
@@ -165,15 +165,15 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     assert.equal(response.status, 202, await response.text());
   };
   /** 这个会话此刻落库的记录。进程在不在都读得到:SQLite 是唯一真相(ADR 0031)。 */
-  const records = (): { type: string; entry: unknown }[] => {
+  const records = async (): Promise<{ type: string; entry: unknown }[]> => {
     const read = openStore(dbPath);
     try {
-      return read.listAgentSessionEntries(session.id).map((record) => ({
+      return (await read.listAgentSessionEntries(session.id)).map((record) => ({
         type: record.type,
         entry: record.entry,
       }));
     } finally {
-      read.close();
+      await read.close();
     }
   };
 
@@ -199,18 +199,18 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
   assert.match(first.output(), /排空结束/);
 
   // 中止记进了会话记录:人第二天回来看得见这一轮为什么断了。
-  const system = records().filter(
+  const system = (await records()).filter(
     (record) => record.type === "custom" && JSON.stringify(record.entry).includes("排空"),
   );
-  assert.equal(system.length, 1, JSON.stringify(records()));
+  assert.equal(system.length, 1, JSON.stringify(await records()));
   // 排着的那一条落了库:它还没投出去,重建时才投。
   const pending = openStore(dbPath);
-  assert.deepEqual(pending.takeAgentSessionPendingMessages(session.id), [
+  assert.deepEqual(await pending.takeAgentSessionPendingMessages(session.id), [
     { mode: "followUp", text: QUEUED },
   ]);
   // 读完就删,再放回去:下面那个进程要的正是它。
-  pending.putAgentSessionPendingMessages(session.id, [{ mode: "followUp", text: QUEUED }]);
-  pending.close();
+  await pending.putAgentSessionPendingMessages(session.id, [{ mode: "followUp", text: QUEUED }]);
+  await pending.close();
 
   // ── 第二个进程:同一个库。人下次发消息才重建,中止前排着的那条一并投递 ──
   const second = spawnMain(dir, env);
@@ -233,8 +233,8 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
   assert.match(last, new RegExp(AFTER_RESTART));
   // 排队消息投出去就不留:重建那一刻取出即删。
   const drained = openStore(dbPath);
-  assert.deepEqual(drained.takeAgentSessionPendingMessages(session.id), []);
-  drained.close();
+  assert.deepEqual(await drained.takeAgentSessionPendingMessages(session.id), []);
+  await drained.close();
 
   second.child.kill("SIGTERM");
   await new Promise<void>((resolve) => {

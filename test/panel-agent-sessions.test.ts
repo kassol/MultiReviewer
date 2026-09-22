@@ -192,7 +192,7 @@ test("没有 agent:chat 的人建会话与删会话都被挡,读不受影响", a
 test("看不到产品的人建不了会话,也问不到它下面有没有会话", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const productId = await productWithRepo(h, "报销系统");
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   // 有 agent:chat,但分配的是另一个仓库:这个产品对他不存在。
   const outsider = await scopedUser(h, "outsider", PASSWORD, AT, [alpha], ["agent:chat"]);
 
@@ -341,7 +341,7 @@ test("建会话选基点:外仓库、解析不出的 sha 与形状不对都回�
   const h = await startReadyPanelHarness({ registerRepo: true });
   const productId = await productWithRepo(h, "报销系统");
   // 注册了但没归进这个产品的仓库:它的 commit 不该被这个会话读到。
-  seedRepo(h, 101, "acme", "alpha");
+  await seedRepo(h, 101, "acme", "alpha");
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id, 101], [
     "agent:chat",
   ]);
@@ -384,12 +384,12 @@ test("升级前的旧库:开库补上会话那一列,既有会话读作没记过
     assert.equal(response.status, 200, text);
     return (JSON.parse(text) as { session: AgentSession }).session.baselines;
   };
-  const record = (baselines: AgentSessionBaseline[]): void => {
+  const record = async (baselines: AgentSessionBaseline[]): Promise<void> => {
     const store = openStore(h.db.path);
     try {
-      store.setAgentSessionBaselines(created.id, baselines);
+      await store.setAgentSessionBaselines(created.id, baselines);
     } finally {
-      store.close();
+      await store.close();
     }
   };
   const opened: AgentSessionBaseline = {
@@ -399,7 +399,7 @@ test("升级前的旧库:开库补上会话那一列,既有会话读作没记过
     branch: "feature",
     kind: "branch",
   };
-  record([opened]);
+  await record([opened]);
   assert.deepEqual(await read(), [opened]);
 
   // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——理由与 `product_repo`
@@ -412,7 +412,7 @@ test("升级前的旧库:开库补上会话那一列,既有会话读作没记过
   assert.deepEqual(await read(), []);
   assert.deepEqual((await sessions(h, owner, productId)).map((row) => row.id), [created.id]);
   // 补回来的这一列照样写得进去:下一条消息备好工作树就记上。
-  record([opened]);
+  await record([opened]);
   assert.deepEqual(await read(), [opened]);
 });
 
@@ -448,14 +448,14 @@ test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还�
   // 五条记录,正文各不相同:哪一页回了哪几条认得出来。
   const store = openStore(h.db.path);
   for (let index = 1; index <= 5; index += 1) {
-    store.appendAgentSessionEntry(session.id, {
+    await store.appendAgentSessionEntry(session.id, {
       type: "message",
       at: AT,
       entry: { id: `e${index}`, type: "message", message: { role: "user", content: `第 ${index} 条` } },
       usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
     });
   }
-  store.close();
+  await store.close();
 
   const page = async (
     query: string,
@@ -496,7 +496,7 @@ test("面板标题与最后动静:读时从记录派生,不落库", async () => 
   try {
     // 第一条用户消息带一张图,文字块排在图片块后面:标题不能假定文字在下标 0。正文里的
     // 连续空白与首尾空白折成一个空格。
-    store.appendAgentSessionEntry(withMessage.id, {
+    await store.appendAgentSessionEntry(withMessage.id, {
       type: "message",
       at: firstAt,
       entry: {
@@ -513,14 +513,14 @@ test("面板标题与最后动静:读时从记录派生,不落库", async () => 
       usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
     });
     // 之后一条 assistant 消息更晚:最后动静跟着它走,标题仍然是第一条用户消息。
-    store.appendAgentSessionEntry(withMessage.id, {
+    await store.appendAgentSessionEntry(withMessage.id, {
       type: "message",
       at: secondAt,
       entry: { id: "e2", type: "message", message: { role: "assistant", content: "收到" } },
       usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
     });
   } finally {
-    store.close();
+    await store.close();
   }
 
   const read = await sessions(h, owner, productId);

@@ -104,7 +104,7 @@ export async function startSessionHarness(
       : { agentSessionSilenceTimer: options.silenceTimer }),
     ...(options.wrapForge === undefined ? {} : { wrapForge: options.wrapForge }),
   });
-  seedAvailableModelService(
+  await seedAvailableModelService(
     h,
     HARNESS_SPEC.provider,
     options.models ?? [HARNESS_SPEC.model],
@@ -127,14 +127,14 @@ export async function startSessionHarness(
   assert.equal((await h.api("PUT", `/products/${product.id}/repos/${GITEA_REPO.id}`)).status, 204);
   if (options.extraRepo !== undefined) {
     const extra = options.extraRepo;
-    seedRepo(h, extra.repoId, extra.owner, extra.repo);
+    await seedRepo(h, extra.repoId, extra.owner, extra.repo);
     // 第二个仓库直接落归属行:走归入端点会自己开一场梳理(issue #347),而这几例要的是它们
     // 自己投的那一条消息,不是那一场。
     const store = openStore(h.db.path);
     try {
-      assert.equal(store.attachProductRepo(product.id, extra.repoId, AT), "attached");
+      assert.equal(await store.attachProductRepo(product.id, extra.repoId, AT), "attached");
     } finally {
-      store.close();
+      await store.close();
     }
   }
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
@@ -241,8 +241,8 @@ export function messageRoles(landed: readonly Record[]): (string | undefined)[] 
 export async function messagesAtLeast(dbPath: string, sessionId: number, count: number): Promise<void> {
   for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
     const store = openStore(dbPath);
-    const landed = store.listAgentSessionEntries(sessionId) as unknown as Record[];
-    store.close();
+    const landed = (await store.listAgentSessionEntries(sessionId)) as unknown as Record[];
+    await store.close();
     if (messageRoles(landed).length >= count) return;
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }

@@ -146,19 +146,19 @@ test("需求拆分:一轮提问、从答案写术语、写 spec 与两张票并�
     try {
       // 答案落成一条术语,写下即生效。
       assert.deepEqual(
-        store
-          .listProductKnowledge(productId)
+        (await store
+          .listProductKnowledge(productId))
           .map((entry) => [entry.kind, entry.name, entry.writtenBySessionId]),
         [["term", "月结汇率", sessionId]],
       );
       // spec 与它的两张票落在这个产品下,记着写下它们的这一场会话。
       assert.deepEqual(
-        store.listProductSpecs(productId).map((spec) => [spec.id, spec.title, spec.sessionId]),
+        (await store.listProductSpecs(productId)).map((spec) => [spec.id, spec.title, spec.sessionId]),
         [[SPEC, "报销单按原币录入", sessionId]],
       );
       assert.deepEqual(
-        store
-          .listProductTickets(productId)
+        (await store
+          .listProductTickets(productId))
           .map((one) => [one.id, one.title, one.blockedBy, one.sessionId]),
         [
           [FIRST, "月结汇率表", [], sessionId],
@@ -166,7 +166,7 @@ test("需求拆分:一轮提问、从答案写术语、写 spec 与两张票并�
         ],
       );
     } finally {
-      store.close();
+      await store.close();
     }
   } finally {
     await disposeAgentSessions();
@@ -200,14 +200,14 @@ async function productKnowledge(h: PanelHarness, productId: number): Promise<Kno
 }
 
 /** 落一条产品知识,不经子进程。压提示与改写的那几例用它播种。 */
-function seedKnowledge(
+async function seedKnowledge(
   dbPath: string,
   productId: number,
   record: { kind: "term" | "relationship" | "decision"; name?: string; body: string },
-): number {
+): Promise<number> {
   const store = openStore(dbPath);
   try {
-    return store.writeProductKnowledge({
+    return (await store.writeProductKnowledge({
       productId,
       kind: record.kind,
       name: record.name ?? "",
@@ -219,9 +219,9 @@ function seedKnowledge(
       annotations: [],
       at: AT,
       sessionId: null,
-    })!.id;
+    }))!.id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -309,11 +309,11 @@ test("产品梳理:提示带整份产品知识与替代说明,子代理、一轮
   try {
     // 先落一条仓库关系与一条术语:梳理的提示带的是整条正文,不是目录里的一个名字。
     assert.equal(
-      seedKnowledge(h.db.path, productId, { kind: "relationship", body: ACTIVE_STATEMENT }),
+      await seedKnowledge(h.db.path, productId, { kind: "relationship", body: ACTIVE_STATEMENT }),
       1,
     );
     assert.equal(
-      seedKnowledge(h.db.path, productId, {
+      await seedKnowledge(h.db.path, productId, {
         kind: "term",
         name: "结算",
         body: "把一张已审批的单据划给财务付款的那一步",
@@ -609,8 +609,8 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
     const store = openStore(h.db.path);
     let foreignProductId: number;
     try {
-      foreignProductId = store.createProduct({ name: "结算系统", createdAt: AT }).id;
-      const foreignSpec = store.createProductSpec({
+      foreignProductId = (await store.createProduct({ name: "结算系统", createdAt: AT })).id;
+      const foreignSpec = await store.createProductSpec({
         productId: foreignProductId,
         title: "对账",
         body: "别的产品的 spec",
@@ -618,18 +618,18 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
         at: AT,
       });
       assert.equal(
-        store.createProductTicket({
+        (await store.createProductTicket({
           specId: foreignSpec.id,
           title: "对账明细",
           body: "别的产品的票",
           label: "needs-triage",
           sessionId: null,
           at: AT,
-        }).id,
+        })).id,
         FOREIGN_TICKET,
       );
     } finally {
-      store.close();
+      await store.close();
     }
 
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
@@ -638,14 +638,14 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
     const after = openStore(h.db.path);
     try {
       // spec 与票都落在这个产品下,标题两头的空白去掉了。
-      const specs = after.listProductSpecs(productId);
+      const specs = await after.listProductSpecs(productId);
       assert.deepEqual(
         specs.map((spec) => [spec.id, spec.title, spec.state, spec.sessionId]),
         [[SPEC, "报销单可以撤回", "open", sessionId]],
       );
       assert.match(specs[0]!.body, /提交之后改不了。/);
 
-      const tickets = after.listProductTickets(productId);
+      const tickets = await after.listProductTickets(productId);
       assert.deepEqual(
         tickets.map((one) => [one.id, one.title, one.label, one.state, one.blockedBy]),
         [
@@ -657,14 +657,14 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
       assert.match(tickets[0]!.body, /重复撤回回 409/);
       // 评论记在写它的那个会话名下。
       assert.deepEqual(
-        after.listProductTicketComments(SECOND).map((one) => [one.body, one.sessionId]),
+        (await after.listProductTicketComments(SECOND)).map((one) => [one.body, one.sessionId]),
         [["财务确认了只有草稿态能撤回。", sessionId]],
       );
       // 打回的那两条一条边都没加上,别的产品那张票也没被牵进来。
-      assert.deepEqual(after.getProductTicket(FOREIGN_TICKET)?.blockedBy, []);
-      assert.equal(after.listProductSpecs(foreignProductId).length, 1);
+      assert.deepEqual((await after.getProductTicket(FOREIGN_TICKET))?.blockedBy, []);
+      assert.equal((await after.listProductSpecs(foreignProductId)).length, 1);
     } finally {
-      after.close();
+      await after.close();
     }
 
     // 两次打回各自的理由在记录表里的工具结果上,打回走的是正常返回。
@@ -791,15 +791,15 @@ test("开放对话:grill 得到提问轮次,收成 spec 写进 tracker,写文件
     const store = openStore(h.db.path);
     try {
       assert.deepEqual(
-        store.listProductSpecs(productId).map((spec) => [spec.id, spec.title, spec.sessionId]),
+        (await store.listProductSpecs(productId)).map((spec) => [spec.id, spec.title, spec.sessionId]),
         [[SPEC, "报销单可以撤回", sessionId]],
       );
       assert.deepEqual(
-        store.listProductTickets(productId).map((one) => [one.id, one.title, one.label]),
+        (await store.listProductTickets(productId)).map((one) => [one.id, one.title, one.label]),
         [[TICKET, "撤回接口", "ready-for-agent"]],
       );
     } finally {
-      store.close();
+      await store.close();
     }
 
     // 写文件那一次:`write` 一开始就没注册,调用它拿回的是一条错误的工具结果。
@@ -1010,9 +1010,9 @@ test("提问轮次:一轮题落成新种类条目、回合就地收尾转空闲,
     // 条目接在这次工具调用后面:主进程直接落库会让它成旁支,重建时被算成「不在上下文」。
     const store = openStore(h.db.path);
     try {
-      assert.equal(agentSessionContextGap(store.agentSessionEntryLinks(sessionId)), 0);
+      assert.equal(agentSessionContextGap(await store.agentSessionEntryLinks(sessionId)), 0);
     } finally {
-      store.close();
+      await store.close();
     }
 
     // 整轮答案作一条用户消息回来,会话接着跑。

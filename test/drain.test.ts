@@ -134,7 +134,7 @@ test("没有进行中轮次时 SIGTERM 立即退出,退出码 0", async () => {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-drain-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const seed = openStore(join(dir, "multireviewer.db"));
-  seed.close();
+  await seed.close();
 
   const { child, output, listening } = spawnMain(dir, {
     ...process.env,

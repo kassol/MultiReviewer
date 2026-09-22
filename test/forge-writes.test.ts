@@ -27,8 +27,8 @@ function setup() {
   return { repo, remote, cache };
 }
 
-function push(cacheDir: string, cloneUrl: string, sha: string): Promise<void> {
-  return pushBranch({
+async function push(cacheDir: string, cloneUrl: string, sha: string): Promise<void> {
+  return await pushBranch({
     cacheDir,
     ref: REF,
     cloneUrl,

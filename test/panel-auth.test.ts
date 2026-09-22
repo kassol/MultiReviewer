@@ -18,7 +18,7 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
   cleanups.push(cache.cleanup, db.cleanup);
   if (!options.empty) {
     const store = openStore(db.path);
-    store.createPanelUser({
+    await store.createPanelUser({
       username: USERNAME,
       displayName: "Admin",
       passwordHash: PASSWORD_HASH,
@@ -27,7 +27,7 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
       isSystemAdmin: true,
       roleId: null,
     });
-    store.close();
+    await store.close();
   }
   const server = await createWebhookServer({
     forges: {},

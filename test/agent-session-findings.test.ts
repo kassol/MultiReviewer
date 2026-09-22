@@ -53,14 +53,14 @@ type SeedFinding = {
  *
  * `review_run` 的 owner / repo 是两列文本,不引用仓库注册表——会话根外那个仓库因此播得进去。
  */
-function seedFindings(
+async function seedFindings(
   dbPath: string,
   ref: { owner: string; repo: string },
   findings: readonly SeedFinding[],
-): void {
+): Promise<void> {
   const store = openStore(dbPath);
   try {
-    const runId = store.startRun({
+    const runId = await store.startRun({
       owner: ref.owner,
       repo: ref.repo,
       pullNumber: 11,
@@ -71,7 +71,7 @@ function seedFindings(
       batchCount: 1,
       reviewerPins: [],
     });
-    store.finishRun(runId, {
+    await store.finishRun(runId, {
       finishedAt: AT,
       durationMs: 1,
       failed: false,
@@ -103,7 +103,7 @@ function seedFindings(
       verdicts: [],
     });
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -124,7 +124,7 @@ async function startSessionHarness(
 }> {
   const stub = await startModelStub(turns);
   const h = await startPanelHarness();
-  seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model], {}, stub.baseUrl);
+  await seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model], {}, stub.baseUrl);
   assert.equal(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
@@ -249,9 +249,9 @@ test("历史 Finding 工具按仓库、路径 glob 与处置状态过滤,会话�
   ];
   const { h, cookie, sessionId, close } = await startSessionHarness(turns);
   try {
-    seedFindings(h.db.path, GITEA_REPO, SEEDED);
+    await seedFindings(h.db.path, GITEA_REPO, SEEDED);
     // 会话根外的那个仓库也有历史,它一条都不该回来。
-    seedFindings(h.db.path, { owner: "acme", repo: "elsewhere" }, [SEEDED[0]!]);
+    await seedFindings(h.db.path, { owner: "acme", repo: "elsewhere" }, [SEEDED[0]!]);
 
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     await idle(h, cookie, sessionId);
@@ -320,7 +320,7 @@ test("历史 Finding 工具一次最多回 50 条,并说还有更多", async () 
   ];
   const { h, cookie, sessionId, close } = await startSessionHarness(turns);
   try {
-    seedFindings(h.db.path, GITEA_REPO, many);
+    await seedFindings(h.db.path, GITEA_REPO, many);
 
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     await idle(h, cookie, sessionId);

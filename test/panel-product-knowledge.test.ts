@@ -44,7 +44,7 @@ type Product = {
 
 /** 一个带两个仓库的产品:产品梳理要两个以上仓库,这几例的产品照它建。 */
 async function productWithTwoRepos(h: PanelHarness): Promise<Product> {
-  seedRepo(h, ALPHA, "acme", "alpha");
+  await seedRepo(h, ALPHA, "acme", "alpha");
   const response = await h.api("POST", "/products", { name: "报销系统" });
   const text = await response.text();
   assert.equal(response.status, 201, text);
@@ -53,10 +53,10 @@ async function productWithTwoRepos(h: PanelHarness): Promise<Product> {
   const store = openStore(h.db.path);
   try {
     for (const repoId of [GITEA_REPO.id, ALPHA]) {
-      assert.equal(store.attachProductRepo(product.id, repoId, AT), "attached");
+      assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
     }
   } finally {
-    store.close();
+    await store.close();
   }
   return product;
 }
@@ -77,7 +77,7 @@ async function detail(
 }
 
 /** 落一条产品知识,走会话工具落库的同一条路(`Store.writeProductKnowledge`)。 */
-function write(
+async function write(
   h: PanelHarness,
   productId: number,
   record: {
@@ -92,10 +92,10 @@ function write(
     id?: number;
     supersedes?: number;
   },
-): number | undefined {
+): Promise<number | undefined> {
   const store = openStore(h.db.path);
   try {
-    return store.writeProductKnowledge({
+    return (await store.writeProductKnowledge({
       productId,
       kind: record.kind,
       name: record.name ?? "",
@@ -109,9 +109,9 @@ function write(
       sessionId: null,
       ...(record.id === undefined ? {} : { id: record.id }),
       ...(record.supersedes === undefined ? {} : { supersedes: record.supersedes }),
-    })?.id;
+    }))?.id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -120,7 +120,7 @@ test("产品页读到三种条目:术语带分组与避免词、关系一句、�
   const product = await productWithTwoRepos(h);
   const annotation = { location: "acme/widgets/src/order.ts:42", reason: "状态机在这里" };
 
-  const term = write(h, product.id, {
+  const term = await write(h, product.id, {
     kind: "term",
     name: "订单",
     body: "一次可以付钱的购买请求,付款成功之后才进履约。",
@@ -128,11 +128,11 @@ test("产品页读到三种条目:术语带分组与避免词、关系一句、�
     avoided: ["单子"],
     annotations: [annotation],
   });
-  const relationship = write(h, product.id, {
+  const relationship = await write(h, product.id, {
     kind: "relationship",
     body: "网关向订单服务要状态,订单服务不回调网关。",
   });
-  const decision = write(h, product.id, {
+  const decision = await write(h, product.id, {
     kind: "decision",
     name: "签名统一用 HMAC",
     body: "两个仓库各签各的,轮换一次要改两处;统一成 HMAC,密钥一处轮换。",
@@ -170,23 +170,23 @@ test("产品页读到三种条目:术语带分组与避免词、关系一句、�
 test("库层的写与撤回:改写落在同一条上、取代记在旧那条上、同名写两条报错、撤回两遍不算成功", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const product = await productWithTwoRepos(h);
-  const term = write(h, product.id, { kind: "term", name: "订单", body: "一次购买请求。" })!;
+  const term = (await write(h, product.id, { kind: "term", name: "订单", body: "一次购买请求。" }))!;
 
   // 改写:id 不变,正文换一版。
-  assert.equal(write(h, product.id, { kind: "term", id: term, name: "订单", body: "改过的定义。" }), term);
+  assert.equal(await write(h, product.id, { kind: "term", id: term, name: "订单", body: "改过的定义。" }), term);
   assert.deepEqual(
     (await detail(h, product.id)).knowledge.map((row) => [row.id, row.body]),
     [[term, "改过的定义。"]],
   );
 
   // 取代:新决策写下时把旧那条落成被它取代,旧那条仍读得到。
-  const first = write(h, product.id, { kind: "decision", name: "签名用对称密钥", body: "先这样。" })!;
-  const second = write(h, product.id, {
+  const first = (await write(h, product.id, { kind: "decision", name: "签名用对称密钥", body: "先这样。" }))!;
+  const second = (await write(h, product.id, {
     kind: "decision",
     name: "签名统一用 HMAC",
     body: "换成 HMAC。",
     supersedes: first,
-  })!;
+  }))!;
   const decisions = (await detail(h, product.id)).knowledge.filter((row) => row.kind === "decision");
   assert.deepEqual(
     decisions.map((row) => [row.id, row.supersededBy]),
@@ -197,17 +197,17 @@ test("库层的写与撤回:改写落在同一条上、取代记在旧那条上�
   );
 
   // 同名的第二条写不进去:按名字读整条的那一路要求一个名字只有一条。
-  assert.throws(() => write(h, product.id, { kind: "term", name: "订单", body: "另一份定义。" }));
+  await assert.rejects(() => write(h, product.id, { kind: "term", name: "订单", body: "另一份定义。" }));
   // 改写与取代都只认这个产品下的条目:认不出的 id 一格不动。
-  assert.equal(write(h, product.id, { kind: "term", id: 9999, name: "订单", body: "x" }), undefined);
+  assert.equal(await write(h, product.id, { kind: "term", id: 9999, name: "订单", body: "x" }), undefined);
 
   // 撤回:删行,第二遍不算成功;指着它的「被取代」跟着松开。
   const store = openStore(h.db.path);
   try {
-    assert.equal(store.withdrawProductKnowledge(product.id, second), true);
-    assert.equal(store.withdrawProductKnowledge(product.id, second), false);
+    assert.equal(await store.withdrawProductKnowledge(product.id, second), true);
+    assert.equal(await store.withdrawProductKnowledge(product.id, second), false);
   } finally {
-    store.close();
+    await store.close();
   }
   const left = (await detail(h, product.id)).knowledge;
   assert.equal(left.some((row) => row.id === second), false);
@@ -217,7 +217,7 @@ test("库层的写与撤回:改写落在同一条上、取代记在旧那条上�
 test("写与裁决那几个端点已经没有了:条目只由会话写下", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const product = await productWithTwoRepos(h);
-  const entry = write(h, product.id, { kind: "relationship", body: "网关向订单服务要状态。" })!;
+  const entry = (await write(h, product.id, { kind: "relationship", body: "网关向订单服务要状态。" }))!;
 
   const gone: [string, string][] = [
     ["POST", `/products/${product.id}/knowledge`],
@@ -239,13 +239,13 @@ test("写与裁决那几个端点已经没有了:条目只由会话写下", asyn
 test("读产品知识不要权限格:看得到产品的人就读得到", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const product = await productWithTwoRepos(h);
-  write(h, product.id, { kind: "relationship", body: "网关向订单服务要状态。" });
+  await write(h, product.id, { kind: "relationship", body: "网关向订单服务要状态。" });
 
   const reader = await scopedUser(h, "reader", PASSWORD, AT, [GITEA_REPO.id]);
   assert.equal((await detail(h, product.id, reader)).knowledge.length, 1);
 
   // 这个产品里一个仓库都没分配到:与产品不存在同形回 404。
-  const stranger = seedRepo(h, 303, "acme", "gamma");
+  const stranger = await seedRepo(h, 303, "acme", "gamma");
   const outsider = await scopedUser(h, "outsider", PASSWORD, AT, [stranger], ["knowledge:write"]);
   const hidden = await fetch(`${h.serverUrl}/api/products/${product.id}`, {
     headers: { cookie: outsider },
@@ -257,7 +257,7 @@ test("读产品知识不要权限格:看得到产品的人就读得到", async (
 test("升级前的旧库:旧的一句话条目、提案与驳回记忆一并丢掉,新表在且为空", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const product = await productWithTwoRepos(h);
-  write(h, product.id, { kind: "term", name: "订单", body: "一次购买请求。" });
+  await write(h, product.id, { kind: "term", name: "订单", body: "一次购买请求。" });
 
   // 把库退回升级之前的样子:新表还不存在,旧的两张表带着行。
   const db = new DatabaseSync(h.db.path);
@@ -311,6 +311,6 @@ test("升级前的旧库:旧的一句话条目、提案与驳回记忆一并丢�
   }
 
   // 新表空着,写照样走得通。
-  write(h, product.id, { kind: "relationship", body: "网关向订单服务要状态。" });
+  await write(h, product.id, { kind: "relationship", body: "网关向订单服务要状态。" });
   assert.equal((await detail(h, product.id)).knowledge.length, 1);
 });

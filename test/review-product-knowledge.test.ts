@@ -30,14 +30,14 @@ const HEAD_CALC = BASE_CALC.replace("return a - b;", "return a - b - 1;");
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 const REPO_ID = 101;
 
-function setup() {
+async function setup() {
   const { cache, db, forge } = setupRepo(cleanups, {
     tree: { base: { "src/calc.ts": BASE_CALC }, head: { "src/calc.ts": HEAD_CALC } },
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
   });
   const store = openStore(db.path);
   try {
-    store.registerRepo({
+    await store.registerRepo({
       repoId: REPO_ID,
       owner: EVENT.owner,
       repo: EVENT.repo,
@@ -45,7 +45,7 @@ function setup() {
       key: "k".repeat(64),
     });
   } finally {
-    store.close();
+    await store.close();
   }
   return {
     cache,
@@ -56,18 +56,18 @@ function setup() {
 }
 
 /** 建一个产品、把这个仓库归进去,并写下一份四条的产品知识。回产品 id。 */
-function seedProduct(dbPath: string): number {
+async function seedProduct(dbPath: string): Promise<number> {
   const store = openStore(dbPath);
   const at = "2026-09-17T00:00:00.000Z";
   try {
-    const product = store.createProduct({ name: "报销系统", createdAt: at });
-    assert.equal(store.attachProductRepo(product.id, REPO_ID, at), "attached");
-    const write = (
+    const product = await store.createProduct({ name: "报销系统", createdAt: at });
+    assert.equal(await store.attachProductRepo(product.id, REPO_ID, at), "attached");
+    const write = async (
       one: Pick<Parameters<typeof store.writeProductKnowledge>[0], "kind" | "name" | "body"> & {
         topic?: string | null;
       },
-    ): number =>
-      store.writeProductKnowledge({
+    ): Promise<number> =>
+      (await store.writeProductKnowledge({
         productId: product.id,
         topic: one.topic ?? null,
         avoided: [],
@@ -77,19 +77,19 @@ function seedProduct(dbPath: string): number {
         at,
         sessionId: null,
         ...one,
-      })!.id;
-    write({
+      }))!.id;
+    await write({
       kind: "term",
       name: "报销系统",
       topic: "定位",
       body: "员工提交票据、财务审批并打款的内部系统。",
     });
-    write({ kind: "term", name: "报销单", body: "一次报销申请的载体,金额以分记。" });
-    write({ kind: "relationship", name: "", body: "web 的提交走 api 的报销单接口。" });
-    write({ kind: "decision", name: "金额用整数分表示", body: "浮点会攒出误差。" });
+    await write({ kind: "term", name: "报销单", body: "一次报销申请的载体,金额以分记。" });
+    await write({ kind: "relationship", name: "", body: "web 的提交走 api 的报销单接口。" });
+    await write({ kind: "decision", name: "金额用整数分表示", body: "浮点会攒出误差。" });
     return product.id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -102,8 +102,8 @@ const FINDING = {
 };
 
 test("仓库归在产品下:每批提示带目录,query_knowledge 按名字回整条", async () => {
-  const { db, deps } = setup();
-  seedProduct(db.path);
+  const { db, deps } = await setup();
+  await seedProduct(db.path);
 
   const reviewer = scriptedReviewer("stub-model", [FINDING], {
     reads: [{ names: ["报销单", "金额用整数分表示"] }, { relationships: true }],
@@ -137,8 +137,8 @@ test("仓库归在产品下:每批提示带目录,query_knowledge 按名字回�
 });
 
 test("产品写下的条目当轮就读得到:目录在开跑时算,正文按名字现取", async () => {
-  const { db, deps } = setup();
-  const productId = seedProduct(db.path);
+  const { db, deps } = await setup();
+  const productId = await seedProduct(db.path);
 
   // Reviewer 跑着的时候又写下一条决策(写下即生效,ADR 0035)。
   const reviewer = scriptedReviewer("stub-model", [FINDING], {
@@ -146,7 +146,7 @@ test("产品写下的条目当轮就读得到:目录在开跑时算,正文按名
   });
   const store = openStore(db.path);
   try {
-    store.writeProductKnowledge({
+    await store.writeProductKnowledge({
       productId,
       kind: "decision",
       name: "审批只留一级",
@@ -160,7 +160,7 @@ test("产品写下的条目当轮就读得到:目录在开跑时算,正文按名
       sessionId: null,
     });
   } finally {
-    store.close();
+    await store.close();
   }
 
   await runReview(EVENT, { ...deps, reviewers: [reviewer] });
@@ -172,7 +172,7 @@ test("产品写下的条目当轮就读得到:目录在开跑时算,正文按名
 });
 
 test("仓库不在任何产品下:目录与查询回调都不交下去", async () => {
-  const { deps } = setup();
+  const { deps } = await setup();
 
   const reviewer = scriptedReviewer("stub-model", [FINDING], { reads: [{ relationships: true }] });
   await runReview(EVENT, { ...deps, reviewers: [reviewer] });
@@ -183,13 +183,13 @@ test("仓库不在任何产品下:目录与查询回调都不交下去", async (
 });
 
 test("产品建了但一条都没写下:与不在产品下同一条路径", async () => {
-  const { db, deps } = setup();
+  const { db, deps } = await setup();
   const store = openStore(db.path);
   try {
-    const product = store.createProduct({ name: "空产品", createdAt: "2026-09-17T00:00:00.000Z" });
-    store.attachProductRepo(product.id, REPO_ID, "2026-09-17T00:00:00.000Z");
+    const product = await store.createProduct({ name: "空产品", createdAt: "2026-09-17T00:00:00.000Z" });
+    await store.attachProductRepo(product.id, REPO_ID, "2026-09-17T00:00:00.000Z");
   } finally {
-    store.close();
+    await store.close();
   }
 
   const reviewer = scriptedReviewer("stub-model", [FINDING]);
@@ -199,8 +199,8 @@ test("产品建了但一条都没写下:与不在产品下同一条路径", asyn
 });
 
 test("一次 query_knowledge 调用进这一轮的审查轨迹", async () => {
-  const { db, deps } = setup();
-  seedProduct(db.path);
+  const { db, deps } = await setup();
+  await seedProduct(db.path);
 
   // 子进程把每次工具调用按 `tool_call` 转发上来(issue #171);知识查询与别的工具同一条路。
   const reviewer = scriptedReviewer("stub-model", [FINDING], {

@@ -68,22 +68,22 @@ async function records(h: PanelHarness, cookie: string, sessionId: number): Prom
 }
 
 /** 往 tracker 里落一条 spec 与一张票,记在这一场会话名下。写入那一侧由子进程用例把关。 */
-function seedTracker(
+async function seedTracker(
   dbPath: string,
   productId: number,
   sessionId: number | null,
   title: string,
-): { specId: number; ticketId: number } {
+): Promise<{ specId: number; ticketId: number }> {
   const store = openStore(dbPath);
   try {
-    const spec = store.createProductSpec({
+    const spec = await store.createProductSpec({
       productId,
       title,
       body: `## Problem Statement\n\n${title}`,
       sessionId,
       at: AT,
     });
-    const ticket = store.createProductTicket({
+    const ticket = await store.createProductTicket({
       specId: spec.id,
       title: `${title} · 第一张票`,
       body: "第一步",
@@ -93,7 +93,7 @@ function seedTracker(
     });
     return { specId: spec.id, ticketId: ticket.id };
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -107,9 +107,9 @@ test("读会话回得出它写的 spec 与票:别的会话写的、没有会话�
   // 一条都还没写:两份列表都是空的,不是 404——右栏据此整块不渲染。
   assert.deepEqual(await wrote(h, cookie, sessionId), { specs: [], tickets: [] });
 
-  const mine = seedTracker(h.db.path, productId, sessionId, "报销单可以撤回");
-  seedTracker(h.db.path, productId, otherId, "别的会话写的");
-  seedTracker(h.db.path, productId, null, "没有会话写的");
+  const mine = await seedTracker(h.db.path, productId, sessionId, "报销单可以撤回");
+  await seedTracker(h.db.path, productId, otherId, "别的会话写的");
+  await seedTracker(h.db.path, productId, null, "没有会话写的");
 
   assert.deepEqual(await wrote(h, cookie, sessionId), {
     specs: [{ id: mine.specId, title: "报销单可以撤回" }],
@@ -185,7 +185,7 @@ test("升级前的旧库:产出与定稿两张表丢掉,旧的需求拆分会话
   const store = openStore(h.db.path);
   try {
     // 旧会话那两条条目:一条产出卡片标记,一条定稿那句话。
-    store.appendAgentSessionEntry(sessionId, {
+    await store.appendAgentSessionEntry(sessionId, {
       type: "custom",
       at: AT,
       entry: {
@@ -197,7 +197,7 @@ test("升级前的旧库:产出与定稿两张表丢掉,旧的需求拆分会话
       },
       usage: ZERO,
     });
-    store.appendAgentSessionEntry(sessionId, {
+    await store.appendAgentSessionEntry(sessionId, {
       type: "custom_message",
       at: AT,
       entry: {
@@ -211,7 +211,7 @@ test("升级前的旧库:产出与定稿两张表丢掉,旧的需求拆分会话
       usage: ZERO,
     });
   } finally {
-    store.close();
+    await store.close();
   }
 
   // 下一次开库:两张旧表丢掉,会话读得动、记录一条不少。

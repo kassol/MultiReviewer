@@ -574,12 +574,9 @@ export type ReviewerInput = {
    * 与 `productKnowledge` 同进同出:目录不传时这一格也不传,子进程据此不注册
    * `query_knowledge`——目录里没有名字可抄时那件工具无事可做。
    *
-   * 回调可同步可异步(issue #447):编排层那一份要经异步门面查库,而直接调 `review` 的
-   * 地方给的仍是同步的一份,两种都接得住,回音由 `pi-reviewer.ts` 那一侧等出来。
+   * 库在编排进程里,这一份因此是异步的;回音由 `pi-reviewer.ts` 那一侧等出来。
    */
-  queryKnowledge?: (
-    query: SessionKnowledgeQuery,
-  ) => SessionKnowledgeEntries | Promise<SessionKnowledgeEntries>;
+  queryKnowledge?: (query: SessionKnowledgeQuery) => Promise<SessionKnowledgeEntries>;
   /**
    * 收这个 Reviewer 的过程事件(issue #171),编排层一定传,一条即写一条轨迹。
    * 声明成可选是给直接调 `review` 的调用方留的余地:不看过程的地方不必造一个空回调。

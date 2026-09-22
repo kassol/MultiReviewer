@@ -9,10 +9,8 @@
  * 导出的 Markdown 是给人读的一份文档(US 27),因此措辞用中文,票按依赖顺序排:一份拿到
  * 手上就能从第一张往下做的清单。
  */
-import { isThenable } from "../async.ts";
 import {
   PRODUCT_TICKET_LABELS,
-  type AsyncStore,
   type ProductSpecRecord,
   type ProductTicketLabel,
   type ProductTicketRecord,
@@ -132,80 +130,26 @@ function targetText(target: TrackerTarget): string {
 }
 
 /**
- * 一次 tracker 读写走完的那几步:`yield` 出去的是一次 Store 调用,收回来的是它的结果
- * (`wait`),最后 `return` 的是交给模型的那一段文字。
- */
-type TrackerSteps = Generator<unknown, string, unknown>;
-
-/**
- * 等一次 Store 调用的结果。同步那一路拿到的就是值本身(issue #447)。
- *
- * 判定、落库与措辞只有 `trackerSteps` 那一份,而调用方一侧还持着同步的 `Store`
- * (`webhook/agent-session.ts`),迁过来的那一侧给的是异步门面。把库调用写成
- * `yield* wait(...)`,由 `runTrackerRequest` 按它是不是 Promise 决定等不等,两路因此
- * 共用同一段判定;同步那一路当场跑完,返回值仍是一句话。收缩那一票(#449)之后同步
- * 那一路没有了,这两处连同 `yield*` 一起换回 `await`。
- */
-function* wait<T>(value: T): Generator<unknown, Awaited<T>, unknown> {
-  return (yield value) as Awaited<T>;
-}
-
-/**
  * agent 对这个产品的 tracker 做的一次读写(issue #361)。回的是工具原样交给模型的那一段
  * 文字:做成了就一句确认,做不成就一句理由。
  *
  * `sessionId` 是发起它的那个会话:写下的 spec、票与评论都记在它名下(正文只由会话写)。
  */
-export function runTrackerRequest(
+export async function runTrackerRequest(
   store: Store,
   productId: number,
   sessionId: number,
   request: TrackerRequest,
   at: string,
-): string;
-/** 库是异步门面的那一路(issue #447):这一句话等库回完才有。 */
-export function runTrackerRequest(
-  store: AsyncStore,
-  productId: number,
-  sessionId: number,
-  request: TrackerRequest,
-  at: string,
-): Promise<string>;
-export function runTrackerRequest(
-  store: Store | AsyncStore,
-  productId: number,
-  sessionId: number,
-  request: TrackerRequest,
-  at: string,
-): string | Promise<string> {
-  const steps = trackerSteps(store, productId, sessionId, request, at);
-  const step = (result: unknown): string | Promise<string> => {
-    const next = steps.next(result);
-    if (next.done === true) return next.value;
-    return isThenable(next.value)
-      ? Promise.resolve(next.value).then(step)
-      : step(next.value);
-  };
-  return step(undefined);
-}
-
-function* trackerSteps(
-  store: Store | AsyncStore,
-  productId: number,
-  sessionId: number,
-  request: TrackerRequest,
-  at: string,
-): TrackerSteps {
+): Promise<string> {
   /** 这个产品下的一条 spec。别的产品的与不存在的都读作没有。 */
-  function* specOf(specId: number): Generator<unknown, ProductSpecRecord | undefined, unknown> {
-    const spec = yield* wait(store.getProductSpec(specId));
+  async function specOf(specId: number): Promise<ProductSpecRecord | undefined> {
+    const spec = await store.getProductSpec(specId);
     return spec?.productId === productId ? spec : undefined;
   }
   /** 这个产品下的一张票。跨产品的边正是由这一判打回的。 */
-  function* ticketOf(
-    ticketId: number,
-  ): Generator<unknown, ProductTicketRecord | undefined, unknown> {
-    const ticket = yield* wait(store.getProductTicket(ticketId));
+  async function ticketOf(ticketId: number): Promise<ProductTicketRecord | undefined> {
+    const ticket = await store.getProductTicket(ticketId);
     return ticket?.productId === productId ? ticket : undefined;
   }
 
@@ -221,14 +165,14 @@ function* trackerSteps(
       if (body.length > TRACKER_BODY_MAX) {
         return `the body is ${body.length} characters; a spec is at most ${TRACKER_BODY_MAX}`;
       }
-      const spec = yield* wait(store.createProductSpec({ productId, title, body, sessionId, at }));
+      const spec = await store.createProductSpec({ productId, title, body, sessionId, at });
       return `recorded as spec ${spec.id}; split it into tickets with tracker_create_ticket`;
     }
     case "create-ticket": {
       const title = request.title.trim();
       const body = request.body.trim();
       const label = request.label.trim() as ProductTicketLabel;
-      if ((yield* specOf(request.specId)) === undefined) return noSpec(request.specId);
+      if ((await specOf(request.specId)) === undefined) return noSpec(request.specId);
       if (!PRODUCT_TICKET_LABELS.includes(label)) {
         return `${request.label} is not one of this tracker's labels; use one of exactly: ${PRODUCT_TICKET_LABELS.join(", ")}`;
       }
@@ -240,21 +184,19 @@ function* trackerSteps(
       if (body.length > TRACKER_BODY_MAX) {
         return `the body is ${body.length} characters; a ticket is at most ${TRACKER_BODY_MAX}`;
       }
-      const ticket = yield* wait(
-        store.createProductTicket({
-          specId: request.specId,
-          title,
-          body,
-          label,
-          sessionId,
-          at,
-        }),
-      );
+      const ticket = await store.createProductTicket({
+        specId: request.specId,
+        title,
+        body,
+        label,
+        sessionId,
+        at,
+      });
       return `recorded as ticket ${ticket.id} under spec ${request.specId}`;
     }
     case "list": {
-      const specs = yield* wait(store.listProductSpecs(productId));
-      const tickets = yield* wait(store.listProductTickets(productId));
+      const specs = await store.listProductSpecs(productId);
+      const tickets = await store.listProductTickets(productId);
       if (specs.length === 0) {
         return "this product's tracker is empty: no spec has been written yet. Write one with tracker_create_spec once the person and you agree on what is to be built.";
       }
@@ -267,9 +209,9 @@ function* trackerSteps(
     case "read": {
       const { target } = request;
       if (target.kind === "spec") {
-        const spec = yield* specOf(target.id);
+        const spec = await specOf(target.id);
         if (spec === undefined) return noSpec(target.id);
-        const own = (yield* wait(store.listProductTickets(productId))).filter(
+        const own = (await store.listProductTickets(productId)).filter(
           (ticket) => ticket.specId === spec.id,
         );
         return [
@@ -280,9 +222,9 @@ function* trackerSteps(
           ...(own.length === 0 ? ["It has no tickets yet."] : ["Its tickets:", ...own.map(ticketLine)]),
         ].join("\n");
       }
-      const ticket = yield* ticketOf(target.id);
+      const ticket = await ticketOf(target.id);
       if (ticket === undefined) return noTicket(target.id);
-      const comments = yield* wait(store.listProductTicketComments(ticket.id));
+      const comments = await store.listProductTicketComments(ticket.id);
       return [
         `ticket ${ticket.id} (${ticket.state}, ${ticket.label}, ${claim(ticket)}${blockedSuffix(ticket)}) of spec ${ticket.specId}: ${ticket.title}`,
         "",
@@ -307,56 +249,54 @@ function* trackerSteps(
         return `the body is ${body.length} characters; the limit is ${TRACKER_BODY_MAX}`;
       }
       if (target.kind === "spec") {
-        if ((yield* specOf(target.id)) === undefined) return noSpec(target.id);
-        yield* wait(store.setProductSpecBody(target.id, body));
+        if ((await specOf(target.id)) === undefined) return noSpec(target.id);
+        await store.setProductSpecBody(target.id, body);
       } else {
-        if ((yield* ticketOf(target.id)) === undefined) return noTicket(target.id);
-        yield* wait(store.setProductTicketBody(target.id, body));
+        if ((await ticketOf(target.id)) === undefined) return noTicket(target.id);
+        await store.setProductTicketBody(target.id, body);
       }
       return `the body of ${targetText(target)} is rewritten`;
     }
     case "close": {
       const { target } = request;
       if (target.kind === "spec") {
-        if ((yield* specOf(target.id)) === undefined) return noSpec(target.id);
-        return (yield* wait(store.setProductSpecState(target.id, "closed", at)))
+        if ((await specOf(target.id)) === undefined) return noSpec(target.id);
+        return (await store.setProductSpecState(target.id, "closed", at))
           ? `spec ${target.id} is closed`
           : `spec ${target.id} was already closed`;
       }
-      if ((yield* ticketOf(target.id)) === undefined) return noTicket(target.id);
-      return (yield* wait(store.setProductTicketState(target.id, "closed", at)))
+      if ((await ticketOf(target.id)) === undefined) return noTicket(target.id);
+      return (await store.setProductTicketState(target.id, "closed", at))
         ? `ticket ${target.id} is closed`
         : `ticket ${target.id} was already closed`;
     }
     case "comment": {
       const body = request.body.trim();
-      if ((yield* ticketOf(request.ticketId)) === undefined) return noTicket(request.ticketId);
+      if ((await ticketOf(request.ticketId)) === undefined) return noTicket(request.ticketId);
       if (body === "") return "the comment is empty; say what you have to say";
-      yield* wait(
-        store.addProductTicketComment({
-          ticketId: request.ticketId,
-          author: null,
-          sessionId,
-          body,
-          at,
-        }),
-      );
+      await store.addProductTicketComment({
+        ticketId: request.ticketId,
+        author: null,
+        sessionId,
+        body,
+        at,
+      });
       return `comment recorded on ticket ${request.ticketId}`;
     }
     case "block":
     case "unblock": {
       const { ticketId, blockedById } = request;
-      if ((yield* ticketOf(ticketId)) === undefined) return noTicket(ticketId);
+      if ((await ticketOf(ticketId)) === undefined) return noTicket(ticketId);
       if (ticketId === blockedById) {
         return `ticket ${ticketId} cannot block itself; a blocking edge goes between two different tickets`;
       }
       // 别的产品的票在这一判上与不存在的同形:边只在同一个产品的票之间(CONTEXT.md 票)。
-      if ((yield* ticketOf(blockedById)) === undefined) return noTicket(blockedById);
+      if ((await ticketOf(blockedById)) === undefined) return noTicket(blockedById);
       if (request.kind === "block") {
-        yield* wait(store.addProductTicketBlock(ticketId, blockedById));
+        await store.addProductTicketBlock(ticketId, blockedById);
         return `ticket ${ticketId} is now blocked by ticket ${blockedById}`;
       }
-      return (yield* wait(store.removeProductTicketBlock(ticketId, blockedById)))
+      return (await store.removeProductTicketBlock(ticketId, blockedById))
         ? `ticket ${ticketId} is no longer blocked by ticket ${blockedById}`
         : `ticket ${ticketId} was not blocked by ticket ${blockedById}`;
     }

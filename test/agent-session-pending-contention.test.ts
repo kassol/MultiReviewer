@@ -39,8 +39,8 @@ test("另一个进程不停写库时,排队消息的放与取都不报 database 
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-pending-contention-"));
   const dbPath = join(dir, "multireviewer.db");
   const store = openStore(dbPath);
-  const role = store.createPanelRole({ name: "拆需求的人", permissions: ["agent:chat"], createdAt: AT });
-  store.createPanelUser({
+  const role = await store.createPanelRole({ name: "拆需求的人", permissions: ["agent:chat"], createdAt: AT });
+  await store.createPanelUser({
     username: "member",
     displayName: null,
     passwordHash: "unused",
@@ -49,8 +49,8 @@ test("另一个进程不停写库时,排队消息的放与取都不报 database 
     isSystemAdmin: false,
     roleId: role.id,
   });
-  const product = store.createProduct({ name: "报销系统", createdAt: AT });
-  const session = store.createAgentSession({
+  const product = await store.createProduct({ name: "报销系统", createdAt: AT });
+  const session = await store.createAgentSession({
     productId: product.id,
     createdBy: "member",
     purpose: "requirement-breakdown",
@@ -63,14 +63,14 @@ test("另一个进程不停写库时,排队消息的放与取都不报 database 
     await new Promise((resolve) => setTimeout(resolve, 300));
     // 修复前每 3000 轮里稳定出 1–4 次。
     for (let round = 0; round < 3000; round += 1) {
-      store.putAgentSessionPendingMessages(session.id, [{ mode: "followUp", text: "排着的那一句" }]);
-      assert.deepEqual(store.takeAgentSessionPendingMessages(session.id), [
+      await store.putAgentSessionPendingMessages(session.id, [{ mode: "followUp", text: "排着的那一句" }]);
+      assert.deepEqual(await store.takeAgentSessionPendingMessages(session.id), [
         { mode: "followUp", text: "排着的那一句" },
       ]);
     }
   } finally {
     writer.kill("SIGKILL");
-    store.close();
+    await store.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

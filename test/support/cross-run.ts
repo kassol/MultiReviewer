@@ -86,15 +86,15 @@ export function dispositionMarks(dbPath: string): { by: unknown; at: unknown }[]
 }
 
 /** 人在面板上处置一条 Finding:落库这一步与面板 API 走同一段代码。 */
-export function disposeInPanel(
+export async function disposeInPanel(
   dbPath: string,
   commentId: string,
   disposition: "resolved" | "unresolved",
   note?: string,
-): void {
+): Promise<void> {
   const store = openStore(dbPath);
   try {
-    store.recordDisposition({
+    await store.recordDisposition({
       owner: EVENT.owner,
       repo: EVENT.repo,
       commentId,
@@ -104,7 +104,7 @@ export function disposeInPanel(
       ...(note === undefined ? {} : { note }),
     });
   } finally {
-    store.close();
+    await store.close();
   }
 }
 

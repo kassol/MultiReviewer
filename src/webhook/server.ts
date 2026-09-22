@@ -127,7 +127,6 @@ import {
   modelServiceTargetFingerprint,
   modelServiceTargetSetFingerprint,
   normalizeModelServiceTargets,
-  asyncStore,
   openStore,
   runFailureText,
   storedReviewersEmpty,
@@ -137,7 +136,6 @@ import {
   type AgentSessionBaseline,
   type AgentSessionPurpose,
   type AgentSessionRecord,
-  type AsyncStore,
   type BatchLimitField,
   type ComparisonSource,
   type FindingDispositionTarget,
@@ -669,23 +667,14 @@ function describeRepo(payload: unknown, repoId: number): string {
 /**
  * 开库执行一段读写,用完即关——webhook 层用库的既有约定,短开短关。
  *
- * 回调拿到的是异步门面(issue #446):方法同名、调用前加 `await`,底下仍是同一条连接、
- * 同一次同步调用。库等回调跑完才关,因此回调里的每一次 `await` 都还在这次开库之内。
- *
- * 第二个参数是同一条连接的同步那一份,**只为还没迁的跨模块函数**留着——`run.ts` 的
- * `effectiveMinReportSeverity` / `disposeAbsentHistory` 与 `trace.ts` 的 `createTraceRecorder`
- * 收的是同步 `Store`(issue #447),这里不替它们改签名。自己这一侧一律走第一个参数;
- * 那几处迁完之后这一格跟着删。
+ * 库等回调跑完才关,因此回调里的每一次 `await` 都还在这次开库之内。
  */
-async function withStore<T>(
-  dbPath: string,
-  fn: (store: AsyncStore, sync: Store) => T | Promise<T>,
-): Promise<T> {
+async function withStore<T>(dbPath: string, fn: (store: Store) => T | Promise<T>): Promise<T> {
   const store = openStore(dbPath);
   try {
-    return await fn(asyncStore(store), store);
+    return await fn(store);
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -1480,7 +1469,7 @@ async function repoAssignment(deps: WebhookServerDeps, repoIds: readonly number[
 async function rowAllowed(
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
-  read: (store: AsyncStore) => Promise<{ owner: string; repo: string } | undefined>,
+  read: (store: Store) => Promise<{ owner: string; repo: string } | undefined>,
 ): Promise<boolean> {
   const row = await withStore(deps.dbPath, read);
   return row === undefined || assignment.allows(row.owner, row.repo);
@@ -2359,7 +2348,7 @@ async function handleDeleteProduct(
   // 删之前把会话 id 记下来:级联删完就查不到它们了,而图片文件要按 id 删(issue #336)。
   const sessions = await withStore(deps.dbPath, async (store) => await store.listAgentSessions(productId, null));
   // 每个会话的常驻子进程先收掉(评审复核),理由与删会话那一处相同。
-  for (const session of sessions) reclaimAgentSession(session.id);
+  for (const session of sessions) await reclaimAgentSession(session.id);
   const cascade = await withStore(deps.dbPath, async (store) => await store.deleteProduct(productId));
   if (cascade !== undefined) {
     for (const session of sessions) removeAgentSessionImages(deps.dbPath, session.id);
@@ -2476,7 +2465,7 @@ async function openProductSurvey(
   if (product.repos.length < 2) {
     return { refusal: { status: 409, error: PRODUCT_SURVEY_TOO_FEW_REPOS } };
   }
-  if (productSurveyIncomplete(deps.dbPath, productId)) {
+  if (await productSurveyIncomplete(deps.dbPath, productId)) {
     return { refusal: { status: 409, error: PRODUCT_SURVEY_INCOMPLETE } };
   }
   // 定基点在落行之前:选错了一条会话也不该落下,面板上人看到的就是「没梳起来 + 哪个仓库」。
@@ -2587,7 +2576,7 @@ async function agentSessionImageInput(
   deps: WebhookServerDeps,
   session: AgentSessionRecord,
 ): Promise<boolean> {
-  const first = agentSessionRepos(deps.dbPath, session)[0];
+  const first = (await agentSessionRepos(deps.dbPath, session))[0];
   if (first === undefined) return false;
   const auxiliary = await resolveAuxiliaryModelPlan(deps, first.repoId);
   return auxiliary?.plan?.runtimeModel?.input.includes("image") ?? false;
@@ -2878,7 +2867,7 @@ async function handleCreateAgentSession(
   }
   // agent 读得到的那一份仓库集(产品 ∩ 创建者的仓库分配):基点只在它里面选得出,备树时
   // 挂的也正是这几棵。
-  const repos = agentSessionRepos(deps.dbPath, {
+  const repos = await agentSessionRepos(deps.dbPath, {
     productId,
     createdBy: caller.username,
     purpose,
@@ -2905,11 +2894,11 @@ async function handleCreateAgentSession(
  * 排队列表回给面板的那一份(issue #334、#336):只有模式与正文。图片引用是服务端的事——
  * 路径不出这台机器。
  */
-function visibleQueue(
+async function visibleQueue(
   deps: WebhookServerDeps,
   sessionId: number,
-): { mode: AgentSessionMessageMode; text: string }[] {
-  return agentSessionQueue(deps.dbPath, sessionId).map(({ mode, text }) => ({ mode, text }));
+): Promise<{ mode: AgentSessionMessageMode; text: string }[]> {
+  return (await agentSessionQueue(deps.dbPath, sessionId)).map(({ mode, text }) => ({ mode, text }));
 }
 
 /**
@@ -2961,9 +2950,9 @@ async function handleAgentSession(
     ? sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION })
     : sendJson(res, 200, {
         session: withRuntimeStatus(session),
-        queue: visibleQueue(deps, sessionId),
+        queue: await visibleQueue(deps, sessionId),
         imageInput: await agentSessionImageInput(deps, session),
-        droppedFromContext: agentSessionDroppedFromContext(deps.dbPath, sessionId),
+        droppedFromContext: await agentSessionDroppedFromContext(deps.dbPath, sessionId),
         wrote: await agentSessionWrote(deps, session.productId, sessionId),
       });
 }
@@ -3040,7 +3029,7 @@ async function handleDeleteAgentSession(
   });
   if (allowed === undefined) return;
   // 常驻子进程先收掉(评审复核):只删库里的行会留下一个挂着工作树、还在计时的子进程。
-  reclaimAgentSession(sessionId);
+  await reclaimAgentSession(sessionId);
   await withStore(deps.dbPath, async (store) => await store.deleteAgentSession(sessionId));
   // 记录、产出与图片一并消失(spec #329 的 US 25):库里的行在上一句,文件目录在这一句。
   removeAgentSessionImages(deps.dbPath, sessionId);
@@ -3302,7 +3291,7 @@ async function agentSessionRunPlan(
   }
   // 会话根里挂哪几棵工作树:产品当前仓库 ∩ 创建者当前仓库分配(spec #329);产品梳理是产品的
   // 全部仓库(issue #345)。
-  const repos = agentSessionRepos(deps.dbPath, session);
+  const repos = await agentSessionRepos(deps.dbPath, session);
   const first = repos[0];
   if (first === undefined) return { refusal: { status: 409, error: AGENT_SESSION_NO_REPOS } };
   // 辅助模型按会话根里第一个仓库解析(ADR 0029):解析那一处是按仓库问的,而一个会话跨着
@@ -3312,7 +3301,7 @@ async function agentSessionRunPlan(
   if (plan === undefined || plan.runtimeModel === null || plan.credential === null) {
     return { refusal: { status: 409, error: auxiliary?.reason ?? NO_AUXILIARY_MODEL } };
   }
-  if (!agentSessionSlot(session.id)) {
+  if (!(await agentSessionSlot(session.id))) {
     return { refusal: { status: 409, error: AGENT_SESSION_NO_SLOT } };
   }
   return {
@@ -3339,8 +3328,8 @@ async function handleClearAgentSessionQueue(
   caller: PanelCaller,
 ): Promise<void> {
   if ((await agentSessionForCreator(res, deps, sessionId, caller)) === undefined) return;
-  clearAgentSessionQueue(deps.dbPath, sessionId);
-  return sendJson(res, 200, { queue: visibleQueue(deps, sessionId) });
+  await clearAgentSessionQueue(deps.dbPath, sessionId);
+  return sendJson(res, 200, { queue: await visibleQueue(deps, sessionId) });
 }
 
 /**
@@ -3359,17 +3348,17 @@ async function handleStopAgentSession(
   });
   if (allowed === undefined) return;
   const stopped = stopAgentSession(sessionId);
-  return sendJson(res, 200, { stopped, queue: visibleQueue(deps, sessionId) });
+  return sendJson(res, 200, { stopped, queue: await visibleQueue(deps, sessionId) });
 }
 
 /** 在跑或排着消息的会话不更新基点(ADR 0034):子进程正在读的工作区不能换。 */
 const AGENT_SESSION_BASELINE_BUSY = "会话在跑或还有排队的消息,等它空闲再更新基点";
 
 /** 会话在跑,或者有排队的消息。更新基点的闸在拿分支 head 前后各判一次。 */
-function agentSessionBusy(deps: WebhookServerDeps, sessionId: number): boolean {
+async function agentSessionBusy(deps: WebhookServerDeps, sessionId: number): Promise<boolean> {
   return (
     agentSessionStatus(sessionId) === "running" ||
-    agentSessionQueue(deps.dbPath, sessionId).length > 0
+    (await agentSessionQueue(deps.dbPath, sessionId)).length > 0
   );
 }
 
@@ -3415,7 +3404,7 @@ async function handleUpdateAgentSessionBaseline(
       error: `${owner}/${repo} 的会话基点来自 Tag ${baseline.branch},没有最新可更新`,
     });
   }
-  if (agentSessionBusy(deps, sessionId)) {
+  if (await agentSessionBusy(deps, sessionId)) {
     return sendJson(res, 409, { error: AGENT_SESSION_BASELINE_BUSY });
   }
   if (deps.drain?.draining() === true) {
@@ -3440,7 +3429,7 @@ async function handleUpdateAgentSessionBaseline(
   }
   const answer = { owner, repo, branch: baseline.branch, from: baseline.sha, to: head };
   if (head === baseline.sha) return sendJson(res, 200, { changed: false, ...answer });
-  if (agentSessionBusy(deps, sessionId)) {
+  if (await agentSessionBusy(deps, sessionId)) {
     return sendJson(res, 409, { error: AGENT_SESSION_BASELINE_BUSY });
   }
   // 基点整列从库里重读再换这一行:取 head 那段时间里别的仓库的基点不该被这份旧快照盖回去。
@@ -6023,7 +6012,7 @@ async function handleStages(
  * 注册表(仓库移除之后阶段照样看得见)。找不到即回 undefined,取生效阈值时就只剩全局
  * 那一档——仓库都不在了,不该让这个阶段的读与处置跟着一起报错。
  */
-async function stageRepoId(store: AsyncStore, stage: { owner: string; repo: string }): Promise<number | undefined> {
+async function stageRepoId(store: Store, stage: { owner: string; repo: string }): Promise<number | undefined> {
   return await store.findRepoId(stage.owner, stage.repo);
 }
 
@@ -6061,13 +6050,16 @@ async function handleStageDetail(
   } catch {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
   }
-  const detail = await withStore(deps.dbPath, async (store, sync) => {
+  const detail = await withStore(deps.dbPath, async (store) => {
     const found = await store.stageDetail(stageId);
     if (found === undefined) return undefined;
     const rangeReviewId = found.stage.rangeReviewId;
     // 生效最低报告等级跟着详情一起给(issue #274):批量处置的按钮凭它决定露不露面,
     // 而看得到阶段的人不一定读得到审查策略,让面板自己再请求一次会撞权限。
-    const minReportSeverity = effectiveMinReportSeverity(sync, await stageRepoId(store, found.stage));
+    const minReportSeverity = await effectiveMinReportSeverity(
+      store,
+      await stageRepoId(store, found.stage),
+    );
     return rangeReviewId === null
       ? { ...found, minReportSeverity }
       : { ...found, minReportSeverity, rangeReview: await store.getRangeReview(rangeReviewId) };
@@ -6537,12 +6529,12 @@ async function verdictOnlyRejection(
   reviewable: ReadonlySet<string>,
   changedFiles: readonly { path: string }[],
 ): Promise<string | undefined> {
-  const count = await withStore(dbPath, async (store, sync) => {
+  const count = await withStore(dbPath, async (store) => {
     const history = await store.stageHistory(scope);
     const absent = absentHistory(history, reviewable, changedFiles);
     let disposed = 0;
     if (absent.length > 0) {
-      const done = await disposeAbsentHistory(forge, ref, sync, absent);
+      const done = await disposeAbsentHistory(forge, ref, store, absent);
       disposed = done.disposed.deleted.length + done.disposed.reverted.length;
     }
     return openHistory(history).some((entry) => reviewable.has(entry.file)) ? undefined : disposed;
@@ -6956,13 +6948,13 @@ async function handleDisposeBelowThreshold(
   } catch {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
   }
-  const stage = await withStore(deps.dbPath, async (store, sync) => {
+  const stage = await withStore(deps.dbPath, async (store) => {
     const found = await store.stageDetail(stageId);
     if (found === undefined) return undefined;
     return {
       owner: found.stage.owner,
       repo: found.stage.repo,
-      minReportSeverity: effectiveMinReportSeverity(sync, await stageRepoId(store, found.stage)),
+      minReportSeverity: await effectiveMinReportSeverity(store, await stageRepoId(store, found.stage)),
       findings: (await store.stageSummary(stageScopeOf(found.stage))).findings,
     };
   });
@@ -8553,7 +8545,7 @@ const NO_DRAFT_ITEM = "这条规则不在这个仓库的知识草案里";
  */
 function usableRuleItems(
   items: readonly RuleAgentItem[],
-  trace: RuleTraceRecorder<unknown>,
+  trace: RuleTraceRecorder,
 ): RuleAgentItem[] {
   const usable: RuleAgentItem[] = [];
   for (const raw of items) {
@@ -8663,7 +8655,7 @@ function proposalsFromItems(
  * 规则 agent 的一条过程事件落进知识轨迹(issue #214)。两条链路共用:事件类型就是轨迹
  * 的事件类型,`kind` 之外的那几项原样成为 payload——与 Review Run 那侧同一条口径。
  */
-function recordRuleAgentEvent(trace: RuleTraceRecorder<unknown>, event: RuleAgentEvent): void {
+function recordRuleAgentEvent(trace: RuleTraceRecorder, event: RuleAgentEvent): void {
   const { kind, ...payload } = event;
   trace.record(kind, payload);
 }
@@ -8684,7 +8676,7 @@ async function runRuleExplorationInBackground(
   // 轨迹从发起这一刻起(CONTEXT.md 知识轨迹,issue #214):取不回代码、模型用不了这些
   // 失败也发生在探索之内,人来这条轨迹就是要看它究竟卡在哪一步。
   const trace = await startRuleTrace(
-    <T>(use: (sync: Store) => Promise<T>) => withStore(deps.dbPath, (_store, sync) => use(sync)),
+    <T>(use: (store: Store) => Promise<T>) => withStore(deps.dbPath, use),
     repoId,
     "baseline-exploration",
     {
@@ -8811,7 +8803,7 @@ async function applyConsolidation(
   deps: WebhookServerDeps,
   repoId: number,
   actions: readonly RuleConsolidationAction[],
-  trace: RuleTraceRecorder<unknown>,
+  trace: RuleTraceRecorder,
 ): Promise<{ merged: number; retargeted: number }> {
   let merged = 0;
   let retargeted = 0;
@@ -8896,7 +8888,7 @@ async function runRuleConsolidationInBackground(
   const workDir = mkdtempSync(join(tmpdir(), "multireviewer-rule-consolidation-"));
   // 轨迹从发起这一刻起,与基点探索同一条口径:模型用不了也是这一次整理之内的失败。
   const trace = await startRuleTrace(
-    <T>(use: (sync: Store) => Promise<T>) => withStore(deps.dbPath, (_store, sync) => use(sync)),
+    <T>(use: (store: Store) => Promise<T>) => withStore(deps.dbPath, use),
     repoId,
     "knowledge-consolidation",
     {
@@ -8999,7 +8991,7 @@ async function runRuleConsolidationInBackground(
  * 草案条目那一档回的是草案条目标识——那一档改的是草案里那一行,不排提案(issue #298)。
  */
 async function landRuleItems(
-  store: AsyncStore,
+  store: Store,
   repoId: number,
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
@@ -9040,9 +9032,9 @@ async function landRuleItems(
  * 草案条目即原地改写草案里那一行。
  */
 type IntentLanding =
-  | { kind: "proposal"; proposalId: number; trace: RuleTraceRecorder<unknown> }
-  | { kind: "rule"; ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder<unknown> }
-  | { kind: "draft"; itemId: number; trace: RuleTraceRecorder<unknown> };
+  | { kind: "proposal"; proposalId: number; trace: RuleTraceRecorder }
+  | { kind: "rule"; ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder }
+  | { kind: "draft"; itemId: number; trace: RuleTraceRecorder };
 
 /** 目标型意图落地时,产出里不指向目标的那些被丢掉的原因。 */
 const REWRITE_OFF_TARGET = "目标为一条提案的意图只落地指向它的那一条改写";
@@ -9086,7 +9078,7 @@ function chooseTargetItem(
   items: readonly RuleAgentItem[],
   targets: (item: RuleAgentItem) => boolean,
   reason: string,
-  trace: RuleTraceRecorder<unknown>,
+  trace: RuleTraceRecorder,
 ): RuleAgentItem | undefined {
   let chosen: RuleAgentItem | undefined;
   for (const item of items) {
@@ -9111,11 +9103,11 @@ function chooseTargetItem(
  * 一条人工提议附注——附注即修订对话的下一句。
  */
 async function rewriteTargetProposal(
-  store: AsyncStore,
+  store: Store,
   repoId: number,
   items: readonly RuleAgentItem[],
   source: Omit<RuleProposalSourceInput, "evidence">,
-  rewrite: { proposalId: number; trace: RuleTraceRecorder<unknown> },
+  rewrite: { proposalId: number; trace: RuleTraceRecorder },
 ): Promise<number[]> {
   // 落地那一刻它还待裁决吗:与条目、草案两档同一口径先查一次。零产出也要照查——目标已经
   // 被裁决掉时这一次意图本来就没有落处,报成零产出完成会让人以为「agent 认为不用改」。
@@ -9150,11 +9142,11 @@ async function rewriteTargetProposal(
  * 产出逐条丢掉并记轨迹,一条都没有即零产出、意图照常完成。
  */
 async function landRuleTargetEntry(
-  store: AsyncStore,
+  store: Store,
   repoId: number,
   items: readonly RuleAgentItem[],
   source: Omit<RuleProposalSourceInput, "evidence">,
-  target: { ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder<unknown> },
+  target: { ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder },
 ): Promise<number[]> {
   // 落地那一刻它还生效吗:开跑前查过一次,解读那几分钟里人照样可以直接废止它。
   const rules = (await store.getRuleSet(repoId))?.rules ?? [];
@@ -9210,10 +9202,10 @@ function targetsRuleEntry(
  * 里(被删,或者重新探索整组覆盖了这份草案)即抛 `DRAFT_TARGET_GONE`,意图失败留原因。
  */
 async function landRuleDraftItem(
-  store: AsyncStore,
+  store: Store,
   repoId: number,
   items: readonly RuleAgentItem[],
-  target: { itemId: number; trace: RuleTraceRecorder<unknown> },
+  target: { itemId: number; trace: RuleTraceRecorder },
 ): Promise<number[]> {
   // 落地那一刻它还在草案里吗:开跑前查过一次,解读那几分钟里人照样可以删掉它。
   if (!(await store.getRuleDraft(repoId)).some((item) => item.id === target.itemId)) {
@@ -9397,7 +9389,7 @@ function toDraftEntry(item: RuleDraftItem): KnowledgeEntry {
 /** 目标那一份落地要的样子(issue #295、#297、#298)。无目标即缺席,产出按无目标那两档入队。 */
 function intentLanding(
   target: RuleIntentInput["target"],
-  trace: RuleTraceRecorder<unknown>,
+  trace: RuleTraceRecorder,
 ): IntentLanding | undefined {
   if (target.kind === "proposal") {
     return { kind: "proposal", proposalId: target.proposal.id, trace };
@@ -9446,7 +9438,7 @@ async function runRevisionIntentInBackground(
     finding === undefined ? "manual-proposal" : "disposition-feedback";
   // 轨迹从任务开始就起,与另三条链路同一条口径:取不回代码、模型用不了都是这一次运行
   // 之内的失败,人来这条轨迹就是要看它究竟卡在哪一步。
-  const trace = await startRuleTrace(<T>(use: (sync: Store) => Promise<T>) => withStore(deps.dbPath, (_store, sync) => use(sync)), repoId, origin, {
+  const trace = await startRuleTrace(<T>(use: (store: Store) => Promise<T>) => withStore(deps.dbPath, use), repoId, origin, {
     source: origin,
     intentId: intent.id,
     ...(finding === undefined
@@ -10937,7 +10929,7 @@ function resumeInterruptedRuns(
         // 退回 issue #247 的改判:这一轮标记失败并写上原因,下一次启动因此不会再看到它。
         // 先定形再用(issue #436):这一句进轮次那一列、各模型的失败行与轨迹事件三处。
         const reason = runFailureText(`服务重启,上一轮没跑完;${failure}`);
-        const interrupted = await withStore(deps.dbPath, async (store, sync) => {
+        const interrupted = await withStore(deps.dbPath, async (store) => {
           const runs = await store.failInterruptedRuns(
             reason,
             new Date((deps.now ?? Date.now)()).toISOString(),
@@ -10945,7 +10937,7 @@ function resumeInterruptedRuns(
           );
           // 轨迹上补一条 Run 级的失败事件(ADR 0026),与列内是同一句原因:这一轮没有
           // `run_finished`,轨迹里只有它说得出为什么没收尾。频道此刻已不在内存,只落库。
-          createTraceRecorder(sync, run.runId).run("run_failed", { reason });
+          await createTraceRecorder(store, run.runId).run("run_failed", { reason });
           return runs;
         });
         // 改判掉的这一轮在 PR 上还挂着 👀(续跑那一段自己挂的,或崩溃前留下的)。

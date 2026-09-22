@@ -222,16 +222,16 @@ test("偏移命中折叠的那条落库沿用历史行的指纹:轨迹折叠数�
 
   const store = openStore(db.path);
   try {
-    const runId = store.listRuns({ limit: 1 })[0]!.id;
-    const folded = store.listTrace(runId).filter((event) => event.kind === "finding_folded");
-    const summary = store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    const folded = (await store.listTrace(runId)).filter((event) => event.kind === "finding_folded");
+    const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
     const latest = summary.timeline.find((entry) => entry.runId === runId)!;
     assert.equal(folded.length, 1);
     assert.equal(latest.folded, folded.length, "时间线的折叠数与轨迹 finding_folded 条数不一致");
     assert.equal(latest.reported, 0);
     assert.equal(summary.findings.length, 1, "折叠命中的行在阶段汇总里占了新的 Identity");
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -454,7 +454,7 @@ test("下一轮把本阶段历史注入 Reviewer:未处置的带正文与备注,
 
   await runReview(EVENT, { ...deps, reviewers: [scriptedReviewer("model-a", TWO_FINDINGS)] });
   // 人在面板上处置了行级那一条,并留了一句备注。备注要跟着注入,操作人不能跟着。
-  disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
+  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
   forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
@@ -536,7 +536,7 @@ test("已处置的历史不要结论:漏复核只数未处置的那些", async (
   const { repo, db, forge, deps } = setup();
 
   await runReview(EVENT, deps);
-  disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved");
+  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved");
   forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 

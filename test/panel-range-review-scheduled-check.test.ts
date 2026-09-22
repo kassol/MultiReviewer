@@ -94,7 +94,7 @@ async function startedHarness(
     201,
   );
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }
 
@@ -110,14 +110,14 @@ function makeClock(startAt = Date.parse("2026-09-11T09:00:00.000Z")): Clock {
   };
 }
 
-function startRangeReview(
+async function startRangeReview(
   h: PanelHarness,
   base: string,
   comparison: string,
   /** 同一个 base 上已有进行中的范围审查时要它:接口只提醒,确认之后照常发起。 */
   confirm = false,
 ): Promise<RangeReview> {
-  return startRangeReviewRow<RangeReview>(h, {
+  return await startRangeReviewRow<RangeReview>(h, {
     title: "范围审查标题",
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
@@ -152,14 +152,14 @@ async function detailRangeReview(h: PanelHarness, id: number): Promise<RangeRevi
 }
 
 /** 这个阶段名下的轮次,开跑先后。 */
-function runsOf(
+async function runsOf(
   h: PanelHarness,
   rangeReviewId: number,
-): { headSha: string; mode: string; triggerSource: string; triggeredBy: string | null }[] {
+): Promise<{ headSha: string; mode: string; triggerSource: string; triggeredBy: string | null }[]> {
   const store = openStore(h.db.path);
   try {
-    return store
-      .listRuns({ limit: 30, rangeReviewId })
+    return (await store
+      .listRuns({ limit: 30, rangeReviewId }))
       .map((run) => ({
         headSha: run.headSha,
         mode: run.mode,
@@ -168,7 +168,7 @@ function runsOf(
       }))
       .reverse();
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -195,7 +195,7 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
   // 容器 PR 的 head 分支跟着走到了分支最新 commit,base 分支一动不动。
   assert.equal(h.repo.branchSha(rangeReview.headBranch), next);
 
-  const runs = runsOf(h, rangeReview.id);
+  const runs = await runsOf(h, rangeReview.id);
   assert.equal(runs.length, 2);
   assert.deepEqual(runs[1], {
     headSha: next,
@@ -211,8 +211,8 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
 
   // 历次比较项那一行没有记录人:面板据此显示「定时检查」。
   const store = openStore(h.db.path);
-  const comparisons = store.listRangeReviewComparisons(rangeReview.id);
-  store.close();
+  const comparisons = await store.listRangeReviewComparisons(rangeReview.id);
+  await store.close();
   assert.deepEqual(
     comparisons.map((entry) => entry.recordedBy),
     [PANEL_ADMIN_USERNAME, ""],
@@ -242,14 +242,14 @@ test("同一天多次 tick 只跑一次;拨到第二天再跑一次", async () =
   const again = h.repo.pushToHead({ "src/answer.ts": "export const answer = 4;\n" });
   await afterSomeTicks();
   assert.equal(h.scheduledChecks.length, 1);
-  assert.equal(runsOf(h, rangeReview.id).length, 2);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 2);
 
   clock.set(clock.at + DAY_MS);
   await h.scheduledChecksAtLeast(2);
   assert.equal(h.scheduledChecks[1]!.result, "advanced");
   await h.settledAtLeast(3);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), again);
-  assert.equal(runsOf(h, rangeReview.id).length, 3);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 3);
 });
 
 test("开关开在今天不算错过:当天的 tick 不推进", async () => {
@@ -263,7 +263,7 @@ test("开关开在今天不算错过:当天的 tick 不推进", async () => {
 
   await afterSomeTicks();
   assert.equal(h.scheduledChecks.length, 0);
-  assert.equal(runsOf(h, rangeReview.id).length, 1);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 1);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
 });
 
@@ -340,7 +340,7 @@ test("完整审查模式:没有未处置历史也开轮次,那一轮模式是完
   assert.equal(h.scheduledChecks[0]!.result, "advanced");
   await h.settledAtLeast(2);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), next);
-  const runs = runsOf(h, rangeReview.id);
+  const runs = await runsOf(h, rangeReview.id);
   assert.equal(runs.length, 2);
   assert.equal(runs[1]!.mode, "full");
   assert.equal(runs[1]!.triggerSource, "scheduled");
@@ -356,7 +356,7 @@ test("分支上没有新提交:跳过并记原因,不开轮次", async () => {
   clock.set(clock.at + DAY_MS);
   await h.scheduledChecksAtLeast(1);
   assert.equal(h.scheduledChecks[0]!.result, "no-new-commit");
-  assert.equal(runsOf(h, rangeReview.id).length, 1);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 1);
   assert.equal((await detailRangeReview(h, rangeReview.id)).scheduledCheckResult, "no-new-commit");
 });
 
@@ -371,7 +371,7 @@ test("这个范围审查有轮次在跑:跳过并记原因", async () => {
 
   // 一轮停在没有结束时间的状态:人点的那一次,或等着续跑的那一轮。
   const store = openStore(h.db.path);
-  store.startRun({
+  await store.startRun({
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: rangeReview.containerPullNumber!,
@@ -383,7 +383,7 @@ test("这个范围审查有轮次在跑:跳过并记原因", async () => {
     batchCount: 1,
     reviewerPins: [],
   });
-  store.close();
+  await store.close();
 
   clock.set(clock.at + DAY_MS);
   await h.scheduledChecksAtLeast(1);
@@ -403,7 +403,7 @@ test("这个阶段没有未处置历史:跳过并记原因,不开轮次", async 
   clock.set(clock.at + DAY_MS);
   await h.scheduledChecksAtLeast(1);
   assert.equal(h.scheduledChecks[0]!.result, "nothing-to-verdict");
-  assert.equal(runsOf(h, rangeReview.id).length, 1);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 1);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
 });
 
@@ -423,7 +423,7 @@ test("分支被强推、最新 commit 不再是 base 后代:跳过并记原因",
   await h.scheduledChecksAtLeast(1);
   assert.equal(h.scheduledChecks[0]!.result, "not-descendant");
   assert.equal(h.repo.branchSha(rangeReview.headBranch), comparison);
-  assert.equal(runsOf(h, rangeReview.id).length, 1);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 1);
 });
 
 test("跟的分支被删掉:跳过并记原因,开关仍然开着", async () => {
@@ -459,7 +459,7 @@ test("排空期间:跳过并记「排空中」,不开轮次", async () => {
   clock.set(clock.at + DAY_MS);
   await h.scheduledChecksAtLeast(1);
   assert.equal(h.scheduledChecks[0]!.result, "draining");
-  assert.equal(runsOf(h, rangeReview.id).length, 1);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 1);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), h.repo.headSha);
 
   // 同一天不再补:排空那一次已经刷新了时刻。
@@ -480,7 +480,7 @@ test("审查完成之后:定时检查不再碰这个阶段", async () => {
   clock.set(clock.at + DAY_MS);
   await afterSomeTicks();
   assert.equal(h.scheduledChecks.length, 0);
-  assert.equal(runsOf(h, rangeReview.id).length, 1);
+  assert.equal((await runsOf(h, rangeReview.id)).length, 1);
 });
 
 test("一条推分支失败不影响另一条:同一个仓库里另一个范围审查照常推进", async () => {
@@ -509,8 +509,8 @@ test("一条推分支失败不影响另一条:同一个仓库里另一个范围�
   await h.settledAtLeast(3);
   assert.equal(h.repo.branchSha(failing.headBranch), h.repo.headSha);
   assert.equal(h.repo.branchSha(healthy.headBranch), forward);
-  assert.equal(runsOf(h, failing.id).length, 1);
-  assert.equal(runsOf(h, healthy.id).length, 2);
+  assert.equal((await runsOf(h, failing.id)).length, 1);
+  assert.equal((await runsOf(h, healthy.id)).length, 2);
 });
 
 /** 轮询到条件成立。等的是 git 钩子落下的信号文件,没有回调可挂。 */
@@ -584,7 +584,7 @@ test("tick 处理前一条期间人工推进了后一条:后一条开检查前�
     assert.equal(h.repo.branchSha(checkedFirst.headBranch), tip);
     assert.equal(h.repo.branchSha(checkedSecond.headBranch), manualSha);
     assert.deepEqual(
-      runsOf(h, checkedSecond.id).map((run) => run.triggerSource),
+      (await runsOf(h, checkedSecond.id)).map((run) => run.triggerSource),
       ["panel", "panel"],
     );
     releaseManual();

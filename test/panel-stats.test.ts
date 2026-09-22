@@ -13,7 +13,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
   const h = await startPanelHarness();
 
   const seed = openStore(h.db.path);
-  const runId = seed.startRun({
+  const runId = await seed.startRun({
     owner: "acme",
     repo: "widgets",
     pullNumber: 7,
@@ -24,7 +24,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
     batchCount: 1,
     reviewerPins: [],
   });
-  seed.finishRun(runId, {
+  await seed.finishRun(runId, {
     finishedAt: "2026-08-10T00:01:00.000Z",
     durationMs: 1,
     failed: false,
@@ -121,7 +121,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
       },
     ],
   });
-  const secondRunId = seed.startRun({
+  const secondRunId = await seed.startRun({
     owner: "acme",
     repo: "widgets",
     pullNumber: 8,
@@ -132,7 +132,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
     batchCount: 1,
     reviewerPins: [],
   });
-  seed.finishRun(secondRunId, {
+  await seed.finishRun(secondRunId, {
     finishedAt: "2026-08-11T00:01:00.000Z",
     durationMs: 1,
     failed: false,
@@ -155,7 +155,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
     ],
     findings: [],
   });
-  seed.close();
+  await seed.close();
 
   const response = await h.api(
     "GET",

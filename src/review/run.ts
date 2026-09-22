@@ -1,4 +1,3 @@
-import { relay } from "../async.ts";
 import type { ReviewerSpec, ReviewRunReviewerPin } from "../config.ts";
 import type { Drain } from "../drain.ts";
 import {
@@ -76,11 +75,9 @@ import {
   type HunkChange,
 } from "./position.ts";
 import {
-  asyncStore,
   DEFAULT_MIN_REPORT_SEVERITY,
   openStore,
   runFailureText,
-  type AsyncStore,
   type ContinuationCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
@@ -452,35 +449,16 @@ const SEVERITY_ORDER: readonly Severity[] = ["P0", "P1", "P2"];
  * 缺则全局设置,再缺即默认 P2(全报)。别处不重复判。
  *
  * 不给 `repoId` 就只有全局这一档:注册表行认不出来时按跟随全局跑,而不是把这一轮拦下来。
- *
- * 同步的 `Store` 与异步门面都接得住(issue #447):前者当场算完、返回值仍是一个等级,
- * 后者返回 Promise。两路共用同一段判定——取值的唯一入口不允许分叉成两份。收缩那一票
- * (#449)删掉同步那一路之后,这里就只剩一个 `async` 函数。
  */
-export function effectiveMinReportSeverity(store: Store, repoId?: number): Severity;
-export function effectiveMinReportSeverity(store: AsyncStore, repoId?: number): Promise<Severity>;
-export function effectiveMinReportSeverity(
-  store: Store | AsyncStore,
+export async function effectiveMinReportSeverity(
+  store: Store,
   repoId?: number,
-): Severity | Promise<Severity> {
-  const rethrow = (error: unknown): never => {
-    throw error;
-  };
-  // 两次读取顺序取,异步那一路因此是一个跟着另一个的 Promise;`await` 会把嵌套的那层
-  // 摊平。仓库覆盖在就不读全局,与 `??` 短路那一版逐字一致。
-  return relay(
-    () => (repoId === undefined ? undefined : store.getRepo(repoId)),
-    (repo) => {
-      const override = repo?.minReportSeverity ?? null;
-      if (override !== null) return override;
-      return relay(
-        () => store.getGlobalSettings(),
-        (settings) => settings.minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
-        rethrow,
-      );
-    },
-    rethrow,
-  ) as Severity | Promise<Severity>;
+): Promise<Severity> {
+  // 仓库覆盖在就不读全局,与 `??` 短路那一版逐字一致。
+  const repo = repoId === undefined ? undefined : await store.getRepo(repoId);
+  const override = repo?.minReportSeverity ?? null;
+  if (override !== null) return override;
+  return (await store.getGlobalSettings()).minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY;
 }
 
 /**
@@ -919,7 +897,7 @@ function stillOnHead(
  * 解析不到(代码被改写)、或者最近的两处一样近时位置原样不动,复核与延续照旧收口。
  */
 async function relocateHistory(
-  store: AsyncStore,
+  store: Store,
   scope: StageScope,
   worktreePath: string,
 ): Promise<FindingRelocation[]> {
@@ -1105,7 +1083,7 @@ async function applyContinuations(
 async function retryPendingHandoffs(
   forge: Forge,
   event: PullRequestEvent,
-  store: AsyncStore,
+  store: Store,
 ): Promise<void> {
   for (const pending of await store.pendingHandoffs(event.owner, event.repo, event.number)) {
     try {
@@ -1300,7 +1278,7 @@ export async function findingLineAuthors(
 async function autoDispose(
   forge: Forge,
   event: PullRequestEvent,
-  store: Store | AsyncStore,
+  store: Store,
   findingIds: readonly number[],
   note?: string,
 ): Promise<{ findingIds: number[]; commentIds: string[] }> {
@@ -1394,7 +1372,7 @@ export function absentHistory(
 export async function disposeAbsentHistory(
   forge: Forge,
   event: PullRequestEvent,
-  store: Store | AsyncStore,
+  store: Store,
   absent: readonly { findingId: number; reason: AbsenceReason }[],
 ): Promise<{ disposed: Record<AbsenceReason, number[]>; commentIds: string[] }> {
   const disposed: Record<AbsenceReason, number[]> = { deleted: [], reverted: [] };
@@ -2046,7 +2024,7 @@ export async function runReview(
   // 走到核对那一步的续跑状态,计划一定在(issue #253):没有计划的轮次在这里就退回改判。
   let resume: (ResumeState & { plan: string[][] }) | undefined;
   if (resumeRunId !== undefined) {
-    const resumeStore = asyncStore(openStore(deps.dbPath));
+    const resumeStore = openStore(deps.dbPath);
     let stored: ResumeState | undefined;
     try {
       stored = await resumeStore.resumeState(resumeRunId);
@@ -2112,7 +2090,7 @@ export async function runReview(
     // 句柄的存活期覆盖整段审查(时长没有总上限,兜底的是子进程那道连续静默闸,
     // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
     // 泄漏的连接会一次次攒下来。
-    const store = asyncStore(openStore(deps.dbPath));
+    const store = openStore(deps.dbPath);
     // 从这里到 `startRun` 之间的每一处抛(读历史、只复核过滤成空、分批、落库)都在下面
     // 那个 `finally` 盖不到的地方,句柄在这一段里统一归还。
     const opened = async <T>(step: () => T | Promise<T>): Promise<T> => {

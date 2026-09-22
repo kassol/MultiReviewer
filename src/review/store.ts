@@ -8,7 +8,6 @@ import { createHash } from "node:crypto";
 import { matchesGlob } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { isThenable } from "../async.ts";
 import {
   assertReviewerSpecs,
   GLOBAL_REVIEWERS_CONTEXT,
@@ -3005,7 +3004,11 @@ function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
   };
 }
 
-export type Store = {
+/**
+ * 库的内部实现形状:方法一律同步跑完(底下是 `node:sqlite`)。它不出这个文件——
+ * 对外的 `Store` 是它的异步门面,`openStore` 返回的就是门面(spec #445)。
+ */
+type SyncStore = {
   listPanelRoles(): PanelRoleRecord[];
   createPanelRole(record: {
     name: string;
@@ -4042,21 +4045,21 @@ export type Store = {
 };
 
 /**
- * `Store` 的异步门面(issue #459,spec #445 的扩张那一步):方法同名、参数相同,返回值
- * 裹一层 Promise。同名是有意的——调用点迁过来时只多一个 `await`,收缩那一步(#449)把
- * 同步那一份连同这个映射一起删掉,调用点一个字都不用再改。
+ * 库对外的形状(spec #445):每个方法返回 Promise。底下这一版仍是 `node:sqlite` 的同步
+ * 调用,只把返回值裹进 Promise;签名先异步是为了第二段换 Drizzle 与 PostgreSQL 时调用点
+ * 一个字都不用再改。
  */
-export type AsyncStore = {
-  [K in keyof Store]: Store[K] extends (...args: infer A) => infer R
+export type Store = {
+  [K in keyof SyncStore]: SyncStore[K] extends (...args: infer A) => infer R
     ? (...args: A) => Promise<R>
-    : Store[K];
+    : SyncStore[K];
 };
 
 /**
- * 把一份 `Store` 包成异步门面。底下仍是同一条连接、同一次同步调用,只把返回值裹进
- * Promise:方法在微任务里 resolve,抛出的错变成 reject,SQL 一个字没动。
+ * 把内部那份同步实现包成异步门面:方法在微任务里 resolve,抛出的错变成 reject,SQL
+ * 一个字没动。181 个方法不手抄,新增方法自动有它的异步形状。
  */
-export function asyncStore(store: Store): AsyncStore {
+function asyncStore(store: SyncStore): Store {
   return new Proxy(store, {
     get(target, property) {
       const value = Reflect.get(target, property) as unknown;
@@ -4064,7 +4067,7 @@ export function asyncStore(store: Store): AsyncStore {
       const method = value as (...args: unknown[]) => unknown;
       return async (...args: unknown[]) => method.apply(target, args);
     },
-  }) as unknown as AsyncStore;
+  }) as unknown as Store;
 }
 
 /**
@@ -4662,11 +4665,11 @@ export function openStore(dbPath: string): Store {
   };
 
   /**
-   * 回调式事务(issue #459):开事务 → 跑回调 → 提交,回调抛错即回滚后重抛,调
-   * `tx.rollback(值)` 即回滚后把那个值当返回值。
+   * 回调式事务:开事务 → 跑回调 → 提交,回调抛错即回滚后重抛,调 `tx.rollback(值)`
+   * 即回滚后把那个值当返回值。
    *
-   * 回调可同步可异步:回调返回 Promise 时 `T` 就是那个 Promise,提交排在它后面。异步
-   * 那一路的约束写在 `StoreTransaction` 上——回调里不许等 I/O。
+   * 回调是同步的——它跑在门面底下那份同步实现里,`await` 一次就等于在没提交的事务中间
+   * 让别的请求插进来。
    */
   function transaction<T>(mode: TransactionMode, run: (tx: StoreTransaction) => T): T {
     db.exec(mode === "immediate" ? "BEGIN IMMEDIATE" : "BEGIN");
@@ -4677,14 +4680,8 @@ export function openStore(dbPath: string): Store {
       // 中途回滚那一档给回的就是调用方传给 `tx.rollback` 的那个值。
       return rolledBack(error) as T;
     }
-    if (!isThenable(result)) {
-      db.exec("COMMIT");
-      return result;
-    }
-    return Promise.resolve(result).then((value) => {
-      db.exec("COMMIT");
-      return value;
-    }, rolledBack) as T;
+    db.exec("COMMIT");
+    return result;
   }
 
   // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
@@ -5071,7 +5068,7 @@ export function openStore(dbPath: string): Store {
     });
   };
 
-  const store: Store = {
+  const store: SyncStore = {
     listPanelRoles() {
       const rows = db
         .prepare(
@@ -9539,5 +9536,5 @@ export function openStore(dbPath: string): Store {
       db.close();
     },
   };
-  return store;
+  return asyncStore(store);
 }

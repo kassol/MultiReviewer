@@ -66,21 +66,21 @@ export function testCleanups(): (() => void | Promise<void>)[] {
  * 收尾定死耗时与未失败。findings/outcomes/verdicts 已经是落库形状,拼装它们是
  * 各测试自己的事——这里只收拢 `startRun` 加 `finishRun` 那道手续。
  */
-export function seedRun(
+export async function seedRun(
   store: Store,
   meta: Omit<RunMeta, "changedFiles" | "changedLines" | "batchCount" | "reviewerPins">,
   findings: readonly FindingRecord[],
   outcomes: readonly OutcomeRecord[] = [],
   verdicts: readonly VerdictRecord[] = [],
-): number {
-  const runId = store.startRun({
+): Promise<number> {
+  const runId = await store.startRun({
     ...meta,
     changedFiles: 1,
     changedLines: 1,
     batchCount: 1,
     reviewerPins: [],
   });
-  store.finishRun(runId, {
+  await store.finishRun(runId, {
     finishedAt: meta.startedAt,
     durationMs: 1,
     failed: false,
@@ -368,11 +368,11 @@ export function makeDbPath(): { path: string; cleanup(): void } {
  * 走产品自己的知识确认(issue #200:空知识集是合法状态,空草案确认得了),不直写版本表
  * ——绕过产品路径播种的状态,产品路径变了测试也发现不了。仓库不在注册表里时什么都不写。
  */
-export function confirmEmptyRuleSet(dbPath: string, repoId: number): void {
+export async function confirmEmptyRuleSet(dbPath: string, repoId: number): Promise<void> {
   const store = openStore(dbPath);
   try {
-    store.confirmRuleDraft(repoId);
+    await store.confirmRuleDraft(repoId);
   } finally {
-    store.close();
+    await store.close();
   }
 }

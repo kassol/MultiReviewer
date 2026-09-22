@@ -44,7 +44,7 @@ test("注册建好 hook,种子 PR 的投递被受理并跑完审查", async () =
     repo: PR.repo,
     generation: 1,
   });
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   // hook 由面板建出:URL 带 ?k=1、secret 是 64 位十六进制 Key、窄订阅、显式激活。
   assert.equal(h.gitea.hooks.length, 1);
@@ -91,7 +91,7 @@ test("重复注册回 409", async () => {
 test("移除删掉 hook 并摘注册表,历史保留,投递从此 401", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
 
@@ -122,7 +122,7 @@ test("移除删掉 hook 并摘注册表,历史保留,投递从此 401", async ()
 test("hook 删除失败时移除被阻止,注册保持原样", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   h.gitea.control.failDelete = true;
 
   const removal = await h.api("DELETE", `/repos/${GITEA_REPO.id}`);
@@ -137,7 +137,7 @@ test("hook 删除失败时移除被阻止,注册保持原样", async () => {
 
 test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model", "override-model"]);
+  await seedAvailableModelService(h, "test", ["global-model", "override-model"]);
   const override: ReviewerSpec[] = [
     { provider: "test", model: "override-model" },
   ];
@@ -147,7 +147,7 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
       .status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -216,9 +216,9 @@ const auxiliaryModelView = async (h: PanelHarness): Promise<AuxiliaryModelView> 
 
 test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取值 400 一项都不写", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
+  await seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   // 刚注册即两项都跟随全局,整块版本号从 0 起。
   assert.deepEqual(await repoSettingsRow(h), {
@@ -419,7 +419,7 @@ test("升级前的旧库:开库补上默认分支那一列,每个仓库都读作
 
 test("仓库配置的期望版本过期即 409,响应带当前值", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
+  await seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
   const put = (body: unknown): Promise<Response> =>
@@ -488,7 +488,7 @@ test("仓库配置的期望版本过期即 409,响应带当前值", async () => 
 
 test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,改组合仍被拒", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   // 升级前留下的一份覆盖,里面的模型此刻已经失效(播种走库,与 harness 播种全局组合同律)。
   const stale: ReviewerSpec[] = [{ provider: "vanished-service", model: "missing" }];
@@ -554,7 +554,7 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
 test("仓库辅助模型的档位判据与全局同一套:模型不支持的那一档整份拒收", async () => {
   const h = await startPanelHarness();
   // 播种的模型不声明推理能力,它只支持「关闭」。
-  seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
 
   const level = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
@@ -588,7 +588,7 @@ test("仓库辅助模型的档位判据与全局同一套:模型不支持的那�
 
 test("模型覆盖与最低报告等级的旧端点回没有这个端点", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model"]);
+  await seedAvailableModelService(h, "test", ["global-model"]);
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
 
   for (
@@ -605,8 +605,8 @@ test("模型覆盖与最低报告等级的旧端点回没有这个端点", async
 
 test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,换了组合退路跟着变", async () => {
   const h = await startPanelHarness();
-  seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
-  seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
+  await seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
+  await seedAvailableModelService(h, "think", ["deep"], { reasoning: true });
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   const override: ReviewerSpec[] = [{ provider: "test", model: "swapped-model" }];
 
@@ -690,8 +690,8 @@ test("辅助模型三级解析:仓库覆盖 ?? 全局 ?? 生效组合第一个,�
 
 test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为跟随全局", async () => {
   const h = await startHarness();
-  seedAvailableModelService(h, "repo-healthy", ["keep"]);
-  seedAvailableModelService(h, "repo-broken", ["saved"]);
+  await seedAvailableModelService(h, "repo-healthy", ["keep"]);
+  await seedAvailableModelService(h, "repo-broken", ["saved"]);
 
   const sqlite = new DatabaseSync(h.db.path);
   try {
@@ -720,18 +720,18 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
     { provider: "repo-broken", model: "saved" },
     { provider: "vanished-repo-service", model: "missing" },
   ];
-  const serviceState = () => {
+  const serviceState = async () => {
     const store = openStore(h.db.path);
     try {
       return {
-        services: store.listModelServices(),
-        supplements: store.listModelSupplements(),
+        services: await store.listModelServices(),
+        supplements: await store.listModelSupplements(),
       };
     } finally {
-      store.close();
+      await store.close();
     }
   };
-  const before = serviceState();
+  const before = await serviceState();
 
   const blocked = await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
     reviewers: selected,
@@ -758,7 +758,7 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
   assert.deepEqual(rowsAfterSave.find((repo) => repo.repoId === GITEA_REPO.id)?.reviewers, [
     { provider: "repo-healthy", model: "keep" },
   ]);
-  assert.deepEqual(serviceState(), before, "覆盖写入不得创建、删除或改写模型服务与来源");
+  assert.deepEqual(await serviceState(), before, "覆盖写入不得创建、删除或改写模型服务与来源");
 
   assert.equal(
     (
@@ -777,21 +777,21 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
     reviewers: unknown;
   }[];
   assert.equal(rowsAfterClear.find((repo) => repo.repoId === GITEA_REPO.id)?.reviewers, null);
-  assert.deepEqual(serviceState(), before);
+  assert.deepEqual(await serviceState(), before);
 });
 
 test("仓库列表带累计量,按最近活动排序,没跑过的排最后", async () => {
   const h = await startHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
 
   // 另外两个仓库直接种进库(SQLite 临时库是既定测试缝):一个活动时间在遥远的未来,
   // 一个从没跑过 Review Run。
   const seed = openStore(h.db.path);
-  seed.registerRepo({ repoId: 555, owner: "acme", repo: "gadgets", generation: 1, key: "kb" });
-  seed.startRun({
+  await seed.registerRepo({ repoId: 555, owner: "acme", repo: "gadgets", generation: 1, key: "kb" });
+  await seed.startRun({
     owner: "acme",
     repo: "gadgets",
     pullNumber: 1,
@@ -802,8 +802,8 @@ test("仓库列表带累计量,按最近活动排序,没跑过的排最后", asy
     batchCount: 1,
     reviewerPins: [],
   });
-  seed.registerRepo({ repoId: 556, owner: "acme", repo: "sprockets", generation: 1, key: "kc" });
-  seed.close();
+  await seed.registerRepo({ repoId: 556, owner: "acme", repo: "sprockets", generation: 1, key: "kc" });
+  await seed.close();
 
   const list = (await (await h.api("GET", "/repos")).json()) as {
     repoId: number;
@@ -886,13 +886,13 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
   const cache = makeCacheDir();
   const db = makeDbPath();
   cleanups.push(cache.cleanup, db.cleanup);
-  seedAvailableModelService({ db }, "test", ["global-model"]);
+  await seedAvailableModelService({ db }, "test", ["global-model"]);
   const seed = openStore(db.path);
-  assert.equal(putGlobalSettings(seed, {
+  assert.equal(await putGlobalSettings(seed, {
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: null,
   }), true);
-  seed.close();
+  await seed.close();
   const server = await createWebhookServer({
     forges: {},
     buildReviewers: () => [],

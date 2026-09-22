@@ -19,7 +19,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)、SSE 响应的逐帧读取、面板 harness,以及 Agent 会话与跨轮次这两组拆开之后的公用 harness。
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git、ripgrep 与 fd(fd 是 release 的静态 musl 二进制,版本钉在 `FD_VERSION`,单独一层按目标架构取包再拷进运行镜像——Debian 的 fd-find 是 8.6,不认 Pi 传的 `--no-require-git`),依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。装 ripgrep 与 fd 是给 Reviewer 的 `grep` / `find` 工具用:缺二进制时 Pi 会去 GitHub 下载,容器里下不动就各卡满 120 秒超时,一轮 Review Run 白等约 4 分钟。
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
-- `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。
+- `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。每次推两个 tag:给定的那一个与当前提交的短 sha(回滚点,见「部署」)。
 - `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出 Forge 凭据与面板配置、写 `.env`、拉镜像起容器、以「面板能用」为验收自检;新实例从日志抽出一次性 bootstrap 口令交给第一个系统管理员,仓库接入、用户与角色、模型凭据及模型组合在面板上做。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
@@ -52,6 +52,8 @@ bash setup.sh
 # 服务器:后续更新
 docker compose pull && docker compose up -d
 ```
+
+**每次构建推两个 tag,回滚靠改 `.env` 一行。**`scripts/build-push.sh` 除了给定的那个 tag(通常是 `:latest`),再推一个当前提交的短 sha(工作区有改动时带 `-dirty` 后缀,免得同一个 sha 指向两份不一样的产物;不在 git 仓库里时只推给定的那一个)。部署目录的 `.env` 里 `MULTIREVIEWER_IMAGE` **写具体的 sha tag**,不写 `:latest`——这样「现在跑的是哪一版」在服务器上答得出,回滚也只是把那一行改回上一个 sha 再 `docker compose up -d`,不必回开发机重新构建。脚本推完会把这一版的 sha tag 打在屏幕上。`:latest` 仍然推,给「随便拉个最新的」用;`.env` 指着它的实例回滚不了,只能重新构建。**回滚不回滚库**:schema 只增列不删列,回上一版镜像读得动新库,但那一版之后加的列与表它不认——带 schema 变更的那几次发版回滚前先看变更日志。
 
 向导的边界收在「面板能用」:生成凭据主密钥、问基地址,起服务后打登录页并探测 `GET /api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook。它只写自己这一轮问出来的那几项,`.env` 里别的行原样留着——早年那些废弃变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` 等)的自动清理已经取消,服务不读它们,留着也只是几行陈迹;要清自己删。
 
@@ -92,7 +94,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 只有 `docker-compose.yml` 读、应用不读的:
 
-- `MULTIREVIEWER_IMAGE` — 镜像引用,必填
+- `MULTIREVIEWER_IMAGE` — 镜像引用,必填。写具体的 sha tag,别写 `:latest`——回滚就是改这一行(见「部署」)
 - `MULTIREVIEWER_HOST_PORT` — 对外映射的宿主机端口,默认 3000
 - `MULTIREVIEWER_UID` / `MULTIREVIEWER_GID` — 容器以哪个 uid/gid 运行,默认 1000
 

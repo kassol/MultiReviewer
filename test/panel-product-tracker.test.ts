@@ -51,9 +51,9 @@ async function product(h: PanelHarness): Promise<Product> {
   const created = (JSON.parse(text) as { product: Product }).product;
   const store = openStore(h.db.path);
   try {
-    assert.equal(store.attachProductRepo(created.id, GITEA_REPO.id, AT), "attached");
+    assert.equal(await store.attachProductRepo(created.id, GITEA_REPO.id, AT), "attached");
   } finally {
-    store.close();
+    await store.close();
   }
   return created;
 }
@@ -62,39 +62,40 @@ async function product(h: PanelHarness): Promise<Product> {
  * 播种一条 spec 与几张票(会话写下的那一份的形状)。回的是 spec 号与票号,按给的顺序。
  * `blocks` 是阻塞边,按票在 `tickets` 里的位置(从 0 起)写。
  */
-function seedSpec(
+async function seedSpec(
   h: PanelHarness,
   productId: number,
   spec: { title: string; body: string },
   tickets: readonly { title: string; body: string; label?: ProductTicketLabel }[] = [],
   blocks: readonly [number, number][] = [],
-): { specId: number; ticketIds: number[] } {
+): Promise<{ specId: number; ticketIds: number[] }> {
   const store = openStore(h.db.path);
   try {
-    const written = store.createProductSpec({
+    const written = await store.createProductSpec({
       productId,
       title: spec.title,
       body: spec.body,
       sessionId: null,
       at: AT,
     });
-    const ticketIds = tickets.map(
-      (ticket) =>
-        store.createProductTicket({
-          specId: written.id,
-          title: ticket.title,
-          body: ticket.body,
-          label: ticket.label ?? "needs-triage",
-          sessionId: null,
-          at: AT,
-        }).id,
-    );
+    const ticketIds: number[] = [];
+    for (const ticket of tickets) {
+      const written1 = await store.createProductTicket({
+        specId: written.id,
+        title: ticket.title,
+        body: ticket.body,
+        label: ticket.label ?? "needs-triage",
+        sessionId: null,
+        at: AT,
+      });
+      ticketIds.push(written1.id);
+    }
     for (const [blocked, blocker] of blocks) {
-      store.addProductTicketBlock(ticketIds[blocked]!, ticketIds[blocker]!);
+      await store.addProductTicketBlock(ticketIds[blocked]!, ticketIds[blocker]!);
     }
     return { specId: written.id, ticketIds };
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -115,7 +116,7 @@ async function detail(
 test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者都在", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { specId, ticketIds } = seedSpec(
+  const { specId, ticketIds } = await seedSpec(
     h,
     created.id,
     { title: "报销单可以撤回", body: "## Problem Statement\n\n提交之后改不了。" },
@@ -128,9 +129,9 @@ test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者�
   );
   const store = openStore(h.db.path);
   try {
-    assert.equal(store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
+    assert.equal(await store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
   } finally {
-    store.close();
+    await store.close();
   }
 
   const { tracker } = await detail(h, created.id);
@@ -161,7 +162,7 @@ test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者�
 test("一条 spec 打得开全文:正文、票的正文与评论都在", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { specId, ticketIds } = seedSpec(
+  const { specId, ticketIds } = await seedSpec(
     h,
     created.id,
     { title: "报销单可以撤回", body: "## Problem Statement\n\n提交之后改不了。" },
@@ -169,7 +170,7 @@ test("一条 spec 打得开全文:正文、票的正文与评论都在", async (
   );
   const store = openStore(h.db.path);
   try {
-    store.addProductTicketComment({
+    await store.addProductTicketComment({
       ticketId: ticketIds[0]!,
       author: null,
       sessionId: 7,
@@ -177,7 +178,7 @@ test("一条 spec 打得开全文:正文、票的正文与评论都在", async (
       at: AT,
     });
   } finally {
-    store.close();
+    await store.close();
   }
 
   const response = await h.api("GET", `/products/${created.id}/specs/${specId}`);
@@ -211,7 +212,7 @@ test("一条 spec 打得开全文:正文、票的正文与评论都在", async (
 test("导出一条 spec:一份 text/markdown,票按依赖顺序", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { specId, ticketIds } = seedSpec(
+  const { specId, ticketIds } = await seedSpec(
     h,
     created.id,
     { title: "报销单可以撤回", body: "提交之后改不了。" },
@@ -242,14 +243,14 @@ test("导出一条 spec:一份 text/markdown,票按依赖顺序", async () => {
 test("读随产品可见性:看不到这个产品的人一格都读不到", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { specId } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "提交之后改不了。" });
+  const { specId } = await seedSpec(h, created.id, { title: "报销单可以撤回", body: "提交之后改不了。" });
 
   // 有仓库分配、没有任何权限格:读得到 tracker——读随产品可见性,不挂权限格。
   const reader = await scopedUser(h, "reader", PASSWORD, AT, [GITEA_REPO.id]);
   assert.equal((await detail(h, created.id, reader)).tracker.specs.length, 1);
 
   // 对这个产品里一个仓库都没分配:产品详情、spec 全文与导出都与产品不存在同形回 404。
-  const stranger = seedRepo(h, 303, "acme", "gamma");
+  const stranger = await seedRepo(h, 303, "acme", "gamma");
   const outsider = await scopedUser(h, "outsider", PASSWORD, AT, [stranger]);
   for (const path of [
     `/api/products/${created.id}`,
@@ -265,7 +266,7 @@ test("读随产品可见性:看不到这个产品的人一格都读不到", asyn
 test("升级前的旧库:开库建起 tracker 那几张表,产品开起来 tracker 为空", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  seedSpec(h, created.id, { title: "报销单可以撤回", body: "提交之后改不了。" }, [
+  await seedSpec(h, created.id, { title: "报销单可以撤回", body: "提交之后改不了。" }, [
     { title: "撤回接口", body: "PATCH /expenses/{id}" },
   ]);
 
@@ -288,7 +289,7 @@ test("升级前的旧库:开库建起 tracker 那几张表,产品开起来 track
   assert.equal(((await listed.json()) as { products: unknown[] }).products.length, 1);
 
   // 空表照样写得进去:新建的那张表与建库时的那一张同构。
-  const again = seedSpec(h, created.id, { title: "报销单可以撤回", body: "再写一次" });
+  const again = await seedSpec(h, created.id, { title: "报销单可以撤回", body: "再写一次" });
   assert.deepEqual((await detail(h, created.id)).tracker.specs.map((one) => one.id), [
     again.specId,
   ]);
@@ -305,7 +306,7 @@ async function ticketOf(h: PanelHarness, productId: number, ticketId: number): P
 test("人认领与取消认领一张票:认领落自己的名字,别人认领着的认不动", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { ticketIds } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
+  const { ticketIds } = await seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
     { title: "撤回接口", body: "PATCH /expenses/{id}" },
   ]);
   const ticketId = ticketIds[0]!;
@@ -344,7 +345,7 @@ test("人认领与取消认领一张票:认领落自己的名字,别人认领着
 test("取消认领不是谁都做得了:只有认领人自己与系统管理员放得下那一格", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { ticketIds } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
+  const { ticketIds } = await seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
     { title: "撤回接口", body: "PATCH /expenses/{id}" },
   ]);
   const ticketId = ticketIds[0]!;
@@ -389,7 +390,7 @@ test("取消认领不是谁都做得了:只有认领人自己与系统管理员�
 test("人改标签:五个之内换得动,别的值回 400", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { ticketIds } = seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
+  const { ticketIds } = await seedSpec(h, created.id, { title: "报销单可以撤回", body: "改不了。" }, [
     { title: "撤回接口", body: "PATCH /expenses/{id}" },
   ]);
   const path = `/products/${created.id}/tickets/${ticketIds[0]!}`;
@@ -411,7 +412,7 @@ test("人改标签:五个之内换得动,别的值回 400", async () => {
 test("人开关 spec 与票,并在票上评论", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { specId, ticketIds } = seedSpec(
+  const { specId, ticketIds } = await seedSpec(
     h,
     created.id,
     { title: "报销单可以撤回", body: "改不了。" },
@@ -466,7 +467,7 @@ test("人开关 spec 与票,并在票上评论", async () => {
 test("正文与标题改不动:带着它们来的请求回 400,别的产品的票同形回 404", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const created = await product(h);
-  const { specId, ticketIds } = seedSpec(
+  const { specId, ticketIds } = await seedSpec(
     h,
     created.id,
     { title: "报销单可以撤回", body: "改不了。" },

@@ -81,8 +81,8 @@ test("两个 Reviewer 都判已修:Forge 收到 resolve,库里记「已修复」
 
   // 面板的处置进度把人工与自动分开数:这一条落在自动那一列。
   const store = openStore(db.path);
-  const first = store.listRuns({ limit: 10 }).at(-1)!;
-  store.close();
+  const first = (await store.listRuns({ limit: 10 })).at(-1)!;
+  await store.close();
   assert.deepEqual(
     { resolved: first.resolved, fixed: first.fixed, total: first.total },
     { resolved: 0, fixed: 1, total: 1 },
@@ -297,7 +297,7 @@ test("人把「已修复」改回未处置之后,下一轮判已修也不动", a
   assert.deepEqual(latestDispositions(db.path), ["fixed"]);
 
   // 人在面板上撤回了这次自动处置:从此这一行是人工处置的地盘。
-  disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
+  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
@@ -335,7 +335,7 @@ test("跨轮折叠继承处置备注与署名:面板处置活过下一轮", asyn
 
   await runReview(EVENT, deps);
   // 人在面板上处置了它,并留了一句备注。
-  disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
+  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
   forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
@@ -345,8 +345,8 @@ test("跨轮折叠继承处置备注与署名:面板处置活过下一轮", asyn
   // 面板读的是本轮那一行:处置的载体是评论,同一条评论名下的历史行与本轮新行说的
   // 是同一次处置,备注与署名不该只活在上一轮那一行上。
   const store = openStore(db.path);
-  const latest = store.listRuns({ limit: 10 })[0]!;
-  store.close();
+  const latest = (await store.listRuns({ limit: 10 }))[0]!;
+  await store.close();
   const carried = latest.findings[0]!;
   assert.equal(carried.disposition, "resolved");
   assert.equal(carried.commentId, forge.publishedComments[0]!.id);
@@ -360,7 +360,7 @@ test("人撤回处置之后再折叠一轮:复核判已修也不自动处置", a
 
   await runReview(EVENT, deps);
   // 人在面板上把它标回未处置:从此这一行是人工处置的地盘(ADR 0016)。
-  disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
+  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
   forge.existingComments.push(...asPublished(forge, false));
 
   // 第二轮代码没变,同一条 Finding 又被报出,折叠到那条历史评论上。
@@ -443,16 +443,16 @@ test("延续把旧行的备注、处置人与处置时刻带到新行上", async
   const old = forge.publishedComments[0]!;
   // 人处置过又撤回:备注与署名留在旧行上,延续要把它们带到新位置去。延续是位置的交接
   // 不是处置,「已修复」自动处置那道「人碰过就不再碰」的闸门不适用于它(issue #163 US 36)。
-  disposeInPanel(db.path, old.id, "resolved", "确认无影响");
-  disposeInPanel(db.path, old.id, "unresolved");
+  await disposeInPanel(db.path, old.id, "resolved", "确认无影响");
+  await disposeInPanel(db.path, old.id, "unresolved");
   forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
 
   await runReview(EVENT, { ...deps, reviewers: continuing() });
 
   const store = openStore(db.path);
-  const latest = store.listRuns({ limit: 10 })[0]!;
-  store.close();
+  const latest = (await store.listRuns({ limit: 10 }))[0]!;
+  await store.close();
   const carried = latest.findings[0]!;
   assert.equal(carried.note, "确认无影响");
   assert.equal(carried.disposedBy, "kassol");
@@ -720,8 +720,8 @@ test("已延续不进处置计数:旧那一轮的进度里不再有它", async (
   const { db } = await continueSecondRound();
 
   const store = openStore(db.path);
-  const [second, first] = store.listRuns({ limit: 10 });
-  store.close();
+  const [second, first] = await store.listRuns({ limit: 10 });
+  await store.close();
   // 旧那一轮的那条已经交接走,它既不算处置掉,也不该继续挂在待处置里。
   assert.deepEqual(
     { resolved: first!.resolved, fixed: first!.fixed, total: first!.total },

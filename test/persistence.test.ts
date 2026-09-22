@@ -38,10 +38,10 @@ function setup(head: string = HEAD) {
 }
 
 
-test("历史审查策略读回整页初始版本，整份替换推一版，陈旧版本不得覆盖", () => {
+test("历史审查策略读回整页初始版本，整份替换推一版，陈旧版本不得覆盖", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
-  openStore(db.path).close();
+  await openStore(db.path).close();
   const seed = new DatabaseSync(db.path);
   seed.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
     "reviewers",
@@ -55,7 +55,7 @@ test("历史审查策略读回整页初始版本，整份替换推一版，陈�
 
   const store = openStore(db.path);
   const legacyJson = JSON.stringify([{ provider: "test", model: "legacy" }]);
-  assert.deepEqual(store.getGlobalSettings(), {
+  assert.deepEqual(await store.getGlobalSettings(), {
     reviewersJson: legacyJson,
     auxiliaryModelJson: null,
     maxChangedLinesPerBatch: 777,
@@ -67,7 +67,7 @@ test("历史审查策略读回整页初始版本，整份替换推一版，陈�
   });
   // 整页一次全量替换(issue #301):写成 null 的那几项从库里消失,整页版本推一版。
   assert.equal(
-    store.replaceGlobalSettings(1, {
+    await store.replaceGlobalSettings(1, {
       reviewersJson: legacyJson,
       auxiliaryModelJson: null,
       maxChangedLinesPerBatch: null,
@@ -78,7 +78,7 @@ test("历史审查策略读回整页初始版本，整份替换推一版，陈�
     }),
     true,
   );
-  assert.deepEqual(store.getGlobalSettings(), {
+  assert.deepEqual(await store.getGlobalSettings(), {
     reviewersJson: legacyJson,
     auxiliaryModelJson: null,
     maxChangedLinesPerBatch: null,
@@ -89,7 +89,7 @@ test("历史审查策略读回整页初始版本，整份替换推一版，陈�
     version: 2,
   });
   assert.equal(
-    store.replaceGlobalSettings(1, {
+    await store.replaceGlobalSettings(1, {
       reviewersJson: legacyJson,
       auxiliaryModelJson: null,
       maxChangedLinesPerBatch: 900,
@@ -102,10 +102,10 @@ test("历史审查策略读回整页初始版本，整份替换推一版，陈�
     "陈旧版本不得覆盖新值",
   );
   assert.deepEqual(
-    { limit: store.getGlobalSettings().maxChangedLinesPerBatch, version: store.getGlobalSettings().version },
+    { limit: (await store.getGlobalSettings()).maxChangedLinesPerBatch, version: (await store.getGlobalSettings()).version },
     { limit: null, version: 2 },
   );
-  store.close();
+  await store.close();
 });
 
 const FINDING = {
@@ -146,7 +146,7 @@ test("Review Run 的元数据落库:仓库、PR、head commit、起止时间、�
 test("Review Run 的触发者快照可空且不引用用户表", async () => {
   const { cache, db, forge } = setup();
   const seed = openStore(db.path);
-  seed.createPanelUser({
+  await seed.createPanelUser({
     username: "deleted-operator",
     displayName: null,
     passwordHash: "test-only-hash",
@@ -155,7 +155,7 @@ test("Review Run 的触发者快照可空且不引用用户表", async () => {
     isSystemAdmin: false,
     roleId: null,
   });
-  seed.close();
+  await seed.close();
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -166,9 +166,9 @@ test("Review Run 的触发者快照可空且不引用用户表", async () => {
   });
 
   const store = openStore(db.path);
-  assert.equal(store.hasHistoricalRunTrigger("deleted-operator"), true);
-  assert.equal(store.hasHistoricalRunTrigger("never-used"), false);
-  store.close();
+  assert.equal(await store.hasHistoricalRunTrigger("deleted-operator"), true);
+  assert.equal(await store.hasHistoricalRunTrigger("never-used"), false);
+  await store.close();
   assert.equal(query(db.path, "SELECT triggered_by FROM review_run")[0]!["triggered_by"], "deleted-operator");
 
   const sqlite = new DatabaseSync(db.path);
@@ -284,12 +284,12 @@ test("每个 Reviewer 的执行结果与失败原因落库", async () => {
 });
 
 /** 时间流一页的逐模型行。测试只看外部可观察的那三个字段。 */
-function runModels(dbPath: string): { model: string; findings: number; failure: string | null }[] {
+async function runModels(dbPath: string): Promise<{ model: string; findings: number; failure: string | null }[]> {
   const store = openStore(dbPath);
   try {
-    return store.listRuns({ limit: 30 })[0]!.models;
+    return (await store.listRuns({ limit: 30 }))[0]!.models;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -307,8 +307,8 @@ test("时间流:一个模型失败一个成功时两行都在,失败那行带原
   });
 
   const store = openStore(db.path);
-  const run = store.listRuns({ limit: 30 })[0]!;
-  store.close();
+  const run = (await store.listRuns({ limit: 30 }))[0]!;
+  await store.close();
   // 部分失败不是这一轮失败:Finding 是真的,处置照做。
   assert.equal(run.failed, false);
   assert.deepEqual(run.models, [
@@ -331,8 +331,8 @@ test("时间流:全部模型失败时每行都带原因,这一轮标失败", asy
   });
 
   const store = openStore(db.path);
-  const run = store.listRuns({ limit: 30 })[0]!;
-  store.close();
+  const run = (await store.listRuns({ limit: 30 }))[0]!;
+  await store.close();
   assert.equal(run.failed, true);
   assert.deepEqual(run.models, [
     { model: "model-a", findings: 0, failure: "timeout" },
@@ -350,7 +350,7 @@ test("时间流:一条 Finding 都没报的成功模型照样列出", async () =
     dbPath: db.path,
   });
 
-  assert.deepEqual(runModels(db.path), [{ model: "model-a", findings: 0, failure: null }]);
+  assert.deepEqual(await runModels(db.path), [{ model: "model-a", findings: 0, failure: null }]);
 });
 
 test("时间流:失败原因压成一行并截断,原文仍在库里", async () => {
@@ -364,7 +364,7 @@ test("时间流:失败原因压成一行并截断,原文仍在库里", async () 
     dbPath: db.path,
   });
 
-  const failure = runModels(db.path).find((entry) => entry.model === "model-b")!.failure!;
+  const failure = (await runModels(db.path)).find((entry) => entry.model === "model-b")!.failure!;
   assert.equal(failure.length, 201, "节选是 200 字加一个省略号");
   assert.ok(failure.endsWith("…"));
   assert.ok(!failure.includes("\n"), "换行压成空格,卡片上只占一句话");
@@ -466,8 +466,8 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
 
   const published = forge.publishedComments[0]!;
   const store = openStore(db.path);
-  const run = store.listRuns({ limit: 10 })[0]!;
-  store.close();
+  const run = (await store.listRuns({ limit: 10 }))[0]!;
+  await store.close();
   assert.deepEqual(run.findings, [
     {
       id: run.findings[0]!.id,
@@ -503,12 +503,12 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
   ]);
 });
 
-test("正常收尾的轮次没有轮次级失败原因;recordRunFailure 只写原因,failed 与结束时间不动", () => {
+test("正常收尾的轮次没有轮次级失败原因;recordRunFailure 只写原因,failed 与结束时间不动", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    const runId = store.startRun({
+    const runId = await store.startRun({
       owner: "acme",
       repo: "widgets",
       pullNumber: 7,
@@ -519,28 +519,28 @@ test("正常收尾的轮次没有轮次级失败原因;recordRunFailure 只写�
       batchCount: 1,
       reviewerPins: [],
     });
-    store.finishRun(runId, {
+    await store.finishRun(runId, {
       finishedAt: "2026-09-05T00:10:00.000Z",
       durationMs: 600_000,
       failed: false,
       outcomes: [],
       findings: [],
     });
-    assert.equal(store.listRuns({ limit: 10 })[0]!.failure, null);
+    assert.equal((await store.listRuns({ limit: 10 }))[0]!.failure, null);
 
     // 收尾之后的失败(发布 review 失败那一类)只写这一列:Reviewer 结果是有效的,
     // `failed` 不能因它置位(ADR 0026)。
-    store.recordRunFailure(runId, "发布 review 失败:Gitea 回 502");
-    const [run] = store.listRuns({ limit: 10 });
+    await store.recordRunFailure(runId, "发布 review 失败:Gitea 回 502");
+    const [run] = await store.listRuns({ limit: 10 });
     assert.equal(run!.failure, "发布 review 失败:Gitea 回 502");
     assert.equal(run!.failed, false);
     assert.equal(run!.finishedAt, "2026-09-05T00:10:00.000Z");
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("轮次级失败原因通篇空白时落的是「未记录原因」,正常原因原样落库", () => {
+test("轮次级失败原因通篇空白时落的是「未记录原因」,正常原因原样落库", async () => {
   // 「非空即收尾失败」这一档不能在没有任何原因的情况下成立(issue #432):轮次侧滑
   // 原样渲染这一列,空原因就是一句尾巴空着的话。两条写入路径各验一遍。
   const db = makeDbPath();
@@ -558,49 +558,49 @@ test("轮次级失败原因通篇空白时落的是「未记录原因」,正常�
       batchCount: 1,
       reviewerPins: [],
     });
-  const failureOf = (runId: number) =>
-    store.listRuns({ limit: 10 }).find((run) => run.id === runId)!.failure;
+  const failureOf = async (runId: number) =>
+    (await store.listRuns({ limit: 10 })).find((run) => run.id === runId)!.failure;
   try {
     // 发布失败那条路径。
-    const empty = start(7);
-    store.finishRun(empty, {
+    const empty = await start(7);
+    await store.finishRun(empty, {
       finishedAt: "2026-09-21T00:10:00.000Z",
       durationMs: 1,
       failed: false,
       outcomes: [],
       findings: [],
     });
-    store.recordRunFailure(empty, "");
-    assert.equal(failureOf(empty), "未记录原因");
+    await store.recordRunFailure(empty, "");
+    assert.equal(await failureOf(empty), "未记录原因");
 
-    const blank = start(8);
-    store.finishRun(blank, {
+    const blank = await start(8);
+    await store.finishRun(blank, {
       finishedAt: "2026-09-21T00:10:00.000Z",
       durationMs: 1,
       failed: false,
       outcomes: [],
       findings: [],
     });
-    store.recordRunFailure(blank, " \n\t ");
-    assert.equal(failureOf(blank), "未记录原因");
+    await store.recordRunFailure(blank, " \n\t ");
+    assert.equal(await failureOf(blank), "未记录原因");
 
     // 首尾有空白、正文非空的原样落库:不截断,也不改写。
-    const real = start(9);
-    store.finishRun(real, {
+    const real = await start(9);
+    await store.finishRun(real, {
       finishedAt: "2026-09-21T00:10:00.000Z",
       durationMs: 1,
       failed: false,
       outcomes: [],
       findings: [],
     });
-    store.recordRunFailure(real, "\n发布 review 失败:Gitea 回 502\n");
-    assert.equal(failureOf(real), "\n发布 review 失败:Gitea 回 502\n");
+    await store.recordRunFailure(real, "\n发布 review 失败:Gitea 回 502\n");
+    assert.equal(await failureOf(real), "\n发布 review 失败:Gitea 回 502\n");
 
     // 改判失败那条路径(服务重启、续跑不成立):只有它还停在运行中,改判只碰它。
-    const interrupted = start(10);
-    store.failInterruptedRuns("   ", "2026-09-21T01:00:00.000Z");
-    assert.equal(failureOf(interrupted), "未记录原因");
+    const interrupted = await start(10);
+    await store.failInterruptedRuns("   ", "2026-09-21T01:00:00.000Z");
+    assert.equal(await failureOf(interrupted), "未记录原因");
   } finally {
-    store.close();
+    await store.close();
   }
 });

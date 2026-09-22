@@ -60,7 +60,7 @@ function at(minute: number): string {
 type Progress = { minute: number; stageIds: string[] };
 
 /** 一轮跑完的 Review Run。给了指纹就带一条待处置的 Finding,三个计数因此有东西可算。 */
-function seedFinishedRun(
+async function seedFinishedRun(
   store: Store,
   meta: {
     pullNumber: number;
@@ -72,8 +72,8 @@ function seedFinishedRun(
     rangeReviewId?: number;
   },
   fingerprint?: string,
-): void {
-  const runId = store.startRun({
+): Promise<void> {
+  const runId = await store.startRun({
     owner: meta.owner ?? OWNER,
     repo: meta.repo ?? REPO,
     pullNumber: meta.pullNumber,
@@ -86,7 +86,7 @@ function seedFinishedRun(
     batchCount: 1,
     reviewerPins: [],
   });
-  store.finishRun(runId, {
+  await store.finishRun(runId, {
     finishedAt: meta.startedAt,
     durationMs: 1,
     failed: false,
@@ -137,12 +137,12 @@ function seedFinishedRun(
  * 垫底的那几千个阶段:一个 pull request 一轮,还没跑完。它们只负责让库变大,内容断言
  * 落在后面那批完整的阶段上。
  */
-function seedFillerStages(dbPath: string, progress: Progress, count: number): void {
+async function seedFillerStages(dbPath: string, progress: Progress, count: number): Promise<void> {
   const store = openStore(dbPath);
   try {
     for (let index = 0; index < count; index += 1) {
       const pullNumber = 100_000 + index;
-      store.startRun({
+      await store.startRun({
         owner: OWNER,
         repo: REPO,
         pullNumber,
@@ -157,7 +157,7 @@ function seedFillerStages(dbPath: string, progress: Progress, count: number): vo
       progress.stageIds.push(`pr:${OWNER}/${REPO}/${pullNumber}`);
     }
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -165,14 +165,14 @@ function seedFillerStages(dbPath: string, progress: Progress, count: number): vo
  * 最新的那一批阶段,两种来源交错——归并、筛选与排序是同一条查询做的,交错才看得出两
  * 条链路真的合到了一起。每个阶段两轮同一个 head,第二轮带一条待处置的 Finding。
  */
-function seedRichStages(dbPath: string, progress: Progress): void {
+async function seedRichStages(dbPath: string, progress: Progress): Promise<void> {
   const store = openStore(dbPath);
   try {
     for (let index = 0; index < RICH_STAGES; index += 1) {
       // 每五个里的第五个是范围审查。
       if (index % 5 === 4) {
         const comparisonSha = `comparison-${index}`;
-        const rangeReviewId = store.createRangeReview({
+        const rangeReviewId = await store.createRangeReview({
           repoId: 1,
           owner: OWNER,
           repo: REPO,
@@ -183,13 +183,13 @@ function seedRichStages(dbPath: string, progress: Progress): void {
           createdAt: at(progress.minute),
         });
         const containerPullNumber = 9000 + index;
-        seedFinishedRun(store, {
+        await seedFinishedRun(store, {
           pullNumber: containerPullNumber,
           headSha: comparisonSha,
           startedAt: at((progress.minute += 1)),
           rangeReviewId,
         });
-        seedFinishedRun(
+        await seedFinishedRun(
           store,
           {
             pullNumber: containerPullNumber,
@@ -205,13 +205,13 @@ function seedRichStages(dbPath: string, progress: Progress): void {
       const pullNumber = index + 1;
       const headSha = `head-pull-${pullNumber}`;
       const title = `pull request ${pullNumber}`;
-      seedFinishedRun(store, {
+      await seedFinishedRun(store, {
         pullNumber,
         headSha,
         startedAt: at((progress.minute += 1)),
         title,
       });
-      seedFinishedRun(
+      await seedFinishedRun(
         store,
         { pullNumber, headSha, startedAt: at((progress.minute += 1)), title },
         `fingerprint-pull-${index}`,
@@ -219,17 +219,17 @@ function seedRichStages(dbPath: string, progress: Progress): void {
       progress.stageIds.push(`pr:${OWNER}/${REPO}/${pullNumber}`);
     }
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
 /** 另一个仓库的几个阶段,最先播因此时刻最旧,只在仓库过滤那一档露面。 */
-function seedOtherRepoStages(dbPath: string, progress: Progress): void {
+async function seedOtherRepoStages(dbPath: string, progress: Progress): Promise<void> {
   const store = openStore(dbPath);
   try {
     for (let index = 0; index < OTHER_STAGES; index += 1) {
       const pullNumber = index + 1;
-      seedFinishedRun(store, {
+      await seedFinishedRun(store, {
         owner: OTHER_OWNER,
         repo: OTHER_REPO,
         pullNumber,
@@ -239,7 +239,7 @@ function seedOtherRepoStages(dbPath: string, progress: Progress): void {
       });
     }
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -272,10 +272,10 @@ async function fastest(request: () => Promise<unknown>): Promise<number> {
 test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶段总数走", async () => {
   const large = await startPanelHarness();
   const largeProgress: Progress = { minute: 0, stageIds: [] };
-  seedOtherRepoStages(large.db.path, largeProgress);
+  await seedOtherRepoStages(large.db.path, largeProgress);
   const oldestFillerStageId = `pr:${OWNER}/${REPO}/100000`;
-  seedFillerStages(large.db.path, largeProgress, FILLER_STAGES);
-  seedRichStages(large.db.path, largeProgress);
+  await seedFillerStages(large.db.path, largeProgress, FILLER_STAGES);
+  await seedRichStages(large.db.path, largeProgress);
   const richStageIds = largeProgress.stageIds.slice(-RICH_STAGES);
   const newestStageId = richStageIds[RICH_STAGES - 1]!;
   const oldestRichStageId = richStageIds[0]!;
@@ -345,7 +345,7 @@ test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶
   // 小库:只有那三十个完整的阶段,请求的活儿与大库第一页一模一样。
   const small = await startPanelHarness();
   const smallProgress: Progress = { minute: 0, stageIds: [] };
-  seedRichStages(small.db.path, smallProgress);
+  await seedRichStages(small.db.path, smallProgress);
   const smallFirst = await page(small, "");
   assert.deepEqual(
     smallFirst.stages.map((stage) => stage.counts),

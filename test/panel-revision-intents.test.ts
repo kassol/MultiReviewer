@@ -90,7 +90,7 @@ async function harnessWithRepo(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  if (confirmed) confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  if (confirmed) await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   return h;
 }
 
@@ -100,8 +100,8 @@ async function ruleSet(h: PanelHarness): Promise<RuleSetView> {
   return (await response.json()) as RuleSetView;
 }
 
-function submit(h: PanelHarness, body: unknown): Promise<Response> {
-  return h.api("POST", `/repos/${GITEA_REPO.id}/revision-intents`, body);
+async function submit(h: PanelHarness, body: unknown): Promise<Response> {
+  return await h.api("POST", `/repos/${GITEA_REPO.id}/revision-intents`, body);
 }
 
 /** 提交一条意图并等它跑完,回意图行的标识。 */
@@ -149,9 +149,9 @@ test("无目标意图:agent 拿到意图与现集,产出入队并带人工提议
       }),
       undefined,
     );
-    ruleId = store.getRuleSet(GITEA_REPO.id)!.rules[0]!.id;
+    ruleId = (await store.getRuleSet(GITEA_REPO.id))!.rules[0]!.id;
   } finally {
-    store.close();
+    await store.close();
   }
   items = [
     {
@@ -266,7 +266,7 @@ test("agent 指名并入队列里已有的那一条:队列条数不变,附注多
   const store = openStore(h.db.path);
   let queued: number;
   try {
-    queued = store.addRuleProposal(GITEA_REPO.id, {
+    queued = (await store.addRuleProposal(GITEA_REPO.id, {
       type: "rule",
       change: "add",
       targetRuleIds: [],
@@ -281,9 +281,9 @@ test("agent 指名并入队列里已有的那一条:队列条数不变,附注多
           traceTaskId: null,
         },
       ],
-    })!;
+    }))!;
   } finally {
-    store.close();
+    await store.close();
   }
   items = [
     {
@@ -325,13 +325,13 @@ test("知识集未确认:产出追加进草案,原有草案条目留着", async 
   const store = openStore(h.db.path);
   try {
     // 探索产出的那一条:草案手填已经撤掉(issue #299),原有条目只会是探索或意图落的。
-    store.finishRuleExploration(
+    await store.finishRuleExploration(
       GITEA_REPO.id,
       [{ type: "rule", scope: "", statement: "草案里原有的" }],
       "2026-09-08T00:00:00.000Z",
     );
   } finally {
-    store.close();
+    await store.close();
   }
 
   const intentId = await submitAndSettle(h);
@@ -373,7 +373,7 @@ test("未确认仓库上的处置反哺:产出排进提案队列,草案一字不
   );
   // 门禁挡的是没确认过知识集的仓库(issue #206),要有一条可处置的 Finding 就得先确认、
   // 跑一轮。这条用例要的是「有 Finding 而知识集未确认」那一档,因此跑完再把那一版删掉。
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -387,13 +387,13 @@ test("未确认仓库上的处置反哺:产出排进提案队列,草案一字不
   const store = openStore(h.db.path);
   try {
     // 草案里先有一条探索产出的:反哺不该动它。
-    store.finishRuleExploration(
+    await store.finishRuleExploration(
       GITEA_REPO.id,
       [{ type: "rule", scope: "", statement: "草案里原有的" }],
       "2026-09-08T00:00:00.000Z",
     );
   } finally {
-    store.close();
+    await store.close();
   }
 
   const runs = (await (await h.api("GET", "/runs")).json()) as {
@@ -573,9 +573,9 @@ test("重启:停在运行中的意图改判失败", async () => {
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 71, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+    await store.registerRepo({ repoId: 71, owner: "acme", repo: "legacy", generation: 1, key: "k" });
     assert.notEqual(
-      store.startRuleIntent(71, {
+      await store.startRuleIntent(71, {
         text: "跑一半就重启了",
         submittedBy: "someone",
         targetKind: "none",
@@ -587,7 +587,7 @@ test("重启:停在运行中的意图改判失败", async () => {
     );
     // 反哺那一行同样是意图行,改判因此一并覆盖它(issue #296)。
     assert.notEqual(
-      store.startRuleIntent(71, {
+      await store.startRuleIntent(71, {
         text: "处置备注也跑了一半",
         submittedBy: "someone",
         targetKind: "finding",
@@ -598,13 +598,13 @@ test("重启:停在运行中的意图改判失败", async () => {
       undefined,
     );
   } finally {
-    store.close();
+    await store.close();
   }
 
   const restarted = openStore(db.path);
   try {
-    restarted.failInterruptedRuleIntents("服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z");
-    const listed = restarted.listRuleIntents(71);
+    await restarted.failInterruptedRuleIntents("服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z");
+    const listed = await restarted.listRuleIntents(71);
     assert.deepEqual(
       listed.map((row) => [row.targetKind, row.state, row.failure, row.finishedAt]),
       [
@@ -613,7 +613,7 @@ test("重启:停在运行中的意图改判失败", async () => {
       ],
     );
   } finally {
-    restarted.close();
+    await restarted.close();
   }
 });
 
@@ -623,34 +623,34 @@ test("完成很久的意图仍列出,运行中与失败排在完成的前面", a
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 72, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-    const start = (text: string, startedAt: string): number =>
-      store.startRuleIntent(72, {
+    await store.registerRepo({ repoId: 72, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+    const start = async (text: string, startedAt: string): Promise<number> =>
+      (await store.startRuleIntent(72, {
         text,
         submittedBy: "someone",
         targetKind: "none",
         targetId: null,
         model: "test:global-model",
         startedAt,
-      })!.id;
-    const old = start("早就跑完了", "2026-09-01T00:00:00.000Z");
-    store.finishRuleIntent(
+      }))!.id;
+    const old = await start("早就跑完了", "2026-09-01T00:00:00.000Z");
+    await store.finishRuleIntent(
       old,
       { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
       "2026-09-01T00:01:00.000Z",
     );
-    const failed = start("跑失败了", "2026-09-02T00:00:00.000Z");
-    store.failRuleIntent(failed, "模型调用被拒", "2026-09-02T00:01:00.000Z");
-    start("还在跑", "2026-09-03T00:00:00.000Z");
+    const failed = await start("跑失败了", "2026-09-02T00:00:00.000Z");
+    await store.failRuleIntent(failed, "模型调用被拒", "2026-09-02T00:01:00.000Z");
+    await start("还在跑", "2026-09-03T00:00:00.000Z");
     // 开始得最晚的这一条已经完成:它排在运行中与失败之后,而不是按开始时刻排到最前。
-    const recent = start("刚跑完", "2026-09-08T00:00:00.000Z");
-    store.finishRuleIntent(
+    const recent = await start("刚跑完", "2026-09-08T00:00:00.000Z");
+    await store.finishRuleIntent(
       recent,
       { summary: "未产出变更", produced: { proposalIds: [], draftItemIds: [] } },
       "2026-09-08T00:01:00.000Z",
     );
 
-    const listed = store.listRuleIntents(72);
+    const listed = await store.listRuleIntents(72);
     assert.deepEqual(
       listed.map((row) => [row.text, row.state]),
       [
@@ -662,7 +662,7 @@ test("完成很久的意图仍列出,运行中与失败排在完成的前面", a
     );
     assert.deepEqual(listed.at(-1)!.produced, { proposalIds: [3], draftItemIds: [] });
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -672,22 +672,22 @@ test("完成很久的意图仍列出,运行中与失败排在完成的前面", a
  */
 
 /** 现集里加一条,回它的标识。 */
-function seedRule(
+async function seedRule(
   h: PanelHarness,
   rule: { type: "rule" | "fact"; scope: string; statement: string },
-): number {
+): Promise<number> {
   const store = openStore(h.db.path);
   try {
     assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, rule), undefined);
     // `seedReviewRule` 回的是新的知识集版本,条目标识要从现集里读。
-    return store.getRuleSet(GITEA_REPO.id)!.rules.at(-1)!.id;
+    return (await store.getRuleSet(GITEA_REPO.id))!.rules.at(-1)!.id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
 /** 队列里排一条待裁决提案,回它的标识。 */
-function seedProposal(
+async function seedProposal(
   h: PanelHarness,
   input: {
     type: "rule" | "fact";
@@ -696,10 +696,10 @@ function seedProposal(
     scope: string;
     statement: string;
   },
-): number {
+): Promise<number> {
   const store = openStore(h.db.path);
   try {
-    return store.addRuleProposal(GITEA_REPO.id, {
+    return (await store.addRuleProposal(GITEA_REPO.id, {
       ...input,
       sources: [
         {
@@ -710,9 +710,9 @@ function seedProposal(
           traceTaskId: null,
         },
       ],
-    })!;
+    }))!;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -735,8 +735,8 @@ test("目标为待裁决提案:agent 拿到它的全部内容与附注,改写换
   const agent = scriptedRuleAgent(() => ({ items }), "已把范围收到导出函数上");
   const h = await harnessWithRepo(agent);
 
-  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "入参要在边界上校验" });
-  const proposalId = seedProposal(h, {
+  const ruleId = await seedRule(h, { type: "rule", scope: "", statement: "入参要在边界上校验" });
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "modify",
     targetRuleIds: [ruleId],
@@ -809,7 +809,7 @@ test("型规则:新增型提案换型成立", async () => {
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const proposalId = seedProposal(h, {
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -831,8 +831,8 @@ test("型规则:修改型提案要换型即变成单目标合并型,目标不变
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const ruleId = seedRule(h, { type: "fact", scope: "", statement: "这一层由全局拦截器覆盖" });
-  const proposalId = seedProposal(h, {
+  const ruleId = await seedRule(h, { type: "fact", scope: "", statement: "这一层由全局拦截器覆盖" });
+  const proposalId = await seedProposal(h, {
     type: "fact",
     change: "modify",
     targetRuleIds: [ruleId],
@@ -855,9 +855,9 @@ test("型规则:合并型提案的型由新陈述定", async () => {
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const first = seedRule(h, { type: "rule", scope: "", statement: "处理器要校验入参" });
-  const second = seedRule(h, { type: "rule", scope: "", statement: "处理器要校验查询串" });
-  const proposalId = seedProposal(h, {
+  const first = await seedRule(h, { type: "rule", scope: "", statement: "处理器要校验入参" });
+  const second = await seedRule(h, { type: "rule", scope: "", statement: "处理器要校验查询串" });
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "merge",
     targetRuleIds: [first, second],
@@ -879,7 +879,7 @@ test("没有指向目标的产出:全部丢弃并记轨迹,意图零产出完成
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const proposalId = seedProposal(h, {
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -911,7 +911,7 @@ test("一条指向目标的产出都没有:意图零产出完成,提案一字不
   const h = await harnessWithRepo(
     scriptedRuleAgent(() => ({ items: [{ type: "rule", scope: "", statement: "别的那一条" }] })),
   );
-  const proposalId = seedProposal(h, {
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -947,7 +947,7 @@ test("目标在运行中被驳回:意图失败并留原因,提案一字不动", 
     return { items: [{ type: "rule", scope: "src/api/**", statement: "改写那一条", proposalId }] };
   });
   harness = h;
-  proposalId = seedProposal(h, {
+  proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -987,7 +987,7 @@ test("目标在运行中被驳回而一条产出都不指向它:意图仍失败�
     return { items: [{ type: "rule", scope: "", statement: "顺手提的另一条" }] };
   });
   harness = h;
-  proposalId = seedProposal(h, {
+  proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -1015,7 +1015,7 @@ test("连续两次意图:第二次的 agent 输入含第一次留下的那条附
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const proposalId = seedProposal(h, {
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -1061,8 +1061,8 @@ test("目标校验:不存在与已裁决 404,废止型 400,同目标运行中 40
   const target = (id: number): unknown => ({ text: INTENT, target: { kind: "proposal", id } });
   assert.equal((await submit(h, target(999999))).status, 404);
 
-  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "现集里的那一条" });
-  const retire = seedProposal(h, {
+  const ruleId = await seedRule(h, { type: "rule", scope: "", statement: "现集里的那一条" });
+  const retire = await seedProposal(h, {
     type: "rule",
     change: "retire",
     targetRuleIds: [ruleId],
@@ -1072,7 +1072,7 @@ test("目标校验:不存在与已裁决 404,废止型 400,同目标运行中 40
   // 废止型提案没有改写入口。
   assert.equal((await submit(h, target(retire))).status, 400);
 
-  const rejected = seedProposal(h, {
+  const rejected = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -1085,7 +1085,7 @@ test("目标校验:不存在与已裁决 404,废止型 400,同目标运行中 40
   );
   assert.equal((await submit(h, target(rejected))).status, 404);
 
-  const proposalId = seedProposal(h, {
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -1126,9 +1126,9 @@ test("目标为知识条目:agent 拿到它与指向它的待裁决提案,产出
   const agent = scriptedRuleAgent(() => ({ items }), "已按 api 目录的现状收窄");
   const h = await harnessWithRepo(agent);
 
-  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const ruleId = await seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
   // 队列里另有一条指向它的提案:agent 要看得到它才判得出该并入还是另提一条。
-  const queued = seedProposal(h, {
+  const queued = await seedProposal(h, {
     type: "rule",
     change: "modify",
     targetRuleIds: [ruleId],
@@ -1136,7 +1136,7 @@ test("目标为知识条目:agent 拿到它与指向它的待裁决提案,产出
     statement: "队列里已经指向它的那一条",
   });
   // 别的条目与别的提案照常渲染给 agent:它要判得出这件事现集里还有没有别处说过。
-  const otherRule = seedRule(h, { type: "fact", scope: "", statement: "另一条与它无关的" });
+  const otherRule = await seedRule(h, { type: "fact", scope: "", statement: "另一条与它无关的" });
 
   items = [
     {
@@ -1210,7 +1210,7 @@ test("目标为知识条目:换型的产出成为指向它的单目标合并", a
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const ruleId = seedRule(h, { type: "fact", scope: "", statement: "这一层由全局拦截器覆盖" });
+  const ruleId = await seedRule(h, { type: "fact", scope: "", statement: "这一层由全局拦截器覆盖" });
   items = [
     {
       type: "rule",
@@ -1234,7 +1234,7 @@ test("目标为知识条目:带废止标记的产出成为指向它的废止型�
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const ruleId = seedRule(h, { type: "rule", scope: "src/**", statement: "这条代码已经不支持了" });
+  const ruleId = await seedRule(h, { type: "rule", scope: "src/**", statement: "这条代码已经不支持了" });
   items = [
     {
       type: "rule",
@@ -1261,8 +1261,8 @@ test("目标为知识条目:agent 指名并入指向它的那一条,队列仍一
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
-  const queued = seedProposal(h, {
+  const ruleId = await seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const queued = await seedProposal(h, {
     type: "rule",
     change: "modify",
     targetRuleIds: [ruleId],
@@ -1307,10 +1307,10 @@ test("目标为知识条目:指向它的废止型提案不作并入候选,指名
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const ruleId = await seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
   // 队列里指向它的那一条是废止型:它说的就是废止哪一条,并进去只会把它改成别的意思
   // ——提交时那一档本来就 400,并入这条路径同一口径。
-  const retire = seedProposal(h, {
+  const retire = await seedProposal(h, {
     type: "rule",
     change: "retire",
     targetRuleIds: [ruleId],
@@ -1354,10 +1354,10 @@ test("目标为知识条目:不指向它的产出丢弃并记轨迹,意图仍完
   let items: RuleAgentItem[] = [];
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent);
-  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
-  const other = seedRule(h, { type: "rule", scope: "", statement: "另一条与它无关的" });
+  const ruleId = await seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const other = await seedRule(h, { type: "rule", scope: "", statement: "另一条与它无关的" });
   // 队列里那一条指向别的条目:并进去也不算指向目标。
-  const elsewhere = seedProposal(h, {
+  const elsewhere = await seedProposal(h, {
     type: "rule",
     change: "modify",
     targetRuleIds: [other],
@@ -1413,7 +1413,7 @@ test("目标条目在运行中被直接废止:意图失败并留原因", async (
     };
   });
   harness = h;
-  ruleId = seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  ruleId = await seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
 
   const submitted = await rewriteEntryAndSettle(h, ruleId);
   assert.notEqual(h.revisionIntents[0]!.failure, undefined);
@@ -1439,11 +1439,11 @@ test("目标校验:条目不存在与已废止 404,同目标运行中 409", asyn
   const target = (id: number): unknown => ({ text: INTENT, target: { kind: "rule", id } });
   assert.equal((await submit(h, target(999999))).status, 404);
 
-  const retired = seedRule(h, { type: "rule", scope: "", statement: "马上就要废止的那一条" });
+  const retired = await seedRule(h, { type: "rule", scope: "", statement: "马上就要废止的那一条" });
   assert.equal((await h.api("DELETE", `/repos/${GITEA_REPO.id}/rules/${retired}`)).status, 200);
   assert.equal((await submit(h, target(retired))).status, 404);
 
-  const ruleId = seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const ruleId = await seedRule(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
   assert.equal((await submit(h, target(ruleId))).status, 202);
   // 同一目标同时只跑一条。
   assert.equal((await submit(h, target(ruleId))).status, 409);
@@ -1460,17 +1460,17 @@ test("目标校验:条目不存在与已废止 404,同目标运行中 409", asyn
  */
 
 /** 草案里加一条,回它的标识。 */
-function seedDraftItem(
+async function seedDraftItem(
   h: PanelHarness,
   item: { type: "rule" | "fact"; scope: string; statement: string },
-): number {
+): Promise<number> {
   const store = openStore(h.db.path);
   try {
-    const [id] = store.appendRuleDraftItems(GITEA_REPO.id, [item], "2026-09-08T00:00:00.000Z");
+    const [id] = await store.appendRuleDraftItems(GITEA_REPO.id, [item], "2026-09-08T00:00:00.000Z");
     assert.notEqual(id, undefined);
     return id!;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -1493,8 +1493,8 @@ test("目标为草案条目:agent 拿到它与其余草案条目,那一行原地
   const agent = scriptedRuleAgent(() => ({ items }), "已按 api 目录的现状收窄");
   const h = await harnessWithRepo(agent, false);
 
-  const itemId = seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
-  const other = seedDraftItem(h, { type: "fact", scope: "src/**", statement: "另一条草案里的" });
+  const itemId = await seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const other = await seedDraftItem(h, { type: "fact", scope: "src/**", statement: "另一条草案里的" });
   items = [
     {
       type: "fact",
@@ -1544,7 +1544,7 @@ test("目标为草案条目:陈述超过 100 字的产出被丢弃,意图完成�
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent, false);
 
-  const itemId = seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const itemId = await seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
   items = [{ type: "rule", scope: "src/api/**", statement: "太".repeat(101), targetRuleIds: [itemId] }];
 
   const submitted = await rewriteDraftAndSettle(h, itemId);
@@ -1568,8 +1568,8 @@ test("目标为草案条目:不指向它的产出丢弃并记轨迹,意图零产
   const agent = scriptedRuleAgent(() => ({ items }));
   const h = await harnessWithRepo(agent, false);
 
-  const itemId = seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
-  const other = seedDraftItem(h, { type: "rule", scope: "", statement: "另一条草案里的" });
+  const itemId = await seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const other = await seedDraftItem(h, { type: "rule", scope: "", statement: "另一条草案里的" });
   items = [
     // 指向别的草案条目、一个目标都不给、目标不止一条:三条都不是人指着的那一件事。
     { type: "rule", scope: "", statement: "改的是另一条", targetRuleIds: [other] },
@@ -1612,7 +1612,7 @@ test("目标草案条目在运行中被删:意图失败并留原因", async () =
     };
   }, false);
   harness = h;
-  itemId = seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  itemId = await seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
 
   const submitted = await rewriteDraftAndSettle(h, itemId);
   assert.notEqual(h.revisionIntents[0]!.failure, undefined);
@@ -1638,7 +1638,7 @@ test("目标校验:草案条目不存在 404,同目标运行中 409", async () =
   const target = (id: number): unknown => ({ text: INTENT, target: { kind: "draft", id } });
   assert.equal((await submit(h, target(999999))).status, 404);
 
-  const itemId = seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
+  const itemId = await seedDraftItem(h, { type: "rule", scope: "", statement: "处理器都要校验入参" });
   assert.equal((await submit(h, target(itemId))).status, 202);
   // 同一目标同时只跑一条。
   assert.equal((await submit(h, target(itemId))).status, 409);
@@ -1660,30 +1660,30 @@ test("知识集已确认的仓库没有草案:目标为草案条目回 404", asy
  * 的结算清空,模型按此刻生效的辅助模型重新解析;校验与提交端点同一口径。
  */
 
-function retry(h: PanelHarness, intentId: number): Promise<Response> {
-  return h.api("POST", `/repos/${GITEA_REPO.id}/revision-intents/${intentId}/retry`);
+async function retry(h: PanelHarness, intentId: number): Promise<Response> {
+  return await h.api("POST", `/repos/${GITEA_REPO.id}/revision-intents/${intentId}/retry`);
 }
 
 /** 直接落一条失败的意图,回它的标识。拒绝面的用例不必先让 agent 真跑失败一次。 */
-function seedFailedIntent(
+async function seedFailedIntent(
   h: PanelHarness,
   targetKind: IntentRow["targetKind"],
   targetId: number | null,
-): number {
+): Promise<number> {
   const store = openStore(h.db.path);
   try {
-    const intent = store.startRuleIntent(GITEA_REPO.id, {
+    const intent = (await store.startRuleIntent(GITEA_REPO.id, {
       text: INTENT,
       submittedBy: "someone",
       targetKind,
       targetId,
       model: "test:global-model",
       startedAt: "2026-09-11T00:00:00.000Z",
-    })!;
-    store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:01:00.000Z");
+    }))!;
+    await store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:01:00.000Z");
     return intent.id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -1714,17 +1714,17 @@ test("重试失败的意图:同一行原地变回运行中再完成,模型按此
   assert.notEqual(failed.traceTaskId, null);
 
   // 失败之后换了辅助模型:重试用此刻生效的那一处,不沿用第一次记下的那一处。
-  seedAvailableModelService(h, "second", ["other-model"]);
+  await seedAvailableModelService(h, "second", ["other-model"]);
   const store = openStore(h.db.path);
   try {
     assert.equal(
-      putGlobalSettings(store, {
+      await putGlobalSettings(store, {
         auxiliaryModelJson: JSON.stringify({ provider: "second", model: "other-model" }),
       }),
       true,
     );
   } finally {
-    store.close();
+    await store.close();
   }
 
   const response = await retry(h, intentId);
@@ -1811,9 +1811,9 @@ test("重试:目标已裁决、已废止、草案条目或 Finding 不在 404,�
     return { items: [] };
   });
 
-  const retired = seedRule(h, { type: "rule", scope: "", statement: "已经废止的那一条" });
+  const retired = await seedRule(h, { type: "rule", scope: "", statement: "已经废止的那一条" });
   assert.equal((await h.api("DELETE", `/repos/${GITEA_REPO.id}/rules/${retired}`)).status, 200);
-  const rejected = seedProposal(h, {
+  const rejected = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
@@ -1831,21 +1831,21 @@ test("重试:目标已裁决、已废止、草案条目或 Finding 不在 404,�
     ["finding", 999999],
   ];
   for (const [kind, id] of gone) {
-    const failedId = seedFailedIntent(h, kind, id);
+    const failedId = await seedFailedIntent(h, kind, id);
     assert.equal((await retry(h, failedId)).status, 404, kind);
   }
   // 被拒的那几行仍是失败:没有被改回运行中。
   assert.ok((await ruleSet(h)).intents.every((row) => row.state === "failed"));
 
   // 同一目标已有一条在跑:重试与提交同一道互斥。
-  const proposalId = seedProposal(h, {
+  const proposalId = await seedProposal(h, {
     type: "rule",
     change: "add",
     targetRuleIds: [],
     scope: "",
     statement: "队列里原来那一句",
   });
-  const failedId = seedFailedIntent(h, "proposal", proposalId);
+  const failedId = await seedFailedIntent(h, "proposal", proposalId);
   assert.equal(
     (await submit(h, { text: INTENT, target: { kind: "proposal", id: proposalId } })).status,
     202,
@@ -1858,7 +1858,7 @@ test("重试:目标已裁决、已废止、草案条目或 Finding 不在 404,�
 
 test("重试:辅助模型跑不了 409 且那一行仍失败,没有 knowledge:write 403", async () => {
   const h = await harnessWithRepo(scriptedRuleAgent(() => ({ items: [] })));
-  const failedId = seedFailedIntent(h, "none", null);
+  const failedId = await seedFailedIntent(h, "none", null);
 
   const reader = await scopedUser(
     h,
@@ -1894,34 +1894,34 @@ test("重跑只认这个仓库的失败行:原地改回运行中,清掉上一次
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
-    store.registerRepo({ repoId: 73, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-    const intent = store.startRuleIntent(73, {
+    await store.registerRepo({ repoId: 73, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+    const intent = (await store.startRuleIntent(73, {
       text: "跑过一次的那一段",
       submittedBy: "someone",
       targetKind: "proposal",
       targetId: 11,
       model: "test:global-model",
       startedAt: "2026-09-11T00:00:00.000Z",
-    })!;
+    }))!;
     const run = {
       model: "second:other-model",
       thinkingLevel: "high" as const,
       startedAt: "2026-09-11T01:00:00.000Z",
     };
     // 运行中与完成的都不重跑。
-    assert.equal(store.rerunRuleIntent(73, intent.id, run), undefined);
-    store.setRuleIntentTrace(intent.id, 5);
-    store.finishRuleIntent(
+    assert.equal(await store.rerunRuleIntent(73, intent.id, run), undefined);
+    await store.setRuleIntentTrace(intent.id, 5);
+    await store.finishRuleIntent(
       intent.id,
       { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
       "2026-09-11T00:01:00.000Z",
     );
-    assert.equal(store.rerunRuleIntent(73, intent.id, run), undefined);
-    store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:02:00.000Z");
+    assert.equal(await store.rerunRuleIntent(73, intent.id, run), undefined);
+    await store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:02:00.000Z");
     // 别的仓库认不出这一行。
-    assert.equal(store.rerunRuleIntent(74, intent.id, run), undefined);
+    assert.equal(await store.rerunRuleIntent(74, intent.id, run), undefined);
 
-    const rerun = store.rerunRuleIntent(73, intent.id, run)!;
+    const rerun = (await store.rerunRuleIntent(73, intent.id, run))!;
     assert.deepEqual(
       {
         id: rerun.id,
@@ -1957,6 +1957,6 @@ test("重跑只认这个仓库的失败行:原地改回运行中,清掉上一次
       },
     );
   } finally {
-    store.close();
+    await store.close();
   }
 });

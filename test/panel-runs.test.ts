@@ -26,7 +26,7 @@ import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixtur
  */
 type RunRow = RunProjection;
 
-function seedRun(
+async function seedRun(
   dbPath: string,
   meta: {
     owner: string;
@@ -45,9 +45,9 @@ function seedRun(
   }[],
   outcomes: { model: string; failure?: string; usage?: ReviewerUsage }[] = [],
   verdicts: { model: string; findingId: number; missing?: boolean }[] = [],
-): number {
+): Promise<number> {
   const store = openStore(dbPath);
-  const runId = seedRunRow(
+  const runId = await seedRunRow(
     store,
     { ...meta, headSha: `sha-${meta.pullNumber}-${meta.startedAt}` },
     // 同一个 group 的几条是同一处:落成一条 Finding 加几条归属(ADR 0015)。
@@ -96,7 +96,7 @@ function seedRun(
       ...(v.missing === true ? { missing: "no-verdict" as const } : {}),
     })),
   );
-  store.close();
+  await store.close();
   return runId;
 }
 
@@ -105,12 +105,12 @@ test("时间流 API:倒序分页、逐条计数、已移除仓库的历史照常
 
   // 一条“已移除仓库”的历史(注册表里没有 ghost/gone)加一条带计数的:
   // 两个模型各报了行级 Finding,其中一组被 resolve,另有一条正文行不进已处置口径。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "ghost", repo: "gone", pullNumber: 1, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ model: "model-a" }],
   );
-  seedRun(
+  await seedRun(
     h.db.path,
     {
       owner: "acme",
@@ -156,7 +156,7 @@ test("时间流 API:倒序分页、逐条计数、已移除仓库的历史照常
 
 test("时间流 API:失败的模型照样出现在 JSON 里,带失败原因", async () => {
   const h = await startPanelHarness();
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
     [{ model: "model-a" }],
@@ -190,7 +190,7 @@ test("时间流 API:整轮用量是各 Reviewer 的 token 之和", async () => {
     cacheWriteTokens: 1,
     totalTokens: 20,
   };
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
     [],
@@ -215,7 +215,7 @@ test("时间流 API:整轮用量是各 Reviewer 的 token 之和", async () => {
 test("时间流 API:满页给 nextBefore 游标,翻页不重不漏;owner/repo 过滤", async () => {
   const h = await startPanelHarness();
   for (let i = 1; i <= 32; i += 1) {
-    seedRun(
+    await seedRun(
       h.db.path,
       {
         owner: i % 2 === 0 ? "acme" : "other",
@@ -259,7 +259,7 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
       .status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   // 这几条用例看的是重跑本身,与模式无关;完整审查那一档不依赖阶段有没有历史。
   const rerun = await h.api("POST", "/rerun", {
@@ -284,8 +284,8 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
   assert.equal(h.settled[1]!.error, undefined);
 
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30 });
-  store.close();
+  const runs = await store.listRuns({ limit: 30 });
+  await store.close();
   assert.equal(runs.length, 2);
   assert.equal(runs[0]!.pullNumber, HARNESS_PR.number);
   assert.deepEqual(
@@ -301,14 +301,14 @@ test("投递触发的 Review Run 不写调用者快照", async () => {
       .status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
   await h.settledAtLeast(1);
 
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30 });
-  store.close();
+  const runs = await store.listRuns({ limit: 30 });
+  await store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.triggeredBy, null);
 });
@@ -320,9 +320,9 @@ test("评审记录带 pull request 标题:投递触发的行有标题,升级前�
       .status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   // 升级前落库的一行:那时还没有标题这一列,它因此为空。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "ghost", repo: "gone", pullNumber: 1, startedAt: "2026-08-01T00:00:00.000Z" },
     [],
@@ -366,7 +366,7 @@ test("重跑:PR 号读不到 404,不开跑", async () => {
       .status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   const rerun = await h.api("POST", "/rerun", {
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
@@ -374,13 +374,13 @@ test("重跑:PR 号读不到 404,不开跑", async () => {
   });
   assert.equal(rerun.status, 404);
   const store = openStore(h.db.path);
-  assert.equal(store.listRuns({ limit: 30 }).length, 0);
-  store.close();
+  assert.equal((await store.listRuns({ limit: 30 })).length, 0);
+  await store.close();
 });
 
 test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
   const h = await startReadyPanelHarness();
-  seedAvailableModelService(h, "rerun-provider", ["override-model"]);
+  await seedAvailableModelService(h, "rerun-provider", ["override-model"]);
   assert.equal(
     (
       await h.api("POST", "/repos", {
@@ -393,7 +393,7 @@ test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {
     ).status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   h.runtimePlans.length = 0;
 
   const rerun = await h.api("POST", "/rerun", {
@@ -415,13 +415,13 @@ test("轮次列表与轮次详情都带这一轮的模式,升级前的旧行按�
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
 
   // 投递触发的一轮永远是完整审查:模式只有重跑那两种入参给得出。
   assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
   await h.settledAtLeast(1);
   // 这一列是这一票才加的,升级前落的行读回来同样是完整审查。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [],
@@ -442,7 +442,7 @@ test("轮次列表与轮次详情都带这一轮的模式,升级前的旧行按�
 test("轮次列表的代表段:升级前落的行按规则从归属现算(issue #278)", async () => {
   const h = await startPanelHarness();
   // 同一处的两条归属:一条说得长、一条说得短,代表段该取长的那条。
-  const runId = seedRun(
+  const runId = await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [

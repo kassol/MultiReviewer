@@ -46,17 +46,17 @@ const AT_LINE_2 = {
 };
 
 /** 这一轮落库的全部轨迹事件。 */
-function trace(dbPath: string): {
+async function trace(dbPath: string): Promise<{
   seq: number;
   scope: string;
   reviewer?: string;
   kind: string;
   payload: Record<string, unknown>;
-}[] {
+}[]> {
   const store = openStore(dbPath);
   try {
-    const runId = store.listRuns({ limit: 1 })[0]!.id;
-    return store.listTrace(runId).map((event) => ({
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    return (await store.listTrace(runId)).map((event) => ({
       seq: event.seq,
       scope: event.scope,
       ...(event.reviewer === undefined ? {} : { reviewer: event.reviewer }),
@@ -64,7 +64,7 @@ function trace(dbPath: string): {
       payload: event.payload as Record<string, unknown>,
     }));
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -98,7 +98,7 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
     dbPath: db.path,
   });
 
-  const reviewerEvents = trace(db.path).filter((e) => e.scope === "reviewer");
+  const reviewerEvents = (await trace(db.path)).filter((e) => e.scope === "reviewer");
   assert.deepEqual(
     reviewerEvents.map((e) => e.kind),
     // 倒数第二条是这一批的收尾(issue #408),末一条才是整个模型的收尾。
@@ -131,8 +131,8 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
 
   // 序号在一轮之内自增且不重复,断线续传按它续。
   assert.deepEqual(
-    trace(db.path).map((e) => e.seq),
-    trace(db.path).map((_, index) => index + 1),
+    (await trace(db.path)).map((e) => e.seq),
+    (await trace(db.path)).map((_, index) => index + 1),
   );
 });
 
@@ -146,7 +146,7 @@ test("轮次级编排事件按顺序落库:工作副本、批次起止、评论�
     dbPath: db.path,
   });
 
-  const runEvents = trace(db.path).filter((e) => e.scope === "run");
+  const runEvents = (await trace(db.path)).filter((e) => e.scope === "run");
   assert.deepEqual(
     runEvents.map((e) => e.kind),
     ["worktree_ready", "batch_started", "batch_finished", "review_posted", "run_finished"],
@@ -175,7 +175,7 @@ test("锚不进 diff hunk 的 Finding 被丢弃,轨迹留下一条被拒记录",
     dbPath: db.path,
   });
 
-  const discarded = trace(db.path).filter((e) => e.kind === "finding_discarded");
+  const discarded = (await trace(db.path)).filter((e) => e.kind === "finding_discarded");
   assert.equal(discarded.length, 1);
   assert.equal(discarded[0]!.scope, "run", "丢弃是编排层的事,挂在轮次上");
   assert.deepEqual(discarded[0]!.payload, {
@@ -207,7 +207,7 @@ test("两个模型报同一行:一条合并事件,成员齐全,判据是同一�
     dbPath: db.path,
   });
 
-  const merges = trace(db.path).filter((e) => e.kind === "finding_merged");
+  const merges = (await trace(db.path)).filter((e) => e.kind === "finding_merged");
   assert.equal(merges.length, 1);
   assert.equal(merges[0]!.scope, "run", "合并是编排层的事,挂在轮次上");
   assert.deepEqual(merges[0]!.payload, {
@@ -235,7 +235,7 @@ test("行号相近而内容相似的两条:合并事件的判据带行距与相�
     dbPath: db.path,
   });
 
-  const merges = trace(db.path).filter((e) => e.kind === "finding_merged");
+  const merges = (await trace(db.path)).filter((e) => e.kind === "finding_merged");
   assert.equal(merges.length, 1);
   const criteria = merges[0]!.payload["criteria"] as Record<string, unknown>;
   assert.equal(criteria["kind"], "distance");
@@ -264,7 +264,7 @@ test("相邻但讲的不是一回事:两条各自成组,一条合并事件都不
 
   assert.equal(result.findings.length, 2, "内容不相似的相邻两条不该合并");
   assert.deepEqual(
-    trace(db.path).filter((e) => e.kind === "finding_merged"),
+    (await trace(db.path)).filter((e) => e.kind === "finding_merged"),
     [],
     "没有合并就不该有合并事件",
   );
@@ -283,7 +283,7 @@ test("Reviewer 失败:末尾一条失败事件带原因,它之前发出的事件
     dbPath: db.path,
   });
 
-  const failed = trace(db.path).filter((e) => e.reviewer === "model-a");
+  const failed = (await trace(db.path)).filter((e) => e.reviewer === "model-a");
   assert.deepEqual(
     failed.map((e) => e.kind),
     // 中间那条是这一批的收尾(issue #408),失败与正常同一档;轮次级的失败原因仍补在末尾。
@@ -293,7 +293,7 @@ test("Reviewer 失败:末尾一条失败事件带原因,它之前发出的事件
   assert.deepEqual(failed[2]!.payload, { failure: "模型返回 401", exitCode: null });
   // 跑成功的那个走的是另一档,两者不混。
   assert.equal(
-    trace(db.path).findLast((e) => e.reviewer === "model-b")!.kind,
+    (await trace(db.path)).findLast((e) => e.reviewer === "model-b")!.kind,
     "reviewer_finished",
   );
 });
@@ -313,16 +313,16 @@ test("两轮各记各的轨迹,序号各自从 1 起", async () => {
 
   const store = openStore(db.path);
   try {
-    const runs = store.listRuns({ limit: 10 });
+    const runs = await store.listRuns({ limit: 10 });
     assert.equal(runs.length, 2);
     for (const run of runs) {
-      const events = store.listTrace(run.id);
+      const events = await store.listTrace(run.id);
       assert.ok(events.length > 0, "每一轮都要有自己的轨迹");
       assert.equal(events[0]!.seq, 1, "序号在一轮之内自增,跨轮不接着数");
       assert.ok(events.every((event) => event.runId === run.id));
     }
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -338,14 +338,14 @@ test("afterSeq 只回它之后的那些事件", async () => {
 
   const store = openStore(db.path);
   try {
-    const runId = store.listRuns({ limit: 1 })[0]!.id;
-    const all = store.listTrace(runId);
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    const all = await store.listTrace(runId);
     assert.deepEqual(
-      store.listTrace(runId, 3).map((event) => event.seq),
+      (await store.listTrace(runId, 3)).map((event) => event.seq),
       all.slice(3).map((event) => event.seq),
     );
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -385,7 +385,7 @@ test("取证子会话的事件随那次调用一起落库,实时与回看是同�
 
   // 实时广播与历史回看读的是同一批行(`createTraceRecorder` 把落库与广播合成一个动作),
   // 因此库里读回来嵌套一格不少,即两条路径都拿得到它。
-  const calls = trace(db.path).filter((e) => e.kind === "tool_call");
+  const calls = (await trace(db.path)).filter((e) => e.kind === "tool_call");
   assert.equal(calls.length, 1);
   const payload = calls[0]!.payload;
   assert.equal(calls[0]!.reviewer, "model-a", "嵌套事件与它所属的 Reviewer 关联");

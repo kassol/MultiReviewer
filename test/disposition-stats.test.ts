@@ -59,7 +59,7 @@ function finding(
 }
 
 /** 种一轮 Review Run 连同它的 finding。 */
-function seedRun(
+async function seedRun(
   store: Store,
   opts: {
     owner?: string;
@@ -68,8 +68,8 @@ function seedRun(
     startedAt: string;
     findings: FindingRecord[];
   },
-): void {
-  seedRunRow(
+): Promise<void> {
+  await seedRunRow(
     store,
     {
       owner: opts.owner ?? "acme",
@@ -84,7 +84,7 @@ function seedRun(
 
 type Case = {
   name: string;
-  seed: (store: Store) => void;
+  seed: (store: Store) => Promise<void>;
   window?: [string, string];
   expected: DispositionCell[];
   /** 缺省即这一条不验参与条数。 */
@@ -94,10 +94,10 @@ type Case = {
 const CASES: Case[] = [
   {
     name: "同一处 Finding 多轮多行折叠成一条,任一行 resolved 即已处置",
-    seed: (store) => {
-      seedRun(store, { startedAt: T1, findings: [finding({})] });
-      seedRun(store, { startedAt: T2, findings: [finding({ disposition: "unresolved" })] });
-      seedRun(store, { startedAt: T3, findings: [finding({ disposition: "resolved" })] });
+    seed: async (store) => {
+      await seedRun(store, { startedAt: T1, findings: [finding({})] });
+      await seedRun(store, { startedAt: T2, findings: [finding({ disposition: "unresolved" })] });
+      await seedRun(store, { startedAt: T3, findings: [finding({ disposition: "resolved" })] });
     },
     expected: [
       {
@@ -114,14 +114,14 @@ const CASES: Case[] = [
   },
   {
     name: "「已修复」自成一列,同一处上人工处置盖过自动处置",
-    seed: (store) => {
-      seedRun(store, { startedAt: T1, findings: [finding({ disposition: "fixed" })] });
+    seed: async (store) => {
+      await seedRun(store, { startedAt: T1, findings: [finding({ disposition: "fixed" })] });
       // 同一处先被自动处置,人后来又在面板上 resolve:这一条算人工那一列。
-      seedRun(store, {
+      await seedRun(store, {
         startedAt: T1,
         findings: [finding({ fingerprint: "fp-2", disposition: "fixed" })],
       });
-      seedRun(store, {
+      await seedRun(store, {
         startedAt: T2,
         findings: [finding({ fingerprint: "fp-2", disposition: "resolved" })],
       });
@@ -144,9 +144,9 @@ const CASES: Case[] = [
     // 自成一条 Identity,分母因此不加。整条退出而不是只跳过那一行——同一条上更早的
     // 未处置行还在,只过滤那一行会把它原样带回分母。
     name: "已延续不进分子分母,新位置那条独立计一条",
-    seed: (store) => {
-      seedRun(store, { startedAt: T1, findings: [finding({})] });
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, { startedAt: T1, findings: [finding({})] });
+      await seedRun(store, {
         startedAt: T2,
         findings: [
           finding({ disposition: "continued" }),
@@ -169,8 +169,8 @@ const CASES: Case[] = [
   },
   {
     name: "fallback(body)排除在统计外,即便它被标了 resolved",
-    seed: (store) => {
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, {
         startedAt: T1,
         findings: [finding({ placement: "body", disposition: "resolved" })],
       });
@@ -179,8 +179,8 @@ const CASES: Case[] = [
   },
   {
     name: "指纹算不出的行各算一条,不互相折叠",
-    seed: (store) => {
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, {
         startedAt: T1,
         findings: [
           finding({ fingerprint: undefined, line: 3 }),
@@ -203,10 +203,10 @@ const CASES: Case[] = [
   },
   {
     name: "unknown 按 PR 状态分流:已关闭进分母档,开放只作展示",
-    seed: (store) => {
-      seedRun(store, { pr: 7, startedAt: T1, findings: [finding({})] });
-      seedRun(store, { pr: 8, startedAt: T1, findings: [finding({ fingerprint: "fp-8" })] });
-      store.markPullRequestState("acme", "widgets", 7, "closed");
+    seed: async (store) => {
+      await seedRun(store, { pr: 7, startedAt: T1, findings: [finding({})] });
+      await seedRun(store, { pr: 8, startedAt: T1, findings: [finding({ fingerprint: "fp-8" })] });
+      await store.markPullRequestState("acme", "widgets", 7, "closed");
     },
     expected: [
       {
@@ -223,16 +223,16 @@ const CASES: Case[] = [
   },
   {
     name: "已关闭阶段新增 Review Run 继承关闭状态,新 Finding 进入关闭档",
-    seed: (store) => {
-      seedRun(store, { pr: 7, startedAt: T1, findings: [] });
-      store.markPullRequestState("acme", "widgets", 7, "closed");
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, { pr: 7, startedAt: T1, findings: [] });
+      await store.markPullRequestState("acme", "widgets", 7, "closed");
+      await seedRun(store, {
         pr: 7,
         startedAt: T2,
         findings: [finding({ fingerprint: "fp-after-close" })],
       });
       assert.equal(
-        store.listStages({ offset: 0, limit: 30 })[0]?.status,
+        (await store.listStages({ offset: 0, limit: 30 }))[0]?.status,
         "closed",
         "新一轮必须保留阶段的关闭状态",
       );
@@ -252,10 +252,10 @@ const CASES: Case[] = [
   },
   {
     name: "时间窗按同一处 Finding 首次报出那轮归属,再次报出不改归属",
-    seed: (store) => {
+    seed: async (store) => {
       // fp-old 首见于窗外,窗内再次报出也不算进来;fp-new 首见于窗内。
-      seedRun(store, { startedAt: T0, findings: [finding({ fingerprint: "fp-old" })] });
-      seedRun(store, {
+      await seedRun(store, { startedAt: T0, findings: [finding({ fingerprint: "fp-old" })] });
+      await seedRun(store, {
         startedAt: T2,
         findings: [finding({ fingerprint: "fp-old" }), finding({ fingerprint: "fp-new" })],
       });
@@ -279,10 +279,10 @@ const CASES: Case[] = [
     // 同一条。跨 PR 的同指纹仍是两条——一个 pull request 是一个审查阶段,阶段之间
     // 不折叠,但两个阶段都归在同一个仓库那一行上。
     name: "同指纹跨 PR 不折叠,同一 PR 里换个模型报出仍是同一条",
-    seed: (store) => {
-      seedRun(store, { pr: 7, startedAt: T1, findings: [finding({})] });
-      seedRun(store, { pr: 7, startedAt: T2, findings: [finding({ models: ["model-b"] })] });
-      seedRun(store, { pr: 8, startedAt: T1, findings: [finding({})] });
+    seed: async (store) => {
+      await seedRun(store, { pr: 7, startedAt: T1, findings: [finding({})] });
+      await seedRun(store, { pr: 7, startedAt: T2, findings: [finding({ models: ["model-b"] })] });
+      await seedRun(store, { pr: 8, startedAt: T1, findings: [finding({})] });
     },
     expected: [
       {
@@ -305,9 +305,9 @@ const CASES: Case[] = [
   {
     // 主维度是仓库(ADR 0015):同一个 owner 下的两个仓库各成一行,同名分类不合并。
     name: "两个仓库各成一行",
-    seed: (store) => {
-      seedRun(store, { repo: "widgets", startedAt: T1, findings: [finding({})] });
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, { repo: "widgets", startedAt: T1, findings: [finding({})] });
+      await seedRun(store, {
         repo: "gadgets",
         startedAt: T1,
         findings: [finding({ disposition: "resolved" })],
@@ -340,8 +340,8 @@ const CASES: Case[] = [
     // 一条 Finding 由几个模型合报时分母只加一次(否则同一处被重复计入,比率不可解释),
     // 参与条数则每个归属各加一。
     name: "多模型归属的一条 Finding 分母只计一次,参与条数各计一次",
-    seed: (store) => {
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, {
         startedAt: T1,
         findings: [finding({ models: ["model-a", "model-b", "model-c"] })],
       });
@@ -367,9 +367,9 @@ const CASES: Case[] = [
   {
     // 参与条数与分母同一批 Identity:已延续那条整条退出,fallback 与窗外的也不算。
     name: "参与条数不数已延续、fallback 与窗外的那些",
-    seed: (store) => {
-      seedRun(store, { startedAt: T0, findings: [finding({ fingerprint: "fp-old" })] });
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, { startedAt: T0, findings: [finding({ fingerprint: "fp-old" })] });
+      await seedRun(store, {
         startedAt: T2,
         findings: [
           finding({ fingerprint: "fp-continued", disposition: "continued" }),
@@ -401,9 +401,9 @@ const CASES: Case[] = [
   },
   {
     name: "category 跨轮漂移时以首次报出那轮为准",
-    seed: (store) => {
-      seedRun(store, { startedAt: T1, findings: [finding({ category: "bug" })] });
-      seedRun(store, {
+    seed: async (store) => {
+      await seedRun(store, { startedAt: T1, findings: [finding({ category: "bug" })] });
+      await seedRun(store, {
         startedAt: T2,
         findings: [finding({ category: "maintainability", disposition: "resolved" })],
       });
@@ -424,34 +424,34 @@ const CASES: Case[] = [
 ];
 
 for (const c of CASES) {
-  test(`口径:${c.name}`, () => {
+  test(`口径:${c.name}`, async () => {
     const db = makeDbPath();
     const store = openStore(db.path);
     try {
-      c.seed(store);
+      await c.seed(store);
       const [from, to] = c.window ?? WIDE;
-      assert.deepEqual(store.dispositionStats(from, to), c.expected);
+      assert.deepEqual(await store.dispositionStats(from, to), c.expected);
       if (c.participation !== undefined) {
-        assert.deepEqual(store.modelParticipation(from, to), c.participation);
+        assert.deepEqual(await store.modelParticipation(from, to), c.participation);
       }
     } finally {
-      store.close();
+      await store.close();
       db.cleanup();
     }
   });
 }
 
 /** 读两张表里的 model 列。 */
-function models(store: Store): { finding: string[]; outcome: string[] } {
+async function models(store: Store): Promise<{ finding: string[]; outcome: string[] }> {
   return {
-    finding: store.modelParticipation(...WIDE).map((entry) => entry.model),
-    outcome: store.listRuns({ limit: 50 }).flatMap((run) => run.models.map((m) => m.model)),
+    finding: (await store.modelParticipation(...WIDE)).map((entry) => entry.model),
+    outcome: (await store.listRuns({ limit: 50 })).flatMap((run) => run.models.map((m) => m.model)),
   };
 }
 
 /** 种一轮带 outcome 的 Run,model 列直接写成传进来的值。 */
-function seedWithModel(store: Store, model: string, at: string): void {
-  const runId = store.startRun({
+async function seedWithModel(store: Store, model: string, at: string): Promise<void> {
+  const runId = await store.startRun({
     owner: "acme",
     repo: "widgets",
     pullNumber: 7,
@@ -462,7 +462,7 @@ function seedWithModel(store: Store, model: string, at: string): void {
     batchCount: 1,
     reviewerPins: [],
   });
-  store.finishRun(runId, {
+  await store.finishRun(runId, {
     finishedAt: at,
     durationMs: 1,
     failed: false,
@@ -480,24 +480,24 @@ function seedWithModel(store: Store, model: string, at: string): void {
   });
 }
 
-test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一条", () => {
+test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一条", async () => {
   const db = makeDbPath();
   try {
     // 升级前的一轮写裸 id,升级后的一轮写模型标识。provider 从库里恢复不出来,
     // 按当前模型组合反查会把历史错归到别家去,所以一律不回填(issue #73 的取舍)。
     const seed = openStore(db.path);
-    seedWithModel(seed, "old-model", T1);
-    seedWithModel(seed, "acme:old-model", T2);
-    seed.close();
+    await seedWithModel(seed, "old-model", T1);
+    await seedWithModel(seed, "acme:old-model", T2);
+    await seed.close();
 
     const reopened = openStore(db.path);
-    assert.deepEqual(models(reopened), {
+    assert.deepEqual(await models(reopened), {
       finding: ["acme:old-model", "old-model"],
       outcome: ["acme:old-model", "old-model"],
     });
     // 主维度是仓库,两条落在同一格里;它们没有互相折叠这件事由分母的 2 说了算。
-    assert.equal(reopened.dispositionStats(...WIDE)[0]?.unknownOpen, 2, "两条各自独立");
-    reopened.close();
+    assert.equal((await reopened.dispositionStats(...WIDE))[0]?.unknownOpen, 2, "两条各自独立");
+    await reopened.close();
   } finally {
     db.cleanup();
   }

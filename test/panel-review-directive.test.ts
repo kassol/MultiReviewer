@@ -29,20 +29,20 @@ async function registeredHarness(
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return harness;
 }
 
 /** 库里每一轮的本轮指令,按开跑先后。 */
-function directives(h: PanelHarness, rangeReviewId?: number): (string | null)[] {
+async function directives(h: PanelHarness, rangeReviewId?: number): Promise<(string | null)[]> {
   const store = openStore(h.db.path);
   try {
-    return store
-      .listRuns({ limit: 30, ...(rangeReviewId === undefined ? {} : { rangeReviewId }) })
+    return (await store
+      .listRuns({ limit: 30, ...(rangeReviewId === undefined ? {} : { rangeReviewId }) }))
       .map((run) => run.directive)
       .reverse();
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -59,8 +59,8 @@ function launchBody(h: PanelHarness): Record<string, unknown> {
   };
 }
 
-function startRangeReview(h: PanelHarness, directive?: string): Promise<RangeReview> {
-  return startRangeReviewRow<RangeReview>(h, {
+async function startRangeReview(h: PanelHarness, directive?: string): Promise<RangeReview> {
+  return await startRangeReviewRow<RangeReview>(h, {
     ...launchBody(h),
     ...(directive === undefined ? {} : { directive }),
   });
@@ -101,7 +101,7 @@ test("PR 重跑附本轮指令:随这一轮存库,轮次详情读得到,下一�
   await h.settledAtLeast(3);
 
   // 投递触发的第一轮没有指令,附了指令的第二轮有,第三轮又没有。
-  assert.deepEqual(directives(h), [null, DIRECTIVE, null]);
+  assert.deepEqual(await directives(h), [null, DIRECTIVE, null]);
 
   // 轮次详情看得到:发起人要能回答「那一轮是按什么要求跑的」。时间流是倒序的。
   const runs = (await (await h.api("GET", "/runs")).json()) as {
@@ -141,7 +141,7 @@ test("范围审查重跑与增量评审都能附本轮指令,各自只作用于�
   );
   await h.settledAtLeast(3);
 
-  assert.deepEqual(directives(h, rangeReview.id), [null, DIRECTIVE, "推进这一轮补看回归"]);
+  assert.deepEqual(await directives(h, rangeReview.id), [null, DIRECTIVE, "推进这一轮补看回归"]);
 });
 
 test("空白指令与不给指令同一档,超长与非字符串一律 400", async () => {
@@ -166,7 +166,7 @@ test("空白指令与不给指令同一档,超长与非字符串一律 400", asy
 
   assert.equal((await h.api("POST", "/rerun", { ...target, directive: "  \n " })).status, 202);
   await h.settledAtLeast(2);
-  assert.deepEqual(directives(h), [null, null]);
+  assert.deepEqual(await directives(h), [null, null]);
 });
 
 test("发起范围审查附本轮指令:随发起触发的首轮记下它,下一轮不带", async () => {
@@ -180,7 +180,7 @@ test("发起范围审查附本轮指令:随发起触发的首轮记下它,下一
   );
   await h.settledAtLeast(2);
 
-  assert.deepEqual(directives(h, rangeReview.id), [DIRECTIVE, null]);
+  assert.deepEqual(await directives(h, rangeReview.id), [DIRECTIVE, null]);
 });
 
 test("发起范围审查的指令超长或非字符串一律 400,一轮都不开跑", async () => {
@@ -206,7 +206,7 @@ test("发起范围审查的指令超长或非字符串一律 400,一轮都不开
     202,
   );
   await h.settledAtLeast(1);
-  assert.deepEqual(directives(h), [null]);
+  assert.deepEqual(await directives(h), [null]);
 });
 
 test("没有 review:rerun 的用户发不出带指令的重审", async () => {
@@ -215,12 +215,12 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
   await h.settledAtLeast(1);
 
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: "只读角色",
     permissions: ["review:create"],
     createdAt: "2026-08-31T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username: "directive-denied",
     displayName: null,
     passwordHash: HASH,
@@ -229,8 +229,8 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.setPanelUserAssignment("directive-denied", [GITEA_REPO.id]);
-  store.close();
+  await store.setPanelUserAssignment("directive-denied", [GITEA_REPO.id]);
+  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -253,7 +253,7 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
   // 指令不新增权限格,它随重审那一格走(issue #225)。
   assert.equal(denied.status, 403);
   assert.equal(h.settled.length, 1);
-  assert.deepEqual(directives(h), [null]);
+  assert.deepEqual(await directives(h), [null]);
 });
 
 /** 报一条 Finding 的 Reviewer:只复核那一轮要有未处置历史才开得起来。 */
@@ -267,15 +267,15 @@ const reportingReviewers: NonNullable<
   );
 
 /** 库里每一轮的模式与指令,按开跑先后。 */
-function roundsOf(h: PanelHarness): { mode: string; directive: string | null }[] {
+async function roundsOf(h: PanelHarness): Promise<{ mode: string; directive: string | null }[]> {
   const store = openStore(h.db.path);
   try {
-    return store
-      .listRuns({ limit: 30 })
+    return (await store
+      .listRuns({ limit: 30 }))
       .map((run) => ({ mode: run.mode, directive: run.directive }))
       .reverse();
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -297,7 +297,7 @@ test("PR 重跑默认只复核,与本轮指令同时附上时各自落库,`full`
   assert.equal((await h.api("POST", "/rerun", { ...target, mode: "verdict" })).status, 400);
   assert.equal(h.settled.length, 3);
 
-  assert.deepEqual(roundsOf(h), [
+  assert.deepEqual(await roundsOf(h), [
     { mode: "full", directive: null },
     { mode: "verdict-only", directive: DIRECTIVE },
     { mode: "full", directive: null },
@@ -310,12 +310,12 @@ test("只复核不新增权限格:没有 review:rerun 的用户照样被拒", as
   await h.settledAtLeast(1);
 
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: "只读角色",
     permissions: ["review:create"],
     createdAt: "2026-09-04T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username: "mode-denied",
     displayName: null,
     passwordHash: HASH,
@@ -324,8 +324,8 @@ test("只复核不新增权限格:没有 review:rerun 的用户照样被拒", as
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.setPanelUserAssignment("mode-denied", [GITEA_REPO.id]);
-  store.close();
+  await store.setPanelUserAssignment("mode-denied", [GITEA_REPO.id]);
+  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -383,12 +383,12 @@ test("PR 重跑:未处置历史全落在回退文件上时先自动处置再 409
   assert.deepEqual(h.memory.resolvedIds, [carried.id]);
 
   const store = openStore(h.db.path);
-  const history = store.stageHistory({
+  const history = await store.stageHistory({
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
   });
-  store.close();
+  await store.close();
   assert.deepEqual(
     history.map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null })),
     [{ file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" }],

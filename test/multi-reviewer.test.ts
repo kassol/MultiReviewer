@@ -84,13 +84,13 @@ test("同一轮两个模型报同一处:一条评论、一份代表段加归属�
   // 库里是一条 Finding 加两条归属,各带自己的严重度、分类与表述。
   const store = openStore(db.path);
   try {
-    const findings = store.listRuns({ limit: 1 })[0]!.findings;
+    const findings = (await store.listRuns({ limit: 1 }))[0]!.findings;
     assert.equal(findings.length, 1);
     assert.deepEqual(findings[0]!.models, ["model-a", "model-b"]);
     assert.equal(findings[0]!.severity, "P0");
     assert.equal(findings[0]!.category, "design");
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -411,11 +411,11 @@ test("撞名的 provider 留下失败记录,其余 Reviewer 照常跑完,整轮�
 
   const store = openStore(db.path);
   try {
-    const models = store.listRuns({ limit: 1 })[0]!.models;
+    const models = (await store.listRuns({ limit: 1 }))[0]!.models;
     const failed = models.find((row) => row.model === "corp-gateway:corp-qwen3-max");
     assert.match(failed?.failure ?? "", /名字/, "失败记录没写明是名字冲突");
     assert.equal(models.find((row) => row.model === "model-a")?.failure, null);
   } finally {
-    store.close();
+    await store.close();
   }
 });

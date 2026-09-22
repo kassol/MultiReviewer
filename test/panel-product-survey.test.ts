@@ -40,7 +40,7 @@ type Product = { id: number; name: string; repos: { repoId: number }[] };
 
 /** 建一个产品,按 `repoIds` 归入仓库。`ALPHA` 只落注册表,不建 hook。 */
 async function product(h: PanelHarness, repoIds: readonly number[]): Promise<Product> {
-  seedRepo(h, ALPHA, "acme", "alpha");
+  await seedRepo(h, ALPHA, "acme", "alpha");
   const created = await h.api("POST", "/products", { name: "报销系统" });
   assert.equal(created.status, 201);
   const { product: row } = (await created.json()) as { product: Product };
@@ -50,9 +50,9 @@ async function product(h: PanelHarness, repoIds: readonly number[]): Promise<Pro
   return row;
 }
 
-function survey(h: PanelHarness, productId: number, cookie?: string): Promise<Response> {
+async function survey(h: PanelHarness, productId: number, cookie?: string): Promise<Response> {
   return cookie === undefined
-    ? h.api("POST", `/products/${productId}/survey`)
+    ? await h.api("POST", `/products/${productId}/survey`)
     : fetch(`${h.serverUrl}/api/products/${productId}/survey`, {
         method: "POST",
         headers: { cookie },
@@ -60,31 +60,31 @@ function survey(h: PanelHarness, productId: number, cookie?: string): Promise<Re
 }
 
 /** 直接落一行产品梳理会话,创建者是给的那个人。不经接口建:这几例只要它在库里。 */
-function seedSurveySession(
+async function seedSurveySession(
   h: PanelHarness,
   productId: number,
   createdBy: string,
-): AgentSessionRecord {
+): Promise<AgentSessionRecord> {
   const store = openStore(h.db.path);
   try {
-    return store.createAgentSession({
+    return await store.createAgentSession({
       productId,
       createdBy,
       purpose: "product-survey",
       createdAt: AT,
     });
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
 /** 把这一场梳理记成谈完了,与完成工具落的是同一格。 */
-function completeSession(h: PanelHarness, sessionId: number): void {
+async function completeSession(h: PanelHarness, sessionId: number): Promise<void> {
   const store = openStore(h.db.path);
   try {
-    store.completeAgentSession(sessionId, AT);
+    await store.completeAgentSession(sessionId, AT);
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -141,7 +141,7 @@ test("开梳理:创建者是点下它的那个人;那一场没谈完时第二次
     assert.equal((await sessionsOf(h, two.id, h.cookie)).length, 1);
 
     // 谈完之后再开一场:新会话,上一场留着可读可续。
-    completeSession(h, session.id);
+    await completeSession(h, session.id);
     const next = await survey(h, two.id);
     const nextText = await next.text();
     assert.equal(next.status, 201, nextText);
@@ -164,7 +164,7 @@ test("开梳理要 knowledge:write 加这个产品里的一个仓库分配", asy
   assert.deepEqual(await refused.json(), { error: "没有这一格权限" });
 
   // 有这一格权限、对这个产品里一个仓库都没分配:与产品不存在同形回 404。
-  const stranger = seedRepo(h, 303, "acme", "gamma");
+  const stranger = await seedRepo(h, 303, "acme", "gamma");
   const outsider = await scopedUser(h, "outsider", PASSWORD, AT, [stranger], ["knowledge:write"]);
   const hidden = await survey(h, two.id, outsider);
   assert.equal(hidden.status, 404);
@@ -178,7 +178,7 @@ test("梳理会话:产品可见者都读得到,只有创建者发得了消息", 
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [ALPHA], ["agent:chat"]);
-  const session = seedSurveySession(h, two.id, "owner");
+  const session = await seedSurveySession(h, two.id, "owner");
 
   // 看得到产品、不是创建者的人:这一条在他的会话列表里,也读得开。
   const member = await scopedUser(h, "member", PASSWORD, AT, [ALPHA], ["agent:chat"]);
@@ -220,7 +220,7 @@ test("梳理会话:产品可见者都读得到,只有创建者发得了消息", 
   }
 
   // 一个仓库都没分到的人看不到这个产品,也就问不到它的会话。
-  const stranger = seedRepo(h, 404, "acme", "delta");
+  const stranger = await seedRepo(h, 404, "acme", "delta");
   const nobody = await scopedUser(h, "nobody", PASSWORD, AT, [stranger], ["agent:chat"]);
   const hidden = await fetch(`${h.serverUrl}/api/agent-sessions/${session.id}`, {
     headers: { cookie: nobody },
@@ -278,9 +278,9 @@ test("升级前的梳理会话:开库补列即记成谈完了,下一场开得起
   // 下一次开库把列补回来并回填:这一场从此算谈完了。
   const store = openStore(h.db.path);
   try {
-    assert.equal(store.getAgentSession(OLD_ID)?.completedAt, AT);
+    assert.equal((await store.getAgentSession(OLD_ID))?.completedAt, AT);
   } finally {
-    store.close();
+    await store.close();
   }
 
   try {
@@ -311,8 +311,8 @@ test("升级前的梳理会话:开库补列即记成谈完了,下一场开得起
 
 test("归入、移出与下线仓库都不开梳理:那一场由人在产品页上开", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const beta = seedRepo(h, 202, "acme", "beta");
-  seedRepo(h, ALPHA, "acme", "alpha");
+  const beta = await seedRepo(h, 202, "acme", "beta");
+  await seedRepo(h, ALPHA, "acme", "alpha");
   const created = await h.api("POST", "/products", { name: "报销系统" });
   assert.equal(created.status, 201);
   const { product: row } = (await created.json()) as { product: Product };
@@ -419,7 +419,7 @@ test("开梳理选基点:外仓库、解析不出的 sha 与形状不对都回�
   const h = await startReadyPanelHarness({ registerRepo: true });
   const two = await product(h, [GITEA_REPO.id, ALPHA]);
   // 注册了但没归进这个产品的仓库:它的 commit 不该被这一场梳理读到。
-  seedRepo(h, 303, "acme", "gamma");
+  await seedRepo(h, 303, "acme", "gamma");
 
   const rejected = async (baselines: unknown, error: string): Promise<void> => {
     const response = await h.api("POST", `/products/${two.id}/survey`, { baselines });

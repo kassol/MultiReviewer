@@ -52,14 +52,14 @@ async function assignedRepoIds(h: PanelHarness, username: string): Promise<numbe
   return user.repoIds;
 }
 
-function userCookie(h: PanelHarness, username: string): Promise<string> {
-  return userCookieRow(h.serverUrl, username, PASSWORD);
+async function userCookie(h: PanelHarness, username: string): Promise<string> {
+  return await userCookieRow(h.serverUrl, username, PASSWORD);
 }
 
 test("创建用户带 repoIds 后列表回显同一集合", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  const beta = seedRepo(h, 102, "acme", "beta");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  const beta = await seedRepo(h, 102, "acme", "beta");
 
   await createUser(h, "reviewer", [beta, alpha]);
 
@@ -71,8 +71,8 @@ test("创建用户带 repoIds 后列表回显同一集合", async () => {
 
 test("更新用户不带 repoIds 时集合不变,带空数组时清空", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  const beta = seedRepo(h, 102, "acme", "beta");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  const beta = await seedRepo(h, 102, "acme", "beta");
   await createUser(h, "reviewer", [alpha, beta]);
   const update = (body: Record<string, unknown>): Promise<Response> =>
     h.api("PUT", "/users/reviewer", { displayName: null, roleId: null, isSystemAdmin: false, ...body });
@@ -110,8 +110,8 @@ test("repoIds 形状不对时创建与更新都回 400", async () => {
 
 test("会话带上仓库分配:普通用户是自己的集合,系统管理员是 null", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  seedRepo(h, 102, "acme", "beta");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  await seedRepo(h, 102, "acme", "beta");
   await createUser(h, "reviewer", [alpha]);
 
   const cookie = await userCookie(h, "reviewer");
@@ -126,7 +126,7 @@ test("会话带上仓库分配:普通用户是自己的集合,系统管理员是
 
 test("删除用户与移除仓库都不留分配行", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   await createUser(h, "reviewer", [alpha, GITEA_REPO.id]);
 
@@ -143,7 +143,7 @@ test("删除用户与移除仓库都不留分配行", async () => {
 });
 
 /** 播种一轮跑完的 Review Run,附一条已处置的 Finding:处置率矩阵要有格子可数。 */
-function seedRun(
+async function seedRun(
   h: PanelHarness,
   meta: {
     owner: string;
@@ -155,10 +155,10 @@ function seedRun(
     /** 这一轮的 token 用量。省略即这一轮没落用量,不进 `usage`。 */
     tokens?: number;
   },
-): number {
+): Promise<number> {
   const model = meta.model ?? "model-a";
   const store = openStore(h.db.path);
-  const runId = seedRunRow(
+  const runId = await seedRunRow(
     store,
     {
       owner: meta.owner,
@@ -209,15 +209,15 @@ function seedRun(
       },
     ],
   );
-  store.close();
+  await store.close();
   return runId;
 }
 
 /** 播种一个范围审查:推进、审查完成与重跑三个动作的目标。容器 PR 不建,不碰 Forge。 */
-function seedRangeReview(h: PanelHarness, repoId: number, owner: string, repo: string): number {
+async function seedRangeReview(h: PanelHarness, repoId: number, owner: string, repo: string): Promise<number> {
   const store = openStore(h.db.path);
   try {
-    const id = store.createRangeReview({
+    const id = await store.createRangeReview({
       repoId,
       owner,
       repo,
@@ -229,7 +229,7 @@ function seedRangeReview(h: PanelHarness, repoId: number, owner: string, repo: s
     });
     return id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -242,12 +242,12 @@ async function scopedUser(
 ): Promise<string> {
   const store = openStore(h.db.path);
   try {
-    const role = store.createPanelRole({
+    const role = await store.createPanelRole({
       name: `role-${username}`,
       permissions,
       createdAt: "2026-08-20T00:00:00.000Z",
     });
-    store.createPanelUser({
+    await store.createPanelUser({
       username,
       displayName: null,
       passwordHash: await hashTestPassword(PASSWORD),
@@ -256,9 +256,9 @@ async function scopedUser(
       isSystemAdmin: false,
       roleId: role.id,
     });
-    store.setPanelUserAssignment(username, repoIds);
+    await store.setPanelUserAssignment(username, repoIds);
   } finally {
-    store.close();
+    await store.close();
   }
   return userCookie(h, username);
 }
@@ -299,10 +299,10 @@ async function twoRepoHarness(): Promise<{
   cookie: string;
 }> {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  const beta = seedRepo(h, 102, "acme", "beta");
-  seedRun(h, { owner: "acme", repo: "alpha", pullNumber: 1, startedAt: "2026-08-10T00:00:00.000Z" });
-  seedRun(h, { owner: "acme", repo: "beta", pullNumber: 2, startedAt: "2026-08-11T00:00:00.000Z" });
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  const beta = await seedRepo(h, 102, "acme", "beta");
+  await seedRun(h, { owner: "acme", repo: "alpha", pullNumber: 1, startedAt: "2026-08-10T00:00:00.000Z" });
+  await seedRun(h, { owner: "acme", repo: "beta", pullNumber: 2, startedAt: "2026-08-11T00:00:00.000Z" });
   const cookie = await scopedUser(h, "reviewer", [alpha], ALL_PERMISSIONS);
   return { h, alpha, beta, cookie };
 }
@@ -328,9 +328,9 @@ test("普通用户的仓库、阶段与处置率只含分配到的仓库", async
 
 test("模型参与条数与 token 用量与处置率矩阵同一口径,都只算分配到的仓库", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  seedRepo(h, 102, "acme", "beta");
-  seedRun(h, {
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  await seedRepo(h, 102, "acme", "beta");
+  await seedRun(h, {
     owner: "acme",
     repo: "alpha",
     pullNumber: 1,
@@ -338,7 +338,7 @@ test("模型参与条数与 token 用量与处置率矩阵同一口径,都只算
     model: "model-alpha",
     tokens: 100,
   });
-  seedRun(h, {
+  await seedRun(h, {
     owner: "acme",
     repo: "beta",
     pullNumber: 2,
@@ -371,13 +371,13 @@ test("模型参与条数与 token 用量与处置率矩阵同一口径,都只算
 
 test("时间流的收窄在 SQL 里做:分配外的一整页不会把自己那一行挤掉", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  seedRepo(h, 102, "acme", "beta");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  await seedRepo(h, 102, "acme", "beta");
   // 自己的那一轮最旧,分配外的仓库在它上面压满一整页(时间流一页 30 行)。收窄要是回到
   // JS 再做,这一页会滤成空的,而 nextBefore 照样按满页给出去。
-  seedRun(h, { owner: "acme", repo: "alpha", pullNumber: 1, startedAt: "2026-08-10T00:00:00.000Z" });
+  await seedRun(h, { owner: "acme", repo: "alpha", pullNumber: 1, startedAt: "2026-08-10T00:00:00.000Z" });
   for (let index = 1; index <= 31; index += 1) {
-    seedRun(h, {
+    await seedRun(h, {
       owner: "acme",
       repo: "beta",
       pullNumber: index,
@@ -440,9 +440,9 @@ test("系统管理员不受分配限制,三份列表都看得到两个仓库", a
 test("直达分配外的阶段页、汇总、轨迹与 diff 一律 404", async () => {
   const { h, cookie } = await twoRepoHarness();
   const store = openStore(h.db.path);
-  const mine = store.listRuns({ limit: 30, owner: "acme", repo: "alpha" })[0]!.id;
-  const theirs = store.listRuns({ limit: 30, owner: "acme", repo: "beta" })[0]!.id;
-  store.close();
+  const mine = (await store.listRuns({ limit: 30, owner: "acme", repo: "alpha" }))[0]!.id;
+  const theirs = (await store.listRuns({ limit: 30, owner: "acme", repo: "beta" }))[0]!.id;
+  await store.close();
 
   const stage = (name: string): string => `/stages/${encodeURIComponent(`pr:acme/${name}`)}`;
   const summary = (name: string): string =>
@@ -474,8 +474,8 @@ test("分配外的处置、重跑、发起、推进、完成、配置与移除�
       .get("beta")!["id"],
   );
   sqlite.close();
-  const theirRange = seedRangeReview(h, beta, "acme", "beta");
-  const mineRange = seedRangeReview(h, alpha, "acme", "alpha");
+  const theirRange = await seedRangeReview(h, beta, "acme", "beta");
+  const mineRange = await seedRangeReview(h, alpha, "acme", "alpha");
 
   const cases: [string, string, unknown?][] = [
     ["POST", `/findings/${finding}/resolve`, {}],
@@ -555,11 +555,11 @@ test("webhook 投递不经过仓库分配", async () => {
     (await post(h, cookie, "POST", "/repos", { owner: PR.owner, repo: PR.repo })).status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   // 谁都没分到这个仓库也照样投递:webhook 路径不经过过滤层。
   const store = openStore(h.db.path);
-  store.setPanelUserAssignment("maintainer", []);
-  store.close();
+  await store.setPanelUserAssignment("maintainer", []);
+  await store.close();
 
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);

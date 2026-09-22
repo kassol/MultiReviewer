@@ -98,21 +98,21 @@ function runRows(dbPath: string): { failed: number; failure: unknown; finishedAt
   );
 }
 
-function traceKinds(dbPath: string, runId: number): TraceEvent[] {
+async function traceKinds(dbPath: string, runId: number): Promise<TraceEvent[]> {
   const store = openStore(dbPath);
   try {
-    return store.listTrace(runId).filter((event) => event.scope === "run");
+    return (await store.listTrace(runId)).filter((event) => event.scope === "run");
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
-function interruptedRunIds(dbPath: string): number[] {
+async function interruptedRunIds(dbPath: string): Promise<number[]> {
   const store = openStore(dbPath);
   try {
-    return store.interruptedRuns().map((run) => run.runId);
+    return (await store.interruptedRuns()).map((run) => run.runId);
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -133,7 +133,7 @@ async function firstRound(): Promise<ReturnType<typeof setup>> {
 }
 
 /** 发布失败的三档共用的断言:不 resolve、不记延续,轮次记原因而不算 Reviewer 失败。 */
-function assertPublishFailed(fixture: ReturnType<typeof setup>, reason: RegExp): void {
+async function assertPublishFailed(fixture: ReturnType<typeof setup>, reason: RegExp): Promise<void> {
   const { db, forge } = fixture;
   assert.deepEqual(forge.resolvedIds, [], "发布没成却把旧评论 resolve 了");
   // 旧行留在未处置,本轮那条照常落库,谁都没记延续。
@@ -148,11 +148,11 @@ function assertPublishFailed(fixture: ReturnType<typeof setup>, reason: RegExp):
   assert.match(String(second.failure), reason);
   assert.match(String(second.failure), /发布 review 失败/);
   // 轨迹里只有失败,没有「已发布」与正常收尾;PR 上也不点 👍。
-  const kinds = traceKinds(db.path, 2).map((event) => event.kind);
+  const kinds = (await traceKinds(db.path, 2)).map((event) => event.kind);
   assert.ok(kinds.includes("run_failed"), `轨迹缺 run_failed:${kinds.join(",")}`);
   assert.ok(!kinds.includes("review_posted"), "发布失败却记了 review_posted");
   assert.ok(!kinds.includes("run_finished"), "发布失败却记了正常收尾");
-  const failedEvent = traceKinds(db.path, 2).find((event) => event.kind === "run_failed");
+  const failedEvent = (await traceKinds(db.path, 2)).find((event) => event.kind === "run_failed");
   assert.equal(
     (failedEvent?.payload as { reason?: string }).reason,
     String(second.failure),
@@ -161,7 +161,7 @@ function assertPublishFailed(fixture: ReturnType<typeof setup>, reason: RegExp):
   assert.ok(!forge.reactionLog.includes("add:+1"), "发布失败却点了 👍");
   assert.ok(forge.reactionLog.includes("remove:eyes"), "👀 该撤掉");
   // 轮次已有结束时间,启动续跑不会再选中它:这一轮不自动重发。
-  assert.deepEqual(interruptedRunIds(db.path), []);
+  assert.deepEqual(await interruptedRunIds(db.path), []);
 }
 
 test("发布明确失败:不 resolve 旧评论、不记延续,轮次记发布失败原因", async () => {
@@ -173,7 +173,7 @@ test("发布明确失败:不 resolve 旧评论、不记延续,轮次记发布失
 
   await runReview(EVENT, { ...deps, reviewers: continuing() });
 
-  assertPublishFailed(fixture, /422 行号越界/);
+  await assertPublishFailed(fixture, /422 行号越界/);
   assert.equal(forge.createdReviews.length, 1, "review 未创建,记录里只该有第一轮那条");
 });
 
@@ -189,7 +189,7 @@ test("review 已创建但读回评论失败:按发布失败处理,review id 随�
 
   await runReview(EVENT, { ...deps, reviewers: continuing() });
 
-  assertPublishFailed(fixture, /99/);
+  await assertPublishFailed(fixture, /99/);
   assert.equal(forge.createdReviews.length, 2, "这一轮发过一次;读回失败不该再发一次");
 });
 
@@ -202,7 +202,7 @@ test("无法判定 review 是否已创建:按发布失败处理,原因说明不�
 
   await runReview(EVENT, { ...deps, reviewers: continuing() });
 
-  assertPublishFailed(fixture, /无法判定/);
+  await assertPublishFailed(fixture, /无法判定/);
   assert.equal(forge.createdReviews.length, 1);
 });
 
@@ -228,10 +228,10 @@ test("发布成功而 resolve 旧评论失败:仍记延续并标「交接未完�
   // 本轮是正常收尾:发布成了,resolve 没成只是交接的收尾动作没做完。
   const [, run] = runRows(db.path);
   assert.equal(run!.failure, null);
-  const kinds = traceKinds(db.path, 2).map((event) => event.kind);
+  const kinds = (await traceKinds(db.path, 2)).map((event) => event.kind);
   assert.ok(kinds.includes("review_posted"));
   assert.ok(kinds.includes("run_finished"));
-  const continued = traceKinds(db.path, 2).find((event) => event.kind === "finding_continued");
+  const continued = (await traceKinds(db.path, 2)).find((event) => event.kind === "finding_continued");
   assert.equal(
     (continued?.payload as { handoff?: string }).handoff,
     "pending",
@@ -241,9 +241,9 @@ test("发布成功而 resolve 旧评论失败:仍记延续并标「交接未完�
   // 面板:旧行不在阶段汇总里,承接它的那条标「交接未完成」;轮次投影上旧行自己带着
   // 标记,新行没有。
   const store = openStore(db.path);
-  const summary = store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
-  const [firstRun, secondRun] = store.listRuns({ limit: 2 }).sort((a, b) => a.id - b.id);
-  store.close();
+  const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
+  const [firstRun, secondRun] = (await store.listRuns({ limit: 2 })).sort((a, b) => a.id - b.id);
+  await store.close();
   assert.equal(summary.findings.length, 1);
   assert.equal(summary.findings[0]!.handoffPending, true);
   assert.equal(summary.findings[0]!.continuedFrom, old.htmlUrl);
@@ -274,8 +274,8 @@ test("交接未完成的旧评论由下一轮 Review Run 收尾时重试 resolve
   assert.equal(rows[0]!.disposition, "continued");
   assert.equal(rows[0]!.handoffPending, null, "交接完成后标记该清掉");
   const store = openStore(db.path);
-  const summary = store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
-  store.close();
+  const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
+  await store.close();
   assert.equal(summary.findings[0]!.handoffPending, false);
 });
 
@@ -345,6 +345,6 @@ test("正常发布:新评论确认后才 resolve 旧评论,延续不带待办标
     { disposition: "continued", continuedFrom: null, handoffPending: null },
     { disposition: "unknown", continuedFrom: old.htmlUrl, handoffPending: null },
   ]);
-  const continued = traceKinds(db.path, 2).find((event) => event.kind === "finding_continued");
+  const continued = (await traceKinds(db.path, 2)).find((event) => event.kind === "finding_continued");
   assert.equal((continued?.payload as { handoff?: string }).handoff, "complete");
 });

@@ -189,18 +189,18 @@ function expectedRouteKey(route: (typeof ROUTE_EXPECTATIONS)[number]): string {
   return `${route[0]} ${route[1]} ${route[2]} ${route[3]}`;
 }
 
-function addPermissionUser(
+async function addPermissionUser(
   h: PanelHarness,
   username: string,
   permissions: readonly PanelPermission[],
-): void {
+): Promise<void> {
   const store = openStore(h.db.path);
-  const role = store.createPanelRole({
+  const role = await store.createPanelRole({
     name: `role-${username}`,
     permissions,
     createdAt: "2026-08-20T00:00:00.000Z",
   });
-  store.createPanelUser({
+  await store.createPanelUser({
     username,
     displayName: null,
     passwordHash: HASH,
@@ -209,19 +209,19 @@ function addPermissionUser(
     isSystemAdmin: false,
     roleId: role.id,
   });
-  store.close();
+  await store.close();
 }
 
-function userCookie(serverUrl: string, username: string): Promise<string> {
-  return userCookieRow(serverUrl, username, PASSWORD);
+async function userCookie(serverUrl: string, username: string): Promise<string> {
+  return await userCookieRow(serverUrl, username, PASSWORD);
 }
 
 test("角色权限每请求现读:改角色后不用重登立即生效", async () => {
   const h = await startPanelHarness();
   const store = openStore(h.db.path);
-  const none = store.createPanelRole({ name: "无权限", permissions: [], createdAt: new Date().toISOString() });
-  const reader = store.createPanelRole({ name: "模型读", permissions: ["model:read"], createdAt: new Date().toISOString() });
-  store.createPanelUser({
+  const none = await store.createPanelRole({ name: "无权限", permissions: [], createdAt: new Date().toISOString() });
+  const reader = await store.createPanelRole({ name: "模型读", permissions: ["model:read"], createdAt: new Date().toISOString() });
+  await store.createPanelUser({
     username: "reader",
     displayName: null,
     passwordHash: HASH,
@@ -230,7 +230,7 @@ test("角色权限每请求现读:改角色后不用重登立即生效", async (
     isSystemAdmin: false,
     roleId: none.id,
   });
-  store.close();
+  await store.close();
 
   const cookie = await userCookie(h.serverUrl, "reader");
   const request = (): Promise<Response> =>
@@ -238,19 +238,19 @@ test("角色权限每请求现读:改角色后不用重登立即生效", async (
   assert.equal((await request()).status, 403);
   const update = openStore(h.db.path);
   assert.equal(
-    update.updatePanelUser("reader", { displayName: null, roleId: reader.id, isSystemAdmin: false }),
+    await update.updatePanelUser("reader", { displayName: null, roleId: reader.id, isSystemAdmin: false }),
     "updated",
   );
-  update.close();
+  await update.close();
   assert.equal((await request()).status, 200);
 });
 
 test("写权限在会话与端点统一包含对应读权限，review:rerun 保持独立", async () => {
   const h = await startPanelHarness();
-  addPermissionUser(h, "repo-writer", ["repo:write"]);
-  addPermissionUser(h, "effective-model-writer", ["model:write"]);
-  addPermissionUser(h, "effective-credential-writer", ["credential:write"]);
-  addPermissionUser(h, "rerunner", ["review:rerun"]);
+  await addPermissionUser(h, "repo-writer", ["repo:write"]);
+  await addPermissionUser(h, "effective-model-writer", ["model:write"]);
+  await addPermissionUser(h, "effective-credential-writer", ["credential:write"]);
+  await addPermissionUser(h, "rerunner", ["review:rerun"]);
 
   const cases = [
     ["repo-writer", ["repo:write"], "/repos"],
@@ -305,7 +305,7 @@ test("写权限在会话与端点统一包含对应读权限，review:rerun 保�
 test("新增的 knowledge:write 不落到已有角色上,持有它的人也只多这一格", async () => {
   const h = await startPanelHarness();
   // 已有角色只勾了重跑:新增权限格不会自动落到它上面(角色是权限格的子集)。
-  addPermissionUser(h, "rerun-only", ["review:rerun"]);
+  await addPermissionUser(h, "rerun-only", ["review:rerun"]);
   const rerunCookie = await userCookie(h.serverUrl, "rerun-only");
   const rerunSession = (await (
     await fetch(`${h.serverUrl}/api/session`, { headers: { cookie: rerunCookie } })
@@ -313,7 +313,7 @@ test("新增的 knowledge:write 不落到已有角色上,持有它的人也只�
   assert.deepEqual(rerunSession.permissions, ["review:rerun"]);
 
   // knowledge:write 不隐含任何读权限:读侧沿用登录加仓库分配(ADR 0019)。
-  addPermissionUser(h, "rule-writer", ["knowledge:write"]);
+  await addPermissionUser(h, "rule-writer", ["knowledge:write"]);
   const cookie = await userCookie(h.serverUrl, "rule-writer");
   const session = (await (
     await fetch(`${h.serverUrl}/api/session`, { headers: { cookie } })
@@ -324,7 +324,7 @@ test("新增的 knowledge:write 不落到已有角色上,持有它的人也只�
 test("普通用户不能调用系统管理员端点", async () => {
   const h = await startPanelHarness();
   const store = openStore(h.db.path);
-  store.createPanelUser({
+  await store.createPanelUser({
     username: "ordinary",
     displayName: null,
     passwordHash: HASH,
@@ -333,7 +333,7 @@ test("普通用户不能调用系统管理员端点", async () => {
     isSystemAdmin: false,
     roleId: null,
   });
-  store.close();
+  await store.close();
   const cookie = await userCookie(h.serverUrl, "ordinary");
   const response = await fetch(`${h.serverUrl}/api/roles`, { headers: { cookie } });
   assert.equal(response.status, 403);
@@ -368,7 +368,7 @@ test("无人引用的角色连权限关系一起删除", async () => {
 test("无角色的普通用户登录即可读仓库、评审记录与处置率", async () => {
   const h = await startPanelHarness();
   const store = openStore(h.db.path);
-  store.createPanelUser({
+  await store.createPanelUser({
     username: "plain",
     displayName: null,
     passwordHash: HASH,
@@ -377,7 +377,7 @@ test("无角色的普通用户登录即可读仓库、评审记录与处置率",
     isSystemAdmin: false,
     roleId: null,
   });
-  store.close();
+  await store.close();
   const cookie = await userCookie(h.serverUrl, "plain");
   for (const path of ["/repos", "/stages", "/runs", "/stats"]) {
     const response = await fetch(`${h.serverUrl}/api${path}`, {
@@ -419,9 +419,9 @@ test("手写权限与仓库分配期望表与面板代码路由集合完全相�
 
 test("allOf 路由必须同时持有模型写与凭据写，系统管理员仍无条件放行", async () => {
   const h = await startPanelHarness();
-  addPermissionUser(h, "model-writer", ["model:write"]);
-  addPermissionUser(h, "credential-writer", ["credential:write"]);
-  addPermissionUser(h, "combined-writer", ["model:write", "credential:write"]);
+  await addPermissionUser(h, "model-writer", ["model:write"]);
+  await addPermissionUser(h, "credential-writer", ["credential:write"]);
+  await addPermissionUser(h, "combined-writer", ["model:write", "credential:write"]);
   const modelCookie = await userCookie(h.serverUrl, "model-writer");
   const credentialCookie = await userCookie(h.serverUrl, "credential-writer");
   const combinedCookie = await userCookie(h.serverUrl, "combined-writer");
@@ -478,8 +478,8 @@ test("旧模型 API 已从路由表删除，认证后统一返回 404", async ()
 
 test("目录刷新与补录变更只要求模型写权限", async () => {
   const h = await startPanelHarness();
-  addPermissionUser(h, "catalog-model-writer", ["model:write"]);
-  addPermissionUser(h, "catalog-credential-writer", ["credential:write"]);
+  await addPermissionUser(h, "catalog-model-writer", ["model:write"]);
+  await addPermissionUser(h, "catalog-credential-writer", ["credential:write"]);
   const modelCookie = await userCookie(h.serverUrl, "catalog-model-writer");
   const credentialCookie = await userCookie(h.serverUrl, "catalog-credential-writer");
   const mutations = [
@@ -511,29 +511,29 @@ test("人动产品 tracker 要 agent:chat 加这个产品里的仓库分配,缺�
   assert.equal(created.status, 201);
   const productId = ((await created.json()) as { product: { id: number } }).product.id;
   const store = openStore(h.db.path);
-  const specId = store.createProductSpec({
+  const specId = (await store.createProductSpec({
     productId,
     title: "报销单可以撤回",
     body: "提交之后改不了。",
     sessionId: null,
     at,
-  }).id;
-  const ticketId = store.createProductTicket({
+  })).id;
+  const ticketId = (await store.createProductTicket({
     specId,
     title: "撤回接口",
     body: "PATCH /expenses/{id}",
     label: "needs-triage",
     sessionId: null,
     at,
-  }).id;
-  assert.equal(store.attachProductRepo(productId, GITEA_REPO.id, at), "attached");
-  store.close();
+  })).id;
+  assert.equal(await store.attachProductRepo(productId, GITEA_REPO.id, at), "attached");
+  await store.close();
 
   // 两样齐了的那个人;有仓库分配、缺权限格的那个人;有权限格、这个产品里一个仓库都没
   // 分到的那个人。
   const both = await scopedUser(h, "tracker-hand", PASSWORD, at, [GITEA_REPO.id], ["agent:chat"]);
   const noPermission = await scopedUser(h, "tracker-reader", PASSWORD, at, [GITEA_REPO.id]);
-  const elsewhere = seedRepo(h, 505, "acme", "delta");
+  const elsewhere = await seedRepo(h, 505, "acme", "delta");
   const noAssignment = await scopedUser(h, "tracker-outsider", PASSWORD, at, [elsewhere], [
     "agent:chat",
   ]);
@@ -566,8 +566,8 @@ test("人动产品 tracker 要 agent:chat 加这个产品里的仓库分配,缺�
 
 test("模型写或凭据写权限可读取各自包含的模型服务字段", async () => {
   const h = await startPanelHarness();
-  addPermissionUser(h, "model-service-model-writer", ["model:write"]);
-  addPermissionUser(h, "model-service-credential-writer", ["credential:write"]);
+  await addPermissionUser(h, "model-service-model-writer", ["model:write"]);
+  await addPermissionUser(h, "model-service-credential-writer", ["credential:write"]);
   for (const username of ["model-service-model-writer", "model-service-credential-writer"]) {
     const cookie = await userCookie(h.serverUrl, username);
     const response = await fetch(`${h.serverUrl}/api/model-services`, {

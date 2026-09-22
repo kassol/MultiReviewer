@@ -484,7 +484,7 @@ test("子进程的知识查询经 IPC 由编排层回一条,查不动时带上�
     path,
     CONFIG,
     input({
-      queryKnowledge: (query) => {
+      queryKnowledge: async (query) => {
         asked.push(query);
         // 第二次抛:库读不动时也必须有回音,不然那次工具调用永远等下去。
         if (asked.length === 2) throw new Error("库读不动");

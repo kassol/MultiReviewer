@@ -96,17 +96,17 @@ function seedRule(
  * 落一条生效条目并回它的标识。写入口只剩裁决与草案确认(issue #299),用例要的现集条目
  * 因此直接落库。
  */
-function seedActiveRule(
+async function seedActiveRule(
   h: PanelHarness,
   repoId: number,
   entry: { type: "rule" | "fact"; scope: string; statement: string },
-): number {
+): Promise<number> {
   const store = openStore(h.db.path);
   try {
     assert.notEqual(seedReviewRule(h.db.path, repoId, entry), undefined);
-    return store.getRuleSet(repoId)!.rules.at(-1)!.id;
+    return (await store.getRuleSet(repoId))!.rules.at(-1)!.id;
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -117,7 +117,7 @@ async function scopedUser(
 ): Promise<string> {
   const store = openStore(h.db.path);
   try {
-    store.createPanelUser({
+    await store.createPanelUser({
       username,
       displayName: null,
       passwordHash: await hashTestPassword(PASSWORD),
@@ -126,9 +126,9 @@ async function scopedUser(
       isSystemAdmin: false,
       roleId: null,
     });
-    store.setPanelUserAssignment(username, repoIds);
+    await store.setPanelUserAssignment(username, repoIds);
   } finally {
-    store.close();
+    await store.close();
   }
   const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -166,13 +166,13 @@ async function ruleWriterCookie(
   const cookie = await scopedUser(h, username, repoIds);
   const store = openStore(h.db.path);
   try {
-    const role = store.createPanelRole({
+    const role = await store.createPanelRole({
       name: `role-${username}`,
       permissions: ["knowledge:write"],
       createdAt: "2026-08-20T00:00:00.000Z",
     });
     assert.equal(
-      store.updatePanelUser(username, {
+      await store.updatePanelUser(username, {
         displayName: null,
         roleId: role.id,
         isSystemAdmin: false,
@@ -180,41 +180,41 @@ async function ruleWriterCookie(
       "updated",
     );
   } finally {
-    store.close();
+    await store.close();
   }
   return cookie;
 }
 
-test("新注册的仓库知识集未确认,移除仓库连规则一起摘掉", () => {
+test("新注册的仓库知识集未确认,移除仓库连规则一起摘掉", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
     assert.equal(
-      store.registerRepo({ repoId: 88, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
+      await store.registerRepo({ repoId: 88, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
       true,
     );
     // 门禁分代(issue #206):注册不再落版本,知识确认才落第一版。
-    assert.deepEqual(store.getRuleSet(88), { version: null, rules: [], retired: [] });
+    assert.deepEqual(await store.getRuleSet(88), { version: null, rules: [], retired: [] });
     // 没注册的仓库没有知识集可读。
-    assert.equal(store.getRuleSet(999), undefined);
+    assert.equal(await store.getRuleSet(999), undefined);
 
-    store.removeRepo(88);
-    assert.equal(store.getRuleSet(88), undefined);
+    await store.removeRepo(88);
+    assert.equal(await store.getRuleSet(88), undefined);
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("知识集只给当前生效的规则,废止的那条不在集内", () => {
+test("知识集只给当前生效的规则,废止的那条不在集内", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   assert.equal(
-    store.registerRepo({ repoId: 90, owner: "acme", repo: "layered", generation: 1, key: "k" }),
+    await store.registerRepo({ repoId: 90, owner: "acme", repo: "layered", generation: 1, key: "k" }),
     true,
   );
-  store.close();
+  await store.close();
 
   seedRule(db.path, { repoId: 90, scope: "", statement: "公开函数要有类型标注" });
   seedRule(db.path, {
@@ -231,7 +231,7 @@ test("知识集只给当前生效的规则,废止的那条不在集内", () => {
 
   const reopened = openStore(db.path);
   try {
-    const ruleSet = reopened.getRuleSet(90);
+    const ruleSet = await reopened.getRuleSet(90);
     assert.equal(ruleSet?.version, 1);
     assert.deepEqual(
       // 存量行带着退役的层标签值,条目照常读得出,读投影里不再有它。
@@ -242,13 +242,13 @@ test("知识集只给当前生效的规则,废止的那条不在集内", () => {
       ],
     );
   } finally {
-    reopened.close();
+    await reopened.close();
   }
 });
 
 test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 null", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   const cookie = await scopedUser(h, "reader", [alpha]);
 
   const empty = await get(h, cookie, `/repos/${alpha}/rules`);
@@ -291,8 +291,8 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
 
 test("分配外的仓库与没注册的 id 读知识集同形 404", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  const beta = seedRepo(h, 102, "acme", "beta");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  const beta = await seedRepo(h, 102, "acme", "beta");
   const cookie = await scopedUser(h, "reader", [alpha]);
 
   const outside = await get(h, cookie, `/repos/${beta}/rules`);
@@ -315,13 +315,13 @@ test("分配外的仓库与没注册的 id 读知识集同形 404", async () => 
   assert.equal(anonymous.status, 401);
 });
 
-test("直接废止推进一版,历史版本的快照仍取到废止前那一组", () => {
+test("直接废止推进一版,历史版本的快照仍取到废止前那一组", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
     assert.equal(
-      store.registerRepo({ repoId: 91, owner: "acme", repo: "edited", generation: 1, key: "k" }),
+      await store.registerRepo({ repoId: 91, owner: "acme", repo: "edited", generation: 1, key: "k" }),
       true,
     );
     // 注册不落版本(issue #206),第一条条目落库就是这个仓库的第一版。
@@ -329,23 +329,23 @@ test("直接废止推进一版,历史版本的快照仍取到废止前那一组"
       seedReviewRule(db.path, 91, { type: "rule", scope: "", statement: "公开函数要有类型标注" }),
       1,
     );
-    const added = store.getRuleSet(91)!;
+    const added = (await store.getRuleSet(91))!;
     assert.equal(added.version, 1);
     const ruleId = added.rules[0]!.id;
 
     // 不在这个仓库生效规则里的标识废止不动,一版都不推进。
-    assert.equal(store.retireReviewRule(91, 4242), undefined);
+    assert.equal(await store.retireReviewRule(91, 4242), undefined);
 
-    assert.equal(store.retireReviewRule(91, ruleId), 2);
-    const retired = store.getRuleSet(91)!;
+    assert.equal(await store.retireReviewRule(91, ruleId), 2);
+    const retired = (await store.getRuleSet(91))!;
     assert.equal(retired.version, 2);
     assert.deepEqual(retired.rules, []);
     // 废止的不再生效但可查。
     assert.deepEqual(retired.retired.map((rule) => rule.statement), ["公开函数要有类型标注"]);
     // 废止不了第二次。
-    assert.equal(store.retireReviewRule(91, ruleId), undefined);
+    assert.equal(await store.retireReviewRule(91, ruleId), undefined);
   } finally {
-    store.close();
+    await store.close();
   }
 
   // 快照回溯:知识集版本 V 的那一组按 effective_version <= V 且未在 V 之前废止取。
@@ -367,9 +367,9 @@ test("直接废止推进一版,历史版本的快照仍取到废止前那一组"
 
 test("面板直接废止一条条目:knowledge:write 放行,版本推进,废止的仍读得到", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
-  const ruleId = seedActiveRule(h, alpha, {
+  const ruleId = await seedActiveRule(h, alpha, {
     type: "rule",
     scope: "src/api/**",
     statement: "入参要在边界上校验",
@@ -391,7 +391,7 @@ test("面板直接废止一条条目:knowledge:write 放行,版本推进,废止�
 
 test("直改那四个端点已经撤掉:手写条目与草案手填一律回 404", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   const cookie = await ruleWriterCookie(h, "rule-writer", [alpha]);
   // 有 `knowledge:write` 也没有这四条路径了(issue #299,ADR 0028):人写的是修订意图,
   // 陈述、型与作用范围由 agent 产出。
@@ -411,8 +411,8 @@ test("直改那四个端点已经撤掉:手写条目与草案手填一律回 404
 
 test("没有 knowledge:write 的人废止不动条目,分配外的仓库同形 404", async () => {
   const h = await startReadyPanelHarness();
-  const alpha = seedRepo(h, 101, "acme", "alpha");
-  const beta = seedRepo(h, 102, "acme", "beta");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
+  const beta = await seedRepo(h, 102, "acme", "beta");
   // 读得到知识集的人不等于改得动:这个账号有仓库分配,没有权限格。
   const readerCookie = await scopedUser(h, "rules-reader", [alpha]);
   assert.equal((await get(h, readerCookie, `/repos/${alpha}/rules`)).status, 200);
@@ -428,13 +428,13 @@ test("没有 knowledge:write 的人废止不动条目,分配外的仓库同形 4
   );
 });
 
-test("Review Run 的启动快照冻结知识集版本与当时那组规则,之后的变更不追上来", () => {
+test("Review Run 的启动快照冻结知识集版本与当时那组规则,之后的变更不追上来", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
     assert.equal(
-      store.registerRepo({ repoId: 91, owner: "acme", repo: "frozen", generation: 1, key: "k" }),
+      await store.registerRepo({ repoId: 91, owner: "acme", repo: "frozen", generation: 1, key: "k" }),
       true,
     );
     assert.equal(
@@ -442,7 +442,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
       1,
     );
 
-    const snapshot = store.getReviewRunSnapshot(91);
+    const snapshot = await store.getReviewRunSnapshot(91);
     assert.equal(snapshot.ruleSetVersion, 1);
     assert.deepEqual(
       snapshot.rules.map((rule) => [rule.scope, rule.statement]),
@@ -454,21 +454,21 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
     assert.equal(snapshot.ruleSetVersion, 1);
     assert.equal(snapshot.rules.length, 1);
 
-    const next = store.getReviewRunSnapshot(91);
+    const next = await store.getReviewRunSnapshot(91);
     assert.equal(next.ruleSetVersion, 2);
     assert.equal(next.rules.length, 2);
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
-test("启动快照按 type 把两型分开,同一个知识集版本一起冻结", () => {
+test("启动快照按 type 把两型分开,同一个知识集版本一起冻结", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
   try {
     assert.equal(
-      store.registerRepo({ repoId: 92, owner: "acme", repo: "typed", generation: 1, key: "k" }),
+      await store.registerRepo({ repoId: 92, owner: "acme", repo: "typed", generation: 1, key: "k" }),
       true,
     );
     assert.equal(
@@ -488,7 +488,7 @@ test("启动快照按 type 把两型分开,同一个知识集版本一起冻结"
       2,
     );
 
-    const snapshot = store.getReviewRunSnapshot(92);
+    const snapshot = await store.getReviewRunSnapshot(92);
     // 一个版本,两份注入:规则带标识(模型自报命中的凭据),事实同样带标识但不进 prompt。
     assert.equal(snapshot.ruleSetVersion, 2);
     assert.deepEqual(
@@ -501,9 +501,9 @@ test("启动快照按 type 把两型分开,同一个知识集版本一起冻结"
     );
 
     // 纯规则集的事实那一份是空数组,行为与升级前逐字一致。
-    assert.equal(store.retireReviewRule(92, snapshot.facts[0]!.id), 3);
-    assert.deepEqual(store.getReviewRunSnapshot(92).facts, []);
+    assert.equal(await store.retireReviewRule(92, snapshot.facts[0]!.id), 3);
+    assert.deepEqual((await store.getReviewRunSnapshot(92)).facts, []);
   } finally {
-    store.close();
+    await store.close();
   }
 });

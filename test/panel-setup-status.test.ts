@@ -32,7 +32,7 @@ test("首次配置状态从空实例推进到可运行服务、审查配置就�
     instanceEnabled: false,
   });
 
-  seedAvailableModelService(h, "setup-provider", ["review-model"]);
+  await seedAvailableModelService(h, "setup-provider", ["review-model"]);
   assert.deepEqual(await setupStatus(h), {
     hasRunnableModelService: true,
     reviewConfigurationReady: false,
@@ -88,6 +88,6 @@ test("审查配置未就绪时注册在任何 Gitea 调用、Key 生成和落库
   assert.deepEqual(h.gitea.requests, []);
   assert.deepEqual(await (await h.api("GET", "/repos")).json(), []);
   const store = openStore(h.db.path);
-  assert.deepEqual(store.listRepoKeys(GITEA_REPO.id), []);
-  store.close();
+  assert.deepEqual(await store.listRepoKeys(GITEA_REPO.id), []);
+  await store.close();
 });

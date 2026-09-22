@@ -70,10 +70,10 @@ async function productWithRepos(
   const store = openStore(h.db.path);
   try {
     for (const repoId of repoIds) {
-      assert.equal(store.attachProductRepo(product.id, repoId, AT), "attached");
+      assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
     }
   } finally {
-    store.close();
+    await store.close();
   }
   return product.id;
 }
@@ -112,7 +112,7 @@ async function queueOf(
 }
 
 /** 直接往记录表里落一条(ADR 0031)。这几条用例要的是用量累加,不是子进程。 */
-function seedEntry(dbPath: string, sessionId: number, usage: Partial<ReviewerUsage>): void {
+async function seedEntry(dbPath: string, sessionId: number, usage: Partial<ReviewerUsage>): Promise<void> {
   const store = openStore(dbPath);
   try {
     const full: ReviewerUsage = {
@@ -126,20 +126,20 @@ function seedEntry(dbPath: string, sessionId: number, usage: Partial<ReviewerUsa
         (usage.cacheReadTokens ?? 0) +
         (usage.cacheWriteTokens ?? 0),
     };
-    store.appendAgentSessionEntry(sessionId, {
+    await store.appendAgentSessionEntry(sessionId, {
       type: "message",
       at: AT,
       entry: { type: "message", id: `seeded-${full.totalTokens}`, timestamp: AT },
       usage: full,
     });
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
 test("会话根只挂创建者有分配的仓库:产品里别的仓库不出现", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const other = seedRepo(h, 101, "acme", "alpha");
+  const other = await seedRepo(h, 101, "acme", "alpha");
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id, other]);
   // 创建者只分配到两个仓库里的一个。
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
@@ -149,14 +149,14 @@ test("会话根只挂创建者有分配的仓库:产品里别的仓库不出现"
 
   const store = openStore(h.db.path);
   try {
-    const names = (sessionId: number): string[] =>
-      agentSessionRepos(h.db.path, store.getAgentSession(sessionId)!).map(
+    const names = async (sessionId: number): Promise<string[]> =>
+      (await agentSessionRepos(h.db.path, (await store.getAgentSession(sessionId))!)).map(
         (repo) => `${repo.owner}/${repo.repo}`,
       );
-    assert.deepEqual(names(mine), ["acme/widgets"]);
-    assert.deepEqual(names(admin), ["acme/alpha", "acme/widgets"]);
+    assert.deepEqual(await names(mine), ["acme/widgets"]);
+    assert.deepEqual(await names(admin), ["acme/alpha", "acme/widgets"]);
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -195,7 +195,7 @@ async function sessionWorktreeHeads(
 
 test("会话记下每个仓库开在哪条分支的哪个 commit,读端点回这一份", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id, alpha]);
   // harness 那个仓库的默认分支设成 `feature`(夹具那边的默认是 `main`,指向 `baseSha`,
   // `feature` 指向 `headSha`);另一个仓库没设,跟随平台那一条。
@@ -238,7 +238,7 @@ test("会话记下每个仓库开在哪条分支的哪个 commit,读端点回这
 
 test("建会话时选的基点就是工作树停的地方,没选的那个仓库回落生效默认分支", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id, alpha]);
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id, alpha], [
     "agent:chat",
@@ -295,7 +295,7 @@ test("发消息要带客户端消息 id 与非空正文", async () => {
 
 test("会话根里一个仓库都没有时开不起来", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
-  const other = seedRepo(h, 101, "acme", "alpha");
+  const other = await seedRepo(h, 101, "acme", "alpha");
   // 产品下两个仓库,创建者只分配到另一个:交集为空。
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id, other], [
@@ -329,8 +329,8 @@ test("服务正在排空:发消息回 503,不起新的子进程", async () => {
   assert.deepEqual(await response.json(), { error: "服务正在排空,等它起回来再发" });
   // 受理判在这道闸之后:排空结束、服务起回来之后,人重发的还是同一条消息。
   const store = openStore(h.db.path);
-  assert.equal(store.acceptedAgentSessionMessage(sessionId, "c1"), undefined);
-  store.close();
+  assert.equal(await store.acceptedAgentSessionMessage(sessionId, "c1"), undefined);
+  await store.close();
 });
 
 test("同一个客户端消息 id 重发回原受理结果,另一个 id 在执行中进队列", async () => {
@@ -434,7 +434,7 @@ test("记录与记录流只有创建者与系统管理员读得到", async () =>
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const other = await scopedUser(h, "other", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, owner, productId);
-  seedEntry(h.db.path, sessionId, { inputTokens: 10, outputTokens: 2 });
+  await seedEntry(h.db.path, sessionId, { inputTokens: 10, outputTokens: 2 });
 
   // 创建者:记录读得到。
   const mine = await as(h, owner, "GET", `/agent-sessions/${sessionId}/records`);
@@ -479,8 +479,8 @@ test("记录流的 ?after=seq 只补它之后的落库条目", async () => {
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, owner, productId);
-  seedEntry(h.db.path, sessionId, { inputTokens: 10 });
-  seedEntry(h.db.path, sessionId, { inputTokens: 20 });
+  await seedEntry(h.db.path, sessionId, { inputTokens: 10 });
+  await seedEntry(h.db.path, sessionId, { inputTokens: 20 });
 
   const stream = await fetch(
     `${h.serverUrl}/api/agent-sessions/${sessionId}/stream?after=1`,
@@ -502,8 +502,8 @@ test("用量按记录累加到会话上,统计页单列一行", async () => {
   const other = await scopedUser(h, "other", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, owner, productId);
 
-  seedEntry(h.db.path, sessionId, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5 });
-  seedEntry(h.db.path, sessionId, { inputTokens: 30, outputTokens: 4, cacheWriteTokens: 1 });
+  await seedEntry(h.db.path, sessionId, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5 });
+  await seedEntry(h.db.path, sessionId, { inputTokens: 30, outputTokens: 4, cacheWriteTokens: 1 });
   const expected = {
     inputTokens: 130,
     outputTokens: 24,
@@ -535,13 +535,13 @@ test("用量按记录累加到会话上,统计页单列一行", async () => {
 });
 
 /** 更新基点(issue #356)。回的是端点的原样响应,状态码与正文由各用例自己断言。 */
-function updateBaseline(
+async function updateBaseline(
   h: PanelHarness,
   cookie: string,
   sessionId: number,
   repo: { owner: string; repo: string } = GITEA_REPO,
 ): Promise<Response> {
-  return as(h, cookie, "POST", `/agent-sessions/${sessionId}/baselines/${repo.owner}/${repo.repo}/update`);
+  return await as(h, cookie, "POST", `/agent-sessions/${sessionId}/baselines/${repo.owner}/${repo.repo}/update`);
 }
 
 async function recordsOf(h: PanelHarness, cookie: string, sessionId: number): Promise<Record[]> {
@@ -555,7 +555,7 @@ test("更新基点:换到记下的那条分支此刻的 head,落一条基点更�
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, cookie, productId);
-  seedEntry(h.db.path, sessionId, { inputTokens: 1 });
+  await seedEntry(h.db.path, sessionId, { inputTokens: 1 });
   const previous = (await recordsOf(h, cookie, sessionId)).at(-1)!;
   // 建会话之后 `main` 往前走了一步。
   const moved = h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });
@@ -627,7 +627,7 @@ test("更新基点:换到记下的那条分支此刻的 head,落一条基点更�
 test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队、排空中,基点与记录都不动", async () => {
   const drain = createDrain();
   const h = await startReadyPanelHarness({ registerRepo: true, drain });
-  const alpha = seedRepo(h, 101, "acme", "alpha");
+  const alpha = await seedRepo(h, 101, "acme", "alpha");
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id, alpha]);
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const other = await scopedUser(h, "other", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
@@ -636,7 +636,7 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
     { owner: "acme", repo: "widgets", sha: h.repo.baseSha, branch: "v1", kind: "tag" },
   ]);
   const sessionId = await createSession(h, owner, productId);
-  seedEntry(h.db.path, sessionId, { inputTokens: 1 });
+  await seedEntry(h.db.path, sessionId, { inputTokens: 1 });
   // 分支往前走了:每一道闸若没挡住,基点就会变。
   h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });
   const baselines = (await session(h, owner, sessionId)).baselines;
@@ -654,13 +654,13 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
   await refused(await updateBaseline(h, h.cookie, sessionId), 403, "只有会话的创建者能做");
   // 产品梳理与别的用途同律(issue #365):只有开这一场的那个人动得了它的基点。
   const store0 = openStore(h.db.path);
-  const survey = store0.createAgentSession({
+  const survey = (await store0.createAgentSession({
     productId,
     createdBy: "owner",
     purpose: "product-survey",
     createdAt: AT,
-  }).id;
-  store0.close();
+  })).id;
+  await store0.close();
   await refused(await updateBaseline(h, h.cookie, survey), 403, "只有会话的创建者能做");
   // 会话里没有这个仓库的会话基点(创建者没有 alpha 的仓库分配)。
   await refused(
@@ -678,8 +678,8 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
 
   // 有排队的消息(回收时落库的那一种):等它投出去再更新。
   const store = openStore(h.db.path);
-  store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: "再补一句" }]);
-  store.close();
+  await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: "再补一句" }]);
+  await store.close();
   const busy = "会话在跑或还有排队的消息,等它空闲再更新基点";
   await refused(await updateBaseline(h, owner, sessionId), 409, busy);
   await unchanged();

@@ -30,7 +30,7 @@ import type { StageListItem as StageRow } from "../src/contracts/stages.ts";
 type StagesPage = { stages: StageRow[]; nextOffset: number | null };
 
 /** 播种一轮 Review Run:一条 Finding 一个指纹,阶段汇总按「文件 + 指纹」折叠。 */
-function seedRun(
+async function seedRun(
   dbPath: string,
   meta: {
     owner: string;
@@ -51,9 +51,9 @@ function seedRun(
     verdicts?: { model: string; findingId: number; missing: "no-verdict" | "batch-failed" }[];
     closingFailure?: string;
   } = {},
-): number {
+): Promise<number> {
   const store = openStore(dbPath);
-  const runId = seedRunRow(
+  const runId = await seedRunRow(
     store,
     {
       owner: meta.owner,
@@ -118,16 +118,16 @@ function seedRun(
       missing: entry.missing,
     })),
   );
-  if (extra.closingFailure !== undefined) store.recordRunFailure(runId, extra.closingFailure);
-  store.close();
+  if (extra.closingFailure !== undefined) await store.recordRunFailure(runId, extra.closingFailure);
+  await store.close();
   return runId;
 }
 
 /** 上一轮落的那条 Finding 的 id:下一轮的复核结论指向它。 */
-function historyFindingId(dbPath: string, runId: number): number {
+async function historyFindingId(dbPath: string, runId: number): Promise<number> {
   const store = openStore(dbPath);
-  const run = store.listRuns({ limit: 50 }).find((item) => item.id === runId);
-  store.close();
+  const run = (await store.listRuns({ limit: 50 })).find((item) => item.id === runId);
+  await store.close();
   assert.notEqual(run, undefined, `没有这一轮 ${runId}`);
   return run!.findings[0]!.id;
 }
@@ -164,7 +164,7 @@ async function stages(h: PanelHarness, query = ""): Promise<StagesPage> {
 
 test("阶段列表:同一 pull request 三轮只占一行,带最新一轮与阶段汇总三个数", async () => {
   const h = await startPanelHarness();
-  seedRun(
+  await seedRun(
     h.db.path,
     {
       owner: "acme",
@@ -175,7 +175,7 @@ test("阶段列表:同一 pull request 三轮只占一行,带最新一轮与阶�
     },
     [{ fingerprint: "fp-1" }, { fingerprint: "fp-2", disposition: "resolved" }],
   );
-  seedRun(
+  await seedRun(
     h.db.path,
     {
       owner: "acme",
@@ -187,7 +187,7 @@ test("阶段列表:同一 pull request 三轮只占一行,带最新一轮与阶�
     // 同一条 Finding 再报一次:按 Finding Identity 折叠,阶段里仍只有一条。
     [{ fingerprint: "fp-1" }],
   );
-  const latest = seedRun(
+  const latest = await seedRun(
     h.db.path,
     {
       owner: "acme",
@@ -224,7 +224,7 @@ test("阶段列表:同一 pull request 三轮只占一行,带最新一轮与阶�
 
 test("阶段列表:升级前没有标题的旧行,列表里没有标题可用", async () => {
   const h = await startPanelHarness();
-  seedRun(h.db.path, {
+  await seedRun(h.db.path, {
     owner: "ghost",
     repo: "gone",
     pullNumber: 1,
@@ -239,14 +239,14 @@ test("阶段列表:升级前没有标题的旧行,列表里没有标题可用", 
 
 test("阶段列表:全局与仓库过滤返回同一个阶段的同一条记录", async () => {
   const h = await startPanelHarness();
-  seedRun(h.db.path, {
+  await seedRun(h.db.path, {
     owner: "acme",
     repo: "widgets",
     pullNumber: 7,
     startedAt: "2026-08-02T00:00:00.000Z",
     title: HARNESS_PR_TITLE,
   });
-  seedRun(h.db.path, {
+  await seedRun(h.db.path, {
     owner: "other",
     repo: "thing",
     pullNumber: 3,
@@ -276,7 +276,7 @@ test("阶段列表:pull request 关闭后已结束,重开回到进行中且仍�
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
   await h.settledAtLeast(1);
 
@@ -305,7 +305,7 @@ test("阶段列表:已关闭 pull request 手动重跑后仍是已结束,重开�
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook("delivery-head")).status, 200);
   await h.settledAtLeast(1);
 
@@ -337,7 +337,7 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
   const created = await h.api("POST", "/range-reviews", {
     title: "范围审查标题",
     owner: HARNESS_PR.owner,
@@ -368,8 +368,8 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
   assert.equal(stage.pullNumber, null);
   assert.equal(stage.status, "active");
   const store = openStore(h.db.path);
-  const runs = store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  store.close();
+  const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
+  await store.close();
   assert.equal(runs.length, 2);
   assert.equal(stage.latestRunId, runs[0]!.id);
   assert.equal(stage.latestRunAt, runs[0]!.startedAt);
@@ -384,23 +384,23 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
 test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,默认全部", async () => {
   const h = await startPanelHarness();
   // 进行中的 pull request 阶段。
-  seedRun(h.db.path, {
+  await seedRun(h.db.path, {
     owner: "acme",
     repo: "widgets",
     pullNumber: 7,
     startedAt: "2026-08-01T00:00:00.000Z",
   });
   // 已关闭的 pull request 阶段。
-  seedRun(h.db.path, {
+  await seedRun(h.db.path, {
     owner: "acme",
     repo: "widgets",
     pullNumber: 8,
     startedAt: "2026-08-02T00:00:00.000Z",
   });
   const store = openStore(h.db.path);
-  store.markPullRequestState("acme", "widgets", 8, "closed");
+  await store.markPullRequestState("acme", "widgets", 8, "closed");
   // 一个进行中、一个已完成的范围审查。
-  const running = store.createRangeReview({
+  const running = await store.createRangeReview({
     repoId: GITEA_REPO.id,
     owner: "acme",
     repo: "widgets",
@@ -410,7 +410,7 @@ test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,�
     createdBy: "operator",
     createdAt: "2026-08-03T00:00:00.000Z",
   });
-  const done = store.createRangeReview({
+  const done = await store.createRangeReview({
     repoId: GITEA_REPO.id,
     owner: "acme",
     repo: "widgets",
@@ -420,12 +420,12 @@ test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,�
     createdBy: "operator",
     createdAt: "2026-08-04T00:00:00.000Z",
   });
-  store.completeRangeReview({
+  await store.completeRangeReview({
     id: done,
     completedBy: "operator",
     completedAt: "2026-08-05T00:00:00.000Z",
   });
-  store.close();
+  await store.close();
 
   const all = await stages(h);
   assert.deepEqual(
@@ -465,7 +465,7 @@ test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,�
 test("阶段列表:满页给 nextOffset,翻页不重不漏", async () => {
   const h = await startPanelHarness();
   for (let i = 1; i <= 32; i += 1) {
-    seedRun(h.db.path, {
+    await seedRun(h.db.path, {
       owner: "acme",
       repo: "widgets",
       pullNumber: i,
@@ -488,7 +488,7 @@ test("阶段列表:满页给 nextOffset,翻页不重不漏", async () => {
 
 test("单轮 API:按 id 取该阶段最新一轮,不存在的 id 是 404", async () => {
   const h = await startPanelHarness();
-  const runId = seedRun(
+  const runId = await seedRun(
     h.db.path,
     {
       owner: "acme",
@@ -520,19 +520,19 @@ test("单轮 API:按 id 取该阶段最新一轮,不存在的 id 是 404", async
  */
 test("阶段列表:最新一轮有批次没跑成,行上挂警示且说的是批次那一档", async () => {
   const h = await startPanelHarness();
-  const first = seedRun(
+  const first = await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
   );
   // 下一轮复核上一轮那条:model-a 的那一批没跑成,这条历史因此没拿到结论。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
     [],
     {
       verdicts: [
-        { model: "model-a", findingId: historyFindingId(h.db.path, first), missing: "batch-failed" },
+        { model: "model-a", findingId: await historyFindingId(h.db.path, first), missing: "batch-failed" },
       ],
     },
   );
@@ -550,19 +550,19 @@ test("阶段列表:最新一轮有批次没跑成,行上挂警示且说的是批
 test("阶段列表:失败的那一批上没有历史时,批次没跑成由审查轨迹说出来", async () => {
   const h = await startPanelHarness();
   // 头一轮没有历史,复核记录一行都没有;model-a 第 2 批失败只留在批次收尾事件里。
-  const runId = seedRun(
+  const runId = await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
   );
   const store = openStore(h.db.path);
-  store.appendTrace(runId, {
+  await store.appendTrace(runId, {
     scope: "reviewer",
     reviewer: "model-a",
     kind: "reviewer_batch_finished",
     payload: { batch: 2, failed: true, failure: "429" },
   });
-  store.close();
+  await store.close();
 
   const body = await stages(h);
   assert.deepEqual(body.stages[0]!.latestRunAlert, {
@@ -574,7 +574,7 @@ test("阶段列表:失败的那一批上没有历史时,批次没跑成由审查
 
 test("阶段列表:最新一轮有模型整轮没跑成,行上挂警示且说的是模型那一档", async () => {
   const h = await startPanelHarness();
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
@@ -596,7 +596,7 @@ test("阶段列表:最新一轮有模型整轮没跑成,行上挂警示且说的
  */
 test("阶段列表:最新一轮收尾失败,行上挂警示并带原因第一行", async () => {
   const h = await startPanelHarness();
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
@@ -615,19 +615,19 @@ test("阶段列表:最新一轮收尾失败,行上挂警示并带原因第一行
 
 test("阶段列表:三档同时出现时各自说得出,阶段详情那一行同形", async () => {
   const h = await startPanelHarness();
-  const first = seedRun(
+  const first = await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
   );
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
     [],
     {
       failedModel: "model-b",
       verdicts: [
-        { model: "model-a", findingId: historyFindingId(h.db.path, first), missing: "batch-failed" },
+        { model: "model-a", findingId: await historyFindingId(h.db.path, first), missing: "batch-failed" },
       ],
       closingFailure: "resolve 旧评论失败",
     },
@@ -649,24 +649,24 @@ test("阶段列表:三档同时出现时各自说得出,阶段详情那一行同
 
 test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有警示", async () => {
   const h = await startPanelHarness();
-  const first = seedRun(
+  const first = await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
     { failedModel: "model-b", closingFailure: "发布 review 失败" },
   );
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
     [],
     {
       verdicts: [
-        { model: "model-a", findingId: historyFindingId(h.db.path, first), missing: "batch-failed" },
+        { model: "model-a", findingId: await historyFindingId(h.db.path, first), missing: "batch-failed" },
       ],
     },
   );
   // 第三轮两样都没有:警示只看最新那一轮。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-03T00:00:00.000Z" },
     [],
@@ -684,21 +684,21 @@ test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有
 test("阶段列表:收尾失败的原因取头一行有内容的,整篇空白才回落成未记录原因", async () => {
   const h = await startPanelHarness();
   // 以换行开头:第一行是空的。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
     { closingFailure: "\n发布 review 失败:Gitea 回了 500" },
   );
   // 通篇只有空白。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 8, startedAt: "2026-08-02T00:00:00.000Z" },
     [{ fingerprint: "fp-2" }],
     { closingFailure: "   \n  " },
   );
   // 空串。
-  seedRun(
+  await seedRun(
     h.db.path,
     { owner: "acme", repo: "widgets", pullNumber: 9, startedAt: "2026-08-03T00:00:00.000Z" },
     [{ fingerprint: "fp-3" }],

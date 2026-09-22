@@ -49,8 +49,8 @@ import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.
 const TEST_PASSWORD_PARAMETERS = { memory: 8, passes: 1, parallelism: 1 };
 
 /** 按用例参数哈希一个口令。建面板用户的用例一律用它,不直接调 `hashPassword`。 */
-export function hashTestPassword(password: string): Promise<string> {
-  return hashPassword(password, TEST_PASSWORD_PARAMETERS);
+export async function hashTestPassword(password: string): Promise<string> {
+  return await hashPassword(password, TEST_PASSWORD_PARAMETERS);
 }
 
 export const PANEL_ADMIN_USERNAME = "panel-admin";
@@ -131,21 +131,21 @@ export const HARNESS_SPEC: ReviewerSpec = {
  * `fields` 整份服务共用,省略即什么都不声明(推理能力因此落到运行基线的 false,
  * 支持的思考档位只有 `off`)。要一个思考得起来的模型就显式给 `reasoning: true`。
  */
-export function seedAvailableModelService(
+export async function seedAvailableModelService(
   harness: Pick<PanelHarness, "db">,
   provider: string,
   models: readonly string[],
   fields: DiscoveredModel["fields"] = {},
   /** 调用地址。省略即一个不存在的假地址;跑真实 SDK 链路的用例传本机假模型服务的那一个。 */
   serviceBaseUrl?: string,
-): void {
+): Promise<void> {
   assert.ok(models.length > 0, "测试模型服务至少要有一个模型");
   const baseUrl = serviceBaseUrl ?? `https://${provider}.models.example.test/v1`;
   const api = "openai-completions";
   const at = "2026-08-20T00:00:00.000Z";
   const store = openStore(harness.db.path);
   try {
-    assert.equal(store.commitModelServiceVersion(null, {
+    assert.equal(await store.commitModelServiceVersion(null, {
       provider,
       type: "custom",
       baseUrl,
@@ -178,7 +178,7 @@ export function seedAvailableModelService(
       supplements: [],
     }), 1);
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -277,7 +277,7 @@ export async function startPanelHarness(
   // 全局模型组合在库里(issue #66),服务起来之前先播种。
   const reviewers = options.reviewers ?? [HARNESS_SPEC];
   const seed = openStore(db.path);
-  seed.createPanelUser({
+  await seed.createPanelUser({
     username: PANEL_ADMIN_USERNAME,
     displayName: "Panel Admin",
     passwordHash: PANEL_ADMIN_PASSWORD_HASH,
@@ -286,7 +286,7 @@ export async function startPanelHarness(
     isSystemAdmin: true,
     roleId: null,
   });
-  seed.close();
+  await seed.close();
   // Harness 初始组合代表升级前已存在的状态；运行期组合写必须走 Store 的原子可用性门禁。
   if (reviewers.length > 0) {
     const fixtureDb = new DatabaseSync(db.path);
@@ -535,7 +535,7 @@ export async function startReadyPanelHarness(
   options: PanelHarnessOptions = {},
 ): Promise<PanelHarness> {
   const harness = await startPanelHarness(options);
-  seedAvailableModelService(harness, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
+  await seedAvailableModelService(harness, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
   if (options.registerRepo === true) {
     const registered = await harness.api("POST", "/repos", {
       owner: GITEA_REPO.owner,
@@ -547,13 +547,13 @@ export async function startReadyPanelHarness(
 }
 
 /** 播种升级前已经存在的仓库，用于验证注册门禁不能改变历史投递。 */
-export function seedHistoricalRepo(
+export async function seedHistoricalRepo(
   harness: Pick<PanelHarness, "db">,
   key = "historical-repo-key",
-): { url: string; secret: string } {
+): Promise<{ url: string; secret: string }> {
   const store = openStore(harness.db.path);
   try {
-    assert.equal(store.registerRepo({
+    assert.equal(await store.registerRepo({
       repoId: GITEA_REPO.id,
       owner: GITEA_REPO.owner,
       repo: GITEA_REPO.repo,
@@ -561,10 +561,10 @@ export function seedHistoricalRepo(
       key,
     }), true);
   } finally {
-    store.close();
+    await store.close();
   }
   // 「升级前已经存在」的另一半:存量迁移把这些仓库写成已确认空知识集(issue #206)。
-  confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
   return { url: `${PANEL_BASE_URL}/webhook?k=1`, secret: key };
 }
 
@@ -582,7 +582,7 @@ export async function scopedUser(
 ): Promise<string> {
   const store = openStore(h.db.path);
   try {
-    store.createPanelUser({
+    await store.createPanelUser({
       username,
       displayName: null,
       passwordHash: await hashTestPassword(password),
@@ -591,15 +591,15 @@ export async function scopedUser(
       isSystemAdmin: false,
       roleId: null,
     });
-    store.setPanelUserAssignment(username, repoIds);
+    await store.setPanelUserAssignment(username, repoIds);
     if (permissions.length > 0) {
-      const role = store.createPanelRole({
+      const role = await store.createPanelRole({
         name: `role-${username}`,
         permissions: [...permissions],
         createdAt: at,
       });
       assert.equal(
-        store.updatePanelUser(username, {
+        await store.updatePanelUser(username, {
           displayName: null,
           roleId: role.id,
           isSystemAdmin: false,
@@ -608,7 +608,7 @@ export async function scopedUser(
       );
     }
   } finally {
-    store.close();
+    await store.close();
   }
   const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -620,20 +620,20 @@ export async function scopedUser(
 }
 
 /** 直接落一行注册表,不建 hook。返回 `repoId` 供调用方接着用。 */
-export function seedRepo(
+export async function seedRepo(
   h: Pick<PanelHarness, "db">,
   repoId: number,
   owner: string,
   repo: string,
-): number {
+): Promise<number> {
   const store = openStore(h.db.path);
   try {
     assert.equal(
-      store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
+      await store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
       true,
     );
   } finally {
-    store.close();
+    await store.close();
   }
   return repoId;
 }

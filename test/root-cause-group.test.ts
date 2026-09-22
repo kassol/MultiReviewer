@@ -61,15 +61,15 @@ function rootCauseRows(dbPath: string): {
 }
 
 /** 这一轮落库的全部轨迹事件。 */
-function trace(dbPath: string): { kind: string; payload: Record<string, unknown> }[] {
+async function trace(dbPath: string): Promise<{ kind: string; payload: Record<string, unknown> }[]> {
   const store = openStore(dbPath);
   try {
-    const runId = store.listRuns({ limit: 1 })[0]!.id;
-    return store
-      .listTrace(runId)
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    return (await store
+      .listTrace(runId))
       .map((event) => ({ kind: event.kind, payload: event.payload as Record<string, unknown> }));
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -159,9 +159,9 @@ test("坏提议逐组丢弃:轨迹各记一条,分组方案与组外评论照常
   });
 
   assert.equal(result.findings.length, 3, "坏提议不作废分组方案");
-  assert.equal(trace(db.path).filter((event) => event.kind === "merge_fallback").length, 0);
+  assert.equal((await trace(db.path)).filter((event) => event.kind === "merge_fallback").length, 0);
   assert.deepEqual(
-    trace(db.path)
+    (await trace(db.path))
       .filter((event) => event.kind === "root_cause_group_rejected")
       .map((event) => [event.payload["groups"], event.payload["reason"]]),
     [

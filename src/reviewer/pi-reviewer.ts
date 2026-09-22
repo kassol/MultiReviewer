@@ -1,6 +1,5 @@
 import { fileURLToPath } from "node:url";
 
-import { relay } from "../async.ts";
 import type {
   Finding,
   FindingVerdict,
@@ -49,14 +48,12 @@ export function createPiReviewer(config: PiReviewerConfig): Reviewer {
  * 回调可同步可异步(issue #447):同步那一份当场回音(与异步化之前逐字一致),异步那一
  * 份查完再回,失败的那一档两路同形。
  */
-function answerKnowledgeQuery(
+async function answerKnowledgeQuery(
   requestId: string,
   query: SessionKnowledgeQuery,
-  read:
-    | ((query: SessionKnowledgeQuery) => SessionKnowledgeEntries | Promise<SessionKnowledgeEntries>)
-    | undefined,
+  read: ((query: SessionKnowledgeQuery) => Promise<SessionKnowledgeEntries>) | undefined,
   reply: (command: ReviewerCommand) => void,
-): void {
+): Promise<void> {
   const failed = (failure: string): void => {
     reply({
       kind: "knowledge-query-result",
@@ -69,13 +66,11 @@ function answerKnowledgeQuery(
     failed("this repository is not in a product, so nothing is written down to read");
     return;
   }
-  relay(
-    () => read(query),
-    (entries) => {
-      reply({ kind: "knowledge-query-result", requestId, entries });
-    },
-    (error) => failed(error instanceof Error ? error.message : String(error)),
-  );
+  try {
+    reply({ kind: "knowledge-query-result", requestId, entries: await read(query) });
+  } catch (error) {
+    failed(error instanceof Error ? error.message : String(error));
+  }
 }
 
 /**
@@ -161,7 +156,7 @@ export async function runInChild(
     payload: request,
     onMessage: (message, reply) => {
       if (message.kind === "knowledge-query") {
-        answerKnowledgeQuery(message.requestId, message.query, queryKnowledge, reply);
+        void answerKnowledgeQuery(message.requestId, message.query, queryKnowledge, reply);
         return;
       }
       if (message.kind === "finding") {

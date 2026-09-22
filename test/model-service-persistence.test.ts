@@ -55,13 +55,13 @@ function availableService(
 }
 
 
-test("自动目录快照往返稀疏可信字段", () => {
+test("自动目录快照往返稀疏可信字段", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
 
   assert.equal(
-    store.commitModelServiceVersion(null, {
+    await store.commitModelServiceVersion(null, {
       provider: "corp-gateway",
       type: "custom",
       baseUrl: "https://ai.corp.example/v1",
@@ -127,9 +127,9 @@ test("自动目录快照往返稀疏可信字段", () => {
     1,
   );
 
-  store.close();
+  await store.close();
   const reopened = openStore(db.path);
-  assert.deepEqual(reopened.getModelService("corp-gateway")!.automaticModels, [
+  assert.deepEqual((await reopened.getModelService("corp-gateway"))!.automaticModels, [
     {
       identity: "corp-gateway:free-model",
       provider: "corp-gateway",
@@ -166,7 +166,7 @@ test("自动目录快照往返稀疏可信字段", () => {
       },
     },
   ]);
-  reopened.close();
+  await reopened.close();
   const sqlite = new DatabaseSync(db.path, { readOnly: true });
   const idOnly = sqlite.prepare(
     `SELECT name, api, base_url, input_json, reasoning, context_window, max_tokens
@@ -188,12 +188,12 @@ test("自动目录快照往返稀疏可信字段", () => {
   sqlite.close();
 });
 
-test("模型服务当前版本把目标、凭据证据、目录与补录作为一个原子快照保存", () => {
+test("模型服务当前版本把目标、凭据证据、目录与补录作为一个原子快照保存", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
 
-  const committed = store.commitModelServiceVersion(null, {
+  const committed = await store.commitModelServiceVersion(null, {
     provider: "corp-gateway",
     type: "custom",
     baseUrl: "https://ai.corp.example/v1",
@@ -242,7 +242,7 @@ test("模型服务当前版本把目标、凭据证据、目录与补录作为�
   });
 
   assert.equal(committed, 1);
-  assert.deepEqual(store.getModelService("corp-gateway"), {
+  assert.deepEqual(await store.getModelService("corp-gateway"), {
     provider: "corp-gateway",
     type: "custom",
     version: 1,
@@ -292,10 +292,10 @@ test("模型服务当前版本把目标、凭据证据、目录与补录作为�
       },
     ],
   });
-  store.close();
+  await store.close();
 });
 
-test("旧版本候选不写入，匹配版本时整份快照推进并替换目录来源", () => {
+test("旧版本候选不写入，匹配版本时整份快照推进并替换目录来源", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -333,7 +333,7 @@ test("旧版本候选不写入，匹配版本时整份快照推进并替换目�
       },
     ],
   };
-  assert.throws(
+  await assert.rejects(
     () =>
       store.commitModelServiceVersion(null, {
         ...first,
@@ -344,8 +344,8 @@ test("旧版本候选不写入，匹配版本时整份快照推进并替换目�
       }),
     /空、重复或身份不一致/,
   );
-  assert.equal(store.getModelService("openrouter"), undefined);
-  assert.equal(store.commitModelServiceVersion(null, first), 1);
+  assert.equal(await store.getModelService("openrouter"), undefined);
+  assert.equal(await store.commitModelServiceVersion(null, first), 1);
 
   const second = {
     ...first,
@@ -383,12 +383,12 @@ test("旧版本候选不写入，匹配版本时整份快照推进并替换目�
       },
     ],
   };
-  assert.equal(store.commitModelServiceVersion(0, second), undefined);
-  assert.equal(store.getModelService("openrouter")!.version, 1);
-  assert.deepEqual(store.getModelService("openrouter")!.automaticModels, []);
+  assert.equal(await store.commitModelServiceVersion(0, second), undefined);
+  assert.equal((await store.getModelService("openrouter"))!.version, 1);
+  assert.deepEqual((await store.getModelService("openrouter"))!.automaticModels, []);
 
-  assert.equal(store.commitModelServiceVersion(1, second), 2);
-  const current = store.getModelService("openrouter")!;
+  assert.equal(await store.commitModelServiceVersion(1, second), 2);
+  const current = (await store.getModelService("openrouter"))!;
   assert.equal(current.version, 2);
   assert.equal(current.createdAt, first.createdAt);
   assert.equal(current.credential.apiKeyEncrypted, "cipher-new");
@@ -401,30 +401,30 @@ test("旧版本候选不写入，匹配版本时整份快照推进并替换目�
     },
   ]);
   assert.deepEqual(current.supplements.map((entry) => entry.model), ["new-model"]);
-  store.close();
+  await store.close();
 });
 
-test("模型引用按完整身份列出全局、显式覆盖与跟随全局位置", () => {
+test("模型引用按完整身份列出全局、显式覆盖与跟随全局位置", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
-  assert.equal(store.commitModelServiceVersion(null, availableService("alpha", ["global", "shared"])), 1);
-  assert.equal(store.commitModelServiceVersion(null, availableService("beta", ["override"])), 1);
-  putGlobalSettings(store, {
+  assert.equal(await store.commitModelServiceVersion(null, availableService("alpha", ["global", "shared"])), 1);
+  assert.equal(await store.commitModelServiceVersion(null, availableService("beta", ["override"])), 1);
+  await putGlobalSettings(store, {
     reviewersJson: JSON.stringify([
       { provider: "alpha", model: "global" },
       { provider: "alpha", model: "shared" },
     ]),
     maxChangedLinesPerBatch: null,
   });
-  store.registerRepo({
+  await store.registerRepo({
     repoId: 1,
     owner: "acme",
     repo: "follows-global",
     generation: 1,
     key: "follow-key",
   });
-  store.registerRepo({
+  await store.registerRepo({
     repoId: 2,
     owner: "acme",
     repo: "explicit",
@@ -435,16 +435,16 @@ test("模型引用按完整身份列出全局、显式覆盖与跟随全局位�
       { provider: "beta", model: "override" },
     ]),
   });
-  store.registerRepo({
+  await store.registerRepo({
     repoId: 3,
     owner: "acme",
     repo: "removed",
     generation: 1,
     key: "removed-key",
   });
-  store.removeRepo(3);
+  await store.removeRepo(3);
 
-  assert.deepEqual(store.listModelReferences(), [
+  assert.deepEqual(await store.listModelReferences(), [
     {
       identity: "alpha:global",
       provider: "alpha",
@@ -483,10 +483,10 @@ test("模型引用按完整身份列出全局、显式覆盖与跟随全局位�
       ],
     },
   ]);
-  store.close();
+  await store.close();
 });
 
-test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源补录", () => {
+test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源补录", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -502,18 +502,18 @@ test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源�
       createdAt: "2026-08-20T10:00:00.000Z",
     }],
   };
-  assert.equal(store.commitModelServiceVersion(null, withSupplement), 1);
+  assert.equal(await store.commitModelServiceVersion(null, withSupplement), 1);
   const dropSupplement: ModelServiceVersionCommit = { ...withSupplement, supplements: [] };
   const auxiliary = JSON.stringify({ provider, model: "solo" });
 
   // 全局那一处辅助模型引用它:事务内的兜底与 `listModelReferences` 同一份判据(issue #303)。
-  assert.equal(putGlobalSettings(store, { auxiliaryModelJson: auxiliary }), true);
-  assert.equal(store.removeCustomModelService(provider, 1), false, "被全局辅助模型引用即删不动");
-  assert.equal(store.commitModelServiceVersion(1, dropSupplement), undefined, "唯一来源摘不掉");
+  assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: auxiliary }), true);
+  assert.equal(await store.removeCustomModelService(provider, 1), false, "被全局辅助模型引用即删不动");
+  assert.equal(await store.commitModelServiceVersion(1, dropSupplement), undefined, "唯一来源摘不掉");
 
   // 换成仓库那一处引用它,全局清空:两种辅助模型位置同等受保护。
-  assert.equal(putGlobalSettings(store, { auxiliaryModelJson: null }), true);
-  assert.equal(store.registerRepo({
+  assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: null }), true);
+  assert.equal(await store.registerRepo({
     repoId: 71,
     owner: "acme",
     repo: "aux-override",
@@ -521,33 +521,33 @@ test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源�
     key: "aux-override-key",
   }), true);
   assert.equal(
-    store.putRepoSettings(71, 0, {
+    (await store.putRepoSettings(71, 0, {
       reviewersJson: null,
       auxiliaryModelJson: auxiliary,
       minReportSeverity: null,
       defaultBranch: null,
-    }).ok,
+    })).ok,
     true,
   );
-  assert.equal(store.removeCustomModelService(provider, 1), false, "被仓库辅助模型引用即删不动");
-  assert.equal(store.commitModelServiceVersion(1, dropSupplement), undefined, "唯一来源摘不掉");
+  assert.equal(await store.removeCustomModelService(provider, 1), false, "被仓库辅助模型引用即删不动");
+  assert.equal(await store.commitModelServiceVersion(1, dropSupplement), undefined, "唯一来源摘不掉");
 
   // 两处都清掉之后才动得了。
   assert.equal(
-    store.putRepoSettings(71, 1, {
+    (await store.putRepoSettings(71, 1, {
       reviewersJson: null,
       auxiliaryModelJson: null,
       minReportSeverity: null,
       defaultBranch: null,
-    }).ok,
+    })).ok,
     true,
   );
-  assert.equal(store.commitModelServiceVersion(1, dropSupplement), 2);
-  assert.equal(store.removeCustomModelService(provider, 2), true);
-  store.close();
+  assert.equal(await store.commitModelServiceVersion(1, dropSupplement), 2);
+  assert.equal(await store.removeCustomModelService(provider, 2), true);
+  await store.close();
 });
 
-test("冲突自定义 provider 改名原子迁移服务、全局组合与全部仓库覆盖，历史记录不动", () => {
+test("冲突自定义 provider 改名原子迁移服务、全局组合与全部仓库覆盖，历史记录不动", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -555,12 +555,12 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
     ...availableService("openai", ["global-model", "repo-model"]),
     disabledReason: "name-conflict" as const,
   };
-  assert.equal(store.commitModelServiceVersion(null, conflicted), 1);
-  assert.equal(putGlobalSettings(store, {
+  assert.equal(await store.commitModelServiceVersion(null, conflicted), 1);
+  assert.equal(await putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "openai", model: "global-model" }]),
     maxChangedLinesPerBatch: 17,
   }), true);
-  assert.equal(store.registerRepo({
+  assert.equal(await store.registerRepo({
     repoId: 41,
     owner: "acme",
     repo: "first",
@@ -568,7 +568,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
     key: "first-key",
     reviewersJson: JSON.stringify([{ provider: "openai", model: "repo-model" }]),
   }), true);
-  assert.equal(store.registerRepo({
+  assert.equal(await store.registerRepo({
     repoId: 42,
     owner: "acme",
     repo: "second",
@@ -576,7 +576,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
     key: "second-key",
     reviewersJson: JSON.stringify([{ provider: "openai", model: "global-model" }]),
   }), true);
-  store.close();
+  await store.close();
 
   const sqlite = new DatabaseSync(db.path);
   const run = sqlite.prepare(
@@ -608,15 +608,15 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   sqlite.close();
 
   const reopened = openStore(db.path);
-  const result = reopened.renameConflictingCustomModelService(
+  const result = await reopened.renameConflictingCustomModelService(
     "openai",
     "corp-openai",
     1,
     "2026-08-20T12:00:00.000Z",
   );
   assert.deepEqual(result, { status: "renamed", version: 2 });
-  assert.equal(reopened.getModelService("openai"), undefined);
-  const renamed = reopened.getModelService("corp-openai")!;
+  assert.equal(await reopened.getModelService("openai"), undefined);
+  const renamed = (await reopened.getModelService("corp-openai"))!;
   assert.equal(renamed.version, 2);
   assert.equal(renamed.disabledReason, null);
   assert.equal(renamed.credential.validationModel, "corp-openai:global-model");
@@ -624,17 +624,17 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
     "corp-openai:global-model",
     "corp-openai:repo-model",
   ]);
-  assert.deepEqual(JSON.parse(reopened.getGlobalSettings().reviewersJson!), [
+  assert.deepEqual(JSON.parse((await reopened.getGlobalSettings()).reviewersJson!), [
     { provider: "corp-openai", model: "global-model" },
   ]);
-  assert.equal(reopened.getGlobalSettings().version, 3);
-  assert.deepEqual(JSON.parse(reopened.getRepo(41)!.reviewersJson!), [
+  assert.equal((await reopened.getGlobalSettings()).version, 3);
+  assert.deepEqual(JSON.parse((await reopened.getRepo(41))!.reviewersJson!), [
     { provider: "corp-openai", model: "repo-model" },
   ]);
-  assert.deepEqual(JSON.parse(reopened.getRepo(42)!.reviewersJson!), [
+  assert.deepEqual(JSON.parse((await reopened.getRepo(42))!.reviewersJson!), [
     { provider: "corp-openai", model: "global-model" },
   ]);
-  reopened.close();
+  await reopened.close();
 
   const history = new DatabaseSync(db.path, { readOnly: true });
   assert.deepEqual({
@@ -646,11 +646,11 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   history.close();
 });
 
-test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", () => {
+test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
-  assert.equal(store.commitModelServiceVersion(null, {
+  assert.equal(await store.commitModelServiceVersion(null, {
     ...availableService("openai", ["kept"]),
     disabledReason: "name-conflict",
   }), 1);
@@ -661,11 +661,11 @@ test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", () =
   sqlite.close();
 
   const before = JSON.stringify({
-    service: store.getModelService("openai"),
-    settings: store.getGlobalSettings(),
+    service: await store.getModelService("openai"),
+    settings: await store.getGlobalSettings(),
   });
   assert.deepEqual(
-    store.renameConflictingCustomModelService("openai", "corp-openai", 1, "2026-08-20T12:00:00.000Z"),
+    await store.renameConflictingCustomModelService("openai", "corp-openai", 1, "2026-08-20T12:00:00.000Z"),
     {
       status: "missing-models",
       references: [{
@@ -677,28 +677,28 @@ test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", () =
     },
   );
   assert.equal(JSON.stringify({
-    service: store.getModelService("openai"),
-    settings: store.getGlobalSettings(),
+    service: await store.getModelService("openai"),
+    settings: await store.getGlobalSettings(),
   }), before);
-  assert.equal(store.getModelService("corp-openai"), undefined);
+  assert.equal(await store.getModelService("corp-openai"), undefined);
   assert.deepEqual(
-    store.renameConflictingCustomModelService("openai", "corp-openai", 2, "2026-08-20T12:00:00.000Z"),
+    await store.renameConflictingCustomModelService("openai", "corp-openai", 2, "2026-08-20T12:00:00.000Z"),
     { status: "version-conflict" },
   );
   assert.deepEqual(
-    store.renameConflictingCustomModelService("openai", "INVALID", 1, "2026-08-20T12:00:00.000Z"),
+    await store.renameConflictingCustomModelService("openai", "INVALID", 1, "2026-08-20T12:00:00.000Z"),
     { status: "invalid-provider" },
   );
-  assert.equal(store.getModelService("corp-openai"), undefined);
-  store.close();
+  assert.equal(await store.getModelService("corp-openai"), undefined);
+  await store.close();
 });
 
-test("Review Run 启动快照只读生效组合引用的服务密文,后续读取才看见新版本", () => {
+test("Review Run 启动快照只读生效组合引用的服务密文,后续读取才看见新版本", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
 
-  store.registerRepo({
+  await store.registerRepo({
     repoId: 7,
     owner: "acme",
     repo: "widgets",
@@ -706,7 +706,7 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
     key: "hook-key",
   });
   assert.equal(
-    store.commitModelServiceVersion(
+    await store.commitModelServiceVersion(
       null,
       availableService(
         "used",
@@ -718,7 +718,7 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
     1,
   );
   assert.equal(
-    store.commitModelServiceVersion(
+    await store.commitModelServiceVersion(
       null,
       availableService(
         "unused",
@@ -729,12 +729,12 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
     ),
     1,
   );
-  assert.equal(putGlobalSettings(store, {
+  assert.equal(await putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "used", model: "m1" }]),
     maxChangedLinesPerBatch: 17,
   }), true);
 
-  const first = store.getReviewRunSnapshot(7);
+  const first = await store.getReviewRunSnapshot(7);
   assert.deepEqual(first.reviewers, [{ provider: "used", model: "m1" }]);
   assert.equal(first.maxChangedLinesPerBatch, 17);
   assert.equal(first.modelServices.length, 1);
@@ -743,7 +743,7 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
   assert.equal(JSON.stringify(first).includes("ciphertext-must-not-cross-boundary"), false);
 
   assert.equal(
-    store.commitModelServiceVersion(
+    await store.commitModelServiceVersion(
       1,
       availableService(
         "used",
@@ -754,34 +754,34 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
     ),
     2,
   );
-  putGlobalSettings(store, {
+  await putGlobalSettings(store, {
     reviewersJson: JSON.stringify([{ provider: "used", model: "m1" }]),
     maxChangedLinesPerBatch: 999,
   });
 
   assert.equal(first.modelServices[0]!.version, 1, "已返回的快照被当前服务切版改写了");
   assert.equal(first.maxChangedLinesPerBatch, 17);
-  const second = store.getReviewRunSnapshot(7);
+  const second = await store.getReviewRunSnapshot(7);
   assert.equal(second.modelServices[0]!.version, 2);
   assert.equal(second.modelServices[0]!.credential.apiKeyEncrypted, "ciphertext-used-v2");
 
   assert.equal(second.maxChangedLinesPerBatch, 999);
-  store.close();
+  await store.close();
 });
 
-test("两个 Store handle 交错时组合写与服务来源删除互相原子阻断", () => {
+test("两个 Store handle 交错时组合写与服务来源删除互相原子阻断", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const first = openStore(db.path);
   const second = openStore(db.path);
   try {
     assert.equal(
-      first.commitModelServiceVersion(null, availableService("race", ["kept", "removed"])),
+      await first.commitModelServiceVersion(null, availableService("race", ["kept", "removed"])),
       1,
     );
-    const staleVersion = first.getModelService("race")!.version;
+    const staleVersion = (await first.getModelService("race"))!.version;
     assert.equal(
-      second.commitModelServiceVersion(
+      await second.commitModelServiceVersion(
         staleVersion,
         availableService("race", ["kept"], "ciphertext-race-v2"),
       ),
@@ -789,12 +789,12 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
     );
 
     const removedCombination = JSON.stringify([{ provider: "race", model: "removed" }]);
-    assert.equal(putGlobalSettings(first, {
+    assert.equal(await putGlobalSettings(first, {
       reviewersJson: removedCombination,
       maxChangedLinesPerBatch: 17,
     }), false, "服务先切版后，旧候选不能写进全局组合");
-    assert.equal(first.getGlobalSettings().reviewersJson, null);
-    assert.equal(first.registerRepo({
+    assert.equal((await first.getGlobalSettings()).reviewersJson, null);
+    assert.equal(await first.registerRepo({
       repoId: 91,
       owner: "acme",
       repo: "rejected-registration",
@@ -802,9 +802,9 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
       key: "rejected-key",
       reviewersJson: removedCombination,
     }), false, "注册覆盖与首把 Key 都不能留下");
-    assert.equal(first.getRepo(91), undefined);
+    assert.equal(await first.getRepo(91), undefined);
 
-    assert.equal(first.registerRepo({
+    assert.equal(await first.registerRepo({
       repoId: 92,
       owner: "acme",
       repo: "override-race",
@@ -812,7 +812,7 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
       key: "accepted-key",
     }), true);
     assert.deepEqual(
-      first.putRepoSettings(92, 0, {
+      await first.putRepoSettings(92, 0, {
         reviewersJson: removedCombination,
         auxiliaryModelJson: null,
         minReportSeverity: null,
@@ -820,32 +820,32 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
       }),
       { ok: false, reason: "unavailable" },
     );
-    assert.equal(first.getRepo(92)!.reviewersJson, null);
+    assert.equal((await first.getRepo(92))!.reviewersJson, null);
 
     const keptCombination = JSON.stringify([{ provider: "race", model: "kept" }]);
-    assert.equal(putGlobalSettings(first, {
+    assert.equal(await putGlobalSettings(first, {
       reviewersJson: keptCombination,
       maxChangedLinesPerBatch: 17,
     }), true);
-    const current = second.getModelService("race")!;
+    const current = (await second.getModelService("race"))!;
     assert.equal(
-      second.commitModelServiceVersion(
+      await second.commitModelServiceVersion(
         current.version,
         availableService("race", [], "ciphertext-race-v3"),
       ),
       undefined,
       "组合先落库后，来源删除即使版本仍匹配也必须整笔回滚",
     );
-    assert.equal(second.getModelService("race")!.version, 2);
-    assert.equal(second.removeCustomModelService("race", 2), false);
-    assert.equal(second.getModelService("race")!.version, 2);
+    assert.equal((await second.getModelService("race"))!.version, 2);
+    assert.equal(await second.removeCustomModelService("race", 2), false);
+    assert.equal((await second.getModelService("race"))!.version, 2);
   } finally {
-    second.close();
-    first.close();
+    await second.close();
+    await first.close();
   }
 });
 
-test("Review Run 审计只持久化服务版本与运行模型,不落凭据、密文或主密钥", () => {
+test("Review Run 审计只持久化服务版本与运行模型,不落凭据、密文或主密钥", async () => {
   const db = makeDbPath();
   cleanups.push(db.cleanup);
   const store = openStore(db.path);
@@ -876,7 +876,7 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
     credential: "plaintext-reviewer-secret",
     failure: null,
   };
-  store.startRun({
+  await store.startRun({
     owner: "acme",
     repo: "widgets",
     pullNumber: 7,
@@ -900,11 +900,11 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
   // 冻结快照记下这一轮用的档位:事后回看那一轮时说得出它是按哪一档跑的。
   assert.equal(persisted["thinking_level"], "high");
 
-  const projected = store.listRuns({ limit: 1 })[0]!.reviewerPins[0]!;
+  const projected = (await store.listRuns({ limit: 1 }))[0]!.reviewerPins[0]!;
   assert.equal(projected.identity, "corp:pinned-model");
   assert.equal(projected.modelServiceVersion, 9);
   assert.equal(projected.thinkingLevel, "high");
   assert.equal(projected.runtimeModel?.sources.contextWindow, "runtime-baseline");
   assert.equal(JSON.stringify(projected).includes("plaintext-reviewer-secret"), false);
-  store.close();
+  await store.close();
 });

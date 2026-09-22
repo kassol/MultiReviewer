@@ -37,12 +37,12 @@ function deps(fixture: ReturnType<typeof setupRepo>) {
 }
 
 /** 这一轮落库的全部 `reviewer_batch_finished`,按批次序号排。 */
-function batchFinished(dbPath: string): { reviewer: string; payload: Record<string, unknown> }[] {
+async function batchFinished(dbPath: string): Promise<{ reviewer: string; payload: Record<string, unknown> }[]> {
   const store = openStore(dbPath);
   try {
-    const runId = store.listRuns({ limit: 1 })[0]!.id;
-    return store
-      .listTrace(runId)
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    return (await store
+      .listTrace(runId))
       .filter((event) => event.kind === "reviewer_batch_finished")
       .map((event) => ({
         reviewer: event.reviewer!,
@@ -50,7 +50,7 @@ function batchFinished(dbPath: string): { reviewer: string; payload: Record<stri
       }))
       .sort((a, b) => (a.payload["batch"] as number) - (b.payload["batch"] as number));
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -118,7 +118,7 @@ test("每个 Reviewer × 批次一条收尾事件:给全结论、漏给结论与
   await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
   await runReview(EVENT, { ...common, reviewers: [perBatchReviewer("model-a")] });
 
-  const events = batchFinished(fixture.db.path);
+  const events = await batchFinished(fixture.db.path);
   assert.equal(events.length, 3, "三批各一条,失败的那一批同样有");
   assert.ok(
     events.every((event) => event.reviewer === "model-a"),
@@ -184,12 +184,12 @@ test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得
   await runReview(EVENT, { ...common, reviewers: [perBatchReviewer("model-a")] });
 
   const store = openStore(fixture.db.path);
-  const runId = store.listRuns({ limit: 1 })[0]!.id;
-  const batchEnds = store
-    .listTrace(runId)
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  const batchEnds = (await store
+    .listTrace(runId))
     .filter((event) => event.kind === "reviewer_batch_finished")
     .map((event) => event.payload as Record<string, number | boolean>);
-  store.close();
+  await store.close();
 
   // 跑完了却没给的那些:失败的那一批不算,它没跑。
   const skipped = batchEnds
@@ -230,7 +230,7 @@ test("只复核那一轮的批次同样落这条事件,报出条数恒为 0", as
     reviewers: [verdictReviewer("model-b", "present")],
   });
 
-  const events = batchFinished(fixture.db.path);
+  const events = await batchFinished(fixture.db.path);
   assert.deepEqual(
     events.map((event) => ({
       batch: event.payload["batch"],
