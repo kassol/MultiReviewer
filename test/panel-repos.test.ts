@@ -893,7 +893,7 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     maxChangedLinesPerBatch: null,
   }), true);
   seed.close();
-  const server = createWebhookServer({
+  const server = await createWebhookServer({
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,

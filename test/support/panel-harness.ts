@@ -361,7 +361,7 @@ export async function startPanelHarness(
   const revisionIntents = counter<{ intentId: number; failure?: string }>();
   const scheduledChecks = counter<{ rangeReviewId: number; result: ScheduledCheckResult }>();
 
-  const server = createWebhookServer({
+  const server = await createWebhookServer({
     forges: { gitea: forge },
     ...(options.drain === undefined ? {} : { drain: options.drain }),
     buildReviewers: (plans) => {

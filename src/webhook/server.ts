@@ -17,7 +17,6 @@ import {
 } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
 
-import { isThenable } from "../async.ts";
 import {
   assertReviewerSpecs,
   GLOBAL_REVIEWERS_CONTEXT,
@@ -128,6 +127,7 @@ import {
   modelServiceTargetFingerprint,
   modelServiceTargetSetFingerprint,
   normalizeModelServiceTargets,
+  asyncStore,
   openStore,
   runFailureText,
   storedReviewersEmpty,
@@ -137,6 +137,7 @@ import {
   type AgentSessionBaseline,
   type AgentSessionPurpose,
   type AgentSessionRecord,
+  type AsyncStore,
   type BatchLimitField,
   type ComparisonSource,
   type FindingDispositionTarget,
@@ -151,6 +152,7 @@ import {
   type ProductRepoRecord,
   type ProductSpecRecord,
   type ProductTicketLabel,
+  type ProductTicketCommentRecord,
   type ProductTicketRecord,
   type ProductTrackerState,
   type RangeReviewRecord,
@@ -622,9 +624,9 @@ function logFailure(event: NormalizedEvent, error?: unknown): void {
 }
 
 /** 幂等:同一个「仓库 + head commit」只有第一次领得走。 */
-function claim(dbPath: string, event: NormalizedEvent): boolean {
-  return withStore(dbPath, (store) =>
-    store.claimDelivery(event.owner, event.repo, event.headSha),
+async function claim(dbPath: string, event: NormalizedEvent): Promise<boolean> {
+  return await withStore(dbPath, async (store) =>
+    await store.claimDelivery(event.owner, event.repo, event.headSha),
   );
 }
 
@@ -667,29 +669,31 @@ function describeRepo(payload: unknown, repoId: number): string {
 /**
  * 开库执行一段读写,用完即关——webhook 层用库的既有约定,短开短关。
  *
- * 回调可同步可异步(issue #459):返回 Promise 时这里也返回 Promise,库等它跑完才关。
+ * 回调拿到的是异步门面(issue #446):方法同名、调用前加 `await`,底下仍是同一条连接、
+ * 同一次同步调用。库等回调跑完才关,因此回调里的每一次 `await` 都还在这次开库之内。
+ *
+ * 第二个参数是同一条连接的同步那一份,**只为还没迁的跨模块函数**留着——`run.ts` 的
+ * `effectiveMinReportSeverity` / `disposeAbsentHistory` 与 `trace.ts` 的 `createTraceRecorder`
+ * 收的是同步 `Store`(issue #447),这里不替它们改签名。自己这一侧一律走第一个参数;
+ * 那几处迁完之后这一格跟着删。
  */
-function withStore<T>(dbPath: string, fn: (store: Store) => T): T {
+async function withStore<T>(
+  dbPath: string,
+  fn: (store: AsyncStore, sync: Store) => T | Promise<T>,
+): Promise<T> {
   const store = openStore(dbPath);
-  let result: T;
   try {
-    result = fn(store);
-  } catch (error) {
+    return await fn(asyncStore(store), store);
+  } finally {
     store.close();
-    throw error;
   }
-  if (!isThenable(result)) {
-    store.close();
-    return result;
-  }
-  return Promise.resolve(result).finally(() => store.close()) as T;
 }
 
 /** 审查策略。模型组合与分批上限与批次并发数都在库里,用时读一次。 */
-function globalSettings(deps: WebhookServerDeps): GlobalSettings & {
+async function globalSettings(deps: WebhookServerDeps): Promise<GlobalSettings & {
   reviewers: ReviewerSpec[];
-} {
-  const row = withStore(deps.dbPath, (store) => store.getGlobalSettings());
+}> {
+  const row = await withStore(deps.dbPath, async (store) => await store.getGlobalSettings());
   return { ...row, reviewers: parseGlobalReviewers(row.reviewersJson) };
 }
 
@@ -986,13 +990,13 @@ async function buildRunPlan(
    */
   frozenAuxiliaryModel?: ReviewerSpec | null,
 ): Promise<ReviewRunPlan> {
-  const snapshot = withStore(deps.dbPath, (store) => store.getReviewRunSnapshot(repoId));
+  const snapshot = await withStore(deps.dbPath, async (store) => await store.getReviewRunSnapshot(repoId));
   const plans = await materializeReviewerPlans(deps, snapshot.modelServices, snapshot.reviewers);
   // 辅助模型开跑时解析一次(CONTEXT.md 辅助模型,ADR 0029):仓库覆盖 ?? 全局 ?? 生效
   // 组合第一个,最后那一档与这一票之前的 `plans[0]` 等价。
   const auxiliaryModel =
     frozenAuxiliaryModel === undefined
-      ? withStore(deps.dbPath, (store) => store.resolveAuxiliaryModel(repoId))?.spec ?? null
+      ? (await withStore(deps.dbPath, async (store) => await store.resolveAuxiliaryModel(repoId)))?.spec ?? null
       : frozenAuxiliaryModel;
   return createReviewRunPlan(
     repoId,
@@ -1036,8 +1040,8 @@ async function mergeAgentFor(
 
 type Admission = { keys: RepoKey[] };
 
-function lookupAdmission(dbPath: string, repoId: number): Admission {
-  return withStore(dbPath, (store) => ({ keys: store.listRepoKeys(repoId) }));
+async function lookupAdmission(dbPath: string, repoId: number): Promise<Admission> {
+  return await withStore(dbPath, async (store) => ({ keys: await store.listRepoKeys(repoId) }));
 }
 
 /**
@@ -1048,8 +1052,8 @@ function lookupAdmission(dbPath: string, repoId: number): Admission {
  * 挡在启动运行计划之前:未确认的仓库连快照都不取,Run 根本不会开始,冻结知识集版本
  * 那一步(issue #204)因此永远读不到「没有版本」的仓库。
  */
-function ruleSetUnconfirmed(dbPath: string, repoId: number): boolean {
-  return withStore(dbPath, (store) => store.getRuleSet(repoId)?.version ?? null) === null;
+async function ruleSetUnconfirmed(dbPath: string, repoId: number): Promise<boolean> {
+  return await withStore(dbPath, async (store) => (await store.getRuleSet(repoId))?.version ?? null) === null;
 }
 
 /** 未确认知识集时拒绝发起审查的那句话。三个发起入口共用,措辞一致。 */
@@ -1138,9 +1142,9 @@ async function runClosedBackfill(
     forge.listReviewBodies(event),
   ]);
   const updates = backfillUpdates(comments, bodies);
-  withStore(deps.dbPath, (store) => {
-    store.backfillDispositions(event.owner, event.repo, event.number, updates);
-    store.markPullRequestState(event.owner, event.repo, event.number, "closed");
+  await withStore(deps.dbPath, async (store) => {
+    await store.backfillDispositions(event.owner, event.repo, event.number, updates);
+    await store.markPullRequestState(event.owner, event.repo, event.number, "closed");
   });
 }
 
@@ -1187,7 +1191,7 @@ async function handle(
   const repoId = repoIdOf(payload);
   if (repoId === undefined) return send(res, 401);
 
-  const admission = lookupAdmission(deps.dbPath, repoId);
+  const admission = await lookupAdmission(deps.dbPath, repoId);
   const keys = admission.keys;
   if (keys.length === 0) {
     logOnce(`unregistered:${repoId}`, `仓库 ${describeRepo(payload, repoId)} 未注册,回 401`);
@@ -1248,8 +1252,8 @@ async function handle(
   // 「unknown 按 PR 状态区分」隐含状态要跟随 PR)。
   if (event.action === "reopened") {
     log(`${describe(event)} — PR 重新打开,清掉关闭标记`);
-    withStore(deps.dbPath, (store) =>
-      store.markPullRequestState(event.owner, event.repo, event.number, null),
+    await withStore(deps.dbPath, async (store) =>
+      await store.markPullRequestState(event.owner, event.repo, event.number, null),
     );
     return send(res, 200);
   }
@@ -1284,7 +1288,7 @@ async function handle(
 
   // 门禁分代(issue #206):投递照常受理(验签、记录),只是不跑 Run。知识确认一完成
   // 下一次投递即放行,不需要重启。
-  if (ruleSetUnconfirmed(deps.dbPath, repoId)) {
+  if (await ruleSetUnconfirmed(deps.dbPath, repoId)) {
     log(`${describe(event)} — 知识集还没确认,只记录不审`);
     return send(res, 200);
   }
@@ -1309,7 +1313,7 @@ async function handle(
     return send(res, 200);
   }
 
-  if (!claim(deps.dbPath, event)) {
+  if (!(await claim(deps.dbPath, event))) {
     log(`${describe(event)} — 这个 head commit 已经审过,跳过`);
     return send(res, 200);
   }
@@ -1351,15 +1355,15 @@ function versionConflict(
  * 当前版本号一并回给面板。八条写路径(三条提交、模型状态、刷新、两处补录、删除与改名)
  * 都在这里读那一次,措辞各自传入。
  */
-function staleVersionConflict(
+async function staleVersionConflict(
   res: ServerResponse,
   deps: WebhookServerDeps,
   provider: string,
   expectedVersion: number | null,
   error?: string,
-): void {
-  const actualVersion = withStore(deps.dbPath, (store) =>
-    store.getModelService(provider)?.version ?? null,
+): Promise<void> {
+  const actualVersion = await withStore(deps.dbPath, async (store) =>
+    (await store.getModelService(provider))?.version ?? null,
   );
   return versionConflict(res, expectedVersion, actualVersion, error);
 }
@@ -1453,16 +1457,18 @@ const ASSIGNMENT_UNRESTRICTED: RepoAssignment = {
  * 因此这里一次把两种形式都取好。仓库移除后它的历史评审记录不再可见——注册表里
  * 没有行,分配也随之级联删掉了。
  */
-function repoAssignment(deps: WebhookServerDeps, repoIds: readonly number[] | null): RepoAssignment {
+async function repoAssignment(deps: WebhookServerDeps, repoIds: readonly number[] | null): Promise<RepoAssignment> {
   if (repoIds === null) return ASSIGNMENT_UNRESTRICTED;
   const ids = new Set(repoIds);
   // 按 id 逐行取,不走 `listRepos`:那一份带着每个仓库的累计量,而这里只要名字。
-  const refs = withStore(deps.dbPath, (store) =>
-    repoIds.flatMap((repoId) => {
-      const row = store.getRepo(repoId);
-      return row === undefined ? [] : [{ owner: row.owner, repo: row.repo }];
-    }),
-  );
+  const refs = await withStore(deps.dbPath, async (store) => {
+    const found: RepoRef[] = [];
+    for (const repoId of repoIds) {
+      const row = await store.getRepo(repoId);
+      if (row !== undefined) found.push({ owner: row.owner, repo: row.repo });
+    }
+    return found;
+  });
   return {
     refs,
     allowsId: (repoId) => ids.has(repoId),
@@ -1471,12 +1477,12 @@ function repoAssignment(deps: WebhookServerDeps, repoIds: readonly number[] | nu
 }
 
 /** 库里那一行的仓库在不在分配内。查不到就放行,那一档由 handler 回它自己的 404。 */
-function rowAllowed(
+async function rowAllowed(
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
-  read: (store: Store) => { owner: string; repo: string } | undefined,
-): boolean {
-  const row = withStore(deps.dbPath, read);
+  read: (store: AsyncStore) => Promise<{ owner: string; repo: string } | undefined>,
+): Promise<boolean> {
+  const row = await withStore(deps.dbPath, read);
   return row === undefined || assignment.allows(row.owner, row.repo);
 }
 
@@ -1497,7 +1503,7 @@ const ASSIGNMENT_TARGETS: {
       assignment: RepoAssignment,
       id: number,
       req: IncomingMessage,
-    ): boolean;
+    ): boolean | Promise<boolean>;
     missText(id: number): string;
   };
 } = {
@@ -1506,24 +1512,24 @@ const ASSIGNMENT_TARGETS: {
     missText: (id) => `没有 repo id 为 ${id} 的注册仓库`,
   },
   run: {
-    allows: (deps, assignment, id) => rowAllowed(deps, assignment, (store) => store.getRunRange(id)),
+    allows: async (deps, assignment, id) => await rowAllowed(deps, assignment, async (store) => await store.getRunRange(id)),
     missText: () => "没有这一轮 Review Run",
   },
   "range-review": {
-    allows: (deps, assignment, id) =>
-      rowAllowed(deps, assignment, (store) => store.getRangeReview(id)),
+    allows: async (deps, assignment, id) =>
+      await rowAllowed(deps, assignment, async (store) => await store.getRangeReview(id)),
     missText: () => "没有这个范围审查",
   },
   finding: {
-    allows: (deps, assignment, id) => rowAllowed(deps, assignment, (store) => store.getFinding(id)),
+    allows: async (deps, assignment, id) => await rowAllowed(deps, assignment, async (store) => await store.getFinding(id)),
     missText: () => "没有这条 Finding",
   },
   // 产品的可见性:对产品内至少一个仓库有仓库分配即可读(CONTEXT.md 产品,与 ADR 0018
   // 同律)。一个仓库都没分到的人因此读不到任何产品;产品本身不存在时照旧放行,那一档
   // 由 handler 回它自己的 404。
   product: {
-    allows: (deps, assignment, id) => {
-      const product = withStore(deps.dbPath, (store) => store.getProduct(id));
+    allows: async (deps, assignment, id) => {
+      const product = await withStore(deps.dbPath, async (store) => await store.getProduct(id));
       return (
         product === undefined ||
         product.repos.some((row) => assignment.allows(row.owner, row.repo))
@@ -1541,7 +1547,7 @@ const ASSIGNMENT_TARGETS: {
       const rangeReviewRaw = query.get("rangeReviewId");
       if (rangeReviewRaw === null) return true;
       const rangeReviewId = Number(rangeReviewRaw);
-      return rowAllowed(deps, assignment, (store) => store.getRangeReview(rangeReviewId));
+      return rowAllowed(deps, assignment, async (store) => await store.getRangeReview(rangeReviewId));
     },
     missText: () => "没有这个仓库",
   },
@@ -1556,15 +1562,15 @@ function targetId(target: PanelAssignmentTarget, match: RegExpMatchArray | undef
  * 这个请求的目标是不是在分配内。目标本身不存在时放行:那一档由 handler 回它自己的
  * 404,过滤层不替它判「不存在」。
  */
-function assignmentAllowsTarget(
+async function assignmentAllowsTarget(
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
   target: PanelAssignmentTarget,
   req: IncomingMessage,
   match: RegExpMatchArray | undefined,
-): boolean {
+): Promise<boolean> {
   if (assignment.refs === undefined) return true;
-  return ASSIGNMENT_TARGETS[target.by].allows(deps, assignment, targetId(target, match), req);
+  return await ASSIGNMENT_TARGETS[target.by].allows(deps, assignment, targetId(target, match), req);
 }
 
 /** 分配外的目标与不存在同形:404 的措辞跟着 handler 自己那一句。 */
@@ -1590,10 +1596,10 @@ function panelPermissionGranted(
 /** 自定义模型服务名与删除路由共用的字符和长度边界。 */
 const CUSTOM_PROVIDER_NAME = CUSTOM_PROVIDER_NAME_PATTERN;
 
-function listRepos(res: ServerResponse, deps: WebhookServerDeps, assignment: RepoAssignment): void {
-  const { repos, global } = withStore(deps.dbPath, (store) => ({
-    repos: store.listRepos(),
-    global: store.getGlobalSettings().minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
+async function listRepos(res: ServerResponse, deps: WebhookServerDeps, assignment: RepoAssignment): Promise<void> {
+  const { repos, global } = await withStore(deps.dbPath, async (store) => ({
+    repos: await store.listRepos(),
+    global: (await store.getGlobalSettings()).minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
   }));
   const rows = repos.filter((row) => assignment.allowsId(row.repoId));
   return sendJson(
@@ -1638,7 +1644,7 @@ async function handleLogin(
   }
   const username = payload.username;
   const password = payload.password;
-  const user = withStore(deps.dbPath, (store) => store.getPanelUser(username));
+  const user = await withStore(deps.dbPath, async (store) => await store.getPanelUser(username));
   const outcome = await auth(
     user === undefined ? { username } : { username: user.username, passwordHash: user.passwordHash },
     password,
@@ -1653,8 +1659,8 @@ async function handleLogin(
   const raw = randomBytes(32).toString("hex");
   const now = deps.now ?? Date.now;
   const createdAt = new Date(now()).toISOString();
-  withStore(deps.dbPath, (store) =>
-    store.createPanelSession({
+  await withStore(deps.dbPath, async (store) =>
+    await store.createPanelSession({
       sessionHash: sessionHash(raw),
       username,
       createdAt,
@@ -1674,7 +1680,7 @@ async function handleBootstrapRegister(
   bootstrapSecret: () => string | undefined,
   clearBootstrap: () => void,
 ): Promise<void> {
-  if (withStore(deps.dbPath, (store) => store.countPanelUsers()) !== 0) {
+  if (await withStore(deps.dbPath, async (store) => await store.countPanelUsers()) !== 0) {
     return sendJson(res, 409, { error: "实例已初始化,找管理员建号" });
   }
   const ip = req.socket.remoteAddress ?? "";
@@ -1714,8 +1720,8 @@ async function handleBootstrapRegister(
   bootstrapFailures.delete(ip);
   const now = new Date((deps.now ?? Date.now)()).toISOString();
   const passwordHash = await hashPassword(password);
-  const created = withStore(deps.dbPath, (store) =>
-    store.registerFirstPanelUser({
+  const created = await withStore(deps.dbPath, async (store) =>
+    await store.registerFirstPanelUser({
       username,
       displayName: null,
       passwordHash,
@@ -1730,30 +1736,30 @@ async function handleBootstrapRegister(
   return sendJson(res, 201, { username, isSystemAdmin: true });
 }
 
-function panelSession(req: IncomingMessage, deps: WebhookServerDeps) {
+async function panelSession(req: IncomingMessage, deps: WebhookServerDeps) {
   const raw = cookieValue(req.headers.cookie, SESSION_COOKIE);
   if (raw === undefined) return undefined;
   const hash = sessionHash(raw);
-  return withStore(deps.dbPath, (store) => {
-    const session = store.getPanelSession(hash);
+  return await withStore(deps.dbPath, async (store) => {
+    const session = await store.getPanelSession(hash);
     if (session === undefined) return undefined;
     const now = (deps.now ?? Date.now)();
     const expiry = Date.parse(session.expiresAt);
     if (expiry <= now) {
-      store.removePanelSession(hash);
+      await store.removePanelSession(hash);
       return undefined;
     }
     let renewed = false;
     if (expiry - now < SESSION_TTL_MS / 2) {
-      store.renewPanelSession(hash, new Date(now + SESSION_TTL_MS).toISOString());
+      await store.renewPanelSession(hash, new Date(now + SESSION_TTL_MS).toISOString());
       renewed = true;
     }
     const storedPermissions =
       session.roleId === null
         ? []
-        : (store.listPanelRoles().find((role) => role.id === session.roleId)?.permissions ?? []);
+        : ((await store.listPanelRoles()).find((role) => role.id === session.roleId)?.permissions ?? []);
     const permissions = effectivePanelPermissions(storedPermissions);
-    const users = store.listPanelUsers();
+    const users = await store.listPanelUsers();
     const systemAdmins = users
       .filter((user) => user.isSystemAdmin)
       .map((user) => user.displayName ?? user.username);
@@ -1779,8 +1785,8 @@ function parseRepoIds(value: unknown): number[] | null | "invalid" {
 async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps) {
   if (req.method === "GET") {
     return sendJson(res, 200, {
-      users: withStore(deps.dbPath, (store) =>
-        store.listPanelUsers().map(({ passwordHash: _passwordHash, ...user }) => user),
+      users: await withStore(deps.dbPath, async (store) =>
+        (await store.listPanelUsers()).map(({ passwordHash: _passwordHash, ...user }) => user),
       ),
     });
   }
@@ -1803,12 +1809,12 @@ async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps:
   const displayName = value.displayName === undefined ? null : value.displayName;
   const password = value.password;
   const username = value.username;
-  const existsInHistory = withStore(deps.dbPath, (store) => store.hasHistoricalRunTrigger(username));
+  const existsInHistory = await withStore(deps.dbPath, async (store) => await store.hasHistoricalRunTrigger(username));
   if (existsInHistory) return sendJson(res, 409, { error: "这个用户名在评审记录里出现过,换一个" });
   const passwordHash = await hashPassword(password);
   try {
-    withStore(deps.dbPath, (store) => {
-      store.createPanelUser({
+    await withStore(deps.dbPath, async (store) => {
+      await store.createPanelUser({
         username,
         displayName,
         passwordHash,
@@ -1817,7 +1823,7 @@ async function handlePanelUsers(req: IncomingMessage, res: ServerResponse, deps:
         isSystemAdmin: false,
         roleId: null,
       });
-      if (repoIds !== null) store.setPanelUserAssignment(username, repoIds);
+      if (repoIds !== null) await store.setPanelUserAssignment(username, repoIds);
     });
   } catch {
     return sendJson(res, 409, { error: "用户名已存在" });
@@ -1831,18 +1837,15 @@ async function handlePanelUser(
   username: string,
 ) {
   if (req.method === "DELETE") {
-    const store = openStore(deps.dbPath);
-    try {
-      const prior = store.getPanelUser(username);
+    return await withStore(deps.dbPath, async (store) => {
+      const prior = await store.getPanelUser(username);
       if (prior === undefined) return sendJson(res, 404, { error: "用户不存在" });
-      if (prior.isSystemAdmin && store.listPanelUsers().filter((user) => user.isSystemAdmin).length === 1) {
+      if (prior.isSystemAdmin && (await store.listPanelUsers()).filter((user) => user.isSystemAdmin).length === 1) {
         return sendJson(res, 409, { error: "不能删除最后一个系统管理员" });
       }
-      store.removePanelUser(username);
+      await store.removePanelUser(username);
       return send(res, 204);
-    } finally {
-      store.close();
-    }
+    });
   }
   const value = await readJson<{
     displayName?: unknown;
@@ -1862,9 +1865,9 @@ async function handlePanelUser(
   const displayName = value.displayName;
   const roleId = value.roleId;
   const isSystemAdmin = value.isSystemAdmin;
-  const result = withStore(deps.dbPath, (store) => {
-    const outcome = store.updatePanelUser(username, { displayName, roleId, isSystemAdmin });
-    if (outcome === "updated" && repoIds !== null) store.setPanelUserAssignment(username, repoIds);
+  const result = await withStore(deps.dbPath, async (store) => {
+    const outcome = await store.updatePanelUser(username, { displayName, roleId, isSystemAdmin });
+    if (outcome === "updated" && repoIds !== null) await store.setPanelUserAssignment(username, repoIds);
     return outcome;
   });
   if (result === "missing") return sendJson(res, 404, { error: "用户不存在" });
@@ -1882,7 +1885,7 @@ async function handleResetPanelPassword(
   if (value === undefined) return;
   if (value === null || typeof value.password !== "string") return sendJson(res, 400, { error: "密码形状不对" });
   const passwordHash = await hashPassword(value.password);
-  const updated = withStore(deps.dbPath, (store) => store.resetPanelPassword(username, passwordHash));
+  const updated = await withStore(deps.dbPath, async (store) => await store.resetPanelPassword(username, passwordHash));
   return updated ? send(res, 204) : sendJson(res, 404, { error: "用户不存在" });
 }
 
@@ -1898,15 +1901,15 @@ async function handleSelfPassword(
   const passwordHash = await hashPassword(value.password);
   const raw = cookieValue(req.headers.cookie, SESSION_COOKIE)!;
   const current = sessionHash(raw);
-  withStore(deps.dbPath, (store) => {
-    store.updatePanelPassword(caller.username, passwordHash, false);
-    store.removePanelSessions(caller.username, current);
+  await withStore(deps.dbPath, async (store) => {
+    await store.updatePanelPassword(caller.username, passwordHash, false);
+    await store.removePanelSessions(caller.username, current);
   });
   return send(res, 204);
 }
 async function handlePanelRoles(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps) {
   if (req.method === "GET") {
-    return sendJson(res, 200, { roles: withStore(deps.dbPath, (store) => store.listPanelRoles()) });
+    return sendJson(res, 200, { roles: await withStore(deps.dbPath, async (store) => await store.listPanelRoles()) });
   }
   const value = await readJson<{ name?: unknown; permissions?: unknown } | null>(req, res);
   if (value === undefined) return;
@@ -1921,8 +1924,8 @@ async function handlePanelRoles(req: IncomingMessage, res: ServerResponse, deps:
   }
   const name = value.name;
   try {
-    const role = withStore(deps.dbPath, (store) =>
-      store.createPanelRole({ name, permissions, createdAt: new Date((deps.now ?? Date.now)()).toISOString() }),
+    const role = await withStore(deps.dbPath, async (store) =>
+      await store.createPanelRole({ name, permissions, createdAt: new Date((deps.now ?? Date.now)()).toISOString() }),
     );
     return sendJson(res, 201, role);
   } catch {
@@ -1932,7 +1935,7 @@ async function handlePanelRoles(req: IncomingMessage, res: ServerResponse, deps:
 
 async function handlePanelRole(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps, id: number) {
   if (req.method === "DELETE") {
-    const result = withStore(deps.dbPath, (store) => store.removePanelRole(id));
+    const result = await withStore(deps.dbPath, async (store) => await store.removePanelRole(id));
     if (result.usernames.length > 0) return sendJson(res, 409, { error: "角色仍在使用", usernames: result.usernames });
     return result.removed ? send(res, 204) : sendJson(res, 404, { error: "角色不存在" });
   }
@@ -1942,14 +1945,14 @@ async function handlePanelRole(req: IncomingMessage, res: ServerResponse, deps: 
   const permissions = value.permissions.filter((permission): permission is string => typeof permission === "string");
   if (permissions.length !== value.permissions.length || !permissions.every(isPanelPermission)) return sendJson(res, 400, { error: "有认不出的权限格" });
   const name = value.name;
-  const role = withStore(deps.dbPath, (store) => store.updatePanelRole(id, { name, permissions }));
+  const role = await withStore(deps.dbPath, async (store) => await store.updatePanelRole(id, { name, permissions }));
   return role === undefined ? sendJson(res, 404, { error: "角色不存在" }) : sendJson(res, 200, role);
 }
 
-function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps): void {
+async function handleLogout(req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
   const raw = cookieValue(req.headers.cookie, SESSION_COOKIE);
   if (raw !== undefined) {
-    withStore(deps.dbPath, (store) => store.removePanelSession(sessionHash(raw)));
+    await withStore(deps.dbPath, async (store) => await store.removePanelSession(sessionHash(raw)));
   }
   res.writeHead(204, { "set-cookie": sessionCookieHeader("", 0) });
   res.end();
@@ -1976,12 +1979,12 @@ const PRODUCT_ROLE_SHAPE = `仓库职责要是最多 ${PRODUCT_NAME_MAX} 个字�
  * 产品列表(CONTEXT.md 产品)。按仓库分配收窄而不是拒绝:产品内至少有一个仓库在分配里
  * 才出现在这一份里,一个仓库都没分到的人拿到的是空列表。系统管理员不受限。
  */
-function handleListProducts(
+async function handleListProducts(
   res: ServerResponse,
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
-): void {
-  const products = withStore(deps.dbPath, (store) => store.listProducts());
+): Promise<void> {
+  const products = await withStore(deps.dbPath, async (store) => await store.listProducts());
   return sendJson(res, 200, {
     products: products.filter(
       (product) =>
@@ -2000,16 +2003,16 @@ function handleListProducts(
  * 一张带状态的列表,都是同一份条目的不同排法。出处附注一起给——它在产品页上展开可见,只是
  * 不进任何提示(ADR 0035)。
  */
-function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: number): void {
-  const read = withStore(deps.dbPath, (store) => {
-    const product = store.getProduct(productId);
+async function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: number): Promise<void> {
+  const read = await withStore(deps.dbPath, async (store) => {
+    const product = await store.getProduct(productId);
     return product === undefined
       ? undefined
       : {
           product,
-          knowledge: store.listProductKnowledge(productId),
-          specs: store.listProductSpecs(productId),
-          tickets: store.listProductTickets(productId),
+          knowledge: await store.listProductKnowledge(productId),
+          specs: await store.listProductSpecs(productId),
+          tickets: await store.listProductTickets(productId),
         };
   });
   return read === undefined
@@ -2055,15 +2058,15 @@ function handleProduct(res: ServerResponse, deps: WebhookServerDeps, productId: 
 const NO_SUCH_PRODUCT_SPEC = "没有这条 spec";
 
 /** 一条 spec 连同它的票,都带正文。产品下没有这一条即 undefined。 */
-function readProductSpec(
+async function readProductSpec(
   deps: WebhookServerDeps,
   productId: number,
   specId: number,
-): { spec: ProductSpecRecord; tickets: ProductTicketRecord[] } | undefined {
-  return withStore(deps.dbPath, (store) => {
-    const spec = store.getProductSpec(specId);
+): Promise<{ spec: ProductSpecRecord; tickets: ProductTicketRecord[] } | undefined> {
+  return await withStore(deps.dbPath, async (store) => {
+    const spec = await store.getProductSpec(specId);
     if (spec === undefined || spec.productId !== productId) return undefined;
-    const tickets = store.listProductTickets(productId).filter((one) => one.specId === specId);
+    const tickets = (await store.listProductTickets(productId)).filter((one) => one.specId === specId);
     return { spec, tickets };
   });
 }
@@ -2072,17 +2075,22 @@ function readProductSpec(
  * 一条 spec 的全文与它那几张票的全文(CONTEXT.md spec,issue #361)。票带评论:一张票要看的
  * 就是这些。可见性随产品,分配外的产品已经被路由上的 `product` 目标判成 404。
  */
-function handleProductSpec(
+async function handleProductSpec(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
   specId: number,
-): void {
-  const read = readProductSpec(deps, productId, specId);
+): Promise<void> {
+  const read = await readProductSpec(deps, productId, specId);
   if (read === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT_SPEC });
-  const comments = withStore(deps.dbPath, (store) =>
-    read.tickets.map((ticket) => store.listProductTicketComments(ticket.id)),
-  );
+  // 逐条按票的次序取:下面的 `comments[index]` 靠这个次序与票对齐。
+  const comments = await withStore(deps.dbPath, async (store) => {
+    const perTicket: (readonly ProductTicketCommentRecord[])[] = [];
+    for (const ticket of read.tickets) {
+      perTicket.push(await store.listProductTicketComments(ticket.id));
+    }
+    return perTicket;
+  });
   return sendJson(res, 200, {
     spec: {
       id: read.spec.id,
@@ -2109,13 +2117,13 @@ function handleProductSpec(
  * 一条 spec 连它的票导出成一份 Markdown(US 27)。票按依赖顺序:拿到手上从第一张往下做。
  * 回的是 `text/markdown`,人在浏览器里另存即可。
  */
-function handleExportProductSpec(
+async function handleExportProductSpec(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
   specId: number,
-): void {
-  const read = readProductSpec(deps, productId, specId);
+): Promise<void> {
+  const read = await readProductSpec(deps, productId, specId);
   if (read === undefined) return sendJson(res, 404, { error: NO_SUCH_PRODUCT_SPEC });
   res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
   res.end(specMarkdown(read.spec, read.tickets));
@@ -2165,11 +2173,11 @@ async function handleSetProductSpecState(
     return sendJson(res, 400, { error: 'body 要是 {"state": "open" | "closed"} 形状的 JSON' });
   }
   const at = new Date((deps.now ?? Date.now)()).toISOString();
-  const spec = withStore(deps.dbPath, (store) => {
-    const row = store.getProductSpec(specId);
+  const spec = await withStore(deps.dbPath, async (store) => {
+    const row = await store.getProductSpec(specId);
     if (row === undefined || row.productId !== productId) return undefined;
-    store.setProductSpecState(specId, state, at);
-    return store.getProductSpec(specId)!;
+    await store.setProductSpecState(specId, state, at);
+    return (await store.getProductSpec(specId))!;
   });
   return spec === undefined
     ? sendJson(res, 404, { error: NO_SUCH_PRODUCT_SPEC })
@@ -2235,8 +2243,8 @@ async function handleUpdateProductTicket(
   }
 
   const at = new Date((deps.now ?? Date.now)()).toISOString();
-  const done = withStore(deps.dbPath, (store) => {
-    const row = store.getProductTicket(ticketId);
+  const done = await withStore(deps.dbPath, async (store) => {
+    const row = await store.getProductTicket(ticketId);
     if (row === undefined || row.productId !== productId) return "no-ticket" as const;
     const claimant = payload?.claimed === true ? caller.username : null;
     // 动手的是谁:这一格空着或正是他自己才改得动。系统管理员**取消认领**时把「他自己」换成
@@ -2245,12 +2253,12 @@ async function handleUpdateProductTicket(
       caller.isSystemAdmin && claimant === null
         ? (row.claimedBy ?? caller.username)
         : caller.username;
-    if (wantsClaim && !store.setProductTicketClaim(ticketId, claimant, by)) {
+    if (wantsClaim && !await store.setProductTicketClaim(ticketId, claimant, by)) {
       return "claimed-by-another" as const;
     }
-    if (wantsLabel) store.setProductTicketLabel(ticketId, label);
-    if (wantsState) store.setProductTicketState(ticketId, state!, at);
-    return store.getProductTicket(ticketId)!;
+    if (wantsLabel) await store.setProductTicketLabel(ticketId, label);
+    if (wantsState) await store.setProductTicketState(ticketId, state!, at);
+    return (await store.getProductTicket(ticketId))!;
   });
   if (done === "no-ticket") return sendJson(res, 404, { error: NO_SUCH_PRODUCT_TICKET });
   if (done === "claimed-by-another") {
@@ -2286,10 +2294,10 @@ async function handleCommentProductTicket(
     return sendJson(res, 400, { error: `一条评论不能超过 ${TICKET_COMMENT_MAX} 字` });
   }
   const at = new Date((deps.now ?? Date.now)()).toISOString();
-  const comment = withStore(deps.dbPath, (store) => {
-    const row = store.getProductTicket(ticketId);
+  const comment = await withStore(deps.dbPath, async (store) => {
+    const row = await store.getProductTicket(ticketId);
     if (row === undefined || row.productId !== productId) return undefined;
-    return store.addProductTicketComment({
+    return await store.addProductTicketComment({
       ticketId,
       author: caller,
       sessionId: null,
@@ -2312,8 +2320,8 @@ async function handleCreateProduct(
   const name = productName(payload?.name);
   if (name === undefined) return sendJson(res, 400, { error: PRODUCT_NAME_SHAPE });
   try {
-    const product = withStore(deps.dbPath, (store) =>
-      store.createProduct({ name, createdAt: new Date((deps.now ?? Date.now)()).toISOString() }),
+    const product = await withStore(deps.dbPath, async (store) =>
+      await store.createProduct({ name, createdAt: new Date((deps.now ?? Date.now)()).toISOString() }),
     );
     return sendJson(res, 201, { product });
   } catch {
@@ -2332,7 +2340,7 @@ async function handleRenameProduct(
   const name = productName(payload?.name);
   if (name === undefined) return sendJson(res, 400, { error: PRODUCT_NAME_SHAPE });
   try {
-    const renamed = withStore(deps.dbPath, (store) => store.renameProduct(productId, name));
+    const renamed = await withStore(deps.dbPath, async (store) => await store.renameProduct(productId, name));
     return renamed ? send(res, 204) : sendJson(res, 404, { error: NO_SUCH_PRODUCT });
   } catch {
     return sendJson(res, 409, { error: PRODUCT_NAME_TAKEN });
@@ -2343,16 +2351,16 @@ async function handleRenameProduct(
  * 删产品。回应带级联条数:产品下的 Agent 会话连记录、产出与图片一并硬删(spec #329),
  * 面板的确认框照这个字段写。记录、产出与图片那几张表随后面的票建起来,各自跟着会话行走。
  */
-function handleDeleteProduct(
+async function handleDeleteProduct(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
-): void {
+): Promise<void> {
   // 删之前把会话 id 记下来:级联删完就查不到它们了,而图片文件要按 id 删(issue #336)。
-  const sessions = withStore(deps.dbPath, (store) => store.listAgentSessions(productId, null));
+  const sessions = await withStore(deps.dbPath, async (store) => await store.listAgentSessions(productId, null));
   // 每个会话的常驻子进程先收掉(评审复核),理由与删会话那一处相同。
   for (const session of sessions) reclaimAgentSession(session.id);
-  const cascade = withStore(deps.dbPath, (store) => store.deleteProduct(productId));
+  const cascade = await withStore(deps.dbPath, async (store) => await store.deleteProduct(productId));
   if (cascade !== undefined) {
     for (const session of sessions) removeAgentSessionImages(deps.dbPath, session.id);
   }
@@ -2384,8 +2392,8 @@ async function handleAttachProductRepo(
   const role = payload?.role?.trim() ?? "";
   if (role.length > PRODUCT_NAME_MAX) return sendJson(res, 400, { error: PRODUCT_ROLE_SHAPE });
   const at = new Date((deps.now ?? Date.now)()).toISOString();
-  const result = withStore(deps.dbPath, (store) =>
-    store.attachProductRepo(productId, repoId, at, role === "" ? null : role),
+  const result = await withStore(deps.dbPath, async (store) =>
+    await store.attachProductRepo(productId, repoId, at, role === "" ? null : role),
   );
   switch (result) {
     // 归入与改职责回同一句:仓库集变动不再开梳理(CONTEXT.md 产品梳理,issue #365)——梳理
@@ -2409,13 +2417,13 @@ async function handleAttachProductRepo(
  * 不按仓库集合成立,少一个仓库并不让某一条当场不成立。说的正是那个仓库的那几条由下一场
  * 梳理改写或撤回,而那一场由人开(issue #365)。
  */
-function handleDetachProductRepo(
+async function handleDetachProductRepo(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
   repoId: number,
-): void {
-  const detached = withStore(deps.dbPath, (store) => store.detachProductRepo(productId, repoId));
+): Promise<void> {
+  const detached = await withStore(deps.dbPath, async (store) => await store.detachProductRepo(productId, repoId));
   if (!detached) return sendJson(res, 404, { error: "这个产品下没有这个仓库" });
   return send(res, 204);
 }
@@ -2463,7 +2471,7 @@ async function openProductSurvey(
   createdBy: string,
   chosen: readonly SessionBaselineInput[] | undefined,
 ): Promise<{ opened: AgentSessionRecord } | { refusal: { status: number; error: string } }> {
-  const product = withStore(deps.dbPath, (store) => store.getProduct(productId));
+  const product = await withStore(deps.dbPath, async (store) => await store.getProduct(productId));
   if (product === undefined) return { refusal: { status: 404, error: NO_SUCH_PRODUCT } };
   if (product.repos.length < 2) {
     return { refusal: { status: 409, error: PRODUCT_SURVEY_TOO_FEW_REPOS } };
@@ -2478,8 +2486,8 @@ async function openProductSurvey(
     if (!resolved.ok) return { refusal: { status: resolved.status, error: resolved.error } };
     baselines = resolved.baselines;
   }
-  const session = withStore(deps.dbPath, (store) =>
-    store.createAgentSession({
+  const session = await withStore(deps.dbPath, async (store) =>
+    await store.createAgentSession({
       productId,
       createdBy,
       purpose: "product-survey",
@@ -2489,7 +2497,7 @@ async function openProductSurvey(
   );
   const plan = await agentSessionRunPlan(deps, session);
   if ("refusal" in plan) {
-    withStore(deps.dbPath, (store) => store.deleteAgentSession(session.id));
+    await withStore(deps.dbPath, async (store) => await store.deleteAgentSession(session.id));
     return { refusal: plan.refusal };
   }
   deliverAgentSessionMessage(
@@ -2618,16 +2626,16 @@ function agentSessionPurpose(value: unknown): AgentSessionPurpose | undefined {
  * 一个会话加上「这个调用方看不看得到它」这一判。创建者看得到自己的,系统管理员看得到
  * 所有人的,其他人与会话不存在同形——从响应上分不出「没有」与「不是我的」。
  */
-function visibleAgentSession(
+async function visibleAgentSession(
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): AgentSessionRecord | undefined {
-  const session = withStore(deps.dbPath, (store) => store.getAgentSession(sessionId));
+): Promise<AgentSessionRecord | undefined> {
+  const session = await withStore(deps.dbPath, async (store) => await store.getAgentSession(sessionId));
   if (session === undefined) return undefined;
   if (caller.isSystemAdmin || session.createdBy === caller.username) return session;
   // 产品梳理看得到产品的人都读得到(CONTEXT.md 产品梳理):这一场谈的是整个产品是什么。
-  return session.purpose === "product-survey" && seesProduct(deps, session.productId, caller)
+  return session.purpose === "product-survey" && await seesProduct(deps, session.productId, caller)
     ? session
     : undefined;
 }
@@ -2637,15 +2645,15 @@ function visibleAgentSession(
  * 仓库分配里。路由上的 `product` 目标判的是同一件事,这一处给按会话 id 寻址的那几个端点用
  * ——它们的路径上没有产品。
  */
-function seesProduct(
+async function seesProduct(
   deps: WebhookServerDeps,
   productId: number,
   caller: PanelCaller,
-): boolean {
+): Promise<boolean> {
   if (caller.isSystemAdmin) return true;
-  return withStore(deps.dbPath, (store) => {
-    const user = store.listPanelUsers().find((row) => row.username === caller.username);
-    const product = store.getProduct(productId);
+  return await withStore(deps.dbPath, async (store) => {
+    const user = (await store.listPanelUsers()).find((row) => row.username === caller.username);
+    const product = await store.getProduct(productId);
     if (user === undefined || product === undefined) return false;
     const assigned = new Set(user.repoIds);
     return product.repos.some((row) => assigned.has(row.repoId));
@@ -2666,7 +2674,7 @@ function seesProduct(
  * 它们谁都停不掉、删不掉。发消息、传图、清队列仍一律只认创建者——访谈的另一头是开这一场
  * 的那个具体的人。
  */
-function agentSessionForCreator(
+async function agentSessionForCreator(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
@@ -2675,10 +2683,10 @@ function agentSessionForCreator(
     refuse?: (status: number, error: string) => void;
     systemAdminMayActOnSurvey?: boolean;
   } = {},
-): AgentSessionRecord | undefined {
+): Promise<AgentSessionRecord | undefined> {
   const refuse =
     options.refuse ?? ((status: number, error: string) => sendJson(res, status, { error }));
-  const session = visibleAgentSession(deps, sessionId, caller);
+  const session = await visibleAgentSession(deps, sessionId, caller);
   if (session === undefined) {
     refuse(404, NO_SUCH_AGENT_SESSION);
     return undefined;
@@ -2701,17 +2709,17 @@ function agentSessionForCreator(
  * 产品下的全部(spec #329 的审计与查费用)。产品的可见性已由路由上的 `product` 目标判过,
  * 这里只补「产品不存在」那一档。
  */
-function handleListAgentSessions(
+async function handleListAgentSessions(
   res: ServerResponse,
   deps: WebhookServerDeps,
   productId: number,
   caller: PanelCaller,
-): void {
-  const sessions = withStore(deps.dbPath, (store) =>
-    store.getProduct(productId) === undefined
+): Promise<void> {
+  const sessions = await withStore(deps.dbPath, async (store) =>
+    await store.getProduct(productId) === undefined
       ? undefined
-      : store
-          .listAgentSessions(productId, null)
+      : (await store
+          .listAgentSessions(productId, null))
           // 产品梳理看得到产品的人都看得到(CONTEXT.md 产品梳理):谈的是整个产品是什么。
           .filter(
             (session) =>
@@ -2801,7 +2809,7 @@ async function resolveSessionBaselines(
   const baselines: AgentSessionBaseline[] = [];
   for (const repo of repos) {
     const ref = { owner: repo.owner, repo: repo.repo };
-    const configured = withStore(deps.dbPath, (store) => store.getRepo(repo.repoId)?.defaultBranch ?? null);
+    const configured = await withStore(deps.dbPath, async (store) => (await store.getRepo(repo.repoId))?.defaultBranch ?? null);
     let target: Awaited<ReturnType<typeof repoGitTarget>>;
     try {
       target = await repoGitTarget(forge, ref);
@@ -2865,7 +2873,7 @@ async function handleCreateAgentSession(
   if (purpose === undefined) return sendJson(res, 400, { error: AGENT_SESSION_PURPOSE_SHAPE });
   const chosen = agentSessionBaselineInput(payload?.baselines);
   if (chosen === null) return sendJson(res, 400, { error: AGENT_SESSION_BASELINE_SHAPE });
-  if (withStore(deps.dbPath, (store) => store.getProduct(productId)) === undefined) {
+  if (await withStore(deps.dbPath, async (store) => await store.getProduct(productId)) === undefined) {
     return sendJson(res, 404, { error: NO_SUCH_PRODUCT });
   }
   // agent 读得到的那一份仓库集(产品 ∩ 创建者的仓库分配):基点只在它里面选得出,备树时
@@ -2877,10 +2885,10 @@ async function handleCreateAgentSession(
   });
   const resolved = await resolveSessionBaselines(deps, repos, chosen ?? []);
   if (!resolved.ok) return sendJson(res, resolved.status, { error: resolved.error });
-  const session = withStore(deps.dbPath, (store) =>
-    store.getProduct(productId) === undefined
+  const session = await withStore(deps.dbPath, async (store) =>
+    await store.getProduct(productId) === undefined
       ? undefined
-      : store.createAgentSession({
+      : await store.createAgentSession({
           productId,
           createdBy: caller.username,
           purpose,
@@ -2911,18 +2919,18 @@ function visibleQueue(
  * 按 `sessionId` 过产品那两份清单,不另开索引:一个产品的 spec 与票是几十行的量级,而多一条
  * 按会话查的路径就多一处要与可见性对齐的地方。正文不回——右栏只列标题。
  */
-function agentSessionWrote(
+async function agentSessionWrote(
   deps: WebhookServerDeps,
   productId: number,
   sessionId: number,
-): { specs: { id: number; title: string }[]; tickets: { id: number; title: string }[] } {
-  return withStore(deps.dbPath, (store) => ({
-    specs: store
-      .listProductSpecs(productId)
+): Promise<{ specs: { id: number; title: string }[]; tickets: { id: number; title: string }[] }> {
+  return await withStore(deps.dbPath, async (store) => ({
+    specs: (await store
+      .listProductSpecs(productId))
       .filter((spec) => spec.sessionId === sessionId)
       .map((spec) => ({ id: spec.id, title: spec.title })),
-    tickets: store
-      .listProductTickets(productId)
+    tickets: (await store
+      .listProductTickets(productId))
       .filter((ticket) => ticket.sessionId === sessionId)
       .map((ticket) => ({ id: ticket.id, title: ticket.title })),
   }));
@@ -2948,7 +2956,7 @@ async function handleAgentSession(
   sessionId: number,
   caller: PanelCaller,
 ): Promise<void> {
-  const session = visibleAgentSession(deps, sessionId, caller);
+  const session = await visibleAgentSession(deps, sessionId, caller);
   return session === undefined
     ? sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION })
     : sendJson(res, 200, {
@@ -2956,7 +2964,7 @@ async function handleAgentSession(
         queue: visibleQueue(deps, sessionId),
         imageInput: await agentSessionImageInput(deps, session),
         droppedFromContext: agentSessionDroppedFromContext(deps.dbPath, sessionId),
-        wrote: agentSessionWrote(deps, session.productId, sessionId),
+        wrote: await agentSessionWrote(deps, session.productId, sessionId),
       });
 }
 
@@ -2971,20 +2979,20 @@ const AGENT_SESSION_RECORD_PAGE = 200;
  * `?limit=<n>` 换页大小。`hasMore` 说这一页之前还有没有更早的条目,面板按它显隐「加载更早」。
  * 跨天的长会话打开时不必把整段历史搬一遍。
  */
-function handleAgentSessionRecords(
+async function handleAgentSessionRecords(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): void {
-  const session = visibleAgentSession(deps, sessionId, caller);
+): Promise<void> {
+  const session = await visibleAgentSession(deps, sessionId, caller);
   if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const before = Number(query.get("before"));
   const limit = Number(query.get("limit"));
-  const page = withStore(deps.dbPath, (store) =>
-    store.agentSessionEntryPage(
+  const page = await withStore(deps.dbPath, async (store) =>
+    await store.agentSessionEntryPage(
       sessionId,
       Number.isInteger(before) && before > 0 ? before : undefined,
       Number.isInteger(limit) && limit > 0 && limit <= AGENT_SESSION_RECORD_PAGE
@@ -3001,18 +3009,18 @@ function handleAgentSessionRecords(
  *
  * 频道由这里开:会话没有「结束」那一刻,空闲着仍然续得上,页面该一直挂着等下一条。
  */
-function handleAgentSessionStream(
+async function handleAgentSessionStream(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): void {
-  const session = visibleAgentSession(deps, sessionId, caller);
+): Promise<void> {
+  const session = await visibleAgentSession(deps, sessionId, caller);
   if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
   beginTrace(agentSessionChannel(sessionId));
-  return streamTrace(req, res, deps, agentSessionChannel(sessionId), (afterSeq) =>
-    withStore(deps.dbPath, (store) => store.listAgentSessionEntries(sessionId, afterSeq)),
+  return streamTrace(req, res, deps, agentSessionChannel(sessionId), async (afterSeq) =>
+    await withStore(deps.dbPath, async (store) => await store.listAgentSessionEntries(sessionId, afterSeq)),
   );
 }
 
@@ -3021,19 +3029,19 @@ function handleAgentSessionStream(
  * 知道这一条在,再回 404 只会让人以为删成功了。产品梳理与别的用途同律(issue #365):它
  * 也有一个具体的创建者;升级前由系统开的那几场没有,系统管理员因此删得掉它们(评审复核)。
  */
-function handleDeleteAgentSession(
+async function handleDeleteAgentSession(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): void {
-  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
+): Promise<void> {
+  const allowed = await agentSessionForCreator(res, deps, sessionId, caller, {
     systemAdminMayActOnSurvey: true,
   });
   if (allowed === undefined) return;
   // 常驻子进程先收掉(评审复核):只删库里的行会留下一个挂着工作树、还在计时的子进程。
   reclaimAgentSession(sessionId);
-  withStore(deps.dbPath, (store) => store.deleteAgentSession(sessionId));
+  await withStore(deps.dbPath, async (store) => await store.deleteAgentSession(sessionId));
   // 记录、产出与图片一并消失(spec #329 的 US 25):库里的行在上一句,文件目录在这一句。
   removeAgentSessionImages(deps.dbPath, sessionId);
   return send(res, 204);
@@ -3065,7 +3073,7 @@ async function handleUploadAgentSessionImage(
     sendJson(res, status, { error });
     req.resume();
   };
-  const session = agentSessionForCreator(res, deps, sessionId, caller, { refuse });
+  const session = await agentSessionForCreator(res, deps, sessionId, caller, { refuse });
   if (session === undefined) return;
   const mimeType = agentSessionImageMimeType(req.headers["content-type"]);
   if (mimeType === undefined) return refuse(415, AGENT_SESSION_IMAGE_TYPE);
@@ -3076,8 +3084,8 @@ async function handleUploadAgentSessionImage(
   if (body === undefined) return;
   const stored = await storeAgentSessionImage(deps.dbPath, sessionId, body, mimeType);
   if (stored === undefined) return sendJson(res, 400, { error: AGENT_SESSION_IMAGE_UNREADABLE });
-  withStore(deps.dbPath, (store) =>
-    store.addAgentSessionImage({
+  await withStore(deps.dbPath, async (store) =>
+    await store.addAgentSessionImage({
       sessionId,
       imageId: stored.imageId,
       path: stored.path,
@@ -3107,9 +3115,9 @@ async function handleAgentSessionImage(
   imageId: string,
   caller: PanelCaller,
 ): Promise<void> {
-  const session = visibleAgentSession(deps, sessionId, caller);
+  const session = await visibleAgentSession(deps, sessionId, caller);
   if (session === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION });
-  const image = withStore(deps.dbPath, (store) => store.getAgentSessionImage(sessionId, imageId));
+  const image = await withStore(deps.dbPath, async (store) => await store.getAgentSessionImage(sessionId, imageId));
   if (image === undefined) return sendJson(res, 404, { error: NO_SUCH_AGENT_SESSION_IMAGE });
   let content: Buffer;
   try {
@@ -3125,18 +3133,18 @@ async function handleAgentSessionImage(
  * 发消息带的那几张图(issue #336):body 里是这个会话上传过的图片 id。超过四张、不是字符串
  * 数组、认不出某个 id 都回 undefined,由调用处回 400——「带了图却没带上」比默默少一张好。
  */
-function agentSessionMessageImages(
+async function agentSessionMessageImages(
   deps: WebhookServerDeps,
   sessionId: number,
   value: unknown,
-): readonly AgentSessionImageRef[] | undefined {
+): Promise<readonly AgentSessionImageRef[] | undefined> {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > MAX_AGENT_SESSION_IMAGES) return undefined;
   const refs: AgentSessionImageRef[] = [];
   for (const imageId of value) {
     if (typeof imageId !== "string") return undefined;
-    const image = withStore(deps.dbPath, (store) =>
-      store.getAgentSessionImage(sessionId, imageId),
+    const image = await withStore(deps.dbPath, async (store) =>
+      await store.getAgentSessionImage(sessionId, imageId),
     );
     if (image === undefined) return undefined;
     refs.push(agentSessionImageRef(image));
@@ -3158,14 +3166,14 @@ function agentSessionMessageMode(value: unknown): AgentSessionMessageMode | unde
  * 不成立即按普通消息处理,顺序一格不变:这个标记是面板说的一句话,认不出来时该照常把消息
  * 发出去,而不是回绝。
  */
-function answersPendingQuestionRound(
+async function answersPendingQuestionRound(
   dbPath: string,
   sessionId: number,
   value: unknown,
-): boolean {
+): Promise<boolean> {
   if (typeof value !== "number" || !Number.isInteger(value)) return false;
-  const since = withStore(dbPath, (store) =>
-    store.listAgentSessionEntries(sessionId, value - 1),
+  const since = await withStore(dbPath, async (store) =>
+    await store.listAgentSessionEntries(sessionId, value - 1),
   );
   const round = since[0];
   if (round?.seq !== value || round.type !== "custom") return false;
@@ -3204,7 +3212,7 @@ async function handleAgentSessionMessage(
   sessionId: number,
   caller: PanelCaller,
 ): Promise<void> {
-  const session = agentSessionForCreator(res, deps, sessionId, caller);
+  const session = await agentSessionForCreator(res, deps, sessionId, caller);
   if (session === undefined) return;
   const payload = await readJson<{
     clientMessageId?: unknown;
@@ -3224,18 +3232,18 @@ async function handleAgentSessionMessage(
   if (mode === undefined) return sendJson(res, 400, { error: AGENT_SESSION_MODE_SHAPE });
   // 图片的张数与归属在这里判(issue #336)。上传那一步已经判过辅助模型看不看得了图,这里不再
   // 判一遍:图已经在库里,而这一条消息用的是此刻的辅助模型。
-  const images = agentSessionMessageImages(deps, sessionId, payload?.images);
+  const images = await agentSessionMessageImages(deps, sessionId, payload?.images);
   if (images === undefined) return sendJson(res, 400, { error: AGENT_SESSION_IMAGES_SHAPE });
 
   const at = () => new Date((deps.now ?? Date.now)()).toISOString();
   const accepted = (acceptedAt: string): void =>
     sendJson(res, 202, { accepted: { clientMessageId, acceptedAt } });
-  const accept = (): { fresh: boolean; acceptedAt: string } =>
-    withStore(deps.dbPath, (store) =>
-      store.acceptAgentSessionMessage(sessionId, clientMessageId, at()),
+  const accept = async (): Promise<{ fresh: boolean; acceptedAt: string }> =>
+    await withStore(deps.dbPath, async (store) =>
+      await store.acceptAgentSessionMessage(sessionId, clientMessageId, at()),
     );
-  const seen = withStore(deps.dbPath, (store) =>
-    store.acceptedAgentSessionMessage(sessionId, clientMessageId),
+  const seen = await withStore(deps.dbPath, async (store) =>
+    await store.acceptedAgentSessionMessage(sessionId, clientMessageId),
   );
   if (seen !== undefined) return accepted(seen);
 
@@ -3243,7 +3251,7 @@ async function handleAgentSessionMessage(
   // 一次 abort,人赶在那一下之前交答案就落在这里,答案按所选模式进队尾。窗口只有 abort 那几
   // 十毫秒,为它在 Pi 的队列里插队不值当;落在这一档的答案仍会送达,只是排在留存消息之后。
   if (agentSessionStatus(sessionId) === "running") {
-    const queued = accept();
+    const queued = await accept();
     // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
     if (queued.fresh) {
       queueAgentSessionMessage(sessionId, text, mode, (deps.now ?? Date.now)(), images);
@@ -3253,7 +3261,7 @@ async function handleAgentSessionMessage(
   const plan = await agentSessionRunPlan(deps, session);
   if ("refusal" in plan) return sendJson(res, plan.refusal.status, { error: plan.refusal.error });
 
-  const acceptance = accept();
+  const acceptance = await accept();
   // 并发两次同 id 的提交:主键只让一次插得进去,另一次回那一次的受理结果。
   if (!acceptance.fresh) return accepted(acceptance.acceptedAt);
   deliverAgentSessionMessage(
@@ -3264,7 +3272,7 @@ async function handleAgentSessionMessage(
     plan.model,
     plan.repos,
     images,
-    answersPendingQuestionRound(deps.dbPath, sessionId, payload?.answersRound),
+    await answersPendingQuestionRound(deps.dbPath, sessionId, payload?.answersRound),
   );
   return accepted(acceptance.acceptedAt);
 }
@@ -3324,13 +3332,13 @@ async function agentSessionRunPlan(
  * 整队清空排队的消息(issue #334)。Pi 不支持单条撤回,接口因此只有这一个动作。门禁与发消息
  * 同律:只有创建者动得了自己的会话。清完回当前的排队列表——空数组,让调用方不必再取一次。
  */
-function handleClearAgentSessionQueue(
+async function handleClearAgentSessionQueue(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): void {
-  if (agentSessionForCreator(res, deps, sessionId, caller) === undefined) return;
+): Promise<void> {
+  if ((await agentSessionForCreator(res, deps, sessionId, caller)) === undefined) return;
   clearAgentSessionQueue(deps.dbPath, sessionId);
   return sendJson(res, 200, { queue: visibleQueue(deps, sessionId) });
 }
@@ -3339,14 +3347,14 @@ function handleClearAgentSessionQueue(
  * 停止(issue #334):中止当前这一步,排队消息保留。**空闲时是空操作**,回 200 带
  * `stopped: false` 而不是报错——人看到的「在跑」可能已经跑完了,为这一拍回个错误只是噪音。
  */
-function handleStopAgentSession(
+async function handleStopAgentSession(
   res: ServerResponse,
   deps: WebhookServerDeps,
   sessionId: number,
   caller: PanelCaller,
-): void {
+): Promise<void> {
   // 删会话同律(评审复核):系统管理员停得下升级前由系统开的那几场梳理。
-  const allowed = agentSessionForCreator(res, deps, sessionId, caller, {
+  const allowed = await agentSessionForCreator(res, deps, sessionId, caller, {
     systemAdminMayActOnSurvey: true,
   });
   if (allowed === undefined) return;
@@ -3387,7 +3395,7 @@ async function handleUpdateAgentSessionBaseline(
   rawRepo: string,
   caller: PanelCaller,
 ): Promise<void> {
-  const session = agentSessionForCreator(res, deps, sessionId, caller);
+  const session = await agentSessionForCreator(res, deps, sessionId, caller);
   if (session === undefined) return;
   // 路径段是前端 encode 过的(与审查阶段 id 同一读法);解不开的当作没有这个仓库。
   let owner: string;
@@ -3436,9 +3444,9 @@ async function handleUpdateAgentSessionBaseline(
     return sendJson(res, 409, { error: AGENT_SESSION_BASELINE_BUSY });
   }
   // 基点整列从库里重读再换这一行:取 head 那段时间里别的仓库的基点不该被这份旧快照盖回去。
-  withStore(deps.dbPath, (store) => {
-    const current = store.getAgentSession(sessionId)?.baselines ?? [];
-    store.setAgentSessionBaselines(
+  await withStore(deps.dbPath, async (store) => {
+    const current = (await store.getAgentSession(sessionId))?.baselines ?? [];
+    await store.setAgentSessionBaselines(
       sessionId,
       current.map((one) =>
         one.owner === owner && one.repo === repo ? { ...one, sha: head } : one,
@@ -3476,8 +3484,8 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
     pattern: "/session",
     access: "authenticated-only",
     allowedWhilePasswordExpired: true,
-    handler: ({ req, res, deps }) => {
-      const session = panelSession(req, deps)!;
+    handler: async ({ req, res, deps }) => {
+      const session = (await panelSession(req, deps))!;
       return sendJson(res, 200, {
         username: session.username,
         displayName: session.displayName,
@@ -3690,10 +3698,10 @@ async function handlePanelApi(
   if (matched?.route.access === "public") {
     return matched.route.handler(context, matched.match);
   }
-  const session = panelSession(req, deps);
+  const session = await panelSession(req, deps);
   // 未匹配也先过门禁:不登录不能借 404 枚举 API 面。
   if (session === undefined) {
-    const bootstrap = withStore(deps.dbPath, (store) => store.countPanelUsers()) === 0;
+    const bootstrap = await withStore(deps.dbPath, async (store) => await store.countPanelUsers()) === 0;
     return sendJson(res, 401, { error: "未登录", ...(bootstrap ? { bootstrap: true } : {}) });
   }
   if (session.renewed) {
@@ -3722,15 +3730,15 @@ async function handlePanelApi(
   }
   // 权限格在前、仓库分配在后:没有这一格的人对每个仓库都是 403,先判它不泄露任何
   // 「这个仓库存在」的信息;有这一格的人才会看到分配决定的 404。
-  const assignment = repoAssignment(deps, session.repoIds);
+  const assignment = await repoAssignment(deps, session.repoIds);
   const target = matched.route.assignment;
-  if (target !== undefined && !assignmentAllowsTarget(deps, assignment, target, req, matched.match)) {
+  if (target !== undefined && !(await assignmentAllowsTarget(deps, assignment, target, req, matched.match))) {
     return sendJson(res, 404, { error: assignmentMissText(target, matched.match) });
   }
   return matched.route.handler(
     {
       ...context,
-      assignment,
+      assignment: assignment,
       caller: {
         username: session.username,
         isSystemAdmin: session.isSystemAdmin,
@@ -3766,8 +3774,8 @@ const DEFAULT_BRANCH_FIELD = "defaultBranch";
  * 不再另存一份来源标记;默认值随 `defaults` 一起给,面板拿它当占位符。辅助模型没配同样
  * 回 null,面板据此显示「跟随模型组合第一个」(issue #303)。
  */
-function settingsBody(deps: WebhookServerDeps): Record<string, unknown> {
-  const settings = globalSettings(deps);
+async function settingsBody(deps: WebhookServerDeps): Promise<Record<string, unknown>> {
+  const settings = await globalSettings(deps);
   return {
     reviewers: settings.reviewers,
     auxiliaryModel:
@@ -3783,8 +3791,8 @@ function settingsBody(deps: WebhookServerDeps): Record<string, unknown> {
 }
 
 /** 审查策略。仓库详情用它展示「跟随全局」跟的是什么。 */
-function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): void {
-  return sendJson(res, 200, settingsBody(deps));
+async function handleGetSettings(res: ServerResponse, deps: WebhookServerDeps): Promise<void> {
+  return sendJson(res, 200, await settingsBody(deps));
 }
 
 /**
@@ -3823,7 +3831,7 @@ async function handlePutSettings(
     return sendJson(res, 400, { error: "expectedVersion 要是正整数" });
   }
 
-  const stored = withStore(deps.dbPath, (store) => store.getGlobalSettings());
+  const stored = await withStore(deps.dbPath, async (store) => await store.getGlobalSettings());
   // 「首次配置后非空」(spec #300):库里现存的组合是空的或从没配过时,这一次照收空组合
   // ——那时人来这一页多半是先把上限与等级填上。配过非空之后不再收空,要停掉审查走别处。
   // 判据与 `replaceGlobalSettings` 同一条。
@@ -3886,8 +3894,8 @@ async function handlePutSettings(
     )
   ) return;
 
-  const saved = withStore(deps.dbPath, (store) =>
-    store.replaceGlobalSettings(payload.expectedVersion as number, {
+  const saved = await withStore(deps.dbPath, async (store) =>
+    await store.replaceGlobalSettings(payload.expectedVersion as number, {
       reviewersJson: parsed.reviewersJson,
       auxiliaryModelJson: auxiliary.json,
       ...limits,
@@ -3897,7 +3905,7 @@ async function handlePutSettings(
   if (!saved) {
     return sendJson(res, 409, {
       error: "这一页刚被其他人改过，请核对服务端当前值后再保存",
-      settings: settingsBody(deps),
+      settings: await settingsBody(deps),
     });
   }
   return handleGetSettings(res, deps);
@@ -4173,11 +4181,11 @@ async function projectCurrentModelServices(
   retainedSpecs: readonly ReviewerSpec[] = [],
   includeModels = true,
 ) {
-  const { services, supplements, references, states } = withStore(deps.dbPath, (store) => ({
-    services: store.listModelServices(),
-    supplements: store.listModelSupplements(),
-    references: store.listModelReferences(),
-    states: store.listModelServiceModelStates(),
+  const { services, supplements, references, states } = await withStore(deps.dbPath, async (store) => ({
+    services: await store.listModelServices(),
+    supplements: await store.listModelSupplements(),
+    references: await store.listModelReferences(),
+    states: await store.listModelServiceModelStates(),
   }));
   const retainedByIdentity = new Map<string, ReviewerSpec>();
   const retainedByProvider = new Map<string, ReviewerSpec[]>();
@@ -4404,7 +4412,7 @@ async function setupStatus(deps: WebhookServerDeps): Promise<{
   hasRepository: boolean;
   instanceEnabled: boolean;
 }> {
-  const settings = globalSettings(deps);
+  const settings = await globalSettings(deps);
   const projection = await projectCurrentModelServices(deps, settings.reviewers);
   const availableByIdentity = new Map(
     projection.candidates.map((candidate) => [candidate.identity, candidate.available]),
@@ -4417,7 +4425,7 @@ async function setupStatus(deps: WebhookServerDeps): Promise<{
     settings.reviewers.every(
       (reviewer) => availableByIdentity.get(modelIdentity(reviewer)) === true,
     );
-  const hasRepository = withStore(deps.dbPath, (store) => store.listRepos().length > 0);
+  const hasRepository = await withStore(deps.dbPath, async (store) => (await store.listRepos()).length > 0);
   return {
     hasRunnableModelService,
     reviewConfigurationReady,
@@ -4477,9 +4485,9 @@ async function handleBuiltinProviderSearch(
     ?.trim()
     .toLowerCase() ?? "";
   const configured = new Map(
-    withStore(deps.dbPath, (store) => {
-      const references = store.listModelReferences();
-      return store.listModelServices().map((service) => [
+    await withStore(deps.dbPath, async (store) => {
+      const references = await store.listModelReferences();
+      return (await store.listModelServices()).map((service) => [
         service.provider,
         {
           service,
@@ -4632,15 +4640,15 @@ function committedDirectory(input: {
  * 提交一次版本并答复。提交没成只有一个原因:期间有人把版本推进了,此时读一次当前版本
  * 号一并回给面板。三条提交路径(内置、自定义、重验)的事务边界因此只有这一处。
  */
-function commitAndRespond(
+async function commitAndRespond(
   res: ServerResponse,
   deps: WebhookServerDeps,
   provider: string,
   expectedVersion: number | null,
   record: ModelServiceVersionCommit,
-): void {
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(expectedVersion, record),
+): Promise<void> {
+  const version = await withStore(deps.dbPath, async (store) =>
+    await store.commitModelServiceVersion(expectedVersion, record),
   );
   if (version === undefined) {
     return staleVersionConflict(res, deps, provider, expectedVersion);
@@ -4677,7 +4685,7 @@ async function handlePreviewBuiltinModelService(
   }
   const provider = payload.provider;
   const expectedVersion = payload.expectedVersion as number | null;
-  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  const current = await withStore(deps.dbPath, async (store) => await store.getModelService(provider));
   if (occupiedOrStale(res, provider, "builtin", current, expectedVersion)) return;
   if ((await piBuiltinProviderTargets(provider)) === undefined) {
     return sendJson(res, 400, { error: `Pi 没有内置 provider ${provider}` });
@@ -4703,7 +4711,7 @@ async function commitVerifiedBuiltinModelService(
   if (masterKey === undefined || masterKey === "") {
     return sendJson(res, 503, { error: MASTER_KEY_MISSING });
   }
-  const current = withStore(deps.dbPath, (store) => store.getModelService(input.provider));
+  const current = await withStore(deps.dbPath, async (store) => await store.getModelService(input.provider));
   if (occupiedOrStale(res, input.provider, "builtin", current, input.expectedVersion)) return;
   const piTargets = await piBuiltinProviderTargets(input.provider);
   if (piTargets === undefined) {
@@ -4887,7 +4895,7 @@ async function loadVersionedService<T extends { expectedVersion: number }>(
     sendJson(res, 400, { error: spec.invalid });
     return undefined;
   }
-  const current = withStore(deps.dbPath, (store) => store.getModelService(provider));
+  const current = await withStore(deps.dbPath, async (store) => await store.getModelService(provider));
   if (current === undefined) {
     sendJson(res, 404, { error: `没有模型服务 ${provider}` });
     return undefined;
@@ -5037,8 +5045,8 @@ async function handleDeleteModelServiceCredential(
   if (loaded === undefined) return;
   const { current } = loaded;
   const expectedVersion = loaded.input.expectedVersion;
-  const references = withStore(deps.dbPath, (store) =>
-    store.listModelReferences().filter((reference) => reference.provider === provider),
+  const references = await withStore(deps.dbPath, async (store) =>
+    (await store.listModelReferences()).filter((reference) => reference.provider === provider),
   );
   if (references.length > 0) {
     return sendJson(res, 409, {
@@ -5068,8 +5076,8 @@ async function handleDeleteModelServiceCredential(
     automaticModels: current.automaticModels,
     supplements: current.supplements,
   };
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(expectedVersion, record),
+  const version = await withStore(deps.dbPath, async (store) =>
+    await store.commitModelServiceVersion(expectedVersion, record),
   );
   if (version === undefined) {
     return staleVersionConflict(res, deps, provider, expectedVersion, "模型服务版本已变化或仍被模型组合或辅助模型引用，请重新打开配置");
@@ -5196,8 +5204,8 @@ async function handleUpdateModelServiceModelStates(
       error: "模型状态更新需要 models、enabled 与正整数 expectedVersion",
     });
   }
-  const result = withStore(deps.dbPath, (store) => {
-    return store.updateModelServiceModelStates(
+  const result = await withStore(deps.dbPath, async (store) => {
+    return await store.updateModelServiceModelStates(
       provider,
       input.expectedVersion,
       input.models,
@@ -5292,8 +5300,8 @@ async function handleRefreshModelService(
     automaticModels: discovered.ok ? discovered.models : current.automaticModels,
     supplements: current.supplements,
   };
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(expectedVersion, record),
+  const version = await withStore(deps.dbPath, async (store) =>
+    await store.commitModelServiceVersion(expectedVersion, record),
   );
   if (version === undefined) {
     return staleVersionConflict(res, deps, provider, expectedVersion, "模型服务版本已变化，请重新载入后再刷新");
@@ -5394,8 +5402,8 @@ async function handleAddModelSupplement(
     automaticModels: current.automaticModels,
     supplements,
   };
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(input.expectedVersion, record),
+  const version = await withStore(deps.dbPath, async (store) =>
+    await store.commitModelServiceVersion(input.expectedVersion, record),
   );
   if (version === undefined) {
     return staleVersionConflict(res, deps, provider, input.expectedVersion, "模型服务版本已变化，请重新载入后再补录");
@@ -5432,8 +5440,8 @@ async function handleDeleteModelSupplement(
   const hasAutomaticSource = current.automaticModels.some((entry) => entry.id === input.model);
   const identity = modelIdentity({ provider, model: input.model });
   if (!hasAutomaticSource) {
-    const reference = withStore(deps.dbPath, (store) =>
-      store.listModelReferences().find((entry) => entry.identity === identity),
+    const reference = await withStore(deps.dbPath, async (store) =>
+      (await store.listModelReferences()).find((entry) => entry.identity === identity),
     );
     if (reference !== undefined) {
       return sendJson(res, 409, {
@@ -5459,8 +5467,8 @@ async function handleDeleteModelSupplement(
     automaticModels: current.automaticModels,
     supplements: current.supplements.filter((entry) => entry.model !== input.model),
   };
-  const version = withStore(deps.dbPath, (store) =>
-    store.commitModelServiceVersion(input.expectedVersion, record),
+  const version = await withStore(deps.dbPath, async (store) =>
+    await store.commitModelServiceVersion(input.expectedVersion, record),
   );
   if (version === undefined) {
     return staleVersionConflict(res, deps, provider, input.expectedVersion, "模型服务版本已变化，请重新载入后再删除补录");
@@ -5584,7 +5592,7 @@ async function handlePreviewCustomModelService(
   if (input === undefined) {
     return sendJson(res, 400, { error: "自定义模型服务候选形状不对" });
   }
-  const current = withStore(deps.dbPath, (store) => store.getModelService(input.provider));
+  const current = await withStore(deps.dbPath, async (store) => await store.getModelService(input.provider));
   if (occupiedOrStale(res, input.provider, "custom", current, input.expectedVersion)) return;
   if ((await listPiBuiltinProviders()).some(({ id }) => id === input.provider)) {
     return sendJson(res, 409, { error: `${input.provider} 与当前 Pi 内置 provider 名字冲突` });
@@ -5617,9 +5625,9 @@ async function handleCommitCustomModelService(
   if (input === undefined) {
     return sendJson(res, 400, { error: "自定义模型服务最终候选形状不对" });
   }
-  const { current, knownSupplements } = withStore(deps.dbPath, (store) => ({
-    current: store.getModelService(input.provider),
-    knownSupplements: store.listModelSupplements(input.provider),
+  const { current, knownSupplements } = await withStore(deps.dbPath, async (store) => ({
+    current: await store.getModelService(input.provider),
+    knownSupplements: await store.listModelSupplements(input.provider),
   }));
   if (occupiedOrStale(res, input.provider, "custom", current, input.expectedVersion)) return;
   if ((await listPiBuiltinProviders()).some(({ id }) => id === input.provider)) {
@@ -5685,9 +5693,9 @@ async function handleCommitCustomModelService(
   if (!sameTarget) {
     const nextModels = new Set(discovered.ok ? discovered.models.map(({ id }) => id) : []);
     for (const supplement of supplements) nextModels.add(supplement.model);
-    const unresolved = withStore(deps.dbPath, (store) =>
-      store
-        .listModelReferences()
+    const unresolved = await withStore(deps.dbPath, async (store) =>
+      (await store
+        .listModelReferences())
         .filter(
           (reference) =>
             reference.provider === input.provider && !nextModels.has(reference.model),
@@ -5755,9 +5763,9 @@ async function handleDeleteCustomModelService(
     return sendJson(res, 400, { error: "删除模型服务必须带正整数 expectedVersion" });
   }
   const expectedVersion = Number(payload.expectedVersion);
-  const { current, references } = withStore(deps.dbPath, (store) => ({
-    current: store.getModelService(provider),
-    references: store.listModelReferences().filter((reference) => reference.provider === provider),
+  const { current, references } = await withStore(deps.dbPath, async (store) => ({
+    current: await store.getModelService(provider),
+    references: (await store.listModelReferences()).filter((reference) => reference.provider === provider),
   }));
   if (current === undefined) {
     return sendJson(res, 404, { error: `没有自定义模型服务 ${provider}` });
@@ -5774,8 +5782,8 @@ async function handleDeleteCustomModelService(
       references,
     });
   }
-  const removed = withStore(deps.dbPath, (store) =>
-    store.removeCustomModelService(provider, expectedVersion),
+  const removed = await withStore(deps.dbPath, async (store) =>
+    await store.removeCustomModelService(provider, expectedVersion),
   );
   if (!removed) {
     return staleVersionConflict(res, deps, provider, expectedVersion);
@@ -5808,7 +5816,7 @@ async function handleRenameConflictingCustomModelService(
   }
   const provider = payload.provider;
   const expectedVersion = payload.expectedVersion;
-  const current = withStore(deps.dbPath, (store) => store.getModelService(currentProvider));
+  const current = await withStore(deps.dbPath, async (store) => await store.getModelService(currentProvider));
   if (current === undefined) {
     return sendJson(res, 404, { error: `没有自定义模型服务 ${currentProvider}` });
   }
@@ -5821,8 +5829,8 @@ async function handleRenameConflictingCustomModelService(
   if ((await listPiBuiltinProviders()).some(({ id }) => id === provider)) {
     return sendJson(res, 409, { error: `${provider} 与当前 Pi 内置 provider 名字冲突` });
   }
-  const result = withStore(deps.dbPath, (store) =>
-    store.renameConflictingCustomModelService(
+  const result = await withStore(deps.dbPath, async (store) =>
+    await store.renameConflictingCustomModelService(
       currentProvider,
       provider,
       expectedVersion,
@@ -5933,12 +5941,12 @@ function intQuery(
 const RUNS_PAGE = 30;
 
 /** 跨仓库 Review Run 时间流的一页。覆盖已移除仓库的历史——评审记录只写不清。 */
-function handleRuns(
+async function handleRuns(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
-): void {
+): Promise<void> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const beforeId = intQuery(query, "before");
   if (beforeId === "invalid") return sendJson(res, 400, { error: "before 要是整数游标" });
@@ -5947,8 +5955,8 @@ function handleRuns(
   if ((owner === null) !== (repo === null)) {
     return sendJson(res, 400, { error: "owner 与 repo 要成对给,过滤不接受半个键" });
   }
-  const runs = withStore(deps.dbPath, (store) =>
-    store.listRuns({
+  const runs = await withStore(deps.dbPath, async (store) =>
+    await store.listRuns({
       limit: RUNS_PAGE,
       ...(beforeId === null ? {} : { beforeId }),
       // 收窄在 SQL 里做,与评审记录一页同一个理由:回到 JS 再滤会让这一页的行数与
@@ -5973,12 +5981,12 @@ const STAGES_PAGE = 30;
  * 人看到的就是一份与自己所选无关的列表。翻页用 `offset`:排序键是最新一轮的时间,
  * 新一轮随时会把某一行顶上来,id 游标在这里不成立。
  */
-function handleStages(
+async function handleStages(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
-): void {
+): Promise<void> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const offset = intQuery(query, "offset", { min: 0 }) ?? 0;
   if (offset === "invalid") return sendJson(res, 400, { error: "offset 要是非负整数" });
@@ -5995,8 +6003,8 @@ function handleStages(
   if (sourceRaw !== null && sourceRaw !== "pull-request" && sourceRaw !== "range-review") {
     return sendJson(res, 400, { error: "source 只能是 pull-request 或 range-review" });
   }
-  const stages = withStore(deps.dbPath, (store) =>
-    store.listStages({
+  const stages = await withStore(deps.dbPath, async (store) =>
+    await store.listStages({
       offset,
       limit: STAGES_PAGE,
       // 收窄在 SQL 里做:回到 JS 再滤会让「这一页有几行」与翻页游标对不上。
@@ -6015,8 +6023,8 @@ function handleStages(
  * 注册表(仓库移除之后阶段照样看得见)。找不到即回 undefined,取生效阈值时就只剩全局
  * 那一档——仓库都不在了,不该让这个阶段的读与处置跟着一起报错。
  */
-function stageRepoId(store: Store, stage: { owner: string; repo: string }): number | undefined {
-  return store.findRepoId(stage.owner, stage.repo);
+async function stageRepoId(store: AsyncStore, stage: { owner: string; repo: string }): Promise<number | undefined> {
+  return await store.findRepoId(stage.owner, stage.repo);
 }
 
 /** 阶段行上的两个键还原成 `stageSummary` 的入参:一行只带自己那一个,另一个必为 null。 */
@@ -6041,28 +6049,28 @@ function stageScopeOf(stage: {
  * 阶段标识是路径参数,里面的斜杠在地址里编码过,这里先解回来。解不开的与查不到的都是
  * 404:调用方要知道的都是「没有这个阶段」,而不是「这个标识长得不对」。
  */
-function handleStageDetail(
+async function handleStageDetail(
   res: ServerResponse,
   deps: WebhookServerDeps,
   rawStageId: string,
   assignment: RepoAssignment,
-): void {
+): Promise<void> {
   let stageId: string;
   try {
     stageId = decodeURIComponent(rawStageId);
   } catch {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
   }
-  const detail = withStore(deps.dbPath, (store) => {
-    const found = store.stageDetail(stageId);
+  const detail = await withStore(deps.dbPath, async (store, sync) => {
+    const found = await store.stageDetail(stageId);
     if (found === undefined) return undefined;
     const rangeReviewId = found.stage.rangeReviewId;
     // 生效最低报告等级跟着详情一起给(issue #274):批量处置的按钮凭它决定露不露面,
     // 而看得到阶段的人不一定读得到审查策略,让面板自己再请求一次会撞权限。
-    const minReportSeverity = effectiveMinReportSeverity(store, stageRepoId(store, found.stage));
+    const minReportSeverity = effectiveMinReportSeverity(sync, await stageRepoId(store, found.stage));
     return rangeReviewId === null
       ? { ...found, minReportSeverity }
-      : { ...found, minReportSeverity, rangeReview: store.getRangeReview(rangeReviewId) };
+      : { ...found, minReportSeverity, rangeReview: await store.getRangeReview(rangeReviewId) };
   });
   if (detail === undefined || !assignment.allows(detail.stage.owner, detail.stage.repo)) {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
@@ -6074,8 +6082,8 @@ function handleStageDetail(
  * 一轮 Review Run(issue #174)。评审记录的一行点开的是该阶段最新一轮,行上只带它的
  * id,轮次本身按 id 在这里取,与时间流读的是同一份投影。
  */
-function handleRun(res: ServerResponse, deps: WebhookServerDeps, runId: number): void {
-  const run = withStore(deps.dbPath, (store) => store.listRuns({ limit: 1, id: runId })[0]);
+async function handleRun(res: ServerResponse, deps: WebhookServerDeps, runId: number): Promise<void> {
+  const run = await withStore(deps.dbPath, async (store) => (await store.listRuns({ limit: 1, id: runId }))[0]);
   if (run === undefined) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
   return sendJson(res, 200, { run });
 }
@@ -6101,7 +6109,7 @@ async function backfillLineAuthors(
     // 副本还没备过就没什么可判的。先看一眼而不是让 git 逐组报错:阶段页每打开一次就
     // 要为每条留空的 Finding 白起一个 git 进程,还会往日志里刷一遍同样的失败。
     if (!existsSync(join(repoPath, ".git"))) return;
-    const pending = withStore(deps.dbPath, (store) => store.pendingLineAuthors(scope));
+    const pending = await withStore(deps.dbPath, async (store) => await store.pendingLineAuthors(scope));
     if (pending.length === 0) return;
     const authors = await findingLineAuthors(
       repoPath,
@@ -6112,7 +6120,7 @@ async function backfillLineAuthors(
       return lineAuthor === undefined ? [] : [{ findingId: entry.findingId, lineAuthor }];
     });
     if (found.length > 0) {
-      withStore(deps.dbPath, (store) => store.recordLineAuthors(found));
+      await withStore(deps.dbPath, async (store) => await store.recordLineAuthors(found));
     }
   } catch (error) {
     console.error(
@@ -6153,12 +6161,12 @@ async function handleStageSummary(
     if (rangeReviewId === "invalid") {
       return sendJson(res, 400, { error: "rangeReviewId 要是正整数" });
     }
-    const rangeReview = withStore(deps.dbPath, (store) => store.getRangeReview(rangeReviewId));
+    const rangeReview = await withStore(deps.dbPath, async (store) => await store.getRangeReview(rangeReviewId));
     if (rangeReview === undefined) return sendJson(res, 404, { error: "没有这个范围审查" });
     // 这一档只按 rangeReviewId 取轮次;容器 PR 还没建出来时它名下本来就一轮都没有。
     const scope = { rangeReviewId };
     await backfillLineAuthors(deps, rangeReview, scope);
-    return sendJson(res, 200, withStore(deps.dbPath, (store) => store.stageSummary(scope)));
+    return sendJson(res, 200, await withStore(deps.dbPath, async (store) => await store.stageSummary(scope)));
   }
   if (owner === null || repo === null || pullNumber === null) {
     return sendJson(res, 400, { error: "owner、repo 与 pullNumber 要一起给" });
@@ -6168,7 +6176,7 @@ async function handleStageSummary(
   }
   const scope = { owner, repo, pullNumber };
   await backfillLineAuthors(deps, { owner, repo }, scope);
-  return sendJson(res, 200, withStore(deps.dbPath, (store) => store.stageSummary(scope)));
+  return sendJson(res, 200, await withStore(deps.dbPath, async (store) => await store.stageSummary(scope)));
 }
 
 /**
@@ -6178,9 +6186,9 @@ async function handleStageSummary(
  * 轨迹,不另配一格。升级前跑过的轮次一条事件都没有,回空列表——那不是错误,是
  * 那时候还不记过程。
  */
-function handleRunTrace(res: ServerResponse, deps: WebhookServerDeps, runId: number): void {
-  const events = withStore(deps.dbPath, (store) =>
-    store.getRunRange(runId) === undefined ? undefined : store.listTrace(runId),
+async function handleRunTrace(res: ServerResponse, deps: WebhookServerDeps, runId: number): Promise<void> {
+  const events = await withStore(deps.dbPath, async (store) =>
+    await store.getRunRange(runId) === undefined ? undefined : await store.listTrace(runId),
   );
   if (events === undefined) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
   return sendJson(res, 200, { events });
@@ -6210,16 +6218,16 @@ function traceFrame(event: BroadcastEvent): string {
  * 因此既不会漏也不会重。这一轮已经结束时不订阅,回放完直接发 `end` 并关闭——没有后续
  * 事件可等,让页面挂着等于让它永远转圈。
  */
-function handleRunTraceStream(
+async function handleRunTraceStream(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   runId: number,
-): void {
-  const exists = withStore(deps.dbPath, (store) => store.getRunRange(runId) !== undefined);
+): Promise<void> {
+  const exists = await withStore(deps.dbPath, async (store) => (await store.getRunRange(runId)) !== undefined);
   if (!exists) return sendJson(res, 404, { error: "没有这一轮 Review Run" });
-  return streamTrace(req, res, deps, runChannel(runId), (afterSeq) =>
-    withStore(deps.dbPath, (store) => store.listTrace(runId, afterSeq)),
+  return streamTrace(req, res, deps, runChannel(runId), async (afterSeq) =>
+    await withStore(deps.dbPath, async (store) => await store.listTrace(runId, afterSeq)),
   );
 }
 
@@ -6227,13 +6235,13 @@ function handleRunTraceStream(
  * 一条轨迹的实时推送(issue #171,issue #214 起知识轨迹共用)。回放与订阅之外的差别只有
  * 「事件从哪里读」,由 `replay` 给。
  */
-function streamTrace(
+async function streamTrace(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   channel: string,
-  replay: (afterSeq: number) => readonly (TraceEvent | RuleTraceEvent | AgentSessionEntryRecord)[],
-): void {
+  replay: (afterSeq: number) => Promise<readonly (TraceEvent | RuleTraceEvent | AgentSessionEntryRecord)[]>,
+): Promise<void> {
   // 只补这个序号之后的那些。两条来源:浏览器重连时自动带的 `Last-Event-ID`,以及
   // 查询串上的 `?after=`——原生 `EventSource` 设不了首个请求的请求头,面板打开时先取
   // `/trace` 补历史、再拿最后那个 seq 接流,只能走查询串。两个都在时取大的:它们说的
@@ -6269,12 +6277,23 @@ function streamTrace(
     res.end();
   };
 
+  // 回放排在订阅之后:反过来的话两步之间落的事件谁都写不出去。回放此刻要等一次开库
+  // (issue #446),这中间到的事件与结束信号先攒着,回放写完再按原序补出——同步那会儿
+  // 它们根本排不进这个缝里,攒一攒是为了让帧的先后与迁移前逐字一致。
+  let backlog: (() => void)[] | undefined = [];
+  const write = (emit: () => void): void => {
+    if (backlog === undefined) emit();
+    else backlog.push(emit);
+  };
   const unsubscribe = subscribeTrace(channel, {
-    onEvent: (event) => res.write(traceFrame(event)),
-    onEnd: finish,
+    onEvent: (event) => write(() => res.write(traceFrame(event))),
+    onEnd: () => write(finish),
   });
 
-  for (const event of replay(afterSeq)) res.write(traceFrame(event));
+  for (const event of await replay(afterSeq)) res.write(traceFrame(event));
+  const queued = backlog;
+  backlog = undefined;
+  for (const emit of queued) emit();
 
   if (unsubscribe === undefined) {
     finish();
@@ -6308,7 +6327,7 @@ async function prepareRunDiff(
   deps: WebhookServerDeps,
   runId: number,
 ): Promise<RunDiffPreparation> {
-  const run = withStore(deps.dbPath, (store) => store.getRunRange(runId));
+  const run = await withStore(deps.dbPath, async (store) => await store.getRunRange(runId));
   if (run === undefined) return { ok: false, status: 404, error: "没有这一轮 Review Run" };
   const forge = deps.forges.gitea;
   if (forge === undefined) {
@@ -6370,7 +6389,7 @@ const runDiffPreparations = new Map<string, { at: number; pending: Promise<RunDi
  * 只有成功的那次留下来。失败当场丢掉:并发的那一拨仍旧共用一次,而人重试时重新去取,
  * 不会被一次 Forge 抖动黏住十秒。
  */
-function runDiffRange(deps: WebhookServerDeps, runId: number): Promise<RunDiffPreparation> {
+async function runDiffRange(deps: WebhookServerDeps, runId: number): Promise<RunDiffPreparation> {
   const now = Date.now();
   for (const [stale, entry] of runDiffPreparations) {
     if (now - entry.at >= RUN_DIFF_RANGE_TTL_MS) runDiffPreparations.delete(stale);
@@ -6425,18 +6444,18 @@ async function handleRunDiff(
  * 可见集合本来就只含已注册仓库,未注册的对他必然在分配外。系统管理员不受分配限制,
  * 走的才是注册表那一档。拒绝时响应已经发出去,回 undefined 让调用方直接返回。
  */
-function assignedRegisteredRepo(
+async function assignedRegisteredRepo(
   res: ServerResponse,
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
   ref: { owner: string; repo: string },
   action: string,
-): RepoSummary | undefined {
+): Promise<RepoSummary | undefined> {
   if (!assignment.allows(ref.owner, ref.repo)) {
     sendJson(res, 404, { error: "没有这个仓库" });
     return undefined;
   }
-  const registered = withStore(deps.dbPath, (store) => store.listRepos()).find(
+  const registered = (await withStore(deps.dbPath, async (store) => await store.listRepos())).find(
     (row) => row.owner === ref.owner && row.repo === ref.repo,
   );
   if (registered === undefined) {
@@ -6518,19 +6537,17 @@ async function verdictOnlyRejection(
   reviewable: ReadonlySet<string>,
   changedFiles: readonly { path: string }[],
 ): Promise<string | undefined> {
-  const store = openStore(dbPath);
-  let count = 0;
-  try {
-    const history = store.stageHistory(scope);
+  const count = await withStore(dbPath, async (store, sync) => {
+    const history = await store.stageHistory(scope);
     const absent = absentHistory(history, reviewable, changedFiles);
+    let disposed = 0;
     if (absent.length > 0) {
-      const done = await disposeAbsentHistory(forge, ref, store, absent);
-      count = done.disposed.deleted.length + done.disposed.reverted.length;
+      const done = await disposeAbsentHistory(forge, ref, sync, absent);
+      disposed = done.disposed.deleted.length + done.disposed.reverted.length;
     }
-    if (openHistory(history).some((entry) => reviewable.has(entry.file))) return undefined;
-  } finally {
-    store.close();
-  }
+    return openHistory(history).some((entry) => reviewable.has(entry.file)) ? undefined : disposed;
+  });
+  if (count === undefined) return undefined;
   return count === 0
     ? VERDICT_ONLY_NOTHING_TO_DO
     : `已自动处置 ${count} 条回退或删除文件上的历史,${VERDICT_ONLY_NOTHING_TO_DO}`;
@@ -6618,9 +6635,9 @@ async function handleRerun(
   const { owner, repo, pullNumber } = payload;
 
   // 目标在请求体里,过滤层看不到,这里自己判。
-  const registered = assignedRegisteredRepo(res, deps, assignment, { owner, repo }, "重跑");
+  const registered = await assignedRegisteredRepo(res, deps, assignment, { owner, repo }, "重跑");
   if (registered === undefined) return;
-  if (ruleSetUnconfirmed(deps.dbPath, registered.repoId)) {
+  if (await ruleSetUnconfirmed(deps.dbPath, registered.repoId)) {
     return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
   }
   const forge = deps.forges.gitea;
@@ -6690,7 +6707,7 @@ async function rerunRangeReview(
   directive: string | undefined,
   mode: ReviewRunMode,
 ): Promise<void> {
-  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRangeReview(id));
   if (record === undefined || !assignment.allows(record.owner, record.repo)) {
     return sendJson(res, 404, { error: "没有这个范围审查" });
   }
@@ -6702,7 +6719,7 @@ async function rerunRangeReview(
           : "这个范围审查没有可用的容器 pull request,重新发起一个",
     });
   }
-  if (ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
+  if (await ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
     return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
   }
   const forge = deps.forges.gitea;
@@ -6808,8 +6825,8 @@ async function disposeOnForge(
   if (disposition === "resolved") await forge.resolveComment(ref, finding.commentId);
   else await forge.unresolveComment(ref, finding.commentId);
   const disposedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  withStore(deps.dbPath, (store) =>
-    store.recordDisposition({
+  await withStore(deps.dbPath, async (store) =>
+    await store.recordDisposition({
       owner: finding.owner,
       repo: finding.repo,
       commentId: finding.commentId,
@@ -6872,7 +6889,7 @@ async function handleDispose(
   if (parsed === undefined) return;
   const { note } = parsed;
 
-  const finding = withStore(deps.dbPath, (store) => store.getFinding(findingId));
+  const finding = await withStore(deps.dbPath, async (store) => await store.getFinding(findingId));
   if (finding === undefined) return sendJson(res, 404, { error: "没有这条 Finding" });
   if (finding.commentId === null) {
     return sendJson(res, 409, {
@@ -6939,14 +6956,14 @@ async function handleDisposeBelowThreshold(
   } catch {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
   }
-  const stage = withStore(deps.dbPath, (store) => {
-    const found = store.stageDetail(stageId);
+  const stage = await withStore(deps.dbPath, async (store, sync) => {
+    const found = await store.stageDetail(stageId);
     if (found === undefined) return undefined;
     return {
       owner: found.stage.owner,
       repo: found.stage.repo,
-      minReportSeverity: effectiveMinReportSeverity(store, stageRepoId(store, found.stage)),
-      findings: store.stageSummary(stageScopeOf(found.stage)).findings,
+      minReportSeverity: effectiveMinReportSeverity(sync, await stageRepoId(store, found.stage)),
+      findings: (await store.stageSummary(stageScopeOf(found.stage))).findings,
     };
   });
   if (stage === undefined || !assignment.allows(stage.owner, stage.repo)) {
@@ -7025,22 +7042,22 @@ async function handleDisposeRootCauseGroup(
   } catch {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
   }
-  const stage = withStore(deps.dbPath, (store) => {
-    const found = store.stageDetail(stageId);
+  const stage = await withStore(deps.dbPath, async (store) => {
+    const found = await store.stageDetail(stageId);
     if (found === undefined) return undefined;
     // 组与成员都从阶段汇总取:成员在那里已经映到了当前那一行(被后面轮次折叠或延续掉
     // 的跟着链走),面板看到的与这里处置的因此是同一批行。
-    const group = store
-      .stageSummary(stageScopeOf(found.stage))
+    const group = (await store
+      .stageSummary(stageScopeOf(found.stage)))
       .rootCauseGroups.find((entry) => entry.id === groupId);
-    return {
-      owner: found.stage.owner,
-      repo: found.stage.repo,
-      members: group?.findingIds.flatMap((id) => {
-        const finding = store.getFinding(id);
-        return finding === undefined ? [] : [finding];
-      }),
-    };
+    if (group === undefined) return { owner: found.stage.owner, repo: found.stage.repo };
+    // 逐条按组内次序取:处置与跳过的名单照这个顺序回给面板。
+    const members: FindingDispositionTarget[] = [];
+    for (const id of group.findingIds) {
+      const finding = await store.getFinding(id);
+      if (finding !== undefined) members.push(finding);
+    }
+    return { owner: found.stage.owner, repo: found.stage.repo, members };
   });
   if (stage === undefined || !assignment.allows(stage.owner, stage.repo)) {
     return sendJson(res, 404, { error: "没有这个审查阶段" });
@@ -7101,19 +7118,19 @@ function failureText(error: unknown): string {
  * 「最近」按完成时刻算,不按发起先后:先发起的那个完全可能后完成。没有已完成的范围
  * 审查时回 null,表单留空——一个无意义的默认值比空着更容易把人带偏。
  */
-function handleRangeReviewPrefill(
+async function handleRangeReviewPrefill(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
-): void {
+): Promise<void> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const owner = query.get("owner");
   const repo = query.get("repo");
   if (owner === null || repo === null) {
     return sendJson(res, 400, { error: "owner 与 repo 都要给" });
   }
-  const completed = withStore(deps.dbPath, (store) =>
-    store.listRangeReviews({ owner, repo, state: "completed" }),
+  const completed = await withStore(deps.dbPath, async (store) =>
+    await store.listRangeReviews({ owner, repo, state: "completed" }),
   );
   let latest: RangeReviewRecord | undefined;
   for (const record of completed) {
@@ -7242,7 +7259,7 @@ async function resolveRepoGitTarget(
     sendJson(res, 400, { error: "owner 与 repo 都要给" });
     return undefined;
   }
-  const registered = withStore(deps.dbPath, (store) => store.listRepos()).find(
+  const registered = (await withStore(deps.dbPath, async (store) => await store.listRepos())).find(
     (row) => row.owner === owner && row.repo === repo,
   );
   if (registered === undefined) {
@@ -7457,9 +7474,9 @@ async function handleCreateRangeReview(
   const { owner, repo } = payload;
 
   // 目标在请求体里,过滤层看不到,这里自己判。
-  const registered = assignedRegisteredRepo(res, deps, assignment, { owner, repo }, "发起范围审查");
+  const registered = await assignedRegisteredRepo(res, deps, assignment, { owner, repo }, "发起范围审查");
   if (registered === undefined) return;
-  if (ruleSetUnconfirmed(deps.dbPath, registered.repoId)) {
+  if (await ruleSetUnconfirmed(deps.dbPath, registered.repoId)) {
     return sendJson(res, 409, { error: RULE_SET_UNCONFIRMED });
   }
   const forge = deps.forges.gitea;
@@ -7493,8 +7510,8 @@ async function handleCreateRangeReview(
   const { baseSha, comparisonSha } = resolved;
 
   // 同一 base 不去重,只提醒:确实要并行两个阶段是合法诉求(CONTEXT.md 范围审查)。
-  const existing = withStore(deps.dbPath, (store) =>
-    store.listRangeReviews({ owner, repo, baseSha, state: "in-progress" }),
+  const existing = await withStore(deps.dbPath, async (store) =>
+    await store.listRangeReviews({ owner, repo, baseSha, state: "in-progress" }),
   );
   if (existing.length > 0 && payload.confirm !== true) {
     return sendJson(res, 409, {
@@ -7515,8 +7532,8 @@ async function handleCreateRangeReview(
   }
 
   const createdAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const id = withStore(deps.dbPath, (store) =>
-    store.createRangeReview({
+  const id = await withStore(deps.dbPath, async (store) =>
+    await store.createRangeReview({
       repoId: registered.repoId,
       owner,
       repo,
@@ -7552,16 +7569,16 @@ async function handleCreateRangeReview(
     for (const branch of built) {
       await forge.deleteBranch(ref, branch).catch(() => undefined);
     }
-    withStore(deps.dbPath, (store) => store.failRangeReview(id, failure));
+    await withStore(deps.dbPath, async (store) => await store.failRangeReview(id, failure));
     return sendJson(res, 502, {
       error: `在 Forge 上建容器 PR 失败:${failure}`,
       rangeReviewId: id,
     });
   }
 
-  const rangeReview = withStore(deps.dbPath, (store) => {
-    store.attachRangeReviewContainer(id, containerPullNumber);
-    return store.getRangeReview(id)!;
+  const rangeReview = await withStore(deps.dbPath, async (store) => {
+    await store.attachRangeReviewContainer(id, containerPullNumber);
+    return (await store.getRangeReview(id))!;
   });
   // 先回 202 再开跑:一轮审查要跑上几分钟,人等的是「已经在跑了」这个回执。
   sendJson(res, 202, { rangeReview });
@@ -7614,7 +7631,7 @@ async function handleAdvanceRangeReview(
   const mode = readMode(res, payload.mode, "full");
   if (mode === "rejected") return;
 
-  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRangeReview(id));
   if (record === undefined) {
     return sendJson(res, 404, { error: "没有这个范围审查" });
   }
@@ -7714,7 +7731,7 @@ async function advanceRangeReview(
   }
   // 四个发起入口同一道门禁(issue #206)。确认不可逆、范围审查又只能在确认之后发起,
   // 这个分支因此不可达;留着是为了「开跑之前必过门禁」不随入口数量漏掉一处。
-  if (ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
+  if (await ruleSetUnconfirmed(deps.dbPath, record.repoId)) {
     return advanceRejected("rule-set-unconfirmed", RULE_SET_UNCONFIRMED);
   }
   const forge = deps.forges.gitea;
@@ -7817,13 +7834,13 @@ async function advanceRangeReview(
   } catch (error) {
     const failure = failureText(error);
     // 状态不动:容器 PR 还在,人改完分支保护再点一次就该继续。
-    withStore(deps.dbPath, (store) => store.recordRangeReviewForgeFailure(id, failure));
+    await withStore(deps.dbPath, async (store) => await store.recordRangeReviewForgeFailure(id, failure));
     return advanceRejected("push-failed", `把容器 PR 的 head 分支推到新比较项失败:${failure}`);
   }
 
   const advancedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const rangeReview = withStore(deps.dbPath, (store) => {
-    store.advanceRangeReview({
+  const rangeReview = await withStore(deps.dbPath, async (store) => {
+    await store.advanceRangeReview({
       id,
       comparisonSha,
       ...(input.comparisonSource === undefined ? {} : { comparisonSource: input.comparisonSource }),
@@ -7831,7 +7848,7 @@ async function advanceRangeReview(
       advancedBy: operator ?? "",
       advancedAt,
     });
-    return store.getRangeReview(id)!;
+    return (await store.getRangeReview(id))!;
   });
   void startRun(
     deps,
@@ -7872,7 +7889,7 @@ async function handleCompleteRangeReview(
   id: number,
   completedBy: string,
 ): Promise<void> {
-  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRangeReview(id));
   if (record === undefined) {
     return sendJson(res, 404, { error: "没有这个范围审查" });
   }
@@ -7898,16 +7915,16 @@ async function handleCompleteRangeReview(
     await runClosedBackfill(deps, forge, container);
   } catch (error) {
     const failure = failureText(error);
-    withStore(deps.dbPath, (store) => store.recordRangeReviewForgeFailure(id, failure));
+    await withStore(deps.dbPath, async (store) => await store.recordRangeReviewForgeFailure(id, failure));
     return sendJson(res, 502, {
       error: `在 Forge 上收尾容器 pull request 失败:${failure}`,
     });
   }
 
   const completedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const rangeReview = withStore(deps.dbPath, (store) => {
-    store.completeRangeReview({ id, completedBy, completedAt });
-    return store.getRangeReview(id)!;
+  const rangeReview = await withStore(deps.dbPath, async (store) => {
+    await store.completeRangeReview({ id, completedBy, completedAt });
+    return (await store.getRangeReview(id))!;
   });
   return sendJson(res, 200, { rangeReview });
 }
@@ -7947,7 +7964,7 @@ async function handleSetDailyIncrement(
   const mode = readMode(res, payload.enabled ? payload.mode : undefined, "verdict-only");
   if (mode === "rejected") return;
 
-  const record = withStore(deps.dbPath, (store) => store.getRangeReview(id));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRangeReview(id));
   if (record === undefined) {
     return sendJson(res, 404, { error: "没有这个范围审查" });
   }
@@ -7978,9 +7995,9 @@ async function handleSetDailyIncrement(
   }
 
   const at = new Date((deps.now ?? Date.now)()).toISOString();
-  const rangeReview = withStore(deps.dbPath, (store) => {
-    store.setRangeReviewDailyIncrement({ id, branch, time, mode, at });
-    return store.getRangeReview(id)!;
+  const rangeReview = await withStore(deps.dbPath, async (store) => {
+    await store.setRangeReviewDailyIncrement({ id, branch, time, mode, at });
+    return (await store.getRangeReview(id))!;
   });
   return sendJson(res, 200, { rangeReview });
 }
@@ -8107,9 +8124,9 @@ async function scheduledCheck(
  */
 async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
   const nowMs = (deps.now ?? Date.now)();
-  const due = withStore(deps.dbPath, (store) =>
-    store
-      .listRangeReviews({ state: "in-progress" })
+  const due = await withStore(deps.dbPath, async (store) =>
+    (await store
+      .listRangeReviews({ state: "in-progress" }))
       .filter((record) => scheduledCheckDue(record, nowMs)),
   );
   if (due.length === 0) return;
@@ -8120,9 +8137,9 @@ async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
       console.log(`[scheduled-check] 范围审查 ${rangeReviewId} 检查结果:${result}`);
     });
   const at = new Date(nowMs).toISOString();
-  const noteResult = (id: number, result: ScheduledCheckResult): void => {
-    withStore(deps.dbPath, (store) =>
-      store.recordRangeReviewScheduledCheck({ id, at, result }),
+  const noteResult = async (id: number, result: ScheduledCheckResult): Promise<void> => {
+    await withStore(deps.dbPath, async (store) =>
+      await store.recordRangeReviewScheduledCheck({ id, at, result }),
     );
     settled(id, result);
   };
@@ -8131,7 +8148,7 @@ async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
   // 判定补上——同一天不再补,新的一天照常。
   if (deps.drain?.draining() === true) {
     console.log(`[scheduled-check] 排空中,跳过 ${due.length} 个范围审查`);
-    for (const item of due) noteResult(item.id, "draining");
+    for (const item of due) await noteResult(item.id, "draining");
     return;
   }
   console.log(`[scheduled-check] 本次检查 ${due.length} 个范围审查`);
@@ -8158,10 +8175,10 @@ async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
       // 队是 tick 开头排的,前面几条串行跑的这段时间里人可能推进过、关了开关或标了完成:
       // 开检查前重读记录与它名下的轮次。没有结束时间即还在跑,含等待续跑的那些(CONTEXT.md
       // 定时检查)。
-      const current = withStore(deps.dbPath, (store) => {
-        const record = store.getRangeReview(item.id);
+      const current = await withStore(deps.dbPath, async (store) => {
+        const record = await store.getRangeReview(item.id);
         if (record === undefined || !scheduledCheckDue(record, nowMs)) return undefined;
-        const runInFlight = store.interruptedRuns().some((run) => run.rangeReviewId === item.id);
+        const runInFlight = (await store.interruptedRuns()).some((run) => run.rangeReviewId === item.id);
         return { record, runInFlight };
       });
       // 已经不该检查了:这一次检查没有发生,不记结果。
@@ -8178,7 +8195,7 @@ async function scheduledCheckTick(deps: WebhookServerDeps): Promise<void> {
           result = "check-failed";
         }
       }
-      noteResult(item.id, result);
+      await noteResult(item.id, result);
     }
   }
 }
@@ -8214,13 +8231,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * (仓库 × category)与 `store.modelParticipation`(模型的参与条数),ADR 0006 与
  * 0015,这里只做参数与打包——页面矩阵与 API 的数字必须同源。
  */
-function handleStats(
+async function handleStats(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   assignment: RepoAssignment,
   caller: PanelCaller,
-): void {
+): Promise<void> {
   const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
   const nowMs = (deps.now ?? Date.now)();
   const fromMs = Date.parse(query.get("from") ?? new Date(nowMs - 30 * DAY_MS).toISOString());
@@ -8236,16 +8253,16 @@ function handleStats(
   //
   // Agent 会话的用量单列一行,不混进 Review Run(spec #329):两类花费分得清。它挂在产品上
   // 而不是仓库上,收窄因此按创建者——看得到哪些会话的人就看得到那些会话的花费。
-  const { cells: allCells, models, usage, agentSessions, tables } = withStore(
+  const { cells: allCells, models, usage, agentSessions, tables } = await withStore(
     deps.dbPath,
-    (store) => ({
-      cells: store.dispositionStats(from, to),
-      models: store.modelParticipation(from, to, assignment.refs),
-      usage: store.usageStats(from, to, assignment.refs) ?? null,
+    async (store) => ({
+      cells: await store.dispositionStats(from, to),
+      models: await store.modelParticipation(from, to, assignment.refs),
+      usage: await store.usageStats(from, to, assignment.refs) ?? null,
       agentSessions:
-        store.agentSessionUsageStats(from, to, caller.isSystemAdmin ? null : caller.username) ??
+        await store.agentSessionUsageStats(from, to, caller.isSystemAdmin ? null : caller.username) ??
         null,
-      tables: store.tableCounts(),
+      tables: await store.tableCounts(),
     }),
   );
   let fileBytes = 0;
@@ -8315,7 +8332,7 @@ async function handleRepoSearch(
 
   const page = await hookManager.searchRepos(query.trim());
   const registered = new Set(
-    withStore(deps.dbPath, (store) => store.listRepos()).map((row) => row.repoId),
+    (await withStore(deps.dbPath, async (store) => await store.listRepos())).map((row) => row.repoId),
   );
   const results = page.hits.map((hit) => {
     const isRegistered = registered.has(hit.repoId);
@@ -8382,8 +8399,8 @@ async function prepareWorktreeInBackground(
   }
 
   try {
-    withStore(deps.dbPath, (store) =>
-      store.setRepoWorktree(repoId, {
+    await withStore(deps.dbPath, async (store) =>
+      await store.setRepoWorktree(repoId, {
         state: failure === undefined ? "ready" : "failed",
         failure: failure ?? null,
         checkedAt: new Date((deps.now ?? Date.now)()).toISOString(),
@@ -8406,15 +8423,15 @@ async function prepareWorktreeInBackground(
  * 把一次工作副本准备排进后台并当场把状态记成准备中。同一个副本目录已经在准备时返回
  * false,调用方据此告诉人「正在准备中」。
  */
-function startWorktreePreparation(
+async function startWorktreePreparation(
   deps: WebhookServerDeps,
   repoId: number,
   ref: RepoRef,
-): boolean {
+): Promise<boolean> {
   const key = worktreeKey(deps.cacheDir, ref);
   if (preparingWorktrees.has(key)) return false;
-  withStore(deps.dbPath, (store) =>
-    store.setRepoWorktree(repoId, { state: "preparing", failure: null, checkedAt: null }),
+  await withStore(deps.dbPath, async (store) =>
+    await store.setRepoWorktree(repoId, { state: "preparing", failure: null, checkedAt: null }),
   );
   const running = prepareWorktreeInBackground(deps, repoId, ref).finally(() => {
     preparingWorktrees.delete(key);
@@ -8431,23 +8448,23 @@ function startWorktreePreparation(
  * 探索、草案与提案队列不另开端点:它们回答的是同一个问题的两半——「这个仓库现在按
  * 什么标准评审,以及还有什么在等人裁决」,面板一次读取就该拿全。
  */
-function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: number): void {
-  const view = withStore(deps.dbPath, (store) => {
-    const ruleSet = store.getRuleSet(repoId);
+async function handleRuleSet(res: ServerResponse, deps: WebhookServerDeps, repoId: number): Promise<void> {
+  const view = await withStore(deps.dbPath, async (store) => {
+    const ruleSet = await store.getRuleSet(repoId);
     if (ruleSet === undefined) return undefined;
     return {
       ...ruleSet,
       // 轨迹标识由 `rule_exploration.trace_task_id` 显式给(issue #214)。
-      exploration: store.getRuleExploration(repoId),
+      exploration: await store.getRuleExploration(repoId),
       // 知识整理与探索同形地回(issue #284):同一个弹窗一次读取拿全两条链路的状态。
-      consolidation: store.getRuleConsolidation(repoId),
-      draft: store.getRuleDraft(repoId),
-      proposals: store.getRuleProposals(repoId),
+      consolidation: await store.getRuleConsolidation(repoId),
+      draft: await store.getRuleDraft(repoId),
+      proposals: await store.getRuleProposals(repoId),
       // 修订意图(ADR 0028,issue #294)。它将用哪一处模型不在这里回:那是生效辅助模型
       // 的只读投影(`GET /repos/{id}/auxiliary-model`,issue #304),意图框与探索、整理
       // 两处读的因此是同一个结论。
       // 全部历史,运行中与失败在前(issue #317)。
-      intents: store.listRuleIntents(repoId),
+      intents: await store.listRuleIntents(repoId),
     };
   });
   if (view === undefined) {
@@ -8465,34 +8482,34 @@ const NO_RULE_TRACE = "这个仓库没有这条知识轨迹";
  * 404。这里再拦一道「任务不在这个仓库」——不拦的话,分到了任意一个仓库的人就能凭标识
  * 读到别人仓库的探索过程。
  */
-function ruleTraceInRepo(deps: WebhookServerDeps, repoId: number, taskId: number): boolean {
-  return withStore(deps.dbPath, (store) => store.ruleTraceRepo(taskId)) === repoId;
+async function ruleTraceInRepo(deps: WebhookServerDeps, repoId: number, taskId: number): Promise<boolean> {
+  return await withStore(deps.dbPath, async (store) => await store.ruleTraceRepo(taskId)) === repoId;
 }
 
 /** 一条知识轨迹的全量事件,按 `seq` 升序。 */
-function handleRuleTrace(
+async function handleRuleTrace(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   taskId: number,
-): void {
-  if (!ruleTraceInRepo(deps, repoId, taskId)) return sendJson(res, 404, { error: NO_RULE_TRACE });
+): Promise<void> {
+  if (!(await ruleTraceInRepo(deps, repoId, taskId))) return sendJson(res, 404, { error: NO_RULE_TRACE });
   return sendJson(res, 200, {
-    events: withStore(deps.dbPath, (store) => store.listRuleTrace(taskId)),
+    events: await withStore(deps.dbPath, async (store) => await store.listRuleTrace(taskId)),
   });
 }
 
 /** 一条知识轨迹的实时推送。跑完的那些回放完即发结束信号,与审查轨迹同一套。 */
-function handleRuleTraceStream(
+async function handleRuleTraceStream(
   req: IncomingMessage,
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   taskId: number,
-): void {
-  if (!ruleTraceInRepo(deps, repoId, taskId)) return sendJson(res, 404, { error: NO_RULE_TRACE });
-  return streamTrace(req, res, deps, ruleChannel(taskId), (afterSeq) =>
-    withStore(deps.dbPath, (store) => store.listRuleTrace(taskId, afterSeq)),
+): Promise<void> {
+  if (!(await ruleTraceInRepo(deps, repoId, taskId))) return sendJson(res, 404, { error: NO_RULE_TRACE });
+  return streamTrace(req, res, deps, ruleChannel(taskId), async (afterSeq) =>
+    await withStore(deps.dbPath, async (store) => await store.listRuleTrace(taskId, afterSeq)),
   );
 }
 
@@ -8505,13 +8522,13 @@ const NO_ACTIVE_RULE = "这条规则不在这个仓库的生效规则里";
  * 废止一条规则(issue #203)。DELETE 是「让它不再生效」而不是删行:废止的规则不再进
  * 知识集,但历史版本的快照与面板的已废止那一段都还要取得到它。
  */
-function handleRetireRule(
+async function handleRetireRule(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   ruleId: number,
-): void {
-  const version = withStore(deps.dbPath, (store) => store.retireReviewRule(repoId, ruleId));
+): Promise<void> {
+  const version = await withStore(deps.dbPath, async (store) => await store.retireReviewRule(repoId, ruleId));
   if (version === undefined) return sendJson(res, 404, { error: NO_ACTIVE_RULE });
   return sendJson(res, 200, { version });
 }
@@ -8536,7 +8553,7 @@ const NO_DRAFT_ITEM = "这条规则不在这个仓库的知识草案里";
  */
 function usableRuleItems(
   items: readonly RuleAgentItem[],
-  trace: RuleTraceRecorder,
+  trace: RuleTraceRecorder<unknown>,
 ): RuleAgentItem[] {
   const usable: RuleAgentItem[] = [];
   for (const raw of items) {
@@ -8646,7 +8663,7 @@ function proposalsFromItems(
  * 规则 agent 的一条过程事件落进知识轨迹(issue #214)。两条链路共用:事件类型就是轨迹
  * 的事件类型,`kind` 之外的那几项原样成为 payload——与 Review Run 那侧同一条口径。
  */
-function recordRuleAgentEvent(trace: RuleTraceRecorder, event: RuleAgentEvent): void {
+function recordRuleAgentEvent(trace: RuleTraceRecorder<unknown>, event: RuleAgentEvent): void {
   const { kind, ...payload } = event;
   trace.record(kind, payload);
 }
@@ -8666,8 +8683,8 @@ async function runRuleExplorationInBackground(
   let worktree: Worktree | undefined;
   // 轨迹从发起这一刻起(CONTEXT.md 知识轨迹,issue #214):取不回代码、模型用不了这些
   // 失败也发生在探索之内,人来这条轨迹就是要看它究竟卡在哪一步。
-  const trace = startRuleTrace(
-    (use) => withStore(deps.dbPath, use),
+  const trace = await startRuleTrace(
+    <T>(use: (sync: Store) => Promise<T>) => withStore(deps.dbPath, (_store, sync) => use(sync)),
     repoId,
     "baseline-exploration",
     {
@@ -8680,7 +8697,7 @@ async function runRuleExplorationInBackground(
   // 显式关联:轨迹起头失败时这一列保持 NULL,面板不显示入口,也不会挂到上一次探索的轨迹上。
   const traceTaskId = trace.taskId;
   if (traceTaskId !== null) {
-    withStore(deps.dbPath, (store) => store.setRuleExplorationTrace(repoId, traceTaskId));
+    await withStore(deps.dbPath, async (store) => await store.setRuleExplorationTrace(repoId, traceTaskId));
   }
   try {
     const forge = deps.forges.gitea;
@@ -8701,7 +8718,7 @@ async function runRuleExplorationInBackground(
       headSha: baselineSha,
       baseSha: baselineSha,
     });
-    const ruleSet = withStore(deps.dbPath, (store) => store.getRuleSet(repoId));
+    const ruleSet = await withStore(deps.dbPath, async (store) => await store.getRuleSet(repoId));
     const existingRules = ruleSet?.rules ?? [];
     const agent = deps.ruleAgent ?? createPiRuleAgent();
     const result = await agent({
@@ -8719,10 +8736,10 @@ async function runRuleExplorationInBackground(
     // 知识集未确认即这一次产出知识草案,已确认(含空集)即产出修订提案(CONTEXT.md
     // 基点探索,issue #207)。判据读的是交给 agent 的那一份知识集:同一次探索里两处不该
     // 各读各的。按版本而不是按规则为不为空分界:已确认的空知识集重探索也该走提案队列。
-    withStore(deps.dbPath, (store) =>
+    await withStore(deps.dbPath, async (store) =>
       (ruleSet?.version ?? null) === null
-        ? store.finishRuleExploration(repoId, items, at)
-        : store.finishRuleExplorationAsProposals(
+        ? await store.finishRuleExploration(repoId, items, at)
+        : await store.finishRuleExplorationAsProposals(
             repoId,
             proposalsFromItems(items, existingRules, {
               origin: "baseline-exploration",
@@ -8733,10 +8750,10 @@ async function runRuleExplorationInBackground(
             at,
           ),
     );
-    trace.record("rule_agent_finished", { items: items.length });
+    await trace.record("rule_agent_finished", { items: items.length });
   } catch (error) {
     failure = failureText(error);
-    trace.record("rule_agent_failed", { failure });
+    await trace.record("rule_agent_failed", { failure });
   } finally {
     trace.end();
     await worktree?.release();
@@ -8744,8 +8761,8 @@ async function runRuleExplorationInBackground(
 
   try {
     if (failure !== undefined) {
-      withStore(deps.dbPath, (store) =>
-        store.failRuleExploration(
+      await withStore(deps.dbPath, async (store) =>
+        await store.failRuleExploration(
           repoId,
           failure!,
           new Date((deps.now ?? Date.now)()).toISOString(),
@@ -8790,12 +8807,12 @@ function toConsolidationProposal(proposal: RuleProposal): ConsolidationProposal 
  * 一条即 2),`retargeted` 数改写成功的条数。整理对现集提出的那几条不在这里(它们排队
  * 而不是直改),由 `enqueueConsolidationProposals` 数(issue #285)。
  */
-function applyConsolidation(
+async function applyConsolidation(
   deps: WebhookServerDeps,
   repoId: number,
   actions: readonly RuleConsolidationAction[],
-  trace: RuleTraceRecorder,
-): { merged: number; retargeted: number } {
+  trace: RuleTraceRecorder<unknown>,
+): Promise<{ merged: number; retargeted: number }> {
   let merged = 0;
   let retargeted = 0;
   for (const action of actions) {
@@ -8805,25 +8822,25 @@ function applyConsolidation(
     // 带上原因——队列里没有东西被丢掉,记成「丢弃一条产出」会让人去找一条不存在的提案。
     // 改写为修改型没有新陈述,不经这道闸。
     if (action.kind === "merge" && action.statement.trim().length > AGENT_STATEMENT_LIMIT) {
-      trace.record("rule_consolidated", { action, applied: false, reason: STATEMENT_TOO_LONG });
+      await trace.record("rule_consolidated", { action, applied: false, reason: STATEMENT_TOO_LONG });
       continue;
     }
     // 一条一次库:整理跑完这一刻别人可能正在裁决,一次事务把全部动作圈起来只会把
     // 裁决挡在外面,而这正是「整理期间裁决不受影响」不允许的。
-    const applied = withStore(deps.dbPath, (store) => {
+    const applied = await withStore(deps.dbPath, async (store) => {
       if (action.kind === "merge") {
         const ids = [...new Set([action.keepId, ...action.mergedIds])];
-        if (!store.mergeRuleProposals(repoId, ids, action.statement)) return false;
+        if (!await store.mergeRuleProposals(repoId, ids, action.statement)) return false;
         merged += ids.length - 1;
         return true;
       }
-      if (!store.retargetRuleProposal(repoId, action.proposalId, action.targetRuleId)) return false;
+      if (!await store.retargetRuleProposal(repoId, action.proposalId, action.targetRuleId)) return false;
       retargeted += 1;
       return true;
     });
     // 一个动作一条轨迹事件,连它落没落地一起:丢掉的那一条要说得出「它想做什么、为什么
     // 没做成」,而这只有落地这一步知道。
-    trace.record("rule_consolidated", { action, applied });
+    await trace.record("rule_consolidated", { action, applied });
   }
   return { merged, retargeted };
 }
@@ -8837,15 +8854,15 @@ function applyConsolidation(
  * **认不出目标的那一条丢掉**:整理不读代码,提不出没有目标的新增——映射把「一个目标都
  * 认不出」读成新增,那一档在这条链路上只可能是目标已经不生效,丢掉它。
  */
-function enqueueConsolidationProposals(
+async function enqueueConsolidationProposals(
   deps: WebhookServerDeps,
   repoId: number,
   items: readonly RuleAgentItem[],
   traceTaskId: number | null,
-): number {
+): Promise<number> {
   if (items.length === 0) return 0;
-  return withStore(deps.dbPath, (store) => {
-    const activeRules = store.getRuleSet(repoId)?.rules ?? [];
+  return await withStore(deps.dbPath, async (store) => {
+    const activeRules = (await store.getRuleSet(repoId))?.rules ?? [];
     let proposed = 0;
     for (const item of items) {
       const [mapped] = proposalsFromItems([item], activeRules, {
@@ -8855,7 +8872,7 @@ function enqueueConsolidationProposals(
         traceTaskId,
       });
       if (mapped === undefined || mapped.change === "add") continue;
-      if (store.addRuleProposal(repoId, mapped) === undefined) continue;
+      if (await store.addRuleProposal(repoId, mapped) === undefined) continue;
       proposed += 1;
     }
     return proposed;
@@ -8878,8 +8895,8 @@ async function runRuleConsolidationInBackground(
   let failure: string | undefined;
   const workDir = mkdtempSync(join(tmpdir(), "multireviewer-rule-consolidation-"));
   // 轨迹从发起这一刻起,与基点探索同一条口径:模型用不了也是这一次整理之内的失败。
-  const trace = startRuleTrace(
-    (use) => withStore(deps.dbPath, use),
+  const trace = await startRuleTrace(
+    <T>(use: (sync: Store) => Promise<T>) => withStore(deps.dbPath, (_store, sync) => use(sync)),
     repoId,
     "knowledge-consolidation",
     {
@@ -8890,16 +8907,16 @@ async function runRuleConsolidationInBackground(
   );
   const traceTaskId = trace.taskId;
   if (traceTaskId !== null) {
-    withStore(deps.dbPath, (store) => store.setRuleConsolidationTrace(repoId, traceTaskId));
+    await withStore(deps.dbPath, async (store) => await store.setRuleConsolidationTrace(repoId, traceTaskId));
   }
   try {
     if (plan.runtimeModel === null || plan.credential === null) {
       throw new Error(plan.failure ?? `模型 ${modelIdentity(plan.spec)} 不可用`);
     }
-    const input = withStore(deps.dbPath, (store) => ({
-      rules: store.getRuleSet(repoId)?.rules ?? [],
-      proposals: store
-        .getRuleProposals(repoId)
+    const input = await withStore(deps.dbPath, async (store) => ({
+      rules: (await store.getRuleSet(repoId))?.rules ?? [],
+      proposals: (await store
+        .getRuleProposals(repoId))
         .filter((proposal) => proposal.state === "pending")
         .map(toConsolidationProposal),
     }));
@@ -8921,9 +8938,9 @@ async function runRuleConsolidationInBackground(
       });
       if (result.failure !== undefined) throw new Error(result.failure);
       summary = {
-        ...applyConsolidation(deps, repoId, result.actions ?? [], trace),
+        ...(await applyConsolidation(deps, repoId, result.actions ?? [], trace)),
         // 提案与直改同一批产出,条目那一半照另两条链路的收窄先过一遍(issue #285)。
-        proposed: enqueueConsolidationProposals(
+        proposed: await enqueueConsolidationProposals(
           deps,
           repoId,
           usableRuleItems(result.items, trace),
@@ -8931,17 +8948,17 @@ async function runRuleConsolidationInBackground(
         ),
       };
     }
-    withStore(deps.dbPath, (store) =>
-      store.finishRuleConsolidation(
+    await withStore(deps.dbPath, async (store) =>
+      await store.finishRuleConsolidation(
         repoId,
         summary,
         new Date((deps.now ?? Date.now)()).toISOString(),
       ),
     );
-    trace.record("rule_agent_finished", summary);
+    await trace.record("rule_agent_finished", summary);
   } catch (error) {
     failure = failureText(error);
-    trace.record("rule_agent_failed", { failure });
+    await trace.record("rule_agent_failed", { failure });
   } finally {
     trace.end();
     rmSync(workDir, { recursive: true, force: true });
@@ -8949,8 +8966,8 @@ async function runRuleConsolidationInBackground(
 
   try {
     if (failure !== undefined) {
-      withStore(deps.dbPath, (store) =>
-        store.failRuleConsolidation(
+      await withStore(deps.dbPath, async (store) =>
+        await store.failRuleConsolidation(
           repoId,
           failure!,
           new Date((deps.now ?? Date.now)()).toISOString(),
@@ -8981,14 +8998,14 @@ async function runRuleConsolidationInBackground(
  * 回落地的提案标识:并入的是被并那一条的标识,新排的是新行的。意图行的产出记它。目标为
  * 草案条目那一档回的是草案条目标识——那一档改的是草案里那一行,不排提案(issue #298)。
  */
-function landRuleItems(
-  store: Store,
+async function landRuleItems(
+  store: AsyncStore,
   repoId: number,
   items: readonly RuleAgentItem[],
   activeRules: readonly ReviewRuleRecord[],
   source: Omit<RuleProposalSourceInput, "evidence">,
   target?: IntentLanding,
-): number[] {
+): Promise<number[]> {
   if (target?.kind === "proposal") {
     return rewriteTargetProposal(store, repoId, items, source, target);
   }
@@ -8999,7 +9016,7 @@ function landRuleItems(
   for (const item of items) {
     if (
       item.proposalId !== undefined &&
-      store.mergeIntoRuleProposal(repoId, item.proposalId, {
+      await store.mergeIntoRuleProposal(repoId, item.proposalId, {
         statement: item.statement,
         source: { ...source, evidence: itemEvidence(item) },
       })
@@ -9010,7 +9027,7 @@ function landRuleItems(
     added.push(item);
   }
   for (const proposal of proposalsFromItems(added, activeRules, source)) {
-    const id = store.addRuleProposal(repoId, proposal);
+    const id = await store.addRuleProposal(repoId, proposal);
     if (id !== undefined) landed.push(id);
   }
   return landed;
@@ -9023,9 +9040,9 @@ function landRuleItems(
  * 草案条目即原地改写草案里那一行。
  */
 type IntentLanding =
-  | { kind: "proposal"; proposalId: number; trace: RuleTraceRecorder }
-  | { kind: "rule"; ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder }
-  | { kind: "draft"; itemId: number; trace: RuleTraceRecorder };
+  | { kind: "proposal"; proposalId: number; trace: RuleTraceRecorder<unknown> }
+  | { kind: "rule"; ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder<unknown> }
+  | { kind: "draft"; itemId: number; trace: RuleTraceRecorder<unknown> };
 
 /** 目标型意图落地时,产出里不指向目标的那些被丢掉的原因。 */
 const REWRITE_OFF_TARGET = "目标为一条提案的意图只落地指向它的那一条改写";
@@ -9069,7 +9086,7 @@ function chooseTargetItem(
   items: readonly RuleAgentItem[],
   targets: (item: RuleAgentItem) => boolean,
   reason: string,
-  trace: RuleTraceRecorder,
+  trace: RuleTraceRecorder<unknown>,
 ): RuleAgentItem | undefined {
   let chosen: RuleAgentItem | undefined;
   for (const item of items) {
@@ -9093,19 +9110,17 @@ function chooseTargetItem(
  * 落进去的是陈述、作用范围与型三样(`mergeIntoRuleProposal` 按型规则定变更类型),外加
  * 一条人工提议附注——附注即修订对话的下一句。
  */
-function rewriteTargetProposal(
-  store: Store,
+async function rewriteTargetProposal(
+  store: AsyncStore,
   repoId: number,
   items: readonly RuleAgentItem[],
   source: Omit<RuleProposalSourceInput, "evidence">,
-  rewrite: { proposalId: number; trace: RuleTraceRecorder },
-): number[] {
+  rewrite: { proposalId: number; trace: RuleTraceRecorder<unknown> },
+): Promise<number[]> {
   // 落地那一刻它还待裁决吗:与条目、草案两档同一口径先查一次。零产出也要照查——目标已经
   // 被裁决掉时这一次意图本来就没有落处,报成零产出完成会让人以为「agent 认为不用改」。
   if (
-    !store
-      .getRuleProposals(repoId)
-      .some((row) => row.id === rewrite.proposalId && row.state === "pending")
+    !(await store.getRuleProposals(repoId)).some((row) => row.id === rewrite.proposalId && row.state === "pending")
   ) {
     throw new Error(REWRITE_TARGET_GONE);
   }
@@ -9116,7 +9131,7 @@ function rewriteTargetProposal(
     rewrite.trace,
   );
   if (chosen === undefined) return [];
-  const merged = store.mergeIntoRuleProposal(repoId, rewrite.proposalId, {
+  const merged = await store.mergeIntoRuleProposal(repoId, rewrite.proposalId, {
     statement: chosen.statement,
     scope: chosen.scope,
     type: chosen.type,
@@ -9134,15 +9149,15 @@ function rewriteTargetProposal(
  * 队列里指向它的某一条提案——队列里已经有一条在等人裁决时另排一条,人就要裁决两次。其余
  * 产出逐条丢掉并记轨迹,一条都没有即零产出、意图照常完成。
  */
-function landRuleTargetEntry(
-  store: Store,
+async function landRuleTargetEntry(
+  store: AsyncStore,
   repoId: number,
   items: readonly RuleAgentItem[],
   source: Omit<RuleProposalSourceInput, "evidence">,
-  target: { ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder },
-): number[] {
+  target: { ruleId: number; mergeable: readonly number[]; trace: RuleTraceRecorder<unknown> },
+): Promise<number[]> {
   // 落地那一刻它还生效吗:开跑前查过一次,解读那几分钟里人照样可以直接废止它。
-  const rules = store.getRuleSet(repoId)?.rules ?? [];
+  const rules = (await store.getRuleSet(repoId))?.rules ?? [];
   if (!rules.some((rule) => rule.id === target.ruleId)) throw new Error(ENTRY_TARGET_GONE);
   const chosen = chooseTargetItem(
     items,
@@ -9154,7 +9169,7 @@ function landRuleTargetEntry(
   // 并入指向它的那一条走与改写一条提案同一条路径(issue #295):陈述、作用范围与型换新,
   // 附注追加一条,型规则在 `mergeIntoRuleProposal` 里。
   if (chosen.proposalId !== undefined) {
-    const merged = store.mergeIntoRuleProposal(repoId, chosen.proposalId, {
+    const merged = await store.mergeIntoRuleProposal(repoId, chosen.proposalId, {
       statement: chosen.statement,
       scope: chosen.scope,
       type: chosen.type,
@@ -9165,7 +9180,7 @@ function landRuleTargetEntry(
   }
   const landed: number[] = [];
   for (const proposal of proposalsFromItems([chosen], rules, source)) {
-    const id = store.addRuleProposal(repoId, proposal);
+    const id = await store.addRuleProposal(repoId, proposal);
     if (id !== undefined) landed.push(id);
   }
   return landed;
@@ -9194,14 +9209,14 @@ function targetsRuleEntry(
  * 其余产出逐条丢掉并记轨迹,一条都没有即零产出、意图照常完成。落地那一刻它已经不在草案
  * 里(被删,或者重新探索整组覆盖了这份草案)即抛 `DRAFT_TARGET_GONE`,意图失败留原因。
  */
-function landRuleDraftItem(
-  store: Store,
+async function landRuleDraftItem(
+  store: AsyncStore,
   repoId: number,
   items: readonly RuleAgentItem[],
-  target: { itemId: number; trace: RuleTraceRecorder },
-): number[] {
+  target: { itemId: number; trace: RuleTraceRecorder<unknown> },
+): Promise<number[]> {
   // 落地那一刻它还在草案里吗:开跑前查过一次,解读那几分钟里人照样可以删掉它。
-  if (!store.getRuleDraft(repoId).some((item) => item.id === target.itemId)) {
+  if (!(await store.getRuleDraft(repoId)).some((item) => item.id === target.itemId)) {
     throw new Error(DRAFT_TARGET_GONE);
   }
   const chosen = chooseTargetItem(
@@ -9215,7 +9230,7 @@ function landRuleDraftItem(
   );
   if (chosen === undefined) return [];
   if (
-    !store.updateRuleDraftItem(repoId, target.itemId, {
+    !await store.updateRuleDraftItem(repoId, target.itemId, {
       type: chosen.type,
       scope: chosen.scope,
       statement: chosen.statement,
@@ -9244,8 +9259,8 @@ async function startDispositionFeedback(
   note: string,
   disposedBy: string,
 ): Promise<void> {
-  const repoId = withStore(deps.dbPath, (store) =>
-    store.findRepoId(finding.owner, finding.repo),
+  const repoId = await withStore(deps.dbPath, async (store) =>
+    await store.findRepoId(finding.owner, finding.repo),
   );
   if (repoId === undefined) {
     console.error(`处置反哺没有落处:${finding.owner}/${finding.repo} 不在注册表里`);
@@ -9255,8 +9270,8 @@ async function startDispositionFeedback(
   // ——那一行要答得出「这一次本来要用哪个模型」,失败原因由后台那一步写。
   const resolved = await resolveAuxiliaryModelPlan(deps, repoId);
   const spec = resolved?.spec ?? null;
-  const intent = withStore(deps.dbPath, (store) =>
-    store.startRuleIntent(repoId, {
+  const intent = await withStore(deps.dbPath, async (store) =>
+    await store.startRuleIntent(repoId, {
       text: note,
       submittedBy: disposedBy,
       targetKind: "finding",
@@ -9382,7 +9397,7 @@ function toDraftEntry(item: RuleDraftItem): KnowledgeEntry {
 /** 目标那一份落地要的样子(issue #295、#297、#298)。无目标即缺席,产出按无目标那两档入队。 */
 function intentLanding(
   target: RuleIntentInput["target"],
-  trace: RuleTraceRecorder,
+  trace: RuleTraceRecorder<unknown>,
 ): IntentLanding | undefined {
   if (target.kind === "proposal") {
     return { kind: "proposal", proposalId: target.proposal.id, trace };
@@ -9431,7 +9446,7 @@ async function runRevisionIntentInBackground(
     finding === undefined ? "manual-proposal" : "disposition-feedback";
   // 轨迹从任务开始就起,与另三条链路同一条口径:取不回代码、模型用不了都是这一次运行
   // 之内的失败,人来这条轨迹就是要看它究竟卡在哪一步。
-  const trace = startRuleTrace((use) => withStore(deps.dbPath, use), repoId, origin, {
+  const trace = await startRuleTrace(<T>(use: (sync: Store) => Promise<T>) => withStore(deps.dbPath, (_store, sync) => use(sync)), repoId, origin, {
     source: origin,
     intentId: intent.id,
     ...(finding === undefined
@@ -9446,7 +9461,7 @@ async function runRevisionIntentInBackground(
   });
   const traceTaskId = trace.taskId;
   if (traceTaskId !== null) {
-    withStore(deps.dbPath, (store) => store.setRuleIntentTrace(intent.id, traceTaskId));
+    await withStore(deps.dbPath, async (store) => await store.setRuleIntentTrace(intent.id, traceTaskId));
   }
   // 收尾一句取 agent 的最后一段话。它已经在轨迹里,这里只是顺手留住最后那一条——从轨迹
   // 倒查一遍要另开一次库,而这一句是意图行自己的内容。
@@ -9479,14 +9494,14 @@ async function runRevisionIntentInBackground(
       : (await defaultBranchHead(
         clone,
         repository,
-        withStore(deps.dbPath, (store) => store.getRepo(repoId)?.defaultBranch ?? null),
+        await withStore(deps.dbPath, async (store) => (await store.getRepo(repoId))?.defaultBranch ?? null),
       )).sha;
     worktree = await prepareWorktree({ ...clone, headSha: head, baseSha: head });
-    const input = withStore(deps.dbPath, (store) => {
-      const ruleSet = store.getRuleSet(repoId);
+    const input = await withStore(deps.dbPath, async (store) => {
+      const ruleSet = await store.getRuleSet(repoId);
       const rules = ruleSet?.rules ?? [];
-      const pending = store
-        .getRuleProposals(repoId)
+      const pending = (await store
+        .getRuleProposals(repoId))
         .filter((entry) => entry.state === "pending");
       return {
         version: ruleSet?.version ?? null,
@@ -9499,7 +9514,7 @@ async function runRevisionIntentInBackground(
           rules,
           pending,
           // 草案那一份只有目标为草案条目时用得上:别的三档读它是一次白跑的查询。
-          intent.targetKind === "draft" ? store.getRuleDraft(repoId) : [],
+          intent.targetKind === "draft" ? await store.getRuleDraft(repoId) : [],
         ),
       };
     });
@@ -9550,11 +9565,11 @@ async function runRevisionIntentInBackground(
       traceTaskId: trace.taskId,
     };
     const landing = intentLanding(input.target, trace);
-    const produced = withStore(deps.dbPath, (store) => {
+    const produced = await withStore(deps.dbPath, async (store) => {
       // 目标型意图只落地指向目标的那一条(issue #295、#297、#298),与无目标那两档分道:
       // 它不看知识集确不确认——目标本身就说得出这个仓库在哪一边。
       if (landing !== undefined) {
-        const landed = landRuleItems(store, repoId, usable, input.rules, source, landing);
+        const landed = await landRuleItems(store, repoId, usable, input.rules, source, landing);
         // 目标为草案条目那一档改的是草案里那一行,产出因此记在草案那一格(issue #298)。
         return landing.kind === "draft"
           ? { proposalIds: [], draftItemIds: landed }
@@ -9565,7 +9580,7 @@ async function runRevisionIntentInBackground(
       if (intent.targetKind === "none" && input.version === null) {
         return {
           proposalIds: [],
-          draftItemIds: store.appendRuleDraftItems(
+          draftItemIds: await store.appendRuleDraftItems(
             repoId,
             usable.map((item) => ({
               type: item.type,
@@ -9577,23 +9592,23 @@ async function runRevisionIntentInBackground(
         };
       }
       return {
-        proposalIds: landRuleItems(store, repoId, usable, input.rules, source),
+        proposalIds: await landRuleItems(store, repoId, usable, input.rules, source),
         draftItemIds: [],
       };
     });
-    withStore(deps.dbPath, (store) =>
-      store.finishRuleIntent(
+    await withStore(deps.dbPath, async (store) =>
+      await store.finishRuleIntent(
         intent.id,
         { summary: lastMessage === "" ? INTENT_EMPTY_SUMMARY : lastMessage, produced },
         at,
       ),
     );
-    trace.record("rule_agent_finished", {
+    await trace.record("rule_agent_finished", {
       items: produced.proposalIds.length + produced.draftItemIds.length,
     });
   } catch (error) {
     failure = failureText(error);
-    trace.record("rule_agent_failed", { failure });
+    await trace.record("rule_agent_failed", { failure });
   } finally {
     trace.end();
     await worktree?.release();
@@ -9601,7 +9616,7 @@ async function runRevisionIntentInBackground(
 
   try {
     if (failure !== undefined) {
-      withStore(deps.dbPath, (store) => store.failRuleIntent(intent.id, failure!, now()));
+      await withStore(deps.dbPath, async (store) => await store.failRuleIntent(intent.id, failure!, now()));
     }
   } catch (error) {
     // 后台任务:未处理的拒绝会带走整个进程。
@@ -9633,12 +9648,12 @@ async function runRevisionIntentInBackground(
  * 那一档仍 400——它由处置那一侧自己建行,不由人在这里提。回
  * undefined 即这里已经回过响应,调用方直接返回。
  */
-function readIntentTarget(
+async function readIntentTarget(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   raw: unknown,
-): { targetKind: RuleIntentTargetKind; targetId: number | null } | undefined {
+): Promise<{ targetKind: RuleIntentTargetKind; targetId: number | null } | undefined> {
   const target = (raw ?? { kind: "none" }) as { kind?: unknown; id?: unknown };
   const kind = target.kind;
   if (kind === "none" || kind === undefined) {
@@ -9656,8 +9671,8 @@ function readIntentTarget(
   }
   const targetId = target.id;
   if (kind === "proposal") {
-    const proposal = withStore(deps.dbPath, (store) =>
-      store.getRuleProposals(repoId).find((row) => row.id === targetId && row.state === "pending"),
+    const proposal = await withStore(deps.dbPath, async (store) =>
+      (await store.getRuleProposals(repoId)).find((row) => row.id === targetId && row.state === "pending"),
     );
     if (proposal === undefined) {
       sendJson(res, 404, { error: NO_PENDING_PROPOSAL });
@@ -9669,23 +9684,23 @@ function readIntentTarget(
     }
   } else if (kind === "draft") {
     if (
-      !withStore(deps.dbPath, (store) =>
-        store.getRuleDraft(repoId).some((item) => item.id === targetId),
+      !await withStore(deps.dbPath, async (store) =>
+        (await store.getRuleDraft(repoId)).some((item) => item.id === targetId),
       )
     ) {
       sendJson(res, 404, { error: NO_DRAFT_ITEM });
       return undefined;
     }
   } else if (
-    !withStore(deps.dbPath, (store) =>
-      (store.getRuleSet(repoId)?.rules ?? []).some((rule) => rule.id === targetId),
+    !await withStore(deps.dbPath, async (store) =>
+      ((await store.getRuleSet(repoId))?.rules ?? []).some((rule) => rule.id === targetId),
     )
   ) {
     // 不存在与已废止是同一句话:两者对提交方是同一件事——这条条目现在改不了。
     sendJson(res, 404, { error: NO_ACTIVE_RULE });
     return undefined;
   }
-  if (withStore(deps.dbPath, (store) => store.hasRunningRuleIntent(repoId, kind, targetId))) {
+  if (await withStore(deps.dbPath, async (store) => await store.hasRunningRuleIntent(repoId, kind, targetId))) {
     sendJson(res, 409, { error: INTENT_TARGET_BUSY });
     return undefined;
   }
@@ -9715,11 +9730,11 @@ async function handleSubmitRevisionIntent(
   if (text.length > INTENT_TEXT_LIMIT) {
     return sendJson(res, 400, { error: `修订意图不能超过 ${INTENT_TEXT_LIMIT} 字` });
   }
-  const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  const repo = await withStore(deps.dbPath, async (store) => await store.getRepo(repoId));
   if (repo === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  const target = readIntentTarget(res, deps, repoId, payload?.target);
+  const target = await readIntentTarget(res, deps, repoId, payload?.target);
   if (target === undefined) return;
   // 模型在提交这一刻就要跑得起来(ADR 0029,issue #304):选不出与跑不了的话这条意图
   // 落地即失败,不如当场说清楚去哪里改。判据与另三条链路同一处。
@@ -9728,8 +9743,8 @@ async function handleSubmitRevisionIntent(
     return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
   }
   const spec = auxiliary.plan.spec;
-  const intent = withStore(deps.dbPath, (store) =>
-    store.startRuleIntent(repoId, {
+  const intent = await withStore(deps.dbPath, async (store) =>
+    await store.startRuleIntent(repoId, {
       text,
       submittedBy,
       ...target,
@@ -9753,13 +9768,13 @@ async function handleSubmitRevisionIntent(
  * 删掉一条修订意图(ADR 0028)。失败行与完成行删得掉;运行中的删不掉——那一次还在跑,
  * 行删了它结算时就没有落处,而取消一次运行不在这一票的范围里。
  */
-function handleDeleteRevisionIntent(
+async function handleDeleteRevisionIntent(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   intentId: number,
-): void {
-  const outcome = withStore(deps.dbPath, (store) => store.deleteRuleIntent(repoId, intentId));
+): Promise<void> {
+  const outcome = await withStore(deps.dbPath, async (store) => await store.deleteRuleIntent(repoId, intentId));
   if (outcome === "missing") {
     return sendJson(res, 404, { error: "这条修订意图不在这个仓库里" });
   }
@@ -9788,9 +9803,9 @@ async function handleRetryRevisionIntent(
   repoId: number,
   intentId: number,
 ): Promise<void> {
-  const { repo, failed } = withStore(deps.dbPath, (store) => ({
-    repo: store.getRepo(repoId),
-    failed: store.getRuleIntent(repoId, intentId),
+  const { repo, failed } = await withStore(deps.dbPath, async (store) => ({
+    repo: await store.getRepo(repoId),
+    failed: await store.getRuleIntent(repoId, intentId),
   }));
   if (repo === undefined || failed === null) {
     return sendJson(res, 404, { error: "这条修订意图不在这个仓库里" });
@@ -9800,15 +9815,15 @@ async function handleRetryRevisionIntent(
   }
   let finding: FindingDispositionTarget | undefined;
   if (failed.targetKind === "finding") {
-    finding = withStore(deps.dbPath, (store) => store.getFinding(failed.targetId!));
+    finding = await withStore(deps.dbPath, async (store) => await store.getFinding(failed.targetId!));
     if (finding === undefined) return sendJson(res, 404, { error: "没有这条 Finding" });
   } else if (
-    readIntentTarget(
+    (await readIntentTarget(
       res,
       deps,
       repoId,
       failed.targetKind === "none" ? undefined : { kind: failed.targetKind, id: failed.targetId },
-    ) === undefined
+    )) === undefined
   ) {
     return;
   }
@@ -9817,8 +9832,8 @@ async function handleRetryRevisionIntent(
     return sendJson(res, 409, { error: auxiliary?.reason ?? NO_AUXILIARY_MODEL });
   }
   const spec = auxiliary.plan.spec;
-  const intent = withStore(deps.dbPath, (store) =>
-    store.rerunRuleIntent(repoId, intentId, {
+  const intent = await withStore(deps.dbPath, async (store) =>
+    await store.rerunRuleIntent(repoId, intentId, {
       model: modelIdentity(spec),
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
@@ -9880,7 +9895,7 @@ async function auxiliaryModelRunnability(
 ): Promise<AuxiliaryModelRunnability> {
   const [plan] = await materializeReviewerPlans(
     deps,
-    withStore(deps.dbPath, (store) => store.listModelServices()),
+    await withStore(deps.dbPath, async (store) => await store.listModelServices()),
     [spec],
   );
   const identity = modelIdentity(spec);
@@ -9926,8 +9941,8 @@ async function resolveAuxiliaryModelPlan(
   deps: WebhookServerDeps,
   repoId: number,
 ): Promise<AuxiliaryModelResolution | undefined> {
-  const resolved = withStore(deps.dbPath, (store) =>
-    store.getRepo(repoId) === undefined ? undefined : store.resolveAuxiliaryModel(repoId),
+  const resolved = await withStore(deps.dbPath, async (store) =>
+    await store.getRepo(repoId) === undefined ? undefined : await store.resolveAuxiliaryModel(repoId),
   );
   if (resolved === undefined) return undefined;
   if (resolved === null) {
@@ -9996,7 +10011,7 @@ async function prepareRuleTaskLaunch(
   deps: WebhookServerDeps,
   repoId: number,
 ): Promise<{ repo: RepoRef; spec: ReviewerSpec; plan: ReviewerRuntimePlan } | undefined> {
-  const repo = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  const repo = await withStore(deps.dbPath, async (store) => await store.getRepo(repoId));
   if (repo === undefined) {
     sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
     return undefined;
@@ -10015,9 +10030,9 @@ async function prepareRuleTaskLaunch(
  * 在跑的是哪一个——人下一步是等它还是去看它的轨迹,取决于跑的是哪一条链路。两条发起
  * 链路共用它,回执形状因此对称。
  */
-function runningRuleTaskError(deps: WebhookServerDeps, repoId: number): string {
-  const running = withStore(deps.dbPath, (store) =>
-    store.getRuleConsolidation(repoId)?.state === "running" ? "知识整理" : "基点探索",
+async function runningRuleTaskError(deps: WebhookServerDeps, repoId: number): Promise<string> {
+  const running = await withStore(deps.dbPath, async (store) =>
+    (await store.getRuleConsolidation(repoId))?.state === "running" ? "知识整理" : "基点探索",
   );
   return `这个仓库已经有一次${running}在跑,等它结束再发起`;
 }
@@ -10050,8 +10065,8 @@ async function handleStartRuleExploration(
   if (launch === undefined) return;
   const { repo, spec, plan } = launch;
 
-  const started = withStore(deps.dbPath, (store) =>
-    store.startRuleExploration(repoId, {
+  const started = await withStore(deps.dbPath, async (store) =>
+    await store.startRuleExploration(repoId, {
       baselineSha: baseline,
       model: modelIdentity(spec),
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
@@ -10059,10 +10074,10 @@ async function handleStartRuleExploration(
     }),
   );
   if (!started) {
-    return sendJson(res, 409, { error: runningRuleTaskError(deps, repoId) });
+    return sendJson(res, 409, { error: await runningRuleTaskError(deps, repoId) });
   }
 
-  const exploration = withStore(deps.dbPath, (store) => store.getRuleExploration(repoId));
+  const exploration = await withStore(deps.dbPath, async (store) => await store.getRuleExploration(repoId));
   // 先回 202 再开跑:探索要跑上几分钟,人等的是「已经在跑了」这个回执。
   sendJson(res, 202, { exploration });
   void runRuleExplorationInBackground(deps, repoId, repo, baseline, plan);
@@ -10091,31 +10106,31 @@ async function handleStartRuleConsolidation(
   if (launch === undefined) return;
   const { spec, plan } = launch;
 
-  const started = withStore(deps.dbPath, (store) =>
-    store.startRuleConsolidation(repoId, {
+  const started = await withStore(deps.dbPath, async (store) =>
+    await store.startRuleConsolidation(repoId, {
       model: modelIdentity(spec),
       ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
       startedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     }),
   );
   if (!started) {
-    return sendJson(res, 409, { error: runningRuleTaskError(deps, repoId) });
+    return sendJson(res, 409, { error: await runningRuleTaskError(deps, repoId) });
   }
 
-  const consolidation = withStore(deps.dbPath, (store) => store.getRuleConsolidation(repoId));
+  const consolidation = await withStore(deps.dbPath, async (store) => await store.getRuleConsolidation(repoId));
   // 先回 202 再开跑,与基点探索同一条口径:人等的是「已经在跑了」这个回执。
   sendJson(res, 202, { consolidation });
   void runRuleConsolidationInBackground(deps, repoId, plan);
 }
 
 /** 删草案里的一条。草案未确认,删就是删掉——没有历史版本的快照要为它保留。 */
-function handleDeleteDraftItem(
+async function handleDeleteDraftItem(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   itemId: number,
-): void {
-  const deleted = withStore(deps.dbPath, (store) => store.deleteRuleDraftItem(repoId, itemId));
+): Promise<void> {
+  const deleted = await withStore(deps.dbPath, async (store) => await store.deleteRuleDraftItem(repoId, itemId));
   if (!deleted) return sendJson(res, 404, { error: NO_DRAFT_ITEM });
   return sendJson(res, 200, { id: itemId });
 }
@@ -10130,14 +10145,14 @@ const NOT_ALL_PENDING = "不在这个仓库的待裁决队列里";
  * 不读**(issue #299,ADR 0028):采纳的就是队列里那一份,人要改内容先写一条修订意图让
  * agent 改写这条提案,改完再采纳——采纳的与被裁决的因此始终是同一份。
  */
-function handleAcceptRuleProposal(
+async function handleAcceptRuleProposal(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   proposalId: number,
-): void {
-  const version = withStore(deps.dbPath, (store) =>
-    store.acceptRuleProposal(repoId, proposalId),
+): Promise<void> {
+  const version = await withStore(deps.dbPath, async (store) =>
+    await store.acceptRuleProposal(repoId, proposalId),
   );
   if (version === undefined) {
     return sendJson(res, 404, {
@@ -10193,11 +10208,11 @@ async function handleDecideRuleProposals(
   const ids = await readProposalIds(req, res);
   if (ids === undefined) return;
   if (!accept) {
-    const rejected = withStore(deps.dbPath, (store) => store.rejectRuleProposals(repoId, ids));
+    const rejected = await withStore(deps.dbPath, async (store) => await store.rejectRuleProposals(repoId, ids));
     if (!rejected) return sendJson(res, 404, { error: `这一组里有提案${NOT_ALL_PENDING}` });
     return sendJson(res, 200, { ids });
   }
-  const version = withStore(deps.dbPath, (store) => store.acceptRuleProposals(repoId, ids));
+  const version = await withStore(deps.dbPath, async (store) => await store.acceptRuleProposals(repoId, ids));
   if (version === undefined) {
     return sendJson(res, 404, {
       error: `这一组里有提案${NOT_ALL_PENDING},或它要改的知识条目已经不再生效、要改的型别对不上`,
@@ -10207,13 +10222,13 @@ async function handleDecideRuleProposals(
 }
 
 /** 驳回一条修订提案:只改状态,知识集一版都不推进。 */
-function handleRejectRuleProposal(
+async function handleRejectRuleProposal(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
   proposalId: number,
-): void {
-  const rejected = withStore(deps.dbPath, (store) => store.rejectRuleProposal(repoId, proposalId));
+): Promise<void> {
+  const rejected = await withStore(deps.dbPath, async (store) => await store.rejectRuleProposal(repoId, proposalId));
   if (!rejected) return sendJson(res, 404, { error: NO_PENDING_PROPOSAL });
   return sendJson(res, 200, { id: proposalId });
 }
@@ -10242,10 +10257,10 @@ async function handleConfirmRuleDraft(
       });
     }
   }
-  const version = withStore(deps.dbPath, (store) =>
+  const version = await withStore(deps.dbPath, async (store) =>
     itemIds === undefined
-      ? store.confirmRuleDraft(repoId)
-      : store.confirmRuleDraft(repoId, itemIds as number[]),
+      ? await store.confirmRuleDraft(repoId)
+      : await store.confirmRuleDraft(repoId, itemIds as number[]),
   );
   if (version === undefined) {
     return sendJson(res, 409, {
@@ -10259,16 +10274,16 @@ async function handleConfirmRuleDraft(
  * 重新准备工作副本(issue #184)。第一次没备成、或缓存目录被清掉之后,人在仓库页点它;
  * 权限与注册、移除同一格(`repo:write`)。
  */
-function handlePrepareWorktree(
+async function handlePrepareWorktree(
   res: ServerResponse,
   deps: WebhookServerDeps,
   repoId: number,
-): void {
-  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+): Promise<void> {
+  const record = await withStore(deps.dbPath, async (store) => await store.getRepo(repoId));
   if (record === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  const started = startWorktreePreparation(deps, repoId, {
+  const started = await startWorktreePreparation(deps, repoId, {
     owner: record.owner,
     repo: record.repo,
   });
@@ -10328,7 +10343,7 @@ async function handleRegister(
   }
   const repoId = check.repoId;
 
-  if (withStore(deps.dbPath, (store) => store.getRepo(repoId)) !== undefined) {
+  if (await withStore(deps.dbPath, async (store) => await store.getRepo(repoId)) !== undefined) {
     return sendJson(res, 409, { error: `${ref.owner}/${ref.repo} 已注册(repo id ${repoId})` });
   }
 
@@ -10344,8 +10359,8 @@ async function handleRegister(
 
   // 先落库再建 hook:hook 一旦在,投递就会来,库里必须已经有 Key 能验它。建 hook
   // 失败时回滚刚落的注册,不留「已注册却无 hook」的哑仓库。
-  const registered = withStore(deps.dbPath, (store) =>
-    store.registerRepo({
+  const registered = await withStore(deps.dbPath, async (store) =>
+    await store.registerRepo({
       repoId,
       owner: ref.owner,
       repo: ref.repo,
@@ -10362,14 +10377,16 @@ async function handleRegister(
   try {
     await hookManager.ensureHook(ref, { url: hookUrl(deps.baseUrl, generation), key });
   } catch (error) {
-    withStore(deps.dbPath, (store) => store.removeRepo(repoId));
+    await withStore(deps.dbPath, async (store) => await store.removeRepo(repoId));
     return sendJson(res, 502, {
       error: `Gitea 建 hook 失败:${error instanceof Error ? error.message : String(error)}`,
     });
   }
   // 注册到此为止就成了,工作副本在后台备(issue #184):clone 与它的失败都不该让人在
   // 接入仓库这一步等着。状态落库,仓库页显示准备中 / 就绪 / 失败并给得出重试入口。
-  startWorktreePreparation(deps, repoId, ref);
+  // 等的只是「准备中」那一格落库(迁移前它是同步写,在 201 之前就已经写好了),clone
+  // 本身仍在后台:`startWorktreePreparation` 不等那个 promise(issue #446)。
+  await startWorktreePreparation(deps, repoId, ref);
   return sendJson(res, 201, { repoId, owner: ref.owner, repo: ref.repo, generation });
 }
 
@@ -10382,7 +10399,7 @@ async function handleRemove(
   if (hookManager === undefined) {
     return sendJson(res, 500, { error: "没有配置 Gitea,无法移除仓库" });
   }
-  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRepo(repoId));
   if (record === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
@@ -10412,7 +10429,7 @@ async function handleRemove(
   }
 
   // 评审记录一行不动:模型选型的历史不因仓库下线而断(移除后的投递按未注册 401)。
-  withStore(deps.dbPath, (store) => store.removeRepo(repoId));
+  await withStore(deps.dbPath, async (store) => await store.removeRepo(repoId));
 
   // 工作副本随注册一起走(issue #184)。仓库改过名时两个名字下各可能有一份,现名与
   // 注册时的名字各删一次;已经不在的那一份删起来是空操作。目录上还有准备在跑时
@@ -10438,7 +10455,7 @@ async function handleSetRepoSettings(
   deps: WebhookServerDeps,
   repoId: number,
 ): Promise<void> {
-  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRepo(repoId));
   if (record === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
@@ -10538,8 +10555,8 @@ async function handleSetRepoSettings(
     }
   }
 
-  const saved = withStore(deps.dbPath, (store) =>
-    store.putRepoSettings(repoId, payload.expectedVersion as number, {
+  const saved = await withStore(deps.dbPath, async (store) =>
+    await store.putRepoSettings(repoId, payload.expectedVersion as number, {
       reviewersJson,
       auxiliaryModelJson: auxiliary.json,
       minReportSeverity: severity as Severity | null,
@@ -10555,7 +10572,7 @@ async function handleSetRepoSettings(
   }
   // 读到这里那一行必然还在:`missing` 那一档上面已经回过 404。并发改写抢在中间的那一次
   // 走这里,回的是库里此刻的值。
-  return repoSettingsConflict(res, withStore(deps.dbPath, (store) => store.getRepo(repoId))!);
+  return repoSettingsConflict(res, (await withStore(deps.dbPath, async (store) => await store.getRepo(repoId)))!);
 }
 
 /** 版本对不上时回的那一份:库里此刻的四项配置与整块版本号,面板据它换基线而不丢草稿。 */
@@ -10608,10 +10625,10 @@ async function convergeToGeneration(
       await hookManager.deleteHook(ref, hook.id);
     }
   }
-  withStore(deps.dbPath, (store) => {
-    for (const key of store.listRepoKeys(repoId)) {
+  await withStore(deps.dbPath, async (store) => {
+    for (const key of await store.listRepoKeys(repoId)) {
       if (key.generation < target.generation) {
-        store.removeRepoKey(repoId, key.generation);
+        await store.removeRepoKey(repoId, key.generation);
       }
     }
   });
@@ -10630,7 +10647,7 @@ async function handleRotate(
   if (hookManager === undefined) {
     return sendJson(res, 500, { error: "没有配置 Gitea,无法轮转" });
   }
-  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRepo(repoId));
   if (record === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
@@ -10647,10 +10664,10 @@ async function handleRotate(
     const ref = resolved;
 
     // 上一轮未收尾先推到底:两把 Key 时收敛到较新的那把,代次不堆积。
-    let keys = withStore(deps.dbPath, (store) => store.listRepoKeys(repoId));
+    let keys = await withStore(deps.dbPath, async (store) => await store.listRepoKeys(repoId));
     if (keys.length > 1) {
       await convergeToGeneration(deps, hookManager, ref, repoId, keys[keys.length - 1]!);
-      keys = withStore(deps.dbPath, (store) => store.listRepoKeys(repoId));
+      keys = await withStore(deps.dbPath, async (store) => await store.listRepoKeys(repoId));
     }
     // 注册表行与第一把 Key 同事务生灭,注册过的仓库至少有一把。
     const current = keys[keys.length - 1]!;
@@ -10662,7 +10679,7 @@ async function handleRotate(
       .filter((generation): generation is number => generation !== undefined);
     const next = Math.max(current.generation, ...giteaGenerations) + 1;
     const key = randomBytes(32).toString("hex");
-    withStore(deps.dbPath, (store) => store.addRepoKey(repoId, next, key));
+    await withStore(deps.dbPath, async (store) => await store.addRepoKey(repoId, next, key));
     await convergeToGeneration(deps, hookManager, ref, repoId, { generation: next, key });
     return sendJson(res, 200, { repoId, generation: next });
   } catch (error) {
@@ -10687,11 +10704,11 @@ async function handleHookCheck(
   if (hookManager === undefined) {
     return sendJson(res, 500, { error: "没有配置 Gitea,无法核对" });
   }
-  const record = withStore(deps.dbPath, (store) => store.getRepo(repoId));
+  const record = await withStore(deps.dbPath, async (store) => await store.getRepo(repoId));
   if (record === undefined) {
     return sendJson(res, 404, { error: `没有 repo id 为 ${repoId} 的注册仓库` });
   }
-  const keys = withStore(deps.dbPath, (store) => store.listRepoKeys(repoId));
+  const keys = await withStore(deps.dbPath, async (store) => await store.listRepoKeys(repoId));
   const expectedGenerations = keys.map((key) => key.generation);
   const issues: { message: string; action: string }[] = [];
 
@@ -10864,7 +10881,7 @@ async function resumeRun(deps: WebhookServerDeps, run: InterruptedRunDetail): Pr
   const forge = deps.forges.gitea;
   // GitHub 已封存(ADR 0014),被中断的轮次只可能来自 Gitea。
   if (forge === undefined) throw new Error(`${RESUME_NOT_VIABLE}:没有配置 Gitea 的 Forge`);
-  const repoId = withStore(deps.dbPath, (store) => store.findRepoId(run.owner, run.repo));
+  const repoId = await withStore(deps.dbPath, async (store) => await store.findRepoId(run.owner, run.repo));
   if (repoId === undefined) {
     throw new Error(`${RESUME_NOT_VIABLE}:仓库 ${run.owner}/${run.repo} 已经不在注册表里`);
   }
@@ -10920,15 +10937,15 @@ function resumeInterruptedRuns(
         // 退回 issue #247 的改判:这一轮标记失败并写上原因,下一次启动因此不会再看到它。
         // 先定形再用(issue #436):这一句进轮次那一列、各模型的失败行与轨迹事件三处。
         const reason = runFailureText(`服务重启,上一轮没跑完;${failure}`);
-        const interrupted = withStore(deps.dbPath, (store) => {
-          const runs = store.failInterruptedRuns(
+        const interrupted = await withStore(deps.dbPath, async (store, sync) => {
+          const runs = await store.failInterruptedRuns(
             reason,
             new Date((deps.now ?? Date.now)()).toISOString(),
             [run.runId],
           );
           // 轨迹上补一条 Run 级的失败事件(ADR 0026),与列内是同一句原因:这一轮没有
           // `run_finished`,轨迹里只有它说得出为什么没收尾。频道此刻已不在内存,只落库。
-          createTraceRecorder(store, run.runId).run("run_failed", { reason });
+          createTraceRecorder(sync, run.runId).run("run_failed", { reason });
           return runs;
         });
         // 改判掉的这一轮在 PR 上还挂着 👀(续跑那一段自己挂的,或崩溃前留下的)。
@@ -10942,7 +10959,7 @@ function resumeInterruptedRuns(
   })();
 }
 
-export function createWebhookServer(deps: WebhookServerDeps): Server {
+export async function createWebhookServer(deps: WebhookServerDeps): Promise<Server> {
   // 已经记过首次的无关事件类型与 action,整个服务共用一份。
   const loggedOnce = new Set<string>();
   const auth = createPanelAuth({
@@ -10951,7 +10968,7 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
       console.warn(`登录节流:账号 ${account},来源 ${ip},已失败 ${count} 次`),
   });
   let bootstrap =
-    withStore(deps.dbPath, (store) => store.countPanelUsers()) === 0
+    await withStore(deps.dbPath, async (store) => await store.countPanelUsers()) === 0
       ? (deps.bootstrapSecret ?? randomBytes(16).toString("hex"))
       : undefined;
   if (bootstrap !== undefined) deps.onBootstrap?.(bootstrap);
@@ -10961,30 +10978,30 @@ export function createWebhookServer(deps: WebhookServerDeps): Server {
   };
   // 进程重启会中断后台的工作副本准备(issue #184),那些行没有谁再去改它。启动时改判
   // 失败,面板因此显示得出结果、也给得出重试入口。
-  const interrupted = withStore(deps.dbPath, (store) => {
-    store.failInterruptedWorktrees(
+  const interrupted = await withStore(deps.dbPath, async (store) => {
+    await store.failInterruptedWorktrees(
       "服务重启,上一次准备没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
     // 后台跑的基点探索同理(issue #205):停在运行中的那一行没有谁再去改它。
-    store.failInterruptedRuleExplorations(
+    await store.failInterruptedRuleExplorations(
       "服务重启,上一次探索没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
     // 知识整理与探索同律(issue #284)。
-    store.failInterruptedRuleConsolidations(
+    await store.failInterruptedRuleConsolidations(
       "服务重启,上一次整理没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
     // 修订意图同律(issue #294):停在运行中的那些行没有谁再去改它,人也删不掉。
-    store.failInterruptedRuleIntents(
+    await store.failInterruptedRuleIntents(
       "服务重启,上一次提议没跑完",
       new Date((deps.now ?? Date.now)()).toISOString(),
     );
     // 正在跑的 Review Run 停在运行中时先尝试续跑(issue #248):已跑完的批次结果已经
     // 落库,只补缺的那些,已经花掉的 token 因此保得住。续跑不成立才退回 issue #247 的
     // 改判——标记失败、写上原因、撤掉 PR 上残留的 👀。
-    return store.interruptedRuns();
+    return await store.interruptedRuns();
   });
   // 没有中断轮次时启动路径零改动:不查 Forge,也不多发一个写。
   resumeInterruptedRuns(deps, interrupted);
