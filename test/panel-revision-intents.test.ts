@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem, RuleAgentRequest } from "../src/reviewer/rule-agent.ts";
 import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer, scriptedRuleAgent as scriptedRuleAgentRow } from "./support/memory-forge.ts";

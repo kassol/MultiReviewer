@@ -3,7 +3,7 @@
  * head commit 状态,因此 Reviewer 仍能读到其他批次改动后的代码。
  */
 import type { ReviewerOutcome } from "./finding.ts";
-import { sumUsage } from "./store.ts";
+import { sumUsage } from "./store/index.ts";
 
 /**
  * 一批最多多少改动行。规模按增删行数而非文件数衡量:50 个各改 2 行的文件不该被

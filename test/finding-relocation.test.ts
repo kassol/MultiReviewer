@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { runReview } from "../src/review/run.ts";
-import { openStore, type StageScope, type StageSummary } from "../src/review/store.ts";
+import { openStore, type StageScope, type StageSummary } from "../src/review/store/index.ts";
 import { query } from "./support/batch-run.ts";
 import {
   asPublished,

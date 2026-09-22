@@ -18,7 +18,7 @@ import {
   type ReviewRuleInput,
   type RuleProposalInput,
   type RuleProposalSourceInput,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {

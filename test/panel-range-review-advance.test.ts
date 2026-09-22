@@ -11,7 +11,7 @@ import { test } from "node:test";
 
 import type { ChangedFile, Forge } from "../src/forge/forge.ts";
 import type { ReviewRange } from "../src/review/finding.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,

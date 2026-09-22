@@ -16,7 +16,7 @@ import {
   type ReviewRuleInput,
   type RuleProposalInput,
   type RuleProposalSourceInput,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import type { ConsolidationProposal, RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer, scriptedRuleAgent } from "./support/memory-forge.ts";

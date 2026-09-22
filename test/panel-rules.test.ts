@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,

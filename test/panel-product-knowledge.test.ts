@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore, type ProductKnowledgeKind } from "../src/review/store.ts";
+import { openStore, type ProductKnowledgeKind } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   scopedUser,

@@ -12,7 +12,7 @@ import { test } from "node:test";
 import type { MergeAgentRequest } from "../src/review/dedupe.ts";
 import type { Reviewer, ReviewVerdict } from "../src/review/finding.ts";
 import { MERGE_AGENT_TRACE_NAME, runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import {

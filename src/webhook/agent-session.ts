@@ -43,7 +43,7 @@ import {
   type ProductKnowledgeEntry,
   type ProductRepoRecord,
   type RepoFindingQuery,
-} from "../review/store.ts";
+} from "../review/store/index.ts";
 import {
   agentSessionChannel,
   publishAgentSessionRecord,

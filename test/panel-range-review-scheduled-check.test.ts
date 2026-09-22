@@ -15,7 +15,7 @@ import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import type { ReviewRange } from "../src/review/finding.ts";
-import { openStore, type ScheduledCheckResult } from "../src/review/store.ts";
+import { openStore, type ScheduledCheckResult } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,

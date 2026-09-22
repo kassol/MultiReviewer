@@ -16,7 +16,7 @@ import {
   modelServiceTargetSetFingerprint,
   openStore,
   type ModelServiceVersionCommit,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import type { DiscoveredModel, ModelDiscoveryResult } from "../src/reviewer/model-service-runtime.ts";
 import {
   HARNESS_PR,

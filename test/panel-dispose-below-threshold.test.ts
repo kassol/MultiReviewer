@@ -10,7 +10,7 @@ import { test } from "node:test";
 
 import type { Forge } from "../src/forge/forge.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,

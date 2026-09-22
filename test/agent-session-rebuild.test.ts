@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   agentSessionStatus,
   disposeAgentSessions,

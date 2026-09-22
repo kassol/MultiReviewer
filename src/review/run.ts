@@ -91,7 +91,7 @@ import {
   type StageScope,
   type Store,
   type VerdictRecord,
-} from "./store.ts";
+} from "./store/index.ts";
 import {
   beginTrace,
   createTraceRecorder,

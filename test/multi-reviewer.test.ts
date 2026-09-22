@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { buildReviewers } from "../src/config.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";

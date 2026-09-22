@@ -4,7 +4,7 @@
  */
 import { DatabaseSync } from "node:sqlite";
 
-import type { GlobalSettingsValues, ReviewRuleInput, Store } from "../../src/review/store.ts";
+import type { GlobalSettingsValues, ReviewRuleInput, Store } from "../../src/review/store/index.ts";
 
 /** 按当前版本合并写入几项审查策略。整页替换那一条是生产写链,这里只是省去读版本那一步。 */
 export async function putGlobalSettings(store: Store, patch: Partial<GlobalSettingsValues>): Promise<boolean> {

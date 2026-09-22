@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { confirmEmptyRuleSet, makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {

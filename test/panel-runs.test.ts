@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 import { DatabaseSync } from "node:sqlite";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import type { ReviewerUsage, RunProjection } from "../src/contracts/runs.ts";
 import {
   GITEA_REPO,

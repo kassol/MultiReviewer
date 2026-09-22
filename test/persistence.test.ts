@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { Reviewer, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import { query, setup as setupRepo } from "./support/batch-run.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";

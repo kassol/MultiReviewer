@@ -13,7 +13,7 @@ import {
   type NormalizedEvent,
   type Platform,
 } from "../src/webhook/server.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { confirmEmptyRuleSet, makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";

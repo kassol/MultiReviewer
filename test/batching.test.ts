@@ -17,7 +17,7 @@ import {
   splitIntoBatches,
 } from "../src/review/batch.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { query, setup as setupRepo } from "./support/batch-run.ts";

@@ -11,7 +11,7 @@ import {
   type RunMeta,
   type Store,
   type VerdictRecord,
-} from "../../src/review/store.ts";
+} from "../../src/review/store/index.ts";
 
 /**
  * 本测试文件共用的清理队列。每个测试文件是一个独立进程,所以这份模块级的队列就是

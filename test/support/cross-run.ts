@@ -7,7 +7,7 @@
  * 自动处置与延续)两个文件之后它们并行跑,壁钟由长的那一个说。断言一格未动。
  */
 import type { ExistingReviewComment } from "../../src/forge/forge.ts";
-import { openStore } from "../../src/review/store.ts";
+import { openStore } from "../../src/review/store/index.ts";
 import { testCleanups } from "./git-fixture.ts";
 import { query, setup as setupRepo } from "./batch-run.ts";
 import { scriptedReviewer, type MemoryForge } from "./memory-forge.ts";

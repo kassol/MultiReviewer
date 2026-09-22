@@ -27,7 +27,7 @@ import {
   modelServiceTargetFingerprint,
   openStore,
   type ScheduledCheckResult,
-} from "../../src/review/store.ts";
+} from "../../src/review/store/index.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import {
   confirmEmptyRuleSet,

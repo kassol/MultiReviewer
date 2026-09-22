@@ -19,7 +19,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { CREDENTIAL_MASTER_KEY_ENV } from "../src/panel/credential-crypto.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { startFakeGitea } from "./support/fake-gitea.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";

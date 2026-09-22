@@ -18,7 +18,7 @@ import type { ReviewRunReviewerPin } from "../src/config.ts";
 import type { Forge, PullRequestRef, Reaction } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore, runFailureText } from "../src/review/store.ts";
+import { openStore, runFailureText } from "../src/review/store/index.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { query } from "./support/batch-run.ts";
 import type { FileTree } from "./support/git-fixture.ts";

@@ -13,7 +13,7 @@ import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { EVENT, FILES, batchReviewer, query, setup } from "./support/batch-run.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";

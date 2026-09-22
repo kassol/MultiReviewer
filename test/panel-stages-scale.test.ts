@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { startPanelHarness, type PanelHarness } from "./support/panel-harness.ts";
 
 const OWNER = "scale-owner";

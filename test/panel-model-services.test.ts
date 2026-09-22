@@ -12,7 +12,7 @@ import {
   type ModelReferenceLocation,
   type ModelServiceVersionCommit,
   type Store,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import {
   PANEL_CREDENTIAL_MASTER_KEY,
   hashTestPassword,

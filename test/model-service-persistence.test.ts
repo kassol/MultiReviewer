@@ -7,7 +7,7 @@ import {
   modelServiceTargetFingerprint,
   openStore,
   type ModelServiceVersionCommit,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 

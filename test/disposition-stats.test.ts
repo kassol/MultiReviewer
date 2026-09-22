@@ -12,7 +12,7 @@ import {
   type FindingRecord,
   type ModelParticipation,
   type Store,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import { makeDbPath, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 const WIDE: [string, string] = ["2000-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z"];

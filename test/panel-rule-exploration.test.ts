@@ -15,7 +15,7 @@ import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
 import type { KnowledgeEntry } from "../src/review/finding.ts";
-import { openStore, type ReviewRuleInput } from "../src/review/store.ts";
+import { openStore, type ReviewRuleInput } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import {

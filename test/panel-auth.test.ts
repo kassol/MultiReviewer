@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 
 import { hashPassword, verifyPassword } from "../src/panel/password.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 

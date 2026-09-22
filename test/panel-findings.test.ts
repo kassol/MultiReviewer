@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import type { RunFinding, RunProjection } from "../src/contracts/runs.ts";
 import {
   GITEA_REPO,

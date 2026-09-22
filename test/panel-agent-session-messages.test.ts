@@ -15,7 +15,7 @@ import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import type { ReviewerUsage } from "../src/review/finding.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { agentSessionRepos, disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,

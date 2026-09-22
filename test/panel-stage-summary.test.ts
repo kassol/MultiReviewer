@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { openStore, type Store } from "../src/review/store.ts";
+import { openStore, type Store } from "../src/review/store/index.ts";
 import { seedRun as seedRunRow } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,

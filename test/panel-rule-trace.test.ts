@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
 import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";

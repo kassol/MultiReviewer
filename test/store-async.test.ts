@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { startRuleTrace } from "../src/review/trace.ts";
-import { openStore, type Store } from "../src/review/store.ts";
+import { openStore, type Store } from "../src/review/store/index.ts";
 import { runTrackerRequest } from "../src/webhook/product-tracker.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 

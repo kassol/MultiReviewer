@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore, type AgentSessionRecord } from "../src/review/store.ts";
+import { openStore, type AgentSessionRecord } from "../src/review/store/index.ts";
 import { disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,

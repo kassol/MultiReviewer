@@ -1,0 +1,26 @@
+# 跑测试用的本机 PostgreSQL(spec #445)。只服务开发机,不进部署:线上的实例由部署方提供,
+# 服务只读一条连接串。端口挑了 54329,免得撞上本机已有的 5432。
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   export MULTIREVIEWER_TEST_DATABASE_URL=postgres://multireviewer:multireviewer@127.0.0.1:54329/multireviewer
+#   pnpm test
+#
+# 测试夹具在这个实例上按测试文件建库、跑迁移、跑完删库,所以这里给的账号要有 CREATE DATABASE
+# 权限——超级用户 multireviewer 天然就有。
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: multireviewer
+      POSTGRES_PASSWORD: multireviewer
+      POSTGRES_DB: multireviewer
+    ports:
+      - "54329:5432"
+    # 数据不持久:测试库用完即删,重启从空实例起反而干净。
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multireviewer"]
+      interval: 2s
+      timeout: 3s
+      retries: 15

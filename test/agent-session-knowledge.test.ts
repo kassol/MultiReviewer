@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { scopesOverlap } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { FINDING_QUERY_LIMIT } from "../src/reviewer/session-finding-tool.ts";
 import { disposeAgentSessions, sessionKnowledge } from "../src/webhook/agent-session.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";

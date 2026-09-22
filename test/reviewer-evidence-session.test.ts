@@ -18,7 +18,7 @@ import { test } from "node:test";
 
 import type { ReviewerEvent, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { EVIDENCE_AGENT, SUBAGENT_TOOL } from "../src/reviewer/evidence.ts";
 import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";

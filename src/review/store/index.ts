@@ -1,12 +1,25 @@
 /**
- * Review Run 的持久化。用 Node 内置的 SQLite,不引入第三方驱动。
+ * Review Run 的持久化。库是 PostgreSQL,经 Drizzle 读写(ADR 0036)。
+ *
+ * 这个文件是库的装配处:连接池、事务、各域方法的组装。表的声明在 `../schema/`,按域一个
+ * 文件;方法按域分在这个目录下的 `accounts.ts` / `repos.ts` / … 里(spec #445 第二段)。
  *
  * Disposition 的权威状态在 Forge 上,`finding.disposition` 只缓存最近一次读回的
  * 结果,默认 `unknown`。
  */
 import { createHash } from "node:crypto";
 import { matchesGlob } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
+
+import { getTableColumns, getTableName, is } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { PgTable } from "drizzle-orm/pg-core";
+
+import * as schema from "../schema/index.ts";
+import { accountsMethods } from "./accounts.ts";
+import { createPool, storeDb, type Db, type PgPool } from "./pg.ts";
+export type { StoreTransaction, TransactionMode } from "./pg.ts";
 
 import {
   assertReviewerSpecs,
@@ -15,16 +28,16 @@ import {
   type ReviewerSpec,
   type ReviewRunReviewerPin,
   type ThinkingLevel,
-} from "../config.ts";
-import type { LineAuthor } from "../git/worktree.ts";
-import { isPanelPermission, type PanelPermission } from "../panel/permissions.ts";
+} from "../../config.ts";
+import type { LineAuthor } from "../../git/worktree.ts";
+import type { PanelPermission } from "../../panel/permissions.ts";
 import {
   normalizeModelServiceBaseUrl,
   type DiscoveredModel,
   type TrustedModelFields,
   type TrustedModelFieldSource,
   type TrustedModelFieldSources,
-} from "../reviewer/model-service-runtime.ts";
+} from "../../reviewer/model-service-runtime.ts";
 import type {
   CarriedAttribution,
   Category,
@@ -41,12 +54,12 @@ import type {
   ReviewVerdict,
   RuleProposalChange,
   Severity,
-} from "./finding.ts";
-import { DEFAULT_MIN_REPORT_SEVERITY } from "./finding.ts";
-import type { RunProjection } from "../contracts/runs.ts";
+} from "../finding.ts";
+import { DEFAULT_MIN_REPORT_SEVERITY } from "../finding.ts";
+import type { RunProjection } from "../../contracts/runs.ts";
 // 只取类型:`batch.ts` 反过来引用本模块的 `sumUsage`,类型导入在运行时被抹掉,不成环。
-import type { TimedOutcome } from "./batch.ts";
-import { containerBranches, type RangeReviewState } from "./range-review.ts";
+import type { TimedOutcome } from "../batch.ts";
+import { containerBranches, type RangeReviewState } from "../range-review.ts";
 import type {
   RuleTraceEvent,
   RuleTraceEventInput,
@@ -55,7 +68,7 @@ import type {
   TraceEventInput,
   TraceKind,
   TraceScope,
-} from "./trace.ts";
+} from "../trace.ts";
 
 export const STORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS review_run (
@@ -1123,72 +1136,6 @@ const GLOBAL_AUXILIARY_MODEL_KEY = "auxiliary_model";
  */
 const GLOBAL_SETTINGS_VERSION_KEY = "settings_version";
 
-/**
- * 升级前的库里缺的列(issue #312、#313、#314)。建表片段与 `STORE_SCHEMA` 里对应那一行
- * 逐字相同:`CREATE TABLE IF NOT EXISTS` 对既有表不生效,旧库靠 `openStore` 逐列补上,
- * 两处写法漂了就会补出一张与新建的库不同构的表。`backfill` 只跟着补列那一次跑。
- *
- * 发版跑过之后即不再命中;下一次发版连同旧库用例一起删掉(src/AGENTS.md)。
- */
-const ADDED_COLUMNS: readonly { table: string; column: string; backfill?: string }[] = [
-  {
-    table: "review_run",
-    column: "trigger_source TEXT",
-    // 按用户名快照推:有用户名的那一轮是人在面板上开的,其余是投递(定时那一档从 #312
-    // 之后才写得出来,旧行里没有)。
-    backfill: `UPDATE review_run
-                  SET trigger_source = CASE WHEN triggered_by IS NULL THEN 'delivery' ELSE 'panel' END`,
-  },
-  // 每日增量的五列全部可空或带默认值,补完即是「开关没开过、也没检查过」,不必回填。
-  { table: "range_review", column: "daily_increment_enabled INTEGER NOT NULL DEFAULT 0" },
-  { table: "range_review", column: "daily_increment_branch TEXT" },
-  { table: "range_review", column: "daily_increment_enabled_at TEXT" },
-  { table: "range_review", column: "scheduled_check_at TEXT" },
-  { table: "range_review", column: "scheduled_check_result TEXT" },
-  // 检查时刻与模式(issue #315):带默认值,补完即 00:00 只复核,与此前的行为一致。
-  { table: "range_review", column: "scheduled_check_time TEXT NOT NULL DEFAULT '00:00'" },
-  { table: "range_review", column: "scheduled_check_mode TEXT NOT NULL DEFAULT 'verdict-only'" },
-  // 排队消息带的图片引用(issue #336):可空,补完即「这几条没带图」,与此前的行为一致。
-  { table: "agent_session_pending_message", column: "images TEXT" },
-  // 仓库职责(issue #341):可空,补完即「这些仓库还没写职责」,与此前的行为一致。
-  { table: "product_repo", column: "role TEXT" },
-  // 默认分支(issue #350):可空,补完即「每个仓库都跟随 Gitea 的默认分支」,与此前的行为一致。
-  { table: "repo", column: "default_branch TEXT" },
-  // 会话开在哪个 commit(issue #351):可空,补完即「这些会话没记过」,面板对它们什么都不显示。
-  { table: "agent_session", column: "baselines TEXT" },
-  // 没给结论的由来(issue #412、#413):可空,补完即「旧行说不出是哪一种」,按旧口径整份
-  // 算漏复核,与升级前一致。不回填——批次没跑成与覆盖缺口都是当时的运行事实,事后推不出来。
-  { table: "finding_verdict", column: "missing_reason TEXT" },
-  // 产品梳理谈完的时刻(issue #365):可空,补完即「这些会话都还没谈完」。
-  {
-    table: "agent_session",
-    column: "completed_at TEXT",
-    // 升级前就在的那几场产品梳理一律回填成「谈完了」(评审复核):它们是旧形态——由系统
-    // 开的一次交卷,创建者是系统,人发不了消息、也就调不到 `complete_survey`。不回填的话
-    // 它们永远算「没谈完」,这个产品的下一场梳理就再也开不起来。
-    backfill: `UPDATE agent_session
-                  SET completed_at = created_at
-                WHERE purpose = 'product-survey' AND completed_at IS NULL`,
-  },
-  // 位置重定位(issue #368):两列可空,补完即「这些行还没被重定位过」,读回退回
-  // line / run_id,与这一票之前逐字一致。下一轮 Review Run 开跑时按指纹现填。
-  { table: "finding", column: "placed_line INTEGER" },
-  { table: "finding", column: "placed_run_id INTEGER REFERENCES review_run(id)" },
-];
-
-/**
- * 升级前每一项各持一个版本键(issue #301 之前)。开库时一次性删掉,整页版本从缺行的 1
- * 起算;设置值本身一格不动。删过即不再命中,幂等。
- */
-const LEGACY_SETTING_VERSION_KEYS = [
-  "reviewers_version",
-  "max_changed_lines_per_batch_version",
-  "max_parallel_batches_version",
-  "max_files_per_batch_version",
-  "max_evidence_calls_per_batch_version",
-  "min_report_severity_version",
-];
-
 /** 最低报告等级的系统默认住在 `finding.ts`,这里转出:既有的引用方不必改到那边去。 */
 export { DEFAULT_MIN_REPORT_SEVERITY };
 
@@ -1238,12 +1185,6 @@ const BATCH_LIMIT_KEYS = {
 /** 审查策略里按正整数各自保存的哪一项。 */
 export type BatchLimitField = keyof typeof BATCH_LIMIT_KEYS;
 
-/**
- * 等锁的上限。webhook 服务里 webhook 层与后台 Review Run 各持一个句柄写同一个文件,
- * 默认的 0 会让撞上写锁的那一方当场报错,而这里等几十毫秒就过去了。
- */
-const BUSY_TIMEOUT_MS = 5_000;
-
 /** 「同一个 pull request 名下的历史 finding」。回填与自动处置都按它限定范围。 */
 const PULL_REQUEST_SCOPE = `run_id IN (SELECT id FROM review_run
                                         WHERE owner = ? AND repo = ? AND pull_number = ?)`;
@@ -1269,7 +1210,7 @@ const AUTO_DISPOSABLE = "disposition IN ('unknown', 'unresolved') AND disposed_a
  */
 function identityKey(prefix: string): string {
   return `COALESCE(${prefix}comment_id,
-                   ${prefix}file || char(10) || COALESCE(${prefix}fingerprint, 'row:' || ${prefix}id))`;
+                   ${prefix}file || chr(10) || COALESCE(${prefix}fingerprint, 'row:' || ${prefix}id))`;
 }
 
 /**
@@ -1476,7 +1417,7 @@ import type {
   FindingPlacement,
   RecordedFindingAttribution,
   RecordedLineAuthor,
-} from "../contracts/finding.ts";
+} from "../../contracts/finding.ts";
 
 export type { FindingPlacement, RecordedFindingAttribution, RecordedLineAuthor };
 
@@ -2358,13 +2299,13 @@ import type {
   StageSource,
   StageStatus,
   StageTimelineEntry,
-} from "../contracts/stages.ts";
+} from "../../contracts/stages.ts";
 import type {
   StageRootCauseGroup,
   StageRootCauseRef,
   StageSummary,
   StageSummaryFinding,
-} from "../contracts/stage-summary.ts";
+} from "../../contracts/stage-summary.ts";
 
 export type {
   StageDetail,
@@ -4045,9 +3986,8 @@ type SyncStore = {
 };
 
 /**
- * 库对外的形状(spec #445):每个方法返回 Promise。底下这一版仍是 `node:sqlite` 的同步
- * 调用,只把返回值裹进 Promise;签名先异步是为了第二段换 Drizzle 与 PostgreSQL 时调用点
- * 一个字都不用再改。
+ * 库对外的形状(spec #445):每个方法返回 Promise。`SyncStore` 只是这 181 个签名的写法——
+ * 逐个手抄一遍 `Promise<…>` 没有意义,由这个映射类型加上。实现直接按这个形状写。
  */
 export type Store = {
   [K in keyof SyncStore]: SyncStore[K] extends (...args: infer A) => infer R
@@ -4055,51 +3995,6 @@ export type Store = {
     : SyncStore[K];
 };
 
-/**
- * 把内部那份同步实现包成异步门面:方法在微任务里 resolve,抛出的错变成 reject,SQL
- * 一个字没动。181 个方法不手抄,新增方法自动有它的异步形状。
- */
-function asyncStore(store: SyncStore): Store {
-  return new Proxy(store, {
-    get(target, property) {
-      const value = Reflect.get(target, property) as unknown;
-      if (typeof value !== "function") return value;
-      const method = value as (...args: unknown[]) => unknown;
-      return async (...args: unknown[]) => method.apply(target, args);
-    },
-  }) as unknown as Store;
-}
-
-/**
- * 事务内按业务判定回滚的内部信号(issue #459):`transaction` 捕获它,回滚之后把 `value`
- * 当作这次事务的返回值交给调用方。它不是错误,不往方法外抛——手写 `ROLLBACK` 之后
- * `return` 的那 22 处表达的正是这件事。
- */
-class RollbackSignal {
-  value: unknown;
-  constructor(value: unknown) {
-    this.value = value;
-  }
-}
-
-/**
- * 一次事务的句柄:读写经它进行,`rollback` 中途回滚并把给它的值交回去。
- *
- * **事务回调是同步的,里面不能 await。**它跑在门面底下那份同步实现里,`transaction` 跑完
- * 回调就 COMMIT;回调若是 async,第一个 `await` 之前就已经提交,之后的写全落在事务外。
- */
-export type StoreTransaction = {
-  prepare: DatabaseSync["prepare"];
-  exec: DatabaseSync["exec"];
-  rollback(value?: unknown): never;
-};
-
-/**
- * 事务的取锁方式。`immediate` 一开头就拿写锁,给「先读后判再写」那几处用——延迟取锁
- * 要在读完之后升级成写锁,别的连接正等着提交时 SQLite 当场报 database is locked
- * (issue #401)。`deferred` 是其余各处。
- */
-export type TransactionMode = "deferred" | "immediate";
 
 function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
   if (usage === undefined) return Array.from({ length: 5 }, () => null);
@@ -4185,24 +4080,24 @@ const AGENT_SESSION_CHILD_TABLES = [
 ] as const;
 
 /** 这几个会话底下的全部行。调用方自己开事务:两处都要与删会话行本身同进同退。 */
-function deleteAgentSessionRows(db: DatabaseSync, sessionIds: readonly number[]): void {
+async function deleteAgentSessionRows(db: Db, sessionIds: readonly number[]): Promise<void> {
   for (const table of AGENT_SESSION_CHILD_TABLES) {
     const statement = db.prepare(`DELETE FROM ${table} WHERE session_id = ?`);
-    for (const sessionId of sessionIds) statement.run(sessionId);
+    for (const sessionId of sessionIds) await statement.run(sessionId);
   }
 }
 
 /** 这个会话落库的排队消息,按当初写下的顺序。只读与「取出即删」共用这一句查询。 */
-function agentSessionPendingMessages(
-  db: DatabaseSync,
+async function agentSessionPendingMessages(
+  db: Db,
   sessionId: number,
-): AgentSessionPendingMessage[] {
-  return db
+): Promise<AgentSessionPendingMessage[]> {
+  return (await db
     .prepare(
       `SELECT mode, text, images FROM agent_session_pending_message
         WHERE session_id = ? ORDER BY seq`,
     )
-    .all(sessionId)
+    .all(sessionId))
     .map((row) => ({
       mode: String(row["mode"]),
       text: String(row["text"]),
@@ -4211,12 +4106,12 @@ function agentSessionPendingMessages(
 }
 
 /** 这些 Finding 各自承接来的历史说法(issue #267),按 finding id 归组、段内按落库顺序。 */
-function carriedByFinding(
-  db: DatabaseSync,
+async function carriedByFinding(
+  db: Db,
   findingSql: string,
   params: readonly (string | number)[],
-): Map<number, CarriedAttribution[]> {
-  const rows = db
+): Promise<Map<number, CarriedAttribution[]>> {
+  const rows = await db
     .prepare(
       `SELECT c.finding_id AS finding_id, c.model AS model, c.run_id AS run_id,
               c.description AS description, c.impact AS impact, c.suggestion AS suggestion,
@@ -4392,14 +4287,14 @@ export function runFailureText(failure: string): string {
  * 那一轮还没有结论。今天这两张表都只在收尾那一笔事务里写,交进来也问不出东西;由
  * 调用方筛是为了让这条规则读得见,而不是靠写入时机碰巧成立。
  */
-function stageRunAlerts(
-  db: DatabaseSync,
+async function stageRunAlerts(
+  db: Db,
   runIds: readonly number[],
-): Map<number, StageRunAlert> {
+): Promise<Map<number, StageRunAlert>> {
   const alerts = new Map<number, StageRunAlert>();
   if (runIds.length === 0) return alerts;
   const marks = runIds.map(() => "?").join(",");
-  const rows = db
+  const rows = await db
     .prepare(
       `SELECT run_id, MAX(batch_failed) AS batch_failed, MAX(model_failed) AS model_failed,
               MAX(failure) AS failure
@@ -4583,122 +4478,54 @@ function toRuleIntent(row: Record<string, unknown>): RuleIntent {
 }
 
 /** 打开当前 schema；schema-v0 数据库开不起来。 */
-export function openStore(dbPath: string): Store {
-  const db = new DatabaseSync(dbPath, { timeout: BUSY_TIMEOUT_MS });
-  let modelServiceSchemaVersion = Number(
-    db.prepare("PRAGMA user_version").get()?.["user_version"] ?? 0,
-  );
-  if (modelServiceSchemaVersion === 0) {
-    const existingTables = Number(
-      db.prepare(
-        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-      ).get()?.["count"] ?? 0,
-    );
-    if (existingTables !== 0) {
-      db.close();
-      // 迁移器已随 issue #217 删除:现役实例都迁完了,留着的只有这道拒绝启动。
-      throw new Error("schema-v0 数据库开不起来:本程序不再带模型服务迁移器");
-    }
-    db.exec(STORE_SCHEMA);
-    db.exec(MODEL_SERVICE_SCHEMA);
-    db.exec("PRAGMA user_version = 1");
-    modelServiceSchemaVersion = 1;
-  }
-  if (modelServiceSchemaVersion !== 1) {
-    db.close();
-    throw new Error(`不支持数据库 schema 版本 ${modelServiceSchemaVersion}`);
-  }
-  db.exec(STORE_SCHEMA);
-  db.exec(MODEL_SERVICE_SCHEMA);
+/**
+ * 进程内按连接串共用的连接池(ADR 0036)。`openStore` 每次给回一份门面,底下永远是同一个池
+ * ——「每请求开一次库、用完关掉」的形状到此退役,`(await store.close())` 因此也不再关任何东西。
+ * 池由 `closeStorePools()` 关:服务退出时一次,测试每个文件收尾时一次。
+ */
+const pools = new Map<string, PgPool>();
 
-  // 产品知识换形(ADR 0035,issue #360):旧的一句话条目、它的提案与驳回记忆一并丢弃,新表
-  // 由 `STORE_SCHEMA` 建起。`DROP TABLE IF EXISTS` 自带幂等,跑几遍都一样;旧表的名字不再
-  // 被任何代码用到,建不回来。存量丢弃是作者的决定:线上没有一条已裁决的条目。
-  db.exec("DROP TABLE IF EXISTS product_knowledge_rejection");
-  db.exec("DROP TABLE IF EXISTS product_knowledge");
+export function storePool(databaseUrl: string): PgPool {
+  const existing = pools.get(databaseUrl);
+  if (existing !== undefined) return existing;
+  const pool = createPool(databaseUrl);
+  pools.set(databaseUrl, pool);
+  return pool;
+}
 
-  // 需求拆分改走 spec 与票(ADR 0035,issue #366):会话产出与它的定稿记录退役,存量丢弃
-  // ——那一版拆分条目没有去处,而同一场会话现在把结果写进产品 tracker。会话记录一行不动,
-  // 旧的拆分会话照样打得开。
-  db.exec("DROP TABLE IF EXISTS agent_session_output_finalization");
-  db.exec("DROP TABLE IF EXISTS agent_session_output");
+/** 关掉这个进程开过的全部连接池。不关的话事件循环上还挂着空闲连接,进程不退出。 */
+export async function closeStorePools(): Promise<void> {
+  const open = [...pools.values()];
+  pools.clear();
+  await Promise.all(open.map(async (pool) => await pool.end()));
+}
 
-  // 升级前的库缺的列(`ADDED_COLUMNS`):按 `pragma_table_info` 逐列判,缺了才补,补过即
-  // 不再命中。回填只跟着补列那一次跑——`openStore` 每次请求都跑一遍,回填不该跟着每次
-  // 请求扫一次只增不减的表。
-  for (const { table, column, backfill } of ADDED_COLUMNS) {
-    const name = column.split(" ", 1)[0]!;
-    const present = db
-      .prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")
-      .get(table, name);
-    if (present !== undefined) continue;
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
-    if (backfill !== undefined) db.exec(backfill);
-  }
+/**
+ * 跑迁移(ADR 0036)。服务在开始监听之前执行它,失败即拒绝启动:schema 与代码对不上时,
+ * 起得来却每一条查询都报错比起不来更难查。迁移文件在版本库的 `drizzle/` 下,由
+ * `pnpm drizzle-kit generate` 按 `src/review/schema/` 生成。
+ */
+export async function migrateStore(databaseUrl: string): Promise<void> {
+  const pool = storePool(databaseUrl);
+  await migrate(drizzle(pool), {
+    migrationsFolder: fileURLToPath(new URL("../../../drizzle", import.meta.url)),
+  });
+}
 
-  // 审查策略整页一个版本(issue #301):升级前每一项各持一个版本键,这里一次性删掉并建起
-  // 整页那一个(从 1 起)。设置值本身一格不动;删过就不再命中,已有的整页版本也不被覆盖,
-  // 跑几遍都一样。
-  const legacyVersionKeys = db.prepare(
-    `DELETE FROM global_setting WHERE key IN (${LEGACY_SETTING_VERSION_KEYS.map(() => "?").join(", ")})`,
-  ).run(...LEGACY_SETTING_VERSION_KEYS).changes;
-  if (Number(legacyVersionKeys) > 0) {
-    db.prepare(
-      "INSERT INTO global_setting (key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
-    ).run(GLOBAL_SETTINGS_VERSION_KEY);
-  }
+/**
+ * 有 `id` 列的表。`store/pg.ts` 按它给插入自动补 `RETURNING id`(PostgreSQL 没有
+ * `lastInsertRowid`)。从 schema 现算,不另维护清单。
+ */
+const TABLES_WITH_ID = new Set(
+  Object.values(schema)
+    .filter((value) => is(value, PgTable))
+    .filter((table) => "id" in getTableColumns(table))
+    .map((table) => getTableName(table)),
+);
 
-  const tx: StoreTransaction = {
-    prepare: db.prepare.bind(db),
-    exec: db.exec.bind(db),
-    rollback(value) {
-      throw new RollbackSignal(value);
-    },
-  };
-
-  /** 回滚,再把中途回滚那一档的值交回去;别的错原样往外抛。 */
-  const rolledBack = (error: unknown): unknown => {
-    db.exec("ROLLBACK");
-    if (error instanceof RollbackSignal) return error.value;
-    throw error;
-  };
-
-  /**
-   * 回调式事务:开事务 → 跑回调 → 提交,回调抛错即回滚后重抛,调 `tx.rollback(值)`
-   * 即回滚后把那个值当返回值。
-   *
-   * 回调是同步的——它跑在门面底下那份同步实现里,`await` 一次就等于在没提交的事务中间
-   * 让别的请求插进来。
-   */
-  function transaction<T>(mode: TransactionMode, run: (tx: StoreTransaction) => T): T {
-    db.exec(mode === "immediate" ? "BEGIN IMMEDIATE" : "BEGIN");
-    let result: T;
-    try {
-      result = run(tx);
-    } catch (error) {
-      // 中途回滚那一档给回的就是调用方传给 `tx.rollback` 的那个值。
-      return rolledBack(error) as T;
-    }
-    db.exec("COMMIT");
-    return result;
-  }
-
-  // 系统管理员 bootstrap 与普通创建共用同一条用户写入语义。
-  const writePanelUser = (record: Omit<PanelUserRecord, "lastLoginAt">): void => {
-    db.prepare(
-      `INSERT INTO panel_user
-         (username, display_name, password_hash, must_change_password, created_at, is_system_admin, role_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      record.username,
-      record.displayName,
-      record.passwordHash,
-      record.mustChangePassword ? 1 : 0,
-      record.createdAt,
-      record.isSystemAdmin ? 1 : 0,
-      record.roleId,
-    );
-  };
+export function openStore(databaseUrl: string): Store {
+  const pool = storePool(databaseUrl);
+  const { db, orm, transaction } = storeDb(pool, TABLES_WITH_ID);
 
   const parseStoredReviewers = (reviewersJson: string, context: string): ReviewerSpec[] =>
     assertReviewerSpecs(JSON.parse(reviewersJson), context, { allowEmpty: true });
@@ -4729,7 +4556,7 @@ export function openStore(dbPath: string): Store {
          SELECT 1 FROM model_service_model_state state
           WHERE state.provider = service.provider
             AND state.model = ?
-            AND state.enabled = 0
+            AND state.enabled = false
        )
        AND (
          EXISTS (
@@ -4772,34 +4599,33 @@ export function openStore(dbPath: string): Store {
          )
        )
   `);
-  const specAvailable = (spec: ReviewerSpec): boolean =>
-    availableModel.get(spec.provider, spec.model, spec.model, spec.model) !== undefined;
-  const modelCombinationAvailable = (reviewersJson: string, context: string): boolean => {
+  const specAvailable = async (spec: ReviewerSpec): Promise<boolean> =>
+    (await availableModel.get(spec.provider, spec.model, spec.model, spec.model)) !== undefined;
+  const modelCombinationAvailable = async (reviewersJson: string, context: string): Promise<boolean> => {
     const reviewers = parseStoredReviewers(reviewersJson, context);
     return reviewers.length > 0 && reviewers.every(specAvailable);
   };
   /** 一处辅助模型引用当前跑不跑得动(issue #303)。判据与组合里的一项逐字相同。 */
-  const auxiliaryModelAvailable = (auxiliaryModelJson: string): boolean => {
+  const auxiliaryModelAvailable = async (auxiliaryModelJson: string): Promise<boolean> => {
     const spec = parseAuxiliaryModel(auxiliaryModelJson);
-    return spec !== null && specAvailable(spec);
+    return spec !== null && (await specAvailable(spec));
   };
   /**
    * 这一家服务此刻被引用着的模型。判据与 `listModelReferences` 是同一份收集逻辑——事务内
    * 的兜底另写一遍就会漏掉位置(issue #303 的辅助模型两处当初就是这么漏的)。
    */
-  const referencedModels = (provider: string): Set<string> =>
+  const referencedModels = async (provider: string): Promise<Set<string>> =>
     new Set(
-      store
-        .listModelReferences()
+      (await store.listModelReferences())
         .filter((reference) => reference.provider === provider)
         .map((reference) => reference.model),
     );
-  const recordSupportsCurrentReferences = (record: ModelServiceVersionCommit): boolean => {
-    const references = new Set(
-      [...referencedModels(record.provider)].filter((model) =>
-        availableModel.get(record.provider, model, model, model) !== undefined
-      ),
-    );
+  const recordSupportsCurrentReferences = async (record: ModelServiceVersionCommit): Promise<boolean> => {
+    const references = new Set<string>();
+    for (const model of await referencedModels(record.provider)) {
+      const row = await availableModel.get(record.provider, model, model, model);
+      if (row !== undefined) references.add(model);
+    }
     if (references.size === 0) return true;
     if (
       record.targetFingerprint === null ||
@@ -4840,20 +4666,20 @@ export function openStore(dbPath: string): Store {
    * 标识由行自己拼出(`pr:<owner>/<repo>/<number>` 与 `range:<id>`),因此拿回来的行要与
    * 请求的标识逐字相同才算命中——`pr:o/r/007` 解析出的是 7 号,那是另一个标识。
    */
-  const stageRowById = (stageId: string): StageRowEntry | undefined => {
+  const stageRowById = async (stageId: string): Promise<StageRowEntry | undefined> => {
     let row: unknown;
     if (stageId.startsWith("range:")) {
       const rangeReviewId = Number(stageId.slice("range:".length));
       if (!Number.isSafeInteger(rangeReviewId) || rangeReviewId <= 0) return undefined;
-      row = db.prepare(rangeStageQuery("rr.id = ?")).get(rangeReviewId);
+      row = (await db.prepare(rangeStageQuery("rr.id = ?")).get(rangeReviewId));
     } else if (stageId.startsWith("pr:")) {
       const parts = stageId.slice("pr:".length).split("/");
       if (parts.length !== 3) return undefined;
       const pullNumber = Number(parts[2]);
       if (!Number.isSafeInteger(pullNumber) || pullNumber <= 0) return undefined;
-      row = db
+      row = (await db
         .prepare(pullStageQuery("owner = ? AND repo = ? AND pull_number = ?"))
-        .get(parts[0]!, parts[1]!, pullNumber);
+        .get(parts[0]!, parts[1]!, pullNumber));
     } else {
       return undefined;
     }
@@ -4862,40 +4688,40 @@ export function openStore(dbPath: string): Store {
     return entry.item.stageId === stageId ? entry : undefined;
   };
 
-  const repoExists = (repoId: number): boolean =>
-    db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) !== undefined;
+  const repoExists = async (repoId: number): Promise<boolean> =>
+    (await db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId)) !== undefined;
 
   /**
    * 这条知识条目还生效吗:生效即回它的出处与两型之一(改一条要沿用出处、废止一条要
    * 说得出它是规则还是事实),否则回 undefined。
    */
-  const activeRule = (
+  const activeRule = async (
     repoId: number,
     ruleId: number,
-  ): { origin: string; type: KnowledgeType } | undefined => {
-    const row = db
+  ): Promise<{ origin: string; type: KnowledgeType } | undefined> => {
+    const row = (await db
       .prepare(
         "SELECT origin, type FROM review_rule WHERE id = ? AND repo_id = ? AND retired_version IS NULL",
       )
-      .get(ruleId, repoId);
+      .get(ruleId, repoId));
     return row === undefined
       ? undefined
       : { origin: String(row["origin"]), type: String(row["type"]) as KnowledgeType };
   };
 
-  const insertReviewRule = (
+  const insertReviewRule = async (
     repoId: number,
     input: ReviewRuleInput,
     origin: string,
     version: number,
     at: string,
-  ): void => {
+  ): Promise<void> => {
     // layer 是退役的层标签,列还在(NOT NULL)但没人读:新行一律写空串。
-    db.prepare(
+    (await db.prepare(
       `INSERT INTO review_rule
          (repo_id, type, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
        VALUES (?, ?, ?, ?, '', 'active', ?, ?, NULL, ?)`,
-    ).run(repoId, input.type, input.scope, input.statement, origin, version, at);
+    ).run(repoId, input.type, input.scope, input.statement, origin, version, at));
   };
 
   /**
@@ -4903,28 +4729,28 @@ export function openStore(dbPath: string): Store {
    * 探索与知识整理两张表:两者都要读这个仓库的知识集与队列,同时跑会互相看着对方的
    * 中间态。判据只有这一份,两个发起口共用。
    */
-  const ruleTaskRunning = (repoId: number): boolean =>
-    db
+  const ruleTaskRunning = async (repoId: number): Promise<boolean> =>
+    (await db
       .prepare(
         `SELECT 1 FROM rule_exploration WHERE repo_id = ? AND state = 'running'
          UNION ALL
          SELECT 1 FROM rule_consolidation WHERE repo_id = ? AND state = 'running'`,
       )
-      .get(repoId, repoId) !== undefined;
+      .get(repoId, repoId)) !== undefined;
 
-  const completeRuleExploration = (repoId: number, at: string): void => {
-    db.prepare(
+  const completeRuleExploration = async (repoId: number, at: string): Promise<void> => {
+    (await db.prepare(
       "UPDATE rule_exploration SET state = 'completed', failure = NULL, finished_at = ? WHERE repo_id = ?",
-    ).run(at, repoId);
+    ).run(at, repoId));
   };
 
   /** 往一条提案上追加一条出处附注(issue #281)。入队与之后的每一次来源共用它。 */
-  const insertRuleProposalSource = (
+  const insertRuleProposalSource = async (
     proposalId: number,
     source: RuleProposalSourceInput,
     at: string,
-  ): void => {
-    db.prepare(
+  ): Promise<void> => {
+    (await db.prepare(
       `INSERT INTO rule_proposal_source
          (proposal_id, origin, note, evidence, finding_id, trace_task_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -4936,11 +4762,11 @@ export function openStore(dbPath: string): Store {
       source.findingId,
       source.traceTaskId,
       at,
-    );
+    ));
   };
 
-  const insertRuleProposal = (repoId: number, input: RuleProposalInput, at: string): number => {
-    const inserted = db
+  const insertRuleProposal = async (repoId: number, input: RuleProposalInput, at: string): Promise<number> => {
+    const inserted = (await db
       .prepare(
         `INSERT INTO rule_proposal
            (repo_id, type, change, target_rule_ids, scope, statement, layer, state, created_at,
@@ -4955,16 +4781,16 @@ export function openStore(dbPath: string): Store {
         input.scope,
         input.statement,
         at,
-      );
+      ));
     const proposalId = Number(inserted.lastInsertRowid);
-    for (const source of input.sources) insertRuleProposalSource(proposalId, source, at);
+    for (const source of input.sources) (await insertRuleProposalSource(proposalId, source, at));
     return proposalId;
   };
 
   /** 这条提案还等着裁决吗:是即回它自己,否则回 undefined(裁决过的裁不了第二次)。 */
-  const pendingProposal = (repoId: number, proposalId: number): RuleProposal | undefined =>
-    store
-      .getRuleProposals(repoId)
+  const pendingProposal = async (repoId: number, proposalId: number): Promise<RuleProposal | undefined> =>
+    (await store
+      .getRuleProposals(repoId))
       .find((row) => row.id === proposalId && row.state === "pending");
 
   /**
@@ -4977,11 +4803,11 @@ export function openStore(dbPath: string): Store {
     targetOrigin: string | undefined;
   };
 
-  const plannedAcceptance = (
+  const plannedAcceptance = async (
     repoId: number,
     proposalId: number,
-  ): PlannedAcceptance | undefined => {
-    const queued = pendingProposal(repoId, proposalId);
+  ): Promise<PlannedAcceptance | undefined> => {
+    const queued = (await pendingProposal(repoId, proposalId));
     if (queued === undefined) return undefined;
     const content = {
       type: queued.type,
@@ -4990,7 +4816,8 @@ export function openStore(dbPath: string): Store {
     };
     // 修改、废止与合并都要目标条目此刻仍然生效:其中一条已经被人废止掉时,这条提案
     // 落不下去(合并那一档同一条判据,只是要逐条都还生效,issue #282)。
-    const targets = queued.targetRuleIds.map((id) => activeRule(repoId, id));
+    const targets: ({ origin: string; type: KnowledgeType } | undefined)[] = [];
+    for (const id of queued.targetRuleIds) targets.push(await activeRule(repoId, id));
     if (queued.change !== "add" && targets.some((target) => target === undefined)) {
       return undefined;
     }
@@ -5005,318 +4832,84 @@ export function openStore(dbPath: string): Store {
   };
 
   /** 采纳一条提案在写事务里做的那几笔。版本号由调用方给:批量采纳全组共用同一个。 */
-  const applyAcceptance = (
+  const applyAcceptance = async (
     repoId: number,
     planned: PlannedAcceptance,
     version: number,
     at: string,
-  ): void => {
+  ): Promise<void> => {
     const { queued, content, targetOrigin } = planned;
     if (queued.change === "add") {
       // 新条目的出处取第一条附注的来源(issue #281):那一次是提出它的那一次,之后追加
       // 的附注说的是「同一件事又被提了一遍」,不改变它当初从哪来。附注至少有一条。
-      insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at);
+      (await insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at));
     } else {
-      for (const targetId of queued.targetRuleIds) retireRuleRow(targetId, version);
+      for (const targetId of queued.targetRuleIds) (await retireRuleRow(targetId, version));
       // 修改沿用旧行的出处:改文字不改变这条条目当初从哪来(issue #203 同一条口径)。
       if (queued.change === "modify") {
-        insertReviewRule(repoId, content, targetOrigin!, version, at);
+        (await insertReviewRule(repoId, content, targetOrigin!, version, at));
       }
       // 合并的那一条是新写的一句,不是哪一条目标的延续:出处与新增同一条口径,取提案
       // 第一条附注的来源(issue #282)。几条目标的出处各不相同时也没有一份可沿用。
       if (queued.change === "merge") {
-        insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at);
+        (await insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at));
       }
     }
-    db.prepare(
+    (await db.prepare(
       `UPDATE rule_proposal
           SET state = 'accepted', type = ?, scope = ?, statement = ?, decided_at = ?
         WHERE id = ?`,
-    ).run(content.type, content.scope, content.statement, at, queued.id);
+    ).run(content.type, content.scope, content.statement, at, queued.id));
   };
 
-  const rejectProposalRow = (proposalId: number, at: string): void => {
-    db.prepare("UPDATE rule_proposal SET state = 'rejected', decided_at = ? WHERE id = ?").run(
+  const rejectProposalRow = async (proposalId: number, at: string): Promise<void> => {
+    (await db.prepare("UPDATE rule_proposal SET state = 'rejected', decided_at = ? WHERE id = ?").run(
       at,
       proposalId,
-    );
+    ));
   };
 
-  const retireRuleRow = (ruleId: number, version: number): void => {
-    db.prepare(
+  const retireRuleRow = async (ruleId: number, version: number): Promise<void> => {
+    (await db.prepare(
       "UPDATE review_rule SET state = 'retired', retired_version = ? WHERE id = ?",
-    ).run(version, ruleId);
+    ).run(version, ruleId));
   };
 
   /**
    * 推进一版知识集版本,在同一个写事务里跑规则那几行改动。知识集版本与它带来的规则
    * 变更必须一起落:落了版本没落规则,那一版的快照就是错的。
    */
-  const inRuleSetVersion = <T>(repoId: number, write: (version: number, at: string) => T): T => {
-    return transaction("deferred", () => {
-      const current = db
+  const inRuleSetVersion = async <T>(
+    repoId: number,
+    write: (version: number, at: string) => Promise<T>,
+  ): Promise<T> => {
+    return transaction("deferred", async () => {
+      const current = (await db
         .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
-        .get(repoId)?.["version"];
+        .get(repoId))?.["version"];
       const version = (current === null || current === undefined ? 0 : Number(current)) + 1;
       const at = new Date().toISOString();
-      db.prepare(
+      (await db.prepare(
         "INSERT INTO rule_set_version (repo_id, version, created_at) VALUES (?, ?, ?)",
-      ).run(repoId, version, at);
+      ).run(repoId, version, at));
       const result = write(version, at);
       return result;
     });
   };
 
-  const store: SyncStore = {
-    listPanelRoles() {
-      const rows = db
-        .prepare(
-          `SELECT r.id, r.name, r.created_at, p.permission
-             FROM panel_role r LEFT JOIN panel_role_permission p ON p.role_id = r.id
-            ORDER BY r.id, p.permission`,
-        )
-        .all();
-      const roles: PanelRoleRecord[] = [];
-      for (const row of rows) {
-        const id = Number(row["id"]);
-        let role = roles.find((item) => item.id === id);
-        if (role === undefined) {
-          role = { id, name: String(row["name"]), permissions: [], createdAt: String(row["created_at"]) };
-          roles.push(role);
-        }
-        if (row["permission"] !== null) {
-          const value = String(row["permission"]);
-          if (isPanelPermission(value)) role.permissions.push(value);
-        }
-      }
-      return roles;
-    },
+  const store: Store = {
+    // 面板账号域(角色、用户、会话、仓库分配)已迁 Drizzle,见 `./accounts.ts`。
+    ...accountsMethods({ orm, transaction, store: () => store }),
 
-    createPanelRole(record) {
-      return transaction("deferred", () => {
-        const result = db.prepare("INSERT INTO panel_role (name, created_at) VALUES (?, ?)").run(
-          record.name,
-          record.createdAt,
-        );
-        const id = Number(result.lastInsertRowid);
-        for (const permission of record.permissions) {
-          db.prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)").run(id, permission);
-        }
-        return { id, ...record, permissions: [...record.permissions] };
-      });
-    },
-
-    updatePanelRole(id, record) {
-      if (db.prepare("SELECT 1 FROM panel_role WHERE id = ?").get(id) === undefined) return undefined;
-      transaction("deferred", () => {
-        db.prepare("UPDATE panel_role SET name = ? WHERE id = ?").run(record.name, id);
-        db.prepare("DELETE FROM panel_role_permission WHERE role_id = ?").run(id);
-        for (const permission of record.permissions) {
-          db.prepare("INSERT INTO panel_role_permission (role_id, permission) VALUES (?, ?)").run(id, permission);
-        }
-      });
-      return store.listPanelRoles().find((role) => role.id === id);
-    },
-
-    removePanelRole(id) {
-      const usernames = db
-        .prepare("SELECT username FROM panel_user WHERE role_id = ? ORDER BY username")
-        .all(id)
-        .map((row) => String(row["username"]));
-      if (usernames.length > 0) return { removed: false, usernames };
-      return transaction("deferred", () => {
-        db.prepare("DELETE FROM panel_role_permission WHERE role_id = ?").run(id);
-        const result = db.prepare("DELETE FROM panel_role WHERE id = ?").run(id);
-        return { removed: Number(result.changes) > 0, usernames: [] };
-      });
-    },
-
-    listPanelUsers() {
-      const assigned = new Map<string, number[]>();
-      for (const row of db
-        .prepare("SELECT username, repo_id FROM panel_user_repo ORDER BY repo_id")
-        .all()) {
-        const username = String(row["username"]);
-        const repoIds = assigned.get(username);
-        if (repoIds === undefined) assigned.set(username, [Number(row["repo_id"])]);
-        else repoIds.push(Number(row["repo_id"]));
-      }
-      return db
-        .prepare(
-          `SELECT username, display_name, password_hash, must_change_password, created_at,
-                  last_login_at, is_system_admin, role_id FROM panel_user ORDER BY username`,
-        )
-        .all()
-        .map((row) => ({
-          username: String(row["username"]),
-          displayName: row["display_name"] === null ? null : String(row["display_name"]),
-          passwordHash: String(row["password_hash"]),
-          mustChangePassword: Number(row["must_change_password"]) === 1,
-          createdAt: String(row["created_at"]),
-          lastLoginAt: row["last_login_at"] === null ? null : String(row["last_login_at"]),
-          isSystemAdmin: Number(row["is_system_admin"]) === 1,
-          roleId: row["role_id"] === null ? null : Number(row["role_id"]),
-          repoIds: assigned.get(String(row["username"])) ?? [],
-        }));
-    },
-
-    setPanelUserAssignment(username, repoIds) {
-      transaction("deferred", () => {
-        db.prepare("DELETE FROM panel_user_repo WHERE username = ?").run(username);
-        const insert = db.prepare(
-          "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",
-        );
-        for (const repoId of repoIds) insert.run(username, repoId);
-      });
-    },
-
-    updatePanelUser(username, record) {
-      const prior = store.getPanelUser(username);
-      if (prior === undefined) return "missing";
-      return transaction("deferred", (tx) => {
-        db.prepare(
-          "UPDATE panel_user SET display_name = ?, role_id = ?, is_system_admin = ? WHERE username = ?",
-        ).run(record.displayName, record.roleId, record.isSystemAdmin ? 1 : 0, username);
-        const admins = Number((db.prepare("SELECT COUNT(*) AS c FROM panel_user WHERE is_system_admin = 1").get()?.["c"] ?? 0));
-        if (admins === 0) {
-          return tx.rollback("last-system-admin");
-        }
-        return "updated";
-      });
-    },
-
-    resetPanelPassword(username, passwordHash) {
-      return transaction("deferred", () => {
-        const result = db.prepare(
-          "UPDATE panel_user SET password_hash = ?, must_change_password = 1 WHERE username = ?",
-        ).run(passwordHash, username);
-        db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
-        return Number(result.changes) > 0;
-      });
-    },
-
-    countPanelUsers() {
-      const row = db.prepare("SELECT COUNT(*) AS c FROM panel_user").get();
-      return Number(row?.["c"] ?? 0);
-    },
-
-    getPanelUser(username) {
-      const row = db
-        .prepare(
-          `SELECT username, display_name, password_hash, must_change_password,
-                  created_at, last_login_at, is_system_admin, role_id
-             FROM panel_user WHERE username = ?`,
-        )
-        .get(username);
-      if (row === undefined) return undefined;
-
-      return {
-        username: String(row["username"]),
-        displayName: row["display_name"] === null ? null : String(row["display_name"]),
-        passwordHash: String(row["password_hash"]),
-        mustChangePassword: Number(row["must_change_password"]) === 1,
-        createdAt: String(row["created_at"]),
-        lastLoginAt: row["last_login_at"] === null ? null : String(row["last_login_at"]),
-        isSystemAdmin: Number(row["is_system_admin"]) === 1,
-        roleId: row["role_id"] === null ? null : Number(row["role_id"]),
-      };
-    },
-    hasHistoricalRunTrigger(username) {
-      return (
-        db.prepare("SELECT 1 FROM review_run WHERE triggered_by = ? LIMIT 1").get(username) !==
-        undefined
-      );
-    },
-
-    registerFirstPanelUser(record) {
-      // argon2 在调用方 await 完后才进这里;下面没有 await,Node 单线程不会在 COUNT 与
-      // INSERT 之间插进另一个请求。事务表达「查与插是一个决定」,不是额外的并发保证。
-      return transaction("immediate", (tx) => {
-        const countRow = db.prepare("SELECT COUNT(*) AS c FROM panel_user").get();
-        const count = Number(countRow?.["c"] ?? 0);
-        if (count !== 0) {
-          return tx.rollback(false);
-        }
-        writePanelUser(record);
-        return true;
-      });
-    },
-
-    createPanelUser(record) {
-      writePanelUser(record);
-    },
-
-    createPanelSession(record) {
-      db.prepare(
-        "INSERT INTO panel_session (session_hash, username, expires_at, created_at) VALUES (?, ?, ?, ?)",
-      ).run(record.sessionHash, record.username, record.expiresAt, record.createdAt);
-      db.prepare("UPDATE panel_user SET last_login_at = ? WHERE username = ?").run(
-        record.createdAt,
-        record.username,
-      );
-    },
-
-    getPanelSession(hash) {
-      const row = db
-        .prepare(
-          `SELECT u.username, u.display_name, u.must_change_password, u.is_system_admin,
-                  u.role_id, s.expires_at
-             FROM panel_session s JOIN panel_user u ON u.username = s.username
-            WHERE s.session_hash = ?`,
-        )
-        .get(hash);
-      if (row === undefined) return undefined;
-      return {
-        username: String(row["username"]),
-        displayName: row["display_name"] === null ? null : String(row["display_name"]),
-        mustChangePassword: Number(row["must_change_password"]) === 1,
-        isSystemAdmin: Number(row["is_system_admin"]) === 1,
-        roleId: row["role_id"] === null ? null : Number(row["role_id"]),
-        expiresAt: String(row["expires_at"]),
-      };
-    },
-
-    renewPanelSession(hash, expiresAt) {
-      db.prepare("UPDATE panel_session SET expires_at = ? WHERE session_hash = ?").run(expiresAt, hash);
-    },
-
-    removePanelSession(hash) {
-      db.prepare("DELETE FROM panel_session WHERE session_hash = ?").run(hash);
-    },
-
-    removePanelSessions(username, exceptHash) {
-      if (exceptHash === undefined) {
-        db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
-      } else {
-        db.prepare("DELETE FROM panel_session WHERE username = ? AND session_hash <> ?").run(
-          username,
-          exceptHash,
-        );
-      }
-    },
-
-    updatePanelPassword(username, passwordHash, mustChangePassword) {
-      db.prepare(
-        "UPDATE panel_user SET password_hash = ?, must_change_password = ? WHERE username = ?",
-      ).run(passwordHash, mustChangePassword ? 1 : 0, username);
-    },
-
-    removePanelUser(username) {
-      transaction("deferred", () => {
-        db.prepare("DELETE FROM panel_session WHERE username = ?").run(username);
-        db.prepare("DELETE FROM panel_user_repo WHERE username = ?").run(username);
-        db.prepare("DELETE FROM panel_user WHERE username = ?").run(username);
-      });
-    },
-    registerRepo(record) {
-      return transaction("immediate", (tx) => {
+    async registerRepo(record) {
+      return transaction("immediate", async (tx) => {
         if (
           record.reviewersJson !== undefined &&
-          !modelCombinationAvailable(record.reviewersJson, `仓库 ${record.repoId} 的模型覆盖`)
+          !(await modelCombinationAvailable(record.reviewersJson, `仓库 ${record.repoId} 的模型覆盖`))
         ) {
           return tx.rollback(false);
         }
-        db.prepare(
+        (await db.prepare(
           "INSERT INTO repo (id, owner, repo, reviewers, registered_at) VALUES (?, ?, ?, ?, ?)",
         ).run(
           record.repoId,
@@ -5324,54 +4917,54 @@ export function openStore(dbPath: string): Store {
           record.repo,
           record.reviewersJson ?? null,
           new Date().toISOString(),
-        );
-        db.prepare("INSERT INTO repo_key (repo_id, generation, key) VALUES (?, ?, ?)").run(
+        ));
+        (await db.prepare("INSERT INTO repo_key (repo_id, generation, key) VALUES (?, ?, ?)").run(
           record.repoId,
           record.generation,
           record.key,
-        );
+        ));
         if (record.assignTo !== undefined) {
-          db.prepare(
-            "INSERT OR IGNORE INTO panel_user_repo (username, repo_id) VALUES (?, ?)",
-          ).run(record.assignTo, record.repoId);
+          (await db.prepare(
+            "INSERT INTO panel_user_repo (username, repo_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+          ).run(record.assignTo, record.repoId));
         }
         return true;
       });
     },
 
-    addRepoKey(repoId, generation, key) {
-      db.prepare(
+    async addRepoKey(repoId, generation, key) {
+      (await db.prepare(
         "INSERT INTO repo_key (repo_id, generation, key) VALUES (?, ?, ?)",
-      ).run(repoId, generation, key);
+      ).run(repoId, generation, key));
     },
 
-    removeRepoKey(repoId, generation) {
-      db.prepare("DELETE FROM repo_key WHERE repo_id = ? AND generation = ?").run(
+    async removeRepoKey(repoId, generation) {
+      (await db.prepare("DELETE FROM repo_key WHERE repo_id = ? AND generation = ?").run(
         repoId,
         generation,
-      );
+      ));
     },
 
-    listRepoKeys(repoId) {
-      const rows = db
+    async listRepoKeys(repoId) {
+      const rows = (await db
         .prepare(
           "SELECT generation, key FROM repo_key WHERE repo_id = ? ORDER BY generation",
         )
-        .all(repoId);
+        .all(repoId));
       return rows.map((row) => ({
         generation: Number(row["generation"]),
         key: String(row["key"]),
       }));
     },
 
-    getRepo(repoId) {
-      const row = db
+    async getRepo(repoId) {
+      const row = (await db
         .prepare(
           `SELECT id, owner, repo, reviewers, auxiliary_model, min_report_severity,
                   default_branch, settings_version
              FROM repo WHERE id = ?`,
         )
-        .get(repoId);
+        .get(repoId));
       if (row === undefined) return undefined;
       return {
         repoId: Number(row["id"]),
@@ -5388,10 +4981,10 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    resolveAuxiliaryModel(repoId) {
-      const repo = store.getRepo(repoId);
+    async resolveAuxiliaryModel(repoId) {
+      const repo = (await store.getRepo(repoId));
       if (repo === undefined) return null;
-      const settings = store.getGlobalSettings();
+      const settings = (await store.getGlobalSettings());
       const repoOverride = parseAuxiliaryModel(repo.auxiliaryModelJson);
       if (repoOverride !== null) return { spec: repoOverride, source: "repo" };
       const global = parseAuxiliaryModel(settings.auxiliaryModelJson);
@@ -5403,11 +4996,11 @@ export function openStore(dbPath: string): Store {
       return first === undefined ? null : { spec: first, source: "first-reviewer" };
     },
 
-    putRepoSettings(repoId, expectedVersion, settings) {
-      return transaction("immediate", (tx) => {
-        const row = db
+    async putRepoSettings(repoId, expectedVersion, settings) {
+      return transaction("immediate", async (tx) => {
+        const row = (await db
           .prepare("SELECT settings_version, reviewers, auxiliary_model FROM repo WHERE id = ?")
-          .get(repoId);
+          .get(repoId));
         if (row === undefined) {
           return tx.rollback({ ok: false, reason: "missing" });
         }
@@ -5421,7 +5014,7 @@ export function openStore(dbPath: string): Store {
         if (
           settings.reviewersJson !== null &&
           settings.reviewersJson !== storedReviewers &&
-          !modelCombinationAvailable(settings.reviewersJson, `仓库 ${repoId} 的模型覆盖`)
+          !(await modelCombinationAvailable(settings.reviewersJson, `仓库 ${repoId} 的模型覆盖`))
         ) {
           return tx.rollback({ ok: false, reason: "unavailable" });
         }
@@ -5431,12 +5024,12 @@ export function openStore(dbPath: string): Store {
         if (
           settings.auxiliaryModelJson !== null &&
           settings.auxiliaryModelJson !== storedAuxiliary &&
-          !auxiliaryModelAvailable(settings.auxiliaryModelJson)
+          !(await auxiliaryModelAvailable(settings.auxiliaryModelJson))
         ) {
           return tx.rollback({ ok: false, reason: "unavailable" });
         }
         const version = expectedVersion + 1;
-        db.prepare(
+        (await db.prepare(
           `UPDATE repo
               SET reviewers = ?, auxiliary_model = ?, min_report_severity = ?,
                   default_branch = ?, settings_version = ?
@@ -5448,156 +5041,158 @@ export function openStore(dbPath: string): Store {
           settings.defaultBranch,
           version,
           repoId,
-        );
+        ));
         return { ok: true, version };
       });
     },
 
-    removeRepo(repoId) {
-      transaction("deferred", () => {
-        db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId);
-        db.prepare("DELETE FROM panel_user_repo WHERE repo_id = ?").run(repoId);
+    async removeRepo(repoId) {
+      await transaction("deferred", async () => {
+        (await db.prepare("DELETE FROM repo_key WHERE repo_id = ?").run(repoId));
+        (await db.prepare("DELETE FROM panel_user_repo WHERE repo_id = ?").run(repoId));
         // 产品归属跟着仓库走(issue #331):留下来产品就挂着一个已经不存在的仓库。
-        db.prepare("DELETE FROM product_repo WHERE repo_id = ?").run(repoId);
+        (await db.prepare("DELETE FROM product_repo WHERE repo_id = ?").run(repoId));
         // 知识集跟着仓库走:留下来只会在同一个 repo id 重新注册时复活一份没人认过的规则。
-        db.prepare("DELETE FROM review_rule WHERE repo_id = ?").run(repoId);
-        db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId);
-        db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
-        db.prepare("DELETE FROM rule_exploration WHERE repo_id = ?").run(repoId);
-        db.prepare("DELETE FROM rule_consolidation WHERE repo_id = ?").run(repoId);
-        db.prepare(
+        (await db.prepare("DELETE FROM review_rule WHERE repo_id = ?").run(repoId));
+        (await db.prepare("DELETE FROM rule_set_version WHERE repo_id = ?").run(repoId));
+        (await db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId));
+        (await db.prepare("DELETE FROM rule_exploration WHERE repo_id = ?").run(repoId));
+        (await db.prepare("DELETE FROM rule_consolidation WHERE repo_id = ?").run(repoId));
+        (await db.prepare(
           `DELETE FROM rule_proposal_source
             WHERE proposal_id IN (SELECT id FROM rule_proposal WHERE repo_id = ?)`,
-        ).run(repoId);
-        db.prepare("DELETE FROM rule_proposal WHERE repo_id = ?").run(repoId);
-        db.prepare("DELETE FROM rule_trace WHERE repo_id = ?").run(repoId);
-        db.prepare("DELETE FROM repo WHERE id = ?").run(repoId);
+        ).run(repoId));
+        (await db.prepare("DELETE FROM rule_proposal WHERE repo_id = ?").run(repoId));
+        (await db.prepare("DELETE FROM rule_trace WHERE repo_id = ?").run(repoId));
+        (await db.prepare("DELETE FROM repo WHERE id = ?").run(repoId));
       });
     },
 
-    listProducts() {
+    async listProducts() {
       return foldProducts(
-        db.prepare(`${PRODUCT_QUERY} ORDER BY p.name, r.owner, r.repo`).all(),
+        (await db.prepare(`${PRODUCT_QUERY} ORDER BY p.name, r.owner, r.repo`).all()),
       );
     },
 
-    getProduct(productId) {
+    async getProduct(productId) {
       return foldProducts(
-        db.prepare(`${PRODUCT_QUERY} WHERE p.id = ? ORDER BY r.owner, r.repo`).all(productId),
+        (await db.prepare(`${PRODUCT_QUERY} WHERE p.id = ? ORDER BY r.owner, r.repo`).all(productId)),
       )[0];
     },
 
-    createProduct(record) {
-      const result = db
+    async createProduct(record) {
+      const result = (await db
         .prepare("INSERT INTO product (name, created_at) VALUES (?, ?)")
-        .run(record.name, record.createdAt);
+        .run(record.name, record.createdAt));
       return { id: Number(result.lastInsertRowid), ...record, repos: [] };
     },
 
-    renameProduct(productId, name) {
+    async renameProduct(productId, name) {
       return (
-        Number(db.prepare("UPDATE product SET name = ? WHERE id = ?").run(name, productId).changes) >
+        Number((await db.prepare("UPDATE product SET name = ? WHERE id = ?").run(name, productId)).changes) >
         0
       );
     },
 
-    attachProductRepo(productId, repoId, at, role = null) {
-      if (db.prepare("SELECT 1 FROM product WHERE id = ?").get(productId) === undefined) {
+    async attachProductRepo(productId, repoId, at, role = null) {
+      if ((await db.prepare("SELECT 1 FROM product WHERE id = ?").get(productId)) === undefined) {
         return "missing-product";
       }
-      if (db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId) === undefined) {
+      if ((await db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId)) === undefined) {
         return "missing-repo";
       }
       // 一仓多属由主键挡:插不进去才回头看它归在谁下面,不先查再插——先查的那一档
       // 在并发两次归属时两边都以为自己能插。
-      const inserted = db
+      const inserted = (await db
         .prepare(
           `INSERT INTO product_repo (repo_id, product_id, added_at, role) VALUES (?, ?, ?, ?)
              ON CONFLICT(repo_id) DO NOTHING`,
         )
-        .run(repoId, productId, at, role).changes;
+        .run(repoId, productId, at, role)).changes;
       if (Number(inserted) > 0) return "attached";
-      const owner = db
+      const owner = (await db
         .prepare("SELECT product_id FROM product_repo WHERE repo_id = ?")
-        .get(repoId);
+        .get(repoId));
       if (Number(owner?.["product_id"]) !== productId) return "other-product";
       // 已经在这个产品下:这一次改的只有职责,归入时间不动。
-      db.prepare("UPDATE product_repo SET role = ? WHERE repo_id = ?").run(role, repoId);
+      (await db.prepare("UPDATE product_repo SET role = ? WHERE repo_id = ?").run(role, repoId));
       return "role-updated";
     },
 
-    detachProductRepo(productId, repoId) {
+    async detachProductRepo(productId, repoId) {
       return (
         Number(
-          db
+          (await db
             .prepare("DELETE FROM product_repo WHERE product_id = ? AND repo_id = ?")
-            .run(productId, repoId).changes,
+            .run(productId, repoId)).changes,
         ) > 0
       );
     },
 
-    deleteProduct(productId) {
-      return transaction("deferred", () => {
-        db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId);
+    async deleteProduct(productId) {
+      return transaction("deferred", async () => {
+        (await db.prepare("DELETE FROM product_repo WHERE product_id = ?").run(productId));
         // 产品知识同样跟着产品走(issue #343):产品是它唯一的挂载点。
-        db.prepare("DELETE FROM product_knowledge_entry WHERE product_id = ?").run(productId);
+        (await db.prepare("DELETE FROM product_knowledge_entry WHERE product_id = ?").run(productId));
         // 产品 tracker 同律(issue #361):spec 挂在产品上,票、边与评论挂在 spec 上,
         // 从下往上删——边与评论的外键指着票,票的外键指着 spec。
         const tickets = `SELECT id FROM product_ticket
             WHERE spec_id IN (SELECT id FROM product_spec WHERE product_id = ?)`;
-        db.prepare(`DELETE FROM product_ticket_block WHERE ticket_id IN (${tickets})`).run(productId);
-        db.prepare(`DELETE FROM product_ticket_comment WHERE ticket_id IN (${tickets})`).run(
+        (await db.prepare(`DELETE FROM product_ticket_block WHERE ticket_id IN (${tickets})`).run(productId));
+        (await db.prepare(`DELETE FROM product_ticket_comment WHERE ticket_id IN (${tickets})`).run(
           productId,
-        );
-        db.prepare(
+        ));
+        (await db.prepare(
           "DELETE FROM product_ticket WHERE spec_id IN (SELECT id FROM product_spec WHERE product_id = ?)",
-        ).run(productId);
-        db.prepare("DELETE FROM product_spec WHERE product_id = ?").run(productId);
+        ).run(productId));
+        (await db.prepare("DELETE FROM product_spec WHERE product_id = ?").run(productId));
         // 会话跟着产品走(issue #332):产品是会话唯一的挂载点,留下来谁都读不到它。记录与
         // 受理过的消息 id 挂在会话上,同一个事务里一并删(issue #333)。
-        deleteAgentSessionRows(
+        (await deleteAgentSessionRows(
           db,
-          db
+          (await db
             .prepare("SELECT id FROM agent_session WHERE product_id = ?")
-            .all(productId)
+            .all(productId))
             .map((row) => Number(row["id"])),
-        );
+        ));
         const sessions = Number(
-          db.prepare("DELETE FROM agent_session WHERE product_id = ?").run(productId).changes,
+          (await db.prepare("DELETE FROM agent_session WHERE product_id = ?").run(productId)).changes,
         );
         const removed =
-          Number(db.prepare("DELETE FROM product WHERE id = ?").run(productId).changes) > 0;
+          Number((await db.prepare("DELETE FROM product WHERE id = ?").run(productId)).changes) > 0;
         return removed ? { sessions } : undefined;
       });
     },
 
-    listProductKnowledge(productId) {
-      return db
+    async listProductKnowledge(productId) {
+      return (await db
         .prepare(
           // 顺序就是产品页上的顺序:术语表、仓库关系、产品决策,每一段里先写下的在前。
           `SELECT * FROM product_knowledge_entry
             WHERE product_id = ?
             ORDER BY CASE kind WHEN 'term' THEN 0 WHEN 'relationship' THEN 1 ELSE 2 END, id`,
         )
-        .all(productId)
+        .all(productId))
         .map(productKnowledge);
     },
 
-    writeProductKnowledge(record) {
-      const row = (id: number): Record<string, unknown> | undefined =>
-        db
+    async writeProductKnowledge(record) {
+      const row = async (id: number): Promise<Record<string, unknown> | undefined> =>
+        (await db
           .prepare("SELECT * FROM product_knowledge_entry WHERE id = ? AND product_id = ?")
-          .get(id, record.productId) as Record<string, unknown> | undefined;
-      if (record.id !== undefined && row(record.id) === undefined) return undefined;
-      if (record.supersedes !== undefined && row(record.supersedes) === undefined) return undefined;
+          .get(id, record.productId)) as Record<string, unknown> | undefined;
+      if (record.id !== undefined && (await row(record.id)) === undefined) return undefined;
+      if (record.supersedes !== undefined && (await row(record.supersedes)) === undefined) {
+        return undefined;
+      }
       const avoided = JSON.stringify([...record.avoided]);
       const annotations = JSON.stringify([...record.annotations]);
       // 写这一条与「那一条被它取代」是一件事的两半,同一个事务里落。
-      const id = transaction("deferred", () => {
+      const id = transaction("deferred", async () => {
         let id: number;
         if (record.id === undefined) {
           id = Number(
-            db
+            (await db
               .prepare(
                 `INSERT INTO product_knowledge_entry
                    (product_id, kind, name, body, topic, avoided, options, consequences,
@@ -5616,11 +5211,11 @@ export function openStore(dbPath: string): Store {
                 annotations,
                 record.at,
                 record.sessionId,
-              ).lastInsertRowid,
+              )).lastInsertRowid,
           );
         } else {
           id = record.id;
-          db.prepare(
+          (await db.prepare(
             `UPDATE product_knowledge_entry
                SET kind = ?, name = ?, body = ?, topic = ?, avoided = ?, options = ?,
                    consequences = ?, annotations = ?, written_at = ?, written_by_session_id = ?
@@ -5637,54 +5232,54 @@ export function openStore(dbPath: string): Store {
             record.at,
             record.sessionId,
             id,
-          );
+          ));
         }
         if (record.supersedes !== undefined) {
-          db.prepare("UPDATE product_knowledge_entry SET superseded_by = ? WHERE id = ?").run(
+          (await db.prepare("UPDATE product_knowledge_entry SET superseded_by = ? WHERE id = ?").run(
             id,
             record.supersedes,
-          );
+          ));
         }
         return id;
       });
-      return productKnowledge(row(id)!);
+      return productKnowledge((await row(await id))!);
     },
 
-    withdrawProductKnowledge(productId, entryId) {
+    async withdrawProductKnowledge(productId, entryId) {
       // 指向它的「被取代」先松开:留着的话那条决策的状态指向一条不存在的条目。
-      db.prepare(
+      (await db.prepare(
         "UPDATE product_knowledge_entry SET superseded_by = NULL WHERE product_id = ? AND superseded_by = ?",
-      ).run(productId, entryId);
+      ).run(productId, entryId));
       return (
         Number(
-          db
+          (await db
             .prepare("DELETE FROM product_knowledge_entry WHERE id = ? AND product_id = ?")
-            .run(entryId, productId).changes,
+            .run(entryId, productId)).changes,
         ) > 0
       );
     },
 
-    listProductSpecs(productId) {
-      return db
+    async listProductSpecs(productId) {
+      return (await db
         .prepare("SELECT * FROM product_spec WHERE product_id = ? ORDER BY id")
-        .all(productId)
+        .all(productId))
         .map(productSpec);
     },
 
-    getProductSpec(specId) {
-      const row = db.prepare("SELECT * FROM product_spec WHERE id = ?").get(specId);
+    async getProductSpec(specId) {
+      const row = (await db.prepare("SELECT * FROM product_spec WHERE id = ?").get(specId));
       return row === undefined ? undefined : productSpec(row);
     },
 
-    createProductSpec({ productId, title, body, sessionId, at }) {
+    async createProductSpec({ productId, title, body, sessionId, at }) {
       const id = Number(
-        db
+        (await db
           .prepare(
             `INSERT INTO product_spec
                (product_id, title, body, state, session_id, created_at, state_changed_at)
              VALUES (?, ?, ?, 'open', ?, ?, ?)`,
           )
-          .run(productId, title, body, sessionId, at, at).lastInsertRowid,
+          .run(productId, title, body, sessionId, at, at)).lastInsertRowid,
       );
       return {
         id,
@@ -5698,10 +5293,10 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    listProductTickets(productId) {
+    async listProductTickets(productId) {
       // 阻塞边一次查完再按票分组:一张票一次查会让产品页的读随票数线性开销。
       const blocks = new Map<number, number[]>();
-      for (const row of db
+      for (const row of (await db
         .prepare(
           `SELECT b.ticket_id, b.blocked_by_id
              FROM product_ticket_block b
@@ -5710,41 +5305,41 @@ export function openStore(dbPath: string): Store {
             WHERE s.product_id = ?
             ORDER BY b.blocked_by_id`,
         )
-        .all(productId)) {
+        .all(productId))) {
         const ticketId = Number(row["ticket_id"]);
         blocks.set(ticketId, [...(blocks.get(ticketId) ?? []), Number(row["blocked_by_id"])]);
       }
-      return db
+      return (await db
         .prepare(`${PRODUCT_TICKET_QUERY} WHERE s.product_id = ? ORDER BY t.id`)
-        .all(productId)
+        .all(productId))
         .map((row) => productTicket(row, blocks.get(Number(row["id"])) ?? []));
     },
 
-    getProductTicket(ticketId) {
-      const row = db.prepare(`${PRODUCT_TICKET_QUERY} WHERE t.id = ?`).get(ticketId);
+    async getProductTicket(ticketId) {
+      const row = (await db.prepare(`${PRODUCT_TICKET_QUERY} WHERE t.id = ?`).get(ticketId));
       if (row === undefined) return undefined;
-      const blockedBy = db
+      const blockedBy = (await db
         .prepare(
           "SELECT blocked_by_id FROM product_ticket_block WHERE ticket_id = ? ORDER BY blocked_by_id",
         )
-        .all(ticketId)
+        .all(ticketId))
         .map((one) => Number(one["blocked_by_id"]));
       return productTicket(row, blockedBy);
     },
 
-    createProductTicket({ specId, title, body, label, sessionId, at }) {
+    async createProductTicket({ specId, title, body, label, sessionId, at }) {
       const id = Number(
-        db
+        (await db
           .prepare(
             `INSERT INTO product_ticket
                (spec_id, title, body, label, state, session_id, created_at, state_changed_at)
              VALUES (?, ?, ?, ?, 'open', ?, ?, ?)`,
           )
-          .run(specId, title, body, label, sessionId, at, at).lastInsertRowid,
+          .run(specId, title, body, label, sessionId, at, at)).lastInsertRowid,
       );
       // spec 一定在:票是外键挂上去的,上面那句 INSERT 认不出 spec 就已经抛了。读不回来
       // 只可能是库坏了,那时抛出来比给这张票落一个 0 号产品强——0 号产品谁都看不到。
-      const specRow = db.prepare("SELECT product_id FROM product_spec WHERE id = ?").get(specId);
+      const specRow = (await db.prepare("SELECT product_id FROM product_spec WHERE id = ?").get(specId));
       if (specRow === undefined) {
         throw new Error(`product_spec ${specId} 不存在,票 ${id} 归不到产品上`);
       }
@@ -5765,69 +5360,69 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    setProductSpecBody(specId, body) {
+    async setProductSpecBody(specId, body) {
       return (
-        Number(db.prepare("UPDATE product_spec SET body = ? WHERE id = ?").run(body, specId).changes) >
+        Number((await db.prepare("UPDATE product_spec SET body = ? WHERE id = ?").run(body, specId)).changes) >
         0
       );
     },
 
-    setProductSpecState(specId, state, at) {
+    async setProductSpecState(specId, state, at) {
       return (
         Number(
-          db
+          (await db
             .prepare(
               "UPDATE product_spec SET state = ?, state_changed_at = ? WHERE id = ? AND state <> ?",
             )
-            .run(state, at, specId, state).changes,
+            .run(state, at, specId, state)).changes,
         ) > 0
       );
     },
 
-    setProductTicketBody(ticketId, body) {
+    async setProductTicketBody(ticketId, body) {
       return (
         Number(
-          db.prepare("UPDATE product_ticket SET body = ? WHERE id = ?").run(body, ticketId).changes,
+          (await db.prepare("UPDATE product_ticket SET body = ? WHERE id = ?").run(body, ticketId)).changes,
         ) > 0
       );
     },
 
-    setProductTicketState(ticketId, state, at) {
+    async setProductTicketState(ticketId, state, at) {
       return (
         Number(
-          db
+          (await db
             .prepare(
               "UPDATE product_ticket SET state = ?, state_changed_at = ? WHERE id = ? AND state <> ?",
             )
-            .run(state, at, ticketId, state).changes,
+            .run(state, at, ticketId, state)).changes,
         ) > 0
       );
     },
 
-    setProductTicketLabel(ticketId, label) {
+    async setProductTicketLabel(ticketId, label) {
       return (
         Number(
-          db.prepare("UPDATE product_ticket SET label = ? WHERE id = ?").run(label, ticketId)
+          (await db.prepare("UPDATE product_ticket SET label = ? WHERE id = ?").run(label, ticketId))
             .changes,
         ) > 0
       );
     },
 
-    setProductTicketClaim(ticketId, claimedBy, by) {
+    async setProductTicketClaim(ticketId, claimedBy, by) {
       // 认领与取消认领同一句 WHERE:别人的名字在那一格时一行都不匹配,调用方据此说出理由。
-      const run = db
+      const run = (await db
         .prepare(
           `UPDATE product_ticket SET claimed_by = ?
             WHERE id = ? AND (claimed_by IS NULL OR claimed_by = ?)`,
         )
-        .run(claimedBy, ticketId, by);
+        .run(claimedBy, ticketId, by));
       return Number(run.changes) > 0;
     },
 
-    listProductTicketComments(ticketId) {
-      return db
+    async listProductTicketComments(ticketId) {
+      return (await db
         .prepare("SELECT * FROM product_ticket_comment WHERE ticket_id = ? ORDER BY id")
-        .all(ticketId)
+        .all(ticketId))
         .map((row) => ({
           id: Number(row["id"]),
           ticketId: Number(row["ticket_id"]),
@@ -5838,36 +5433,36 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    addProductTicketComment({ ticketId, author, sessionId, body, at }) {
+    async addProductTicketComment({ ticketId, author, sessionId, body, at }) {
       const id = Number(
-        db
+        (await db
           .prepare(
             `INSERT INTO product_ticket_comment (ticket_id, author, session_id, body, created_at)
              VALUES (?, ?, ?, ?, ?)`,
           )
-          .run(ticketId, author, sessionId, body, at).lastInsertRowid,
+          .run(ticketId, author, sessionId, body, at)).lastInsertRowid,
       );
       return { id, ticketId, author, sessionId, body, createdAt: at };
     },
 
-    addProductTicketBlock(ticketId, blockedById) {
-      db.prepare(
-        "INSERT OR IGNORE INTO product_ticket_block (ticket_id, blocked_by_id) VALUES (?, ?)",
-      ).run(ticketId, blockedById);
+    async addProductTicketBlock(ticketId, blockedById) {
+      (await db.prepare(
+        "INSERT INTO product_ticket_block (ticket_id, blocked_by_id) VALUES (?, ?)\n         ON CONFLICT DO NOTHING",
+      ).run(ticketId, blockedById));
     },
 
-    removeProductTicketBlock(ticketId, blockedById) {
+    async removeProductTicketBlock(ticketId, blockedById) {
       return (
         Number(
-          db
+          (await db
             .prepare("DELETE FROM product_ticket_block WHERE ticket_id = ? AND blocked_by_id = ?")
-            .run(ticketId, blockedById).changes,
+            .run(ticketId, blockedById)).changes,
         ) > 0
       );
     },
 
-    listAgentSessions(productId, createdBy) {
-      return db
+    async listAgentSessions(productId, createdBy) {
+      return (await db
         .prepare(
           `${AGENT_SESSION_QUERY}
             WHERE agent_session.product_id = ?${
@@ -5875,22 +5470,22 @@ export function openStore(dbPath: string): Store {
             }
             ORDER BY agent_session.id DESC`,
         )
-        .all(...(createdBy === null ? [productId] : [productId, createdBy]))
+        .all(...(createdBy === null ? [productId] : [productId, createdBy])))
         .map(agentSession);
     },
 
-    getAgentSession(sessionId) {
-      const row = db
+    async getAgentSession(sessionId) {
+      const row = (await db
         .prepare(`${AGENT_SESSION_QUERY} WHERE agent_session.id = ?`)
-        .get(sessionId);
+        .get(sessionId));
       return row === undefined ? undefined : agentSession(row);
     },
 
-    createAgentSession(record) {
+    async createAgentSession(record) {
       // 建会话时人已经按仓库选好了基点(issue #352):那一份跟着 INSERT 一起落下,工作树
       // 按它检出。不给即这一刻还不知道停在哪,首次备树时再写。
       const baselines = record.baselines ?? [];
-      const result = db
+      const result = (await db
         .prepare(
           `INSERT INTO agent_session (product_id, created_by, purpose, status, created_at, baselines)
              VALUES (?, ?, ?, 'idle', ?, ?)`,
@@ -5901,7 +5496,7 @@ export function openStore(dbPath: string): Store {
           record.purpose,
           record.createdAt,
           JSON.stringify(baselines),
-        );
+        ));
       return {
         id: Number(result.lastInsertRowid),
         productId: record.productId,
@@ -5924,38 +5519,38 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    completeAgentSession(sessionId, at) {
-      db.prepare("UPDATE agent_session SET completed_at = ? WHERE id = ?").run(at, sessionId);
+    async completeAgentSession(sessionId, at) {
+      (await db.prepare("UPDATE agent_session SET completed_at = ? WHERE id = ?").run(at, sessionId));
     },
 
-    setAgentSessionBaselines(sessionId, baselines) {
-      db.prepare("UPDATE agent_session SET baselines = ? WHERE id = ?").run(
+    async setAgentSessionBaselines(sessionId, baselines) {
+      (await db.prepare("UPDATE agent_session SET baselines = ? WHERE id = ?").run(
         JSON.stringify(baselines),
         sessionId,
-      );
+      ));
     },
 
-    deleteAgentSession(sessionId) {
-      return transaction("deferred", () => {
+    async deleteAgentSession(sessionId) {
+      return transaction("deferred", async () => {
         // 记录、受理过的消息 id、图片与产出只属于这个会话,跟着它走(issue #333、#336、#337)。
-        deleteAgentSessionRows(db, [sessionId]);
+        (await deleteAgentSessionRows(db, [sessionId]));
         const removed =
-          Number(db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId).changes) > 0;
+          Number((await db.prepare("DELETE FROM agent_session WHERE id = ?").run(sessionId)).changes) > 0;
         return removed;
       });
     },
 
-    addAgentSessionImage(record) {
-      db.prepare(
+    async addAgentSessionImage(record) {
+      (await db.prepare(
         `INSERT INTO agent_session_image (session_id, image_id, path, mime_type, created_at)
            VALUES (?, ?, ?, ?, ?)`,
-      ).run(record.sessionId, record.imageId, record.path, record.mimeType, record.createdAt);
+      ).run(record.sessionId, record.imageId, record.path, record.mimeType, record.createdAt));
     },
 
-    getAgentSessionImage(sessionId, imageId) {
-      const row = db
+    async getAgentSessionImage(sessionId, imageId) {
+      const row = (await db
         .prepare("SELECT * FROM agent_session_image WHERE session_id = ? AND image_id = ?")
-        .get(sessionId, imageId);
+        .get(sessionId, imageId));
       return row === undefined
         ? undefined
         : {
@@ -5967,15 +5562,15 @@ export function openStore(dbPath: string): Store {
           };
     },
 
-    appendAgentSessionEntry(sessionId, input) {
-      return transaction("deferred", () => {
+    async appendAgentSessionEntry(sessionId, input) {
+      return transaction("deferred", async () => {
         const seq =
           Number(
-            db
+            (await db
               .prepare("SELECT COALESCE(MAX(seq), 0) AS seq FROM agent_session_entry WHERE session_id = ?")
-              .get(sessionId)?.["seq"] ?? 0,
+              .get(sessionId))?.["seq"] ?? 0,
           ) + 1;
-        db.prepare(
+        (await db.prepare(
           `INSERT INTO agent_session_entry
              (session_id, seq, type, at, entry,
               input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens)
@@ -5991,8 +5586,8 @@ export function openStore(dbPath: string): Store {
           input.usage.cacheReadTokens,
           input.usage.cacheWriteTokens,
           input.usage.totalTokens,
-        );
-        db.prepare(
+        ));
+        (await db.prepare(
           `UPDATE agent_session
               SET input_tokens = input_tokens + ?,
                   output_tokens = output_tokens + ?,
@@ -6007,32 +5602,32 @@ export function openStore(dbPath: string): Store {
           input.usage.cacheWriteTokens,
           input.usage.totalTokens,
           sessionId,
-        );
+        ));
         return { sessionId, seq, type: input.type, at: input.at, entry: input.entry, usage: input.usage };
       });
     },
 
-    listAgentSessionEntries(sessionId, afterSeq = 0) {
-      return db
+    async listAgentSessionEntries(sessionId, afterSeq = 0) {
+      return (await db
         .prepare(
           `SELECT * FROM agent_session_entry
             WHERE session_id = ? AND seq > ?
             ORDER BY seq`,
         )
-        .all(sessionId, afterSeq)
+        .all(sessionId, afterSeq))
         .map(agentSessionEntry);
     },
 
-    agentSessionEntryPage(sessionId, before, limit) {
+    async agentSessionEntryPage(sessionId, before, limit) {
       // 多取一条:它的存在就是「这一页之前还有更早的」,不必再查一次 count。
-      const rows = db
+      const rows = (await db
         .prepare(
           `SELECT * FROM agent_session_entry
             WHERE session_id = ? AND seq < ?
             ORDER BY seq DESC
             LIMIT ?`,
         )
-        .all(sessionId, before ?? Number.MAX_SAFE_INTEGER, limit + 1);
+        .all(sessionId, before ?? Number.MAX_SAFE_INTEGER, limit + 1));
       const hasMore = rows.length > limit;
       return {
         records: rows
@@ -6043,68 +5638,70 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    acceptedAgentSessionMessage(sessionId, clientMessageId) {
-      const row = db
+    async acceptedAgentSessionMessage(sessionId, clientMessageId) {
+      const row = (await db
         .prepare(
           `SELECT accepted_at FROM agent_session_message
             WHERE session_id = ? AND client_message_id = ?`,
         )
-        .get(sessionId, clientMessageId);
+        .get(sessionId, clientMessageId));
       return row === undefined ? undefined : String(row["accepted_at"]);
     },
 
-    acceptAgentSessionMessage(sessionId, clientMessageId, at) {
+    async acceptAgentSessionMessage(sessionId, clientMessageId, at) {
       // 主键挡重入队:插入不成立即这个 id 已经受理过,回第一次那一刻。先查后插在并发两次
       // 提交时挡不住,主键挡得住。
       const inserted = Number(
-        db
+        (await db
           .prepare(
-            `INSERT OR IGNORE INTO agent_session_message (session_id, client_message_id, accepted_at)
-               VALUES (?, ?, ?)`,
+            `INSERT INTO agent_session_message (session_id, client_message_id, accepted_at)
+               VALUES (?, ?, ?) ON CONFLICT DO NOTHING`,
           )
-          .run(sessionId, clientMessageId, at).changes,
+          .run(sessionId, clientMessageId, at)).changes,
       );
       if (inserted > 0) return { acceptedAt: at, fresh: true };
-      const row = db
+      const row = (await db
         .prepare(
           `SELECT accepted_at FROM agent_session_message
             WHERE session_id = ? AND client_message_id = ?`,
         )
-        .get(sessionId, clientMessageId)!;
+        .get(sessionId, clientMessageId))!;
       return { acceptedAt: String(row["accepted_at"]), fresh: false };
     },
 
-    putAgentSessionPendingMessages(sessionId, messages) {
-      transaction("deferred", () => {
-        db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
+    async putAgentSessionPendingMessages(sessionId, messages) {
+      await transaction("deferred", async () => {
+        (await db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId));
         const insert = db.prepare(
           `INSERT INTO agent_session_pending_message (session_id, seq, mode, text, images)
            VALUES (?, ?, ?, ?, ?)`,
         );
-        messages.forEach((message, index) => {
-          insert.run(sessionId, index + 1, message.mode, message.text, message.images ?? null);
-        });
+        let seq = 0;
+        for (const message of messages) {
+          seq += 1;
+          await insert.run(sessionId, seq, message.mode, message.text, message.images ?? null);
+        }
       });
     },
 
-    takeAgentSessionPendingMessages(sessionId) {
+    async takeAgentSessionPendingMessages(sessionId) {
       // 先读后删:延迟 BEGIN 要在读完之后升级成写锁,别的连接正等着提交时 SQLite 不走
       // busy timeout、当场报 database is locked(issue #401)。一开头就拿写锁才等得起。
-      return transaction("immediate", () => {
-        const messages = agentSessionPendingMessages(db, sessionId);
-        db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId);
+      return transaction("immediate", async () => {
+        const messages = (await agentSessionPendingMessages(db, sessionId));
+        (await db.prepare("DELETE FROM agent_session_pending_message WHERE session_id = ?").run(sessionId));
         return messages;
       });
     },
 
-    listAgentSessionPendingMessages(sessionId) {
-      return agentSessionPendingMessages(db, sessionId);
+    async listAgentSessionPendingMessages(sessionId) {
+      return (await agentSessionPendingMessages(db, sessionId));
     },
 
-    agentSessionEntryLinks(sessionId) {
+    async agentSessionEntryLinks(sessionId) {
       const text = (value: unknown): string | null =>
         typeof value === "string" ? value : null;
-      return db
+      return (await db
         .prepare(
           `SELECT json_extract(entry, '$.id') AS id,
                   json_extract(entry, '$.parentId') AS parent_id,
@@ -6113,7 +5710,7 @@ export function openStore(dbPath: string): Store {
             WHERE session_id = ?
             ORDER BY seq`,
         )
-        .all(sessionId)
+        .all(sessionId))
         .map((row) => ({
           id: text(row["id"]),
           parentId: text(row["parent_id"]),
@@ -6121,8 +5718,8 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    agentSessionUsageStats(from, to, createdBy) {
-      const row = db
+    async agentSessionUsageStats(from, to, createdBy) {
+      const row = (await db
         .prepare(
           `SELECT COUNT(*) AS sessions,
                   SUM(input_tokens) AS input_tokens,
@@ -6135,7 +5732,7 @@ export function openStore(dbPath: string): Store {
               createdBy === null ? "" : " AND created_by = ?"
             }`,
         )
-        .get(...(createdBy === null ? [from, to] : [from, to, createdBy]))!;
+        .get(...(createdBy === null ? [from, to] : [from, to, createdBy])))!;
       const sessions = Number(row["sessions"]);
       if (sessions === 0) return undefined;
       return {
@@ -6148,27 +5745,27 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    setRepoWorktree(repoId, status) {
-      db.prepare(
+    async setRepoWorktree(repoId, status) {
+      (await db.prepare(
         `UPDATE repo
             SET worktree_state = ?, worktree_failure = ?, worktree_checked_at = ?
           WHERE id = ?`,
-      ).run(status.state, status.failure, status.checkedAt, repoId);
+      ).run(status.state, status.failure, status.checkedAt, repoId));
     },
 
-    failInterruptedWorktrees(failure, at) {
-      db.prepare(
+    async failInterruptedWorktrees(failure, at) {
+      (await db.prepare(
         `UPDATE repo
             SET worktree_state = 'failed', worktree_failure = ?, worktree_checked_at = ?
           WHERE worktree_state = 'preparing'`,
-      ).run(failure, at);
+      ).run(failure, at));
     },
 
-    listRepos() {
+    async listRepos() {
       // 评审记录按注册时的 owner/repo 匹配。仓库在 Forge 上改名后新记录用新名字,
       // 旧名字的记录不再计入——注册表的名字由后续的注册流程更新,这里不猜。
       // started_at 是 ISO 字符串,MAX 按字典序即时间序。
-      const rows = db
+      const rows = (await db
         .prepare(
           `SELECT r.id, r.owner, r.repo, r.reviewers, r.auxiliary_model,
                   r.min_report_severity, r.default_branch, r.settings_version,
@@ -6182,7 +5779,7 @@ export function openStore(dbPath: string): Store {
              FROM repo r
             ORDER BY (last_activity IS NULL), COALESCE(last_activity, r.registered_at) DESC`,
         )
-        .all();
+        .all());
       return rows.map((row) => ({
         repoId: Number(row["id"]),
         owner: String(row["owner"]),
@@ -6207,27 +5804,27 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    findRepoId(owner, repo) {
-      const row = db
+    async findRepoId(owner, repo) {
+      const row = (await db
         .prepare("SELECT id FROM repo WHERE owner = ? AND repo = ? ORDER BY id")
-        .get(owner, repo);
+        .get(owner, repo));
       return row === undefined ? undefined : Number(row["id"]);
     },
 
-    getRuleSet(repoId) {
-      if (!repoExists(repoId)) return undefined;
-      const version = db
+    async getRuleSet(repoId) {
+      if (!(await repoExists(repoId))) return undefined;
+      const version = (await db
         .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
-        .get(repoId)?.["version"];
-      const select = (where: string): ReviewRuleRecord[] =>
-        db
+        .get(repoId))?.["version"];
+      const select = async (where: string): Promise<ReviewRuleRecord[]> =>
+        (await db
           .prepare(
             `SELECT id, type, scope, statement, origin
                FROM review_rule
               WHERE repo_id = ? AND ${where}
               ORDER BY id`,
           )
-          .all(repoId)
+          .all(repoId))
           .map((row) => ({
             id: Number(row["id"]),
             type: String(row["type"]) as KnowledgeType,
@@ -6237,27 +5834,27 @@ export function openStore(dbPath: string): Store {
           }));
       return {
         version: version === null || version === undefined ? null : Number(version),
-        rules: select("retired_version IS NULL"),
-        retired: select("retired_version IS NOT NULL"),
+        rules: await select("retired_version IS NULL"),
+        retired: await select("retired_version IS NOT NULL"),
       };
     },
 
-    retireReviewRule(repoId, ruleId) {
-      if (activeRule(repoId, ruleId) === undefined) return undefined;
-      return inRuleSetVersion(repoId, (version) => {
-        retireRuleRow(ruleId, version);
+    async retireReviewRule(repoId, ruleId) {
+      if ((await activeRule(repoId, ruleId)) === undefined) return undefined;
+      return (await inRuleSetVersion(repoId, async (version) => {
+        await retireRuleRow(ruleId, version);
         return version;
-      });
+      }));
     },
 
-    getRuleExploration(repoId) {
-      const row = db
+    async getRuleExploration(repoId) {
+      const row = (await db
         .prepare(
           `SELECT baseline_sha, model, thinking_level, trace_task_id, state, failure,
                   started_at, finished_at
              FROM rule_exploration WHERE repo_id = ?`,
         )
-        .get(repoId);
+        .get(repoId));
       if (row === undefined) return null;
       const failure = row["failure"];
       const finishedAt = row["finished_at"];
@@ -6279,9 +5876,9 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    startRuleExploration(repoId, run) {
-      if (!repoExists(repoId) || ruleTaskRunning(repoId)) return false;
-      db.prepare(
+    async startRuleExploration(repoId, run) {
+      if (!(await repoExists(repoId)) || (await ruleTaskRunning(repoId))) return false;
+      (await db.prepare(
         `INSERT INTO rule_exploration
            (repo_id, baseline_sha, model, thinking_level, trace_task_id,
             state, failure, started_at, finished_at)
@@ -6295,34 +5892,34 @@ export function openStore(dbPath: string): Store {
            failure = NULL,
            started_at = excluded.started_at,
            finished_at = NULL`,
-      ).run(repoId, run.baselineSha, run.model, run.thinkingLevel ?? null, run.startedAt);
+      ).run(repoId, run.baselineSha, run.model, run.thinkingLevel ?? null, run.startedAt));
       return true;
     },
 
-    finishRuleExploration(repoId, items, at) {
-      transaction("deferred", () => {
+    async finishRuleExploration(repoId, items, at) {
+      await transaction("deferred", async () => {
         // 整组覆盖:草案每仓库至多一份,重探索的产出取代未确认的旧草案(含人手加的条目)。
-        db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
+        (await db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId));
         const insert = db.prepare(
           `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
            VALUES (?, ?, ?, ?, '', ?, ?)`,
         );
         for (const item of items) {
-          insert.run(
+          (await insert.run(
             repoId,
             item.type,
             item.scope,
             item.statement,
             BASELINE_EXPLORATION_RULE_ORIGIN,
             at,
-          );
+          ));
         }
-        completeRuleExploration(repoId, at);
+        (await completeRuleExploration(repoId, at));
       });
     },
 
-    finishRuleExplorationAsProposals(repoId, proposals, at) {
-      transaction("deferred", () => {
+    async finishRuleExplorationAsProposals(repoId, proposals, at) {
+      await transaction("deferred", async () => {
         // 与草案同一条覆盖语义:一次基点探索是对照当前知识集的完整推导,新一次的未裁决
         // 产出取代上一次的,不是追加。只覆盖出处附注全部来自基点探索的待裁决行(issue
         // #281):已裁决的留作历史;带处置反哺或知识整理附注的那些里有人写下的意见,
@@ -6332,37 +5929,37 @@ export function openStore(dbPath: string): Store {
                              AND NOT EXISTS (SELECT 1 FROM rule_proposal_source s
                                               WHERE s.proposal_id = rule_proposal.id
                                                 AND s.origin <> 'baseline-exploration')`;
-        db.prepare(
+        (await db.prepare(
           `DELETE FROM rule_proposal_source WHERE proposal_id IN (${replaced})`,
-        ).run(repoId);
-        db.prepare(`DELETE FROM rule_proposal WHERE id IN (${replaced})`).run(repoId);
-        for (const item of proposals) insertRuleProposal(repoId, item, at);
-        completeRuleExploration(repoId, at);
+        ).run(repoId));
+        (await db.prepare(`DELETE FROM rule_proposal WHERE id IN (${replaced})`).run(repoId));
+        for (const item of proposals) (await insertRuleProposal(repoId, item, at));
+        (await completeRuleExploration(repoId, at));
       });
     },
 
-    failRuleExploration(repoId, failure, at) {
-      db.prepare(
+    async failRuleExploration(repoId, failure, at) {
+      (await db.prepare(
         "UPDATE rule_exploration SET state = 'failed', failure = ?, finished_at = ? WHERE repo_id = ?",
-      ).run(failure, at, repoId);
+      ).run(failure, at, repoId));
     },
 
-    failInterruptedRuleExplorations(failure, at) {
-      db.prepare(
+    async failInterruptedRuleExplorations(failure, at) {
+      (await db.prepare(
         `UPDATE rule_exploration
             SET state = 'failed', failure = ?, finished_at = ?
           WHERE state = 'running'`,
-      ).run(failure, at);
+      ).run(failure, at));
     },
 
-    getRuleConsolidation(repoId) {
-      const row = db
+    async getRuleConsolidation(repoId) {
+      const row = (await db
         .prepare(
           `SELECT model, thinking_level, trace_task_id, state, failure, merged, retargeted,
                   proposed, started_at, finished_at
              FROM rule_consolidation WHERE repo_id = ?`,
         )
-        .get(repoId);
+        .get(repoId));
       if (row === undefined) return null;
       const nullable = (value: unknown): number | null =>
         value === null || value === undefined ? null : Number(value);
@@ -6386,9 +5983,9 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    startRuleConsolidation(repoId, run) {
-      if (!repoExists(repoId) || ruleTaskRunning(repoId)) return false;
-      db.prepare(
+    async startRuleConsolidation(repoId, run) {
+      if (!(await repoExists(repoId)) || (await ruleTaskRunning(repoId))) return false;
+      (await db.prepare(
         `INSERT INTO rule_consolidation
            (repo_id, model, thinking_level, trace_task_id, state, failure, merged, retargeted,
             proposed, started_at, finished_at)
@@ -6404,65 +6001,65 @@ export function openStore(dbPath: string): Store {
            proposed = NULL,
            started_at = excluded.started_at,
            finished_at = NULL`,
-      ).run(repoId, run.model, run.thinkingLevel ?? null, run.startedAt);
+      ).run(repoId, run.model, run.thinkingLevel ?? null, run.startedAt));
       return true;
     },
 
-    finishRuleConsolidation(repoId, summary, at) {
-      db.prepare(
+    async finishRuleConsolidation(repoId, summary, at) {
+      (await db.prepare(
         `UPDATE rule_consolidation
             SET state = 'completed', failure = NULL, merged = ?, retargeted = ?, proposed = ?,
                 finished_at = ?
           WHERE repo_id = ?`,
-      ).run(summary.merged, summary.retargeted, summary.proposed, at, repoId);
+      ).run(summary.merged, summary.retargeted, summary.proposed, at, repoId));
     },
 
-    failRuleConsolidation(repoId, failure, at) {
-      db.prepare(
+    async failRuleConsolidation(repoId, failure, at) {
+      (await db.prepare(
         "UPDATE rule_consolidation SET state = 'failed', failure = ?, finished_at = ? WHERE repo_id = ?",
-      ).run(failure, at, repoId);
+      ).run(failure, at, repoId));
     },
 
-    failInterruptedRuleConsolidations(failure, at) {
-      db.prepare(
+    async failInterruptedRuleConsolidations(failure, at) {
+      (await db.prepare(
         `UPDATE rule_consolidation
             SET state = 'failed', failure = ?, finished_at = ?
           WHERE state = 'running'`,
-      ).run(failure, at);
+      ).run(failure, at));
     },
 
-    listRuleIntents(repoId) {
-      return db
+    async listRuleIntents(repoId) {
+      return (await db
         .prepare(
           `${RULE_INTENT_COLUMNS}
              WHERE repo_id = ?
              ORDER BY state = 'completed', started_at DESC, id DESC`,
         )
-        .all(repoId)
+        .all(repoId))
         .map(toRuleIntent);
     },
 
-    getRuleIntent(repoId, intentId) {
-      const row = db
+    async getRuleIntent(repoId, intentId) {
+      const row = (await db
         .prepare(`${RULE_INTENT_COLUMNS} WHERE id = ? AND repo_id = ?`)
-        .get(intentId, repoId);
+        .get(intentId, repoId));
       return row === undefined ? null : toRuleIntent(row);
     },
 
-    hasRunningRuleIntent(repoId, targetKind, targetId) {
-      const row = db
+    async hasRunningRuleIntent(repoId, targetKind, targetId) {
+      const row = (await db
         .prepare(
           `SELECT 1 FROM rule_intent
             WHERE repo_id = ? AND state = 'running' AND target_kind = ? AND target_id = ?
             LIMIT 1`,
         )
-        .get(repoId, targetKind, targetId);
+        .get(repoId, targetKind, targetId));
       return row !== undefined;
     },
 
-    startRuleIntent(repoId, intent) {
-      if (!repoExists(repoId)) return undefined;
-      const inserted = db
+    async startRuleIntent(repoId, intent) {
+      if (!(await repoExists(repoId))) return undefined;
+      const inserted = (await db
         .prepare(
           `INSERT INTO rule_intent
              (repo_id, text, submitted_by, target_kind, target_id, state, failure, summary,
@@ -6478,47 +6075,47 @@ export function openStore(dbPath: string): Store {
           intent.model,
           intent.thinkingLevel ?? null,
           intent.startedAt,
-        );
-      return store.getRuleIntent(repoId, Number(inserted.lastInsertRowid)) ?? undefined;
+        ));
+      return (await store.getRuleIntent(repoId, Number(inserted.lastInsertRowid))) ?? undefined;
     },
 
-    setRuleIntentTrace(intentId, taskId) {
-      db.prepare("UPDATE rule_intent SET trace_task_id = ? WHERE id = ?").run(taskId, intentId);
+    async setRuleIntentTrace(intentId, taskId) {
+      (await db.prepare("UPDATE rule_intent SET trace_task_id = ? WHERE id = ?").run(taskId, intentId));
     },
 
-    finishRuleIntent(intentId, outcome, at) {
-      db.prepare(
+    async finishRuleIntent(intentId, outcome, at) {
+      (await db.prepare(
         `UPDATE rule_intent
             SET state = 'completed', failure = NULL, summary = ?, produced_json = ?,
                 finished_at = ?
           WHERE id = ?`,
-      ).run(outcome.summary, JSON.stringify(outcome.produced), at, intentId);
+      ).run(outcome.summary, JSON.stringify(outcome.produced), at, intentId));
     },
 
-    failRuleIntent(intentId, failure, at) {
-      db.prepare(
+    async failRuleIntent(intentId, failure, at) {
+      (await db.prepare(
         "UPDATE rule_intent SET state = 'failed', failure = ?, finished_at = ? WHERE id = ?",
-      ).run(failure, at, intentId);
+      ).run(failure, at, intentId));
     },
 
-    failInterruptedRuleIntents(failure, at) {
-      db.prepare(
+    async failInterruptedRuleIntents(failure, at) {
+      (await db.prepare(
         `UPDATE rule_intent
             SET state = 'failed', failure = ?, finished_at = ?
           WHERE state = 'running'`,
-      ).run(failure, at);
+      ).run(failure, at));
     },
 
-    deleteRuleIntent(repoId, intentId) {
-      const intent = store.getRuleIntent(repoId, intentId);
+    async deleteRuleIntent(repoId, intentId) {
+      const intent = (await store.getRuleIntent(repoId, intentId));
       if (intent === null) return "missing";
       if (intent.state === "running") return "running";
-      db.prepare("DELETE FROM rule_intent WHERE id = ?").run(intentId);
+      (await db.prepare("DELETE FROM rule_intent WHERE id = ?").run(intentId));
       return "deleted";
     },
 
-    rerunRuleIntent(repoId, intentId, run) {
-      const result = db
+    async rerunRuleIntent(repoId, intentId, run) {
+      const result = (await db
         .prepare(
           `UPDATE rule_intent
               SET state = 'running', failure = NULL, summary = NULL, produced_json = NULL,
@@ -6526,16 +6123,16 @@ export function openStore(dbPath: string): Store {
                   model = ?, thinking_level = ?, started_at = ?
             WHERE id = ? AND repo_id = ? AND state = 'failed'`,
         )
-        .run(run.model, run.thinkingLevel ?? null, run.startedAt, intentId, repoId);
+        .run(run.model, run.thinkingLevel ?? null, run.startedAt, intentId, repoId));
       if (Number(result.changes) === 0) return undefined;
-      return store.getRuleIntent(repoId, intentId) ?? undefined;
+      return (await store.getRuleIntent(repoId, intentId)) ?? undefined;
     },
 
-    mergeRuleProposals(repoId, proposalIds, statement) {
+    async mergeRuleProposals(repoId, proposalIds, statement) {
       const unique = [...new Set(proposalIds)];
       const merged = statement.trim();
       if (unique.length < 2 || merged === "") return false;
-      const pending = store.getRuleProposals(repoId).filter((row) => row.state === "pending");
+      const pending = (await store.getRuleProposals(repoId)).filter((row) => row.state === "pending");
       const rows = unique.map((id) => pending.find((row) => row.id === id));
       if (rows.some((row) => row === undefined)) return false;
       // 合并的对象是重复:变更类型、目标条目与知识型三样都一样才算同一件事。
@@ -6553,35 +6150,35 @@ export function openStore(dbPath: string): Store {
       const keep = Math.min(...unique);
       const dropped = unique.filter((id) => id !== keep);
       const holes = dropped.map(() => "?").join(", ");
-      transaction("deferred", () => {
+      await transaction("deferred", async () => {
         // 附注并入保留行:一条提案的出处是它被哪几件事提过,合并不该把其中几件丢掉。
-        db.prepare(
+        (await db.prepare(
           `UPDATE rule_proposal_source SET proposal_id = ? WHERE proposal_id IN (${holes})`,
-        ).run(keep, ...dropped);
-        db.prepare(`DELETE FROM rule_proposal WHERE id IN (${holes})`).run(...dropped);
-        db.prepare("UPDATE rule_proposal SET statement = ? WHERE id = ?").run(merged, keep);
+        ).run(keep, ...dropped));
+        (await db.prepare(`DELETE FROM rule_proposal WHERE id IN (${holes})`).run(...dropped));
+        (await db.prepare("UPDATE rule_proposal SET statement = ? WHERE id = ?").run(merged, keep));
       });
       return true;
     },
 
-    retargetRuleProposal(repoId, proposalId, targetRuleId) {
-      const queued = pendingProposal(repoId, proposalId);
+    async retargetRuleProposal(repoId, proposalId, targetRuleId) {
+      const queued = (await pendingProposal(repoId, proposalId));
       if (queued === undefined || queued.change !== "add") return false;
-      const target = activeRule(repoId, targetRuleId);
+      const target = (await activeRule(repoId, targetRuleId));
       if (target === undefined || target.type !== queued.type) return false;
-      db.prepare(
+      (await db.prepare(
         "UPDATE rule_proposal SET change = 'modify', target_rule_ids = ? WHERE id = ?",
-      ).run(JSON.stringify([targetRuleId]), proposalId);
+      ).run(JSON.stringify([targetRuleId]), proposalId));
       return true;
     },
 
-    getRuleDraft(repoId) {
-      return db
+    async getRuleDraft(repoId) {
+      return (await db
         .prepare(
           `SELECT id, type, scope, statement, origin
              FROM rule_draft_item WHERE repo_id = ? ORDER BY id`,
         )
-        .all(repoId)
+        .all(repoId))
         .map((row) => ({
           id: Number(row["id"]),
           type: String(row["type"]) as KnowledgeType,
@@ -6591,46 +6188,50 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    appendRuleDraftItems(repoId, items, at) {
-      if (!repoExists(repoId)) return [];
+    async appendRuleDraftItems(repoId, items, at) {
+      if (!(await repoExists(repoId))) return [];
       const insert = db.prepare(
         `INSERT INTO rule_draft_item (repo_id, type, scope, statement, layer, origin, created_at)
          VALUES (?, ?, ?, ?, '', ?, ?)`,
       );
-      return items.map((item) =>
-        Number(
-          insert.run(
-            repoId,
-            item.type,
-            item.scope,
-            item.statement,
-            MANUAL_PROPOSAL_RULE_ORIGIN,
-            at,
-          ).lastInsertRowid,
-        ),
-      );
+      const ids: number[] = [];
+      for (const item of items) {
+        ids.push(
+          Number(
+            (await insert.run(
+              repoId,
+              item.type,
+              item.scope,
+              item.statement,
+              MANUAL_PROPOSAL_RULE_ORIGIN,
+              at,
+            )).lastInsertRowid,
+          ),
+        );
+      }
+      return ids;
     },
 
-    updateRuleDraftItem(repoId, itemId, input) {
+    async updateRuleDraftItem(repoId, itemId, input) {
       // 出处沿用旧值,SQL 不碰 origin 这一列。
-      const changed = db
+      const changed = (await db
         .prepare(
           "UPDATE rule_draft_item SET type = ?, scope = ?, statement = ? WHERE id = ? AND repo_id = ?",
         )
-        .run(input.type, input.scope, input.statement, itemId, repoId);
+        .run(input.type, input.scope, input.statement, itemId, repoId));
       return changed.changes > 0;
     },
 
-    deleteRuleDraftItem(repoId, itemId) {
-      const deleted = db
+    async deleteRuleDraftItem(repoId, itemId) {
+      const deleted = (await db
         .prepare("DELETE FROM rule_draft_item WHERE id = ? AND repo_id = ?")
-        .run(itemId, repoId);
+        .run(itemId, repoId));
       return deleted.changes > 0;
     },
 
-    confirmRuleDraft(repoId, itemIds) {
-      if (!repoExists(repoId)) return undefined;
-      const draft = store.getRuleDraft(repoId);
+    async confirmRuleDraft(repoId, itemIds) {
+      if (!(await repoExists(repoId))) return undefined;
+      const draft = (await store.getRuleDraft(repoId));
       // 勾选里有一条不在草案里就整次不做:一份过期的勾选不该悄悄确认成另一组条目。
       const selected =
         itemIds === undefined
@@ -6640,24 +6241,24 @@ export function openStore(dbPath: string): Store {
       // 空知识集是合法状态(issue #200):还没确认过的仓库确认空草案就是在说「这个仓库
       // 没有知识条目」,照样生成一个版本,门禁随之放行。已确认的仓库拿空的一组再确认只会
       // 白推一版,那时回 undefined。
-      if (selected.length === 0 && store.getRuleSet(repoId)?.version !== null) {
+      if (selected.length === 0 && (await store.getRuleSet(repoId))?.version !== null) {
         return undefined;
       }
-      return inRuleSetVersion(repoId, (version, at) => {
+      return (await inRuleSetVersion(repoId, async (version, at) => {
         for (const item of selected) {
-          insertReviewRule(repoId, item!, item!.origin, version, at);
+          await insertReviewRule(repoId, item!, item!.origin, version, at);
         }
         // 没勾选的随草案一并丢弃:草案是一次性的那一份,确认完就不剩什么了。
-        db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId);
+        (await db.prepare("DELETE FROM rule_draft_item WHERE repo_id = ?").run(repoId));
         return version;
-      });
+      }));
     },
 
-    getRuleProposals(repoId) {
+    async getRuleProposals(repoId) {
       // 附注一次查完再按提案分组:队列一屏几十条,逐条再查一次附注就是几十次往返。
       // Finding 的阶段标识在这一句里算出来(与评审记录同一个字面形状),面板据此开侧滑。
       const sources = new Map<number, RuleProposalSource[]>();
-      for (const row of db
+      for (const row of (await db
         .prepare(
           `SELECT s.id, s.proposal_id, s.origin, s.note, s.evidence, s.finding_id,
                   s.trace_task_id, s.created_at,
@@ -6668,7 +6269,7 @@ export function openStore(dbPath: string): Store {
              LEFT JOIN review_run run ON run.id = f.run_id
             WHERE p.repo_id = ? ORDER BY s.id`,
         )
-        .all(repoId)) {
+        .all(repoId))) {
         const proposalId = Number(row["proposal_id"]);
         const list = sources.get(proposalId) ?? [];
         list.push({
@@ -6684,13 +6285,13 @@ export function openStore(dbPath: string): Store {
         });
         sources.set(proposalId, list);
       }
-      return db
+      return (await db
         .prepare(
           `SELECT id, type, change, target_rule_ids, scope, statement, state, created_at,
                   decided_at
              FROM rule_proposal WHERE repo_id = ? ORDER BY id`,
         )
-        .all(repoId)
+        .all(repoId))
         .map((row) => ({
           id: Number(row["id"]),
           type: String(row["type"]) as KnowledgeType,
@@ -6705,14 +6306,14 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    addRuleProposal(repoId, input) {
-      if (!repoExists(repoId)) return undefined;
-      return insertRuleProposal(repoId, input, new Date().toISOString());
+    async addRuleProposal(repoId, input) {
+      if (!(await repoExists(repoId))) return undefined;
+      return (await insertRuleProposal(repoId, input, new Date().toISOString()));
     },
 
-    mergeIntoRuleProposal(repoId, proposalId, merge) {
+    async mergeIntoRuleProposal(repoId, proposalId, merge) {
       // 已裁决的、不在这个仓库的、根本不存在的都并不进去:那一条退回按新增处理。
-      const queued = pendingProposal(repoId, proposalId);
+      const queued = (await pendingProposal(repoId, proposalId));
       if (queued === undefined) return false;
       const at = new Date().toISOString();
       // 型规则(CONTEXT.md 修订提案,issue #295):修改型要换型即改成指向同一条目标的
@@ -6722,10 +6323,10 @@ export function openStore(dbPath: string): Store {
         merge.type !== undefined && merge.type !== queued.type && queued.change === "modify"
           ? "merge"
           : queued.change;
-      transaction("deferred", () => {
+      await transaction("deferred", async () => {
         // 陈述与附注必须一起落:换了陈述没留下附注,队列里那一条就说不出它是被哪两次
         // 备注合起来的。
-        db.prepare(
+        (await db.prepare(
           "UPDATE rule_proposal SET statement = ?, scope = ?, type = ?, change = ? WHERE id = ?",
         ).run(
           merge.statement,
@@ -6733,29 +6334,30 @@ export function openStore(dbPath: string): Store {
           merge.type ?? queued.type,
           change,
           proposalId,
-        );
-        insertRuleProposalSource(proposalId, merge.source, at);
+        ));
+        (await insertRuleProposalSource(proposalId, merge.source, at));
       });
       return true;
     },
 
-    acceptRuleProposal(repoId, proposalId) {
-      const planned = plannedAcceptance(repoId, proposalId);
+    async acceptRuleProposal(repoId, proposalId) {
+      const planned = (await plannedAcceptance(repoId, proposalId));
       if (planned === undefined) return undefined;
-      return inRuleSetVersion(repoId, (version, at) => {
-        applyAcceptance(repoId, planned, version, at);
+      return (await inRuleSetVersion(repoId, async (version, at) => {
+        await applyAcceptance(repoId, planned, version, at);
         return version;
-      });
+      }));
     },
 
-    acceptRuleProposals(repoId, proposalIds) {
+    async acceptRuleProposals(repoId, proposalIds) {
       // 空的一组不推版:没有要采纳的东西,一个空版本只会让版本轴多一格看不出来历的。
       // 同一条报两遍同样拒:它会被落两遍,而人真正想说的是「这几条」。
       if (proposalIds.length === 0 || new Set(proposalIds).size !== proposalIds.length) {
         return undefined;
       }
       // 先全部算一遍再落:全成或全不成。部分成功会让人对着一份说不清哪些落了的队列继续裁决。
-      const planned = proposalIds.map((id) => plannedAcceptance(repoId, id));
+      const planned: (PlannedAcceptance | undefined)[] = [];
+      for (const id of proposalIds) planned.push(await plannedAcceptance(repoId, id));
       if (planned.some((entry) => entry === undefined)) return undefined;
       // 组内两条指向同一个目标同样整组不做。判据是「目标此刻还生效吗」,而它对整组只算
       // 一次:两条 modify 会把旧行废止一次、新行插两遍,一条规则就此裂成两条;modify 与
@@ -6763,35 +6365,37 @@ export function openStore(dbPath: string): Store {
       // 目标就废止了,第二条自然裁不了;批量要人自己挑一条,而不是替他挑。
       const targets = planned.flatMap((entry) => [...entry!.queued.targetRuleIds]);
       if (new Set(targets).size !== targets.length) return undefined;
-      return inRuleSetVersion(repoId, (version, at) => {
+      return (await inRuleSetVersion(repoId, async (version, at) => {
         // 全组共用同一个版本号(issue #223):逐条各推一版会让一次裁决在版本轴上散成上百格。
-        for (const entry of planned) applyAcceptance(repoId, entry!, version, at);
+        for (const entry of planned) await applyAcceptance(repoId, entry!, version, at);
         return version;
-      });
+      }));
     },
 
-    rejectRuleProposal(repoId, proposalId) {
-      if (pendingProposal(repoId, proposalId) === undefined) return false;
-      rejectProposalRow(proposalId, new Date().toISOString());
+    async rejectRuleProposal(repoId, proposalId) {
+      if ((await pendingProposal(repoId, proposalId)) === undefined) return false;
+      (await rejectProposalRow(proposalId, new Date().toISOString()));
       return true;
     },
 
-    rejectRuleProposals(repoId, proposalIds) {
+    async rejectRuleProposals(repoId, proposalIds) {
       if (proposalIds.length === 0 || new Set(proposalIds).size !== proposalIds.length) {
         return false;
       }
       // 与批量采纳同一条口径:先全部认一遍,有一条不在待裁决队列里就一条都不改。
-      if (proposalIds.some((id) => pendingProposal(repoId, id) === undefined)) return false;
+      for (const id of proposalIds) {
+        if ((await pendingProposal(repoId, id)) === undefined) return false;
+      }
       const at = new Date().toISOString();
       // 一组状态一起落:「一条都不改」这句话要成立,中途出错时已经改掉的那几条得退回去。
-      transaction("deferred", () => {
-        for (const id of proposalIds) rejectProposalRow(id, at);
+      await transaction("deferred", async () => {
+        for (const id of proposalIds) (await rejectProposalRow(id, at));
       });
       return true;
     },
 
-    getGlobalSettings() {
-      const rows = db.prepare("SELECT key, value FROM global_setting").all();
+    async getGlobalSettings() {
+      const rows = (await db.prepare("SELECT key, value FROM global_setting").all());
       const values = new Map(rows.map((row) => [String(row["key"]), String(row["value"])]));
       const limit = (field: BatchLimitField): number | null => {
         const stored = values.get(BATCH_LIMIT_KEYS[field]);
@@ -6809,11 +6413,11 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    getReviewRunSnapshot(repoId) {
-      return transaction("deferred", () => {
-        const repo = store.getRepo(repoId);
+    async getReviewRunSnapshot(repoId) {
+      return transaction("deferred", async () => {
+        const repo = (await store.getRepo(repoId));
         if (repo === undefined) throw new Error(`仓库 ${repoId} 不在注册表里`);
-        const settings = store.getGlobalSettings();
+        const settings = (await store.getGlobalSettings());
         const reviewers = repo.reviewersJson === null
           ? settings.reviewersJson === null
             ? []
@@ -6822,11 +6426,12 @@ export function openStore(dbPath: string): Store {
               })
           : assertReviewerSpecs(JSON.parse(repo.reviewersJson), `仓库 ${repoId} 的模型覆盖`);
         const providers = [...new Set(reviewers.map((reviewer) => reviewer.provider))];
-        const modelServices = providers.flatMap((provider) => {
-          const service = store.getModelService(provider);
-          return service === undefined ? [] : [service];
-        });
-        const ruleSet = store.getRuleSet(repoId);
+        const modelServices: ModelServiceRecord[] = [];
+        for (const provider of providers) {
+          const service = await store.getModelService(provider);
+          if (service !== undefined) modelServices.push(service);
+        }
+        const ruleSet = (await store.getRuleSet(repoId));
         return {
           reviewers: Object.freeze([...reviewers]),
           maxChangedLinesPerBatch: settings.maxChangedLinesPerBatch,
@@ -6847,39 +6452,39 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    replaceGlobalSettings(expectedVersion, next) {
-      const write = (key: string, value: string | null): void => {
+    async replaceGlobalSettings(expectedVersion, next) {
+      const write = async (key: string, value: string | null): Promise<void> => {
         if (value === null) {
-          db.prepare("DELETE FROM global_setting WHERE key = ?").run(key);
+          (await db.prepare("DELETE FROM global_setting WHERE key = ?").run(key));
           return;
         }
-        db.prepare(
+        (await db.prepare(
           `INSERT INTO global_setting (key, value) VALUES (?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-        ).run(key, value);
+        ).run(key, value));
       };
-      return transaction("immediate", (tx) => {
-        const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_SETTINGS_VERSION_KEY)?.["value"];
+      return transaction("immediate", async (tx) => {
+        const versionRow = (await db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_SETTINGS_VERSION_KEY))?.["value"];
         const version = versionRow === undefined ? 1 : Number(versionRow);
         // 组合没换就不重判可用性:这一道是端点那次校验与这次写入之间的兜底(中间有人停用
         // 了模型服务),换的是同一份值就没有引入新的不可用引用。空组合只在库里现存的那一份
         // 也是空的时候放行——首次配置之前库里就是这个样子,配过非空之后不再收空(spec #300,
         // 判据与 `PUT /settings` 同一条)。清成没配(null)是播种与迁移的路,不走这一道。
-        const storedReviewers = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_REVIEWERS_KEY)?.["value"];
+        const storedReviewers = (await db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_REVIEWERS_KEY))?.["value"];
         const stored = storedReviewers === undefined ? null : String(storedReviewers);
         const reviewersOk = next.reviewersJson === null ||
           next.reviewersJson === stored ||
           (storedReviewersEmpty(next.reviewersJson)
             ? storedReviewersEmpty(stored)
-            : modelCombinationAvailable(next.reviewersJson, GLOBAL_REVIEWERS_CONTEXT));
+            : (await modelCombinationAvailable(next.reviewersJson, GLOBAL_REVIEWERS_CONTEXT)));
         // 辅助模型与组合并列同一道兜底(issue #303),同样只在换了的时候判。
-        const storedAuxiliary = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_AUXILIARY_MODEL_KEY)?.["value"];
+        const storedAuxiliary = (await db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_AUXILIARY_MODEL_KEY))?.["value"];
         const auxiliaryOk = next.auxiliaryModelJson === null ||
           next.auxiliaryModelJson === (storedAuxiliary === undefined ? null : String(storedAuxiliary)) ||
-          auxiliaryModelAvailable(next.auxiliaryModelJson);
+          (await auxiliaryModelAvailable(next.auxiliaryModelJson));
         if (version !== expectedVersion || !reviewersOk || !auxiliaryOk) {
           return tx.rollback(false);
         }
@@ -6895,7 +6500,7 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    commitModelServiceVersion(expectedVersion, record) {
+    async commitModelServiceVersion(expectedVersion, record) {
       if (record.provider === "") throw new Error("模型服务 provider 不能为空");
       const automaticModels = new Map<string, DiscoveredModel>();
       for (const model of record.automaticModels) {
@@ -6935,20 +6540,20 @@ export function openStore(dbPath: string): Store {
       }
       const targetsJson = targets === null ? null : JSON.stringify(targets);
 
-      return transaction("immediate", (tx) => {
-        if (!recordSupportsCurrentReferences(record)) {
+      return transaction("immediate", async (tx) => {
+        if (!(await recordSupportsCurrentReferences(record))) {
           return tx.rollback(undefined);
         }
         let version: number;
         if (expectedVersion === null) {
           if (
-            db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(record.provider) !==
+            (await db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(record.provider)) !==
             undefined
           ) {
             return tx.rollback(undefined);
           }
           version = 1;
-          db.prepare(
+          (await db.prepare(
             `INSERT INTO model_service
                (provider, service_type, version, base_url, api, target_fingerprint,
                 targets_json, disabled_reason, created_at, updated_at)
@@ -6964,9 +6569,9 @@ export function openStore(dbPath: string): Store {
             record.disabledReason,
             record.createdAt,
             record.updatedAt,
-          );
+          ));
         } else {
-          const changed = db.prepare(
+          const changed = (await db.prepare(
             `UPDATE model_service
                 SET service_type = ?, version = version + 1, base_url = ?, api = ?,
                     target_fingerprint = ?, targets_json = ?, disabled_reason = ?, updated_at = ?
@@ -6981,15 +6586,15 @@ export function openStore(dbPath: string): Store {
             record.updatedAt,
             record.provider,
             expectedVersion,
-          );
+          ));
           if (Number(changed.changes) === 0) {
             return tx.rollback(undefined);
           }
           version = expectedVersion + 1;
         }
 
-        db.prepare("DELETE FROM model_service_credential WHERE provider = ?").run(record.provider);
-        db.prepare(
+        (await db.prepare("DELETE FROM model_service_credential WHERE provider = ?").run(record.provider));
+        (await db.prepare(
           `INSERT INTO model_service_credential
              (provider, state, api_key_encrypted, updated_at, verified_at,
               validation_model, verification_source)
@@ -7002,11 +6607,11 @@ export function openStore(dbPath: string): Store {
           record.credential.verifiedAt,
           record.credential.validationModel,
           record.credential.verificationSource,
-        );
+        ));
 
-        db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(record.provider);
-        db.prepare("DELETE FROM model_directory WHERE provider = ?").run(record.provider);
-        db.prepare(
+        (await db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(record.provider));
+        (await db.prepare("DELETE FROM model_directory WHERE provider = ?").run(record.provider));
+        (await db.prepare(
           `INSERT INTO model_directory
              (provider, service_version, state, last_attempt_at, last_success_at,
               failure, ignored_model_count)
@@ -7019,7 +6624,7 @@ export function openStore(dbPath: string): Store {
           record.directory.lastSuccessAt,
           record.directory.failure,
           record.directory.ignoredModelCount,
-        );
+        ));
         const insertAutomatic = db.prepare(
           `INSERT INTO model_directory_model
              (provider, model, service_version, name, api, base_url, input_json, reasoning,
@@ -7028,7 +6633,7 @@ export function openStore(dbPath: string): Store {
         );
         for (const model of automaticModels.values()) {
           const fieldSources = normalizedTrustedFieldSources(model.fields, model.fieldSources);
-          insertAutomatic.run(
+          (await insertAutomatic.run(
             record.provider,
             model.id,
             version,
@@ -7042,37 +6647,37 @@ export function openStore(dbPath: string): Store {
             fieldSources === undefined ? null : JSON.stringify(fieldSources),
             model.fields.thinkingLevelMap === undefined ? null : JSON.stringify(model.fields.thinkingLevelMap),
             model.fields.compat === undefined ? null : JSON.stringify(model.fields.compat),
-          );
+          ));
         }
 
-        db.prepare("DELETE FROM model_supplement WHERE provider = ?").run(record.provider);
+        (await db.prepare("DELETE FROM model_supplement WHERE provider = ?").run(record.provider));
         const insertSupplement = db.prepare(
           `INSERT INTO model_supplement
              (provider, model, source, target_fingerprint, created_at)
            VALUES (?, ?, ?, ?, ?)`,
         );
         for (const supplement of record.supplements) {
-          insertSupplement.run(
+          (await insertSupplement.run(
             record.provider,
             supplement.model,
             supplement.source,
             supplement.targetFingerprint,
             supplement.createdAt,
-          );
+          ));
         }
         return version;
       });
     },
 
-    renameConflictingCustomModelService(provider, newProvider, expectedVersion, updatedAt) {
-      return transaction("immediate", (tx) => {
+    async renameConflictingCustomModelService(provider, newProvider, expectedVersion, updatedAt) {
+      return transaction("immediate", async (tx) => {
         if (!CUSTOM_PROVIDER_NAME_PATTERN.test(newProvider)) {
           return tx.rollback({ status: "invalid-provider" });
         }
-        const current = db.prepare(
+        const current = (await db.prepare(
           `SELECT version, service_type, disabled_reason
              FROM model_service WHERE provider = ?`,
-        ).get(provider);
+        ).get(provider));
         if (current === undefined || Number(current["version"]) !== expectedVersion) {
           return tx.rollback({ status: "version-conflict" });
         }
@@ -7082,17 +6687,20 @@ export function openStore(dbPath: string): Store {
         ) {
           return tx.rollback({ status: "not-conflicting" });
         }
-        if (db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(newProvider) !== undefined) {
+        if ((await db.prepare("SELECT 1 FROM model_service WHERE provider = ?").get(newProvider)) !== undefined) {
           return tx.rollback({ status: "provider-conflict" });
         }
 
-        const references = store.listModelReferences().filter(
+        const references = (await store.listModelReferences()).filter(
           (reference) => reference.provider === provider,
         );
-        const missing = references.filter(
-          (reference) =>
-            availableModel.get(provider, reference.model, reference.model, reference.model) === undefined,
-        );
+        const missing: ModelReference[] = [];
+        for (const reference of references) {
+          const row = await availableModel.get(
+            provider, reference.model, reference.model, reference.model,
+          );
+          if (row === undefined) missing.push(reference);
+        }
         if (missing.length > 0) {
           return tx.rollback({ status: "missing-models", references: missing });
         }
@@ -7116,41 +6724,41 @@ export function openStore(dbPath: string): Store {
           return JSON.stringify({ ...spec, provider: newProvider });
         };
         let globalChanged = false;
-        const globalRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_REVIEWERS_KEY);
+        const globalRow = (await db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_REVIEWERS_KEY));
         if (globalRow !== undefined) {
           const oldJson = String(globalRow["value"]);
           const nextJson = rewrite(oldJson, GLOBAL_REVIEWERS_CONTEXT, true);
           if (nextJson !== undefined) {
-            db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
-              .run(nextJson, GLOBAL_REVIEWERS_KEY);
+            (await db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
+              .run(nextJson, GLOBAL_REVIEWERS_KEY));
             globalChanged = true;
           }
         }
-        const globalAuxiliaryRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-          .get(GLOBAL_AUXILIARY_MODEL_KEY);
+        const globalAuxiliaryRow = (await db.prepare("SELECT value FROM global_setting WHERE key = ?")
+          .get(GLOBAL_AUXILIARY_MODEL_KEY));
         if (globalAuxiliaryRow !== undefined) {
           const nextJson = rewriteAuxiliary(String(globalAuxiliaryRow["value"]));
           if (nextJson !== undefined) {
-            db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
-              .run(nextJson, GLOBAL_AUXILIARY_MODEL_KEY);
+            (await db.prepare("UPDATE global_setting SET value = ? WHERE key = ?")
+              .run(nextJson, GLOBAL_AUXILIARY_MODEL_KEY));
             globalChanged = true;
           }
         }
         // 整页一个版本(issue #301):这一页里换了什么都只推一版。
         if (globalChanged) {
-          const versionRow = db.prepare("SELECT value FROM global_setting WHERE key = ?")
-            .get(GLOBAL_SETTINGS_VERSION_KEY);
+          const versionRow = (await db.prepare("SELECT value FROM global_setting WHERE key = ?")
+            .get(GLOBAL_SETTINGS_VERSION_KEY));
           const version = versionRow === undefined ? 1 : Number(versionRow["value"]);
-          db.prepare(
+          (await db.prepare(
             `INSERT INTO global_setting (key, value) VALUES (?, ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          ).run(GLOBAL_SETTINGS_VERSION_KEY, String(version + 1));
+          ).run(GLOBAL_SETTINGS_VERSION_KEY, String(version + 1)));
         }
-        for (const row of db.prepare(
+        for (const row of (await db.prepare(
           `SELECT id, owner, repo, reviewers, auxiliary_model FROM repo
             WHERE reviewers IS NOT NULL OR auxiliary_model IS NOT NULL`,
-        ).all()) {
+        ).all())) {
           const repoId = Number(row["id"]);
           if (row["reviewers"] !== null) {
             const nextJson = rewrite(
@@ -7159,30 +6767,30 @@ export function openStore(dbPath: string): Store {
               false,
             );
             if (nextJson !== undefined) {
-              db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(nextJson, repoId);
+              (await db.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(nextJson, repoId));
             }
           }
           if (row["auxiliary_model"] !== null) {
             const nextJson = rewriteAuxiliary(String(row["auxiliary_model"]));
             if (nextJson !== undefined) {
-              db.prepare("UPDATE repo SET auxiliary_model = ? WHERE id = ?").run(nextJson, repoId);
+              (await db.prepare("UPDATE repo SET auxiliary_model = ? WHERE id = ?").run(nextJson, repoId));
             }
           }
         }
 
         const nextVersion = expectedVersion + 1;
-        db.prepare("UPDATE model_directory_model SET provider = ?, service_version = ? WHERE provider = ?")
-          .run(newProvider, nextVersion, provider);
-        db.prepare("UPDATE model_directory SET provider = ?, service_version = ? WHERE provider = ?")
-          .run(newProvider, nextVersion, provider);
-        db.prepare("UPDATE model_supplement SET provider = ? WHERE provider = ?")
-          .run(newProvider, provider);
-        db.prepare("UPDATE model_service_model_state SET provider = ? WHERE provider = ?")
-          .run(newProvider, provider);
-        const validationModel = db.prepare(
+        (await db.prepare("UPDATE model_directory_model SET provider = ?, service_version = ? WHERE provider = ?")
+          .run(newProvider, nextVersion, provider));
+        (await db.prepare("UPDATE model_directory SET provider = ?, service_version = ? WHERE provider = ?")
+          .run(newProvider, nextVersion, provider));
+        (await db.prepare("UPDATE model_supplement SET provider = ? WHERE provider = ?")
+          .run(newProvider, provider));
+        (await db.prepare("UPDATE model_service_model_state SET provider = ? WHERE provider = ?")
+          .run(newProvider, provider));
+        const validationModel = (await db.prepare(
           "SELECT validation_model FROM model_service_credential WHERE provider = ?",
-        ).get(provider)?.["validation_model"];
-        db.prepare(
+        ).get(provider))?.["validation_model"];
+        (await db.prepare(
           "UPDATE model_service_credential SET provider = ?, validation_model = ? WHERE provider = ?",
         ).run(
           newProvider,
@@ -7190,41 +6798,41 @@ export function openStore(dbPath: string): Store {
             ? null
             : `${newProvider}:${String(validationModel).slice(provider.length + 1)}`,
           provider,
-        );
-        db.prepare(
+        ));
+        (await db.prepare(
           `UPDATE model_service
               SET provider = ?, version = ?, disabled_reason = NULL, updated_at = ?
             WHERE provider = ? AND version = ?`,
-        ).run(newProvider, nextVersion, updatedAt, provider, expectedVersion);
+        ).run(newProvider, nextVersion, updatedAt, provider, expectedVersion));
         return { status: "renamed", version: nextVersion };
       });
     },
 
-    removeCustomModelService(provider, expectedVersion) {
-      return transaction("immediate", (tx) => {
-        const current = db
+    async removeCustomModelService(provider, expectedVersion) {
+      return transaction("immediate", async (tx) => {
+        const current = (await db
           .prepare(
             `SELECT 1 FROM model_service
               WHERE provider = ? AND service_type = 'custom' AND version = ?`,
           )
-          .get(provider, expectedVersion);
+          .get(provider, expectedVersion));
         if (current === undefined) {
           return tx.rollback(false);
         }
-        if (referencedModels(provider).size > 0) {
+        if ((await referencedModels(provider)).size > 0) {
           return tx.rollback(false);
         }
-        db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(provider);
-        db.prepare("DELETE FROM model_directory WHERE provider = ?").run(provider);
-        db.prepare("DELETE FROM model_supplement WHERE provider = ?").run(provider);
-        db.prepare("DELETE FROM model_service_model_state WHERE provider = ?").run(provider);
-        db.prepare("DELETE FROM model_service_credential WHERE provider = ?").run(provider);
-        const removed = db
+        (await db.prepare("DELETE FROM model_directory_model WHERE provider = ?").run(provider));
+        (await db.prepare("DELETE FROM model_directory WHERE provider = ?").run(provider));
+        (await db.prepare("DELETE FROM model_supplement WHERE provider = ?").run(provider));
+        (await db.prepare("DELETE FROM model_service_model_state WHERE provider = ?").run(provider));
+        (await db.prepare("DELETE FROM model_service_credential WHERE provider = ?").run(provider));
+        const removed = (await db
           .prepare(
             `DELETE FROM model_service
               WHERE provider = ? AND service_type = 'custom' AND version = ?`,
           )
-          .run(provider, expectedVersion);
+          .run(provider, expectedVersion));
         if (Number(removed.changes) !== 1) {
           return tx.rollback(false);
         }
@@ -7232,29 +6840,29 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    getModelService(provider) {
-      const service = db
+    async getModelService(provider) {
+      const service = (await db
         .prepare(
           `SELECT provider, service_type, version, base_url, api, target_fingerprint,
                   targets_json, disabled_reason, created_at, updated_at
              FROM model_service WHERE provider = ?`,
         )
-        .get(provider);
+        .get(provider));
       if (service === undefined) return undefined;
-      const credential = db
+      const credential = (await db
         .prepare(
           `SELECT state, api_key_encrypted, updated_at, verified_at,
                   validation_model, verification_source
              FROM model_service_credential WHERE provider = ?`,
         )
-        .get(provider);
-      const directory = db
+        .get(provider));
+      const directory = (await db
         .prepare(
           `SELECT service_version, state, last_attempt_at, last_success_at,
                   failure, ignored_model_count
              FROM model_directory WHERE provider = ?`,
         )
-        .get(provider);
+        .get(provider));
       if (credential === undefined || directory === undefined) {
         throw new Error(`${provider} 的模型服务当前版本不完整`);
       }
@@ -7262,14 +6870,14 @@ export function openStore(dbPath: string): Store {
       if (Number(directory["service_version"]) !== version) {
         throw new Error(`${provider} 的模型目录不属于当前服务版本`);
       }
-      const automaticModels = db
+      const automaticModels = (await db
         .prepare(
           `SELECT model, name, api, base_url, input_json, reasoning,
                   context_window, max_tokens, field_sources_json, thinking_level_map_json, compat_json
              FROM model_directory_model
             WHERE provider = ? AND service_version = ? ORDER BY model`,
         )
-        .all(provider, version)
+        .all(provider, version))
         .map((row): DiscoveredModel => {
           const id = String(row["model"]);
           const fields: TrustedModelFields = {
@@ -7356,18 +6964,22 @@ export function openStore(dbPath: string): Store {
           ignoredModelCount: Number(directory["ignored_model_count"]),
         },
         automaticModels,
-        supplements: store.listModelSupplements(provider),
+        supplements: (await store.listModelSupplements(provider)),
       };
     },
 
-    listModelServices() {
-      return db
+    async listModelServices() {
+      const providers = (await db
         .prepare("SELECT provider FROM model_service ORDER BY provider")
-        .all()
-        .map((row) => store.getModelService(String(row["provider"]))!);
+        .all());
+      const services: ModelServiceRecord[] = [];
+      for (const row of providers) {
+        services.push((await store.getModelService(String(row["provider"])))!);
+      }
+      return services;
     },
 
-    listModelReferences() {
+    async listModelReferences() {
       const references = new Map<string, ModelReference>();
       const referenceFor = (spec: ReviewerSpec): ModelReference => {
         const identity = modelIdentity(spec);
@@ -7384,14 +6996,14 @@ export function openStore(dbPath: string): Store {
       };
       const parse = (reviewersJson: string, context: string, allowEmpty: boolean): ReviewerSpec[] =>
         assertReviewerSpecs(JSON.parse(reviewersJson), context, { allowEmpty });
-      const globalJson = db
+      const globalJson = (await db
         .prepare("SELECT value FROM global_setting WHERE key = ?")
-        .get(GLOBAL_REVIEWERS_KEY)?.["value"];
+        .get(GLOBAL_REVIEWERS_KEY))?.["value"];
       const global = globalJson === undefined
         ? []
         : parse(String(globalJson), GLOBAL_REVIEWERS_CONTEXT, true);
       const followingGlobal = Number(
-        db.prepare("SELECT COUNT(*) AS count FROM repo WHERE reviewers IS NULL").get()!["count"],
+        (await db.prepare("SELECT COUNT(*) AS count FROM repo WHERE reviewers IS NULL").get())!["count"],
       );
       for (const spec of global) {
         const reference = referenceFor(spec);
@@ -7401,22 +7013,22 @@ export function openStore(dbPath: string): Store {
         }
       }
       // 全局那一处辅助模型与模型组合同等(issue #303):它引用的模型一样受这份清单保护。
-      const globalAuxiliaryJson = db
+      const globalAuxiliaryJson = (await db
         .prepare("SELECT value FROM global_setting WHERE key = ?")
-        .get(GLOBAL_AUXILIARY_MODEL_KEY)?.["value"];
+        .get(GLOBAL_AUXILIARY_MODEL_KEY))?.["value"];
       const globalAuxiliary = parseAuxiliaryModel(
         globalAuxiliaryJson === undefined ? null : String(globalAuxiliaryJson),
       );
       if (globalAuxiliary !== null) {
         referenceFor(globalAuxiliary).locations.push({ kind: "global-auxiliary" });
       }
-      for (const row of db
+      for (const row of (await db
         .prepare(
           `SELECT id, owner, repo, reviewers, auxiliary_model FROM repo
             WHERE reviewers IS NOT NULL OR auxiliary_model IS NOT NULL
             ORDER BY id`,
         )
-        .all()) {
+        .all())) {
         const repoId = Number(row["id"]);
         const owner = String(row["owner"]);
         const repo = String(row["repo"]);
@@ -7449,16 +7061,16 @@ export function openStore(dbPath: string): Store {
       );
     },
 
-    listModelServiceModelStates(provider) {
+    async listModelServiceModelStates(provider) {
       const rows = provider === undefined
-        ? db.prepare(
+        ? (await db.prepare(
             `SELECT provider, model, enabled, updated_at
                FROM model_service_model_state ORDER BY provider, model`,
-          ).all()
-        : db.prepare(
+          ).all())
+        : (await db.prepare(
             `SELECT provider, model, enabled, updated_at
                FROM model_service_model_state WHERE provider = ? ORDER BY model`,
-          ).all(provider);
+          ).all(provider));
       return rows.map((row) => ({
         provider: String(row["provider"]),
         model: String(row["model"]),
@@ -7467,29 +7079,29 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    updateModelServiceModelStates(provider, expectedVersion, models, enabled, updatedAt) {
+    async updateModelServiceModelStates(provider, expectedVersion, models, enabled, updatedAt) {
       const requested = [...new Set(models.map((model) => model.trim()))];
       if (requested.some((model) => model === "")) {
         throw new Error("模型标识不能为空");
       }
-      return transaction("immediate", (tx) => {
-        const service = db.prepare(
+      return transaction("immediate", async (tx) => {
+        const service = (await db.prepare(
           "SELECT version FROM model_service WHERE provider = ?",
-        ).get(provider);
+        ).get(provider));
         if (service === undefined || Number(service["version"]) !== expectedVersion) {
           return tx.rollback({ status: "version-conflict" } as const);
         }
-        const knownRows = db.prepare(
+        const knownRows = (await db.prepare(
           `SELECT model FROM model_directory_model WHERE provider = ? AND service_version = ?
            UNION SELECT model FROM model_supplement WHERE provider = ?`,
-        ).all(provider, expectedVersion, provider);
+        ).all(provider, expectedVersion, provider));
         const known = new Set(knownRows.map((row) => String(row["model"])));
         const unknownModels = requested.filter((model) => !known.has(model));
         if (unknownModels.length > 0) {
           return tx.rollback({ status: "unknown-models", models: unknownModels } as const);
         }
         if (!enabled) {
-          const blocked = store.listModelReferences().filter(
+          const blocked = (await store.listModelReferences()).filter(
             (reference) => reference.provider === provider && requested.includes(reference.model),
           );
           if (blocked.length > 0) {
@@ -7503,21 +7115,21 @@ export function openStore(dbPath: string): Store {
              enabled = excluded.enabled,
              updated_at = excluded.updated_at`,
         );
-        for (const model of requested) upsert.run(provider, model, enabled ? 1 : 0, updatedAt);
+        for (const model of requested) (await upsert.run(provider, model, enabled, updatedAt));
         return { status: "updated", updated: requested.length } as const;
       });
     },
 
-    listModelSupplements(provider) {
+    async listModelSupplements(provider) {
       const rows = provider === undefined
-        ? db.prepare(
+        ? (await db.prepare(
             `SELECT provider, model, source, target_fingerprint, created_at
                FROM model_supplement ORDER BY provider, model`,
-          ).all()
-        : db.prepare(
+          ).all())
+        : (await db.prepare(
             `SELECT provider, model, source, target_fingerprint, created_at
                FROM model_supplement WHERE provider = ? ORDER BY model`,
-          ).all(provider);
+          ).all(provider));
       return rows.map((row) => ({
         provider: String(row["provider"]),
         model: String(row["model"]),
@@ -7529,23 +7141,23 @@ export function openStore(dbPath: string): Store {
     },
 
 
-    startRun(meta) {
-      return transaction("deferred", () => {
+    async startRun(meta) {
+      return transaction("deferred", async () => {
         const rangeReviewId = meta.rangeReviewId ?? null;
         // PR 状态属于整个审查阶段。closed/reopened 会改写该 PR 的全部历史行;新轮次在
         // 同一事务里继承当前值,手动重跑已关闭 PR 时不能凭一行 NULL 把阶段改回进行中。
         const pullRequestState =
           rangeReviewId === null &&
-          db.prepare(
+          (await db.prepare(
             `SELECT 1
                FROM review_run
               WHERE owner = ? AND repo = ? AND pull_number = ?
                 AND range_review_id IS NULL AND pr_state = 'closed'
               LIMIT 1`,
-          ).get(meta.owner, meta.repo, meta.pullNumber) !== undefined
+          ).get(meta.owner, meta.repo, meta.pullNumber)) !== undefined
             ? "closed"
             : null;
-        const result = db
+        const result = (await db
           .prepare(
             `INSERT INTO review_run
                (owner, repo, pull_number, head_sha, title, range_review_id, pr_state,
@@ -7584,7 +7196,7 @@ export function openStore(dbPath: string): Store {
             // 开跑时解析出的辅助模型同一次写下(issue #304):合并 agent 用哪一处模型
             // 由这一行说了算,续跑读它。
             meta.auxiliaryModel == null ? null : JSON.stringify(meta.auxiliaryModel),
-          );
+          ));
         const runId = Number(result.lastInsertRowid);
         const insertPin = db.prepare(
           `INSERT INTO review_run_reviewer_pin
@@ -7593,7 +7205,7 @@ export function openStore(dbPath: string): Store {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const [position, pin] of meta.reviewerPins.entries()) {
-          insertPin.run(
+          (await insertPin.run(
             runId,
             position,
             pin.identity,
@@ -7605,13 +7217,13 @@ export function openStore(dbPath: string): Store {
             pin.runtimeModel === null ? null : JSON.stringify(pin.runtimeModel),
             pin.failure,
             pin.thinkingLevel,
-          );
+          ));
         }
         return runId;
       });
     },
 
-    failInterruptedRuns(failure, at, runIds) {
+    async failInterruptedRuns(failure, at, runIds) {
       // `runIds` 缺省即全部停在运行中的轮次;给了就只认这几个 id,其余照旧不动
       // (issue #248:续跑不成立的那些逐轮改判,正在续跑的那些不能被一并扫掉)。
       const scope =
@@ -7619,18 +7231,18 @@ export function openStore(dbPath: string): Store {
           ? ""
           : ` AND id IN (${runIds.map(() => "?").join(", ") || "NULL"})`;
       const params = runIds === undefined ? [] : [...runIds];
-      const rows = db
+      const rows = (await db
         .prepare(
           `SELECT id, owner, repo, pull_number FROM review_run
             WHERE finished_at IS NULL${scope}`,
         )
-        .all(...params);
+        .all(...params));
       // 没有中断轮次时一个写都不发:启动路径因此零改动,调用方也不去问 Forge。
       if (rows.length === 0) return [];
       // 一句原因落两处,先定形再写(issue #436):轮次那一列与借来的 outcome 行说的是
       // 同一件事,兜底只在其中一处时两边会说不一样的话。
       const text = runFailureText(failure);
-      transaction("deferred", () => {
+      await transaction("deferred", async () => {
         // 失败原因借 Reviewer 指定各写一行 outcome:计数与耗时都归零,这一轮它们
         // 什么都没跑完。
         const insertOutcome = db.prepare(
@@ -7643,20 +7255,20 @@ export function openStore(dbPath: string): Store {
           "SELECT identity FROM review_run_reviewer_pin WHERE run_id = ? ORDER BY position",
         );
         for (const row of rows) {
-          for (const pin of pins.all(row["id"] as number)) {
-            insertOutcome.run(row["id"] as number, String(pin["identity"]), text);
+          for (const pin of (await pins.all(row["id"] as number))) {
+            (await insertOutcome.run(row["id"] as number, String(pin["identity"]), text));
           }
         }
         // 结束时间取启动时刻。耗时留空:进程什么时候落地的没人知道,写一个算出来的
         // 数字就是编。同一句原因也写进轮次级那一列(ADR 0026):零 pin 的轮次没有
         // outcome 行可借,原因只在这里读得到。
-        db.prepare(
-          `UPDATE review_run SET finished_at = ?, failed = 1, failure = ?
+        (await db.prepare(
+          `UPDATE review_run SET finished_at = ?, failed = true, failure = ?
             WHERE finished_at IS NULL${scope}`,
-        ).run(at, text, ...params);
+        ).run(at, text, ...params));
         // 改判掉的那些轮次不会再被续跑,中间态的批次结果一并清掉(issue #248)。
         const deleteBatches = db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?");
-        for (const row of rows) deleteBatches.run(row["id"] as number);
+        for (const row of rows) (await deleteBatches.run(row["id"] as number));
       });
       return rows.map((row) => ({
         runId: Number(row["id"]),
@@ -7666,21 +7278,21 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    recordRunFailure(runId, failure) {
-      db.prepare("UPDATE review_run SET failure = ? WHERE id = ?").run(
+    async recordRunFailure(runId, failure) {
+      (await db.prepare("UPDATE review_run SET failure = ? WHERE id = ?").run(
         runFailureText(failure),
         runId,
-      );
+      ));
     },
 
-    interruptedRuns() {
-      return db
+    async interruptedRuns() {
+      return (await db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, range_review_id, directive,
                   mode, triggered_by, auxiliary_model
              FROM review_run WHERE finished_at IS NULL ORDER BY id`,
         )
-        .all()
+        .all())
         .map((row) => ({
           runId: Number(row["id"]),
           owner: String(row["owner"]),
@@ -7699,37 +7311,37 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    recordBatchOutcome(runId, batchIndex, model, outcome) {
-      db.prepare(
+    async recordBatchOutcome(runId, batchIndex, model, outcome) {
+      (await db.prepare(
         `INSERT INTO review_run_batch_outcome (run_id, batch_index, model, outcome_json)
          VALUES (?, ?, ?, ?)
          ON CONFLICT (run_id, batch_index, model)
          DO UPDATE SET outcome_json = excluded.outcome_json`,
-      ).run(runId, batchIndex, model, JSON.stringify(outcome));
+      ).run(runId, batchIndex, model, JSON.stringify(outcome)));
     },
 
-    resumeState(runId) {
-      const run = db
+    async resumeState(runId) {
+      const run = (await db
         .prepare(
           `SELECT head_sha, rule_set_version, batch_count, history_json, batch_plan_json,
                   min_report_severity
              FROM review_run WHERE id = ?`,
         )
-        .get(runId);
+        .get(runId));
       if (run === undefined) return undefined;
-      const rows = db
+      const rows = (await db
         .prepare(
           `SELECT batch_index, model, outcome_json FROM review_run_batch_outcome
             WHERE run_id = ? ORDER BY batch_index`,
         )
-        .all(runId);
+        .all(runId));
       // pin 与已落库的批次一起取(issue #248 的评审复核):第一批就崩的那种轮次一个批次
       // 都没有,模型组合换没换只有这几行说得出。
-      const pins = db
+      const pins = (await db
         .prepare(
           "SELECT identity FROM review_run_reviewer_pin WHERE run_id = ? ORDER BY position",
         )
-        .all(runId);
+        .all(runId));
       // 逐行按批次归拢成「这一批哪几个模型已经有结果」(issue #410)。
       const batches = new Map<number, Map<string, TimedOutcome>>();
       for (const row of rows) {
@@ -7761,18 +7373,18 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    finishRun(runId, result) {
+    async finishRun(runId, result) {
       const rootCauseGroupIds: number[] = [];
       // 一次 Review Run 的收尾要么整体可见,要么整体不可见:半张表的 Finding
       // 会让事后的处置率统计算出偏低的分母。
-      transaction("deferred", () => {
+      await transaction("deferred", async () => {
         // 本轮总量含合并 agent(issue #228):面板的花费数字要覆盖这一轮真的花掉的全部
         // token,而逐 Reviewer 那几行仍只有各自的会话——差额就是合并 agent。
         const runUsage = sumUsage([
           ...result.outcomes,
           ...(result.mergeUsage === undefined ? [] : [{ usage: result.mergeUsage }]),
         ]);
-        db.prepare(
+        (await db.prepare(
           `UPDATE review_run
               SET finished_at = ?, duration_ms = ?, failed = ?,
                   input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
@@ -7781,14 +7393,14 @@ export function openStore(dbPath: string): Store {
         ).run(
           result.finishedAt,
           result.durationMs,
-          result.failed ? 1 : 0,
+          result.failed,
           ...usageColumns(runUsage),
           runId,
-        );
+        ));
 
         // 中间态的批次结果到这里就没用了(issue #248):收尾已经把合并后的结果落进
         // reviewer_outcome 与 finding,这张表只服务「还没收尾的那一轮」。
-        db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?").run(runId);
+        (await db.prepare("DELETE FROM review_run_batch_outcome WHERE run_id = ?").run(runId));
 
         const insertOutcome = db.prepare(
           `INSERT INTO reviewer_outcome
@@ -7799,7 +7411,7 @@ export function openStore(dbPath: string): Store {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const outcome of result.outcomes) {
-          insertOutcome.run(
+          (await insertOutcome.run(
             runId,
             outcome.model,
             outcome.failure ?? null,
@@ -7809,7 +7421,7 @@ export function openStore(dbPath: string): Store {
             outcome.anchorRejections,
             outcome.durationMs,
             ...usageColumns(outcome.usage),
-          );
+          ));
         }
 
         const insertFinding = db.prepare(
@@ -7836,7 +7448,7 @@ export function openStore(dbPath: string): Store {
         // 的 id。折叠到历史的那些成员直接给了历史行 id,不进这张表。
         const findingIdByGroup = new Map<number, number>();
         for (const finding of result.findings) {
-          const inserted = insertFinding.run(
+          const inserted = (await insertFinding.run(
             runId,
             finding.file,
             finding.line,
@@ -7858,11 +7470,11 @@ export function openStore(dbPath: string): Store {
             finding.lineAuthor?.authoredAt ?? null,
             finding.lineAuthor === undefined ? null : Number(finding.lineAuthor.adjacent),
             finding.ruleId ?? null,
-          );
+          ));
           const findingId = Number(inserted.lastInsertRowid);
           findingIdByGroup.set(finding.groupIndex, findingId);
           for (const [position, said] of finding.attributions.entries()) {
-            insertAttribution.run(
+            (await insertAttribution.run(
               findingId,
               position,
               said.model,
@@ -7871,10 +7483,10 @@ export function openStore(dbPath: string): Store {
               said.description,
               said.impact,
               said.suggestion,
-            );
+            ));
           }
           for (const [position, said] of (finding.carried ?? []).entries()) {
-            insertCarried.run(
+            (await insertCarried.run(
               findingId,
               position,
               said.model,
@@ -7882,7 +7494,7 @@ export function openStore(dbPath: string): Store {
               said.description,
               said.impact,
               said.suggestion,
-            );
+            ));
           }
         }
 
@@ -7894,14 +7506,14 @@ export function openStore(dbPath: string): Store {
         );
         for (const verdict of result.verdicts ?? []) {
           // 两列由同一格推出来:标记与由来因此不会各说各话。
-          insertVerdict.run(
+          (await insertVerdict.run(
             runId,
             verdict.model,
             verdict.findingId,
             verdict.verdict,
             verdict.missing === undefined ? 0 : 1,
             verdict.missing ?? null,
-          );
+          ));
         }
 
         // 同根因组(ADR 0030,issue #308):组与成员随这一笔事务一起落,组的 id 回给调用方
@@ -7914,12 +7526,12 @@ export function openStore(dbPath: string): Store {
           "INSERT INTO root_cause_group_member (group_id, finding_id, position) VALUES (?, ?, ?)",
         );
         for (const group of result.rootCauses ?? []) {
-          const groupId = Number(insertRootCause.run(runId, group.reason).lastInsertRowid);
+          const groupId = Number((await insertRootCause.run(runId, group.reason)).lastInsertRowid);
           rootCauseGroupIds.push(groupId);
           for (const [position, member] of group.members.entries()) {
             const findingId = findingIdByGroup.get(member);
             if (findingId === undefined) continue;
-            insertRootCauseMember.run(groupId, findingId, position);
+            (await insertRootCauseMember.run(groupId, findingId, position));
           }
         }
 
@@ -7929,7 +7541,7 @@ export function openStore(dbPath: string): Store {
         // 的标记也会被新的一行稀释,自动处置于是又碰它一次(ADR 0016)。`disposition`
         // 不在此列——它由跨轮匹配与回填决定,口径不变。本轮新发的评论不必走这一步:
         // 它的 id 是新的,库里不会有同 id 的历史行,`recordFindingComments` 因此不动。
-        db.prepare(
+        (await db.prepare(
           `UPDATE finding
               SET (disposed_by, disposed_at, disposition_note) =
                     (SELECT prior.disposed_by, prior.disposed_at, prior.disposition_note
@@ -7943,13 +7555,13 @@ export function openStore(dbPath: string): Store {
                            WHERE prior.comment_id = finding.comment_id
                              AND prior.run_id <> finding.run_id
                              AND prior.disposed_at IS NOT NULL)`,
-        ).run(runId);
+        ).run(runId));
       });
       return rootCauseGroupIds;
     },
 
-    rootCauseGroups(runId) {
-      const rows = db
+    async rootCauseGroups(runId) {
+      const rows = (await db
         .prepare(
           `SELECT g.id AS id, g.reason AS reason, m.finding_id AS finding_id
              FROM root_cause_group g
@@ -7957,7 +7569,7 @@ export function openStore(dbPath: string): Store {
             WHERE g.run_id = ?
             ORDER BY g.id, m.position`,
         )
-        .all(runId) as unknown as Record<string, unknown>[];
+        .all(runId)) as unknown as Record<string, unknown>[];
       const byId = new Map<number, RootCauseGroup>();
       for (const row of rows) {
         const id = Number(row["id"]);
@@ -7968,7 +7580,7 @@ export function openStore(dbPath: string): Store {
       return [...byId.values()];
     },
 
-    stageHistory(scope) {
+    async stageHistory(scope) {
       const [where, params] = stageScope(scope);
       // 折叠键与处置率同源(`identityKey`):承载它的那条评论,没有载体的退回文件 + 指纹。
       // 每条 Identity 取最新那一行——它才带着当前的处置状态、备注与最新表述;同一处未
@@ -7977,7 +7589,7 @@ export function openStore(dbPath: string): Store {
       // 自己在历史里,再给一遍就是同一个问题让模型复核两次。
       // 行号取当前位置(issue #368):本轮开跑时已经把它重定位到这一轮的 head 上,注入
       // 给 Reviewer 的必须是它此刻指着的那一行,而不是几轮之前被报出来时的那一行。
-      const rows = db
+      const rows = (await db
         .prepare(
           `WITH scoped AS (
              SELECT f.id AS id, f.file AS file,
@@ -7996,7 +7608,7 @@ export function openStore(dbPath: string): Store {
               AND s.disposition <> 'continued'
             ORDER BY s.id`,
         )
-        .all(...params);
+        .all(...params));
       return rows.map((row) => {
         const disposition = String(row["disposition"]) as Disposition;
         const note = row["note"] === null ? undefined : String(row["note"]);
@@ -8021,11 +7633,11 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    relocationCandidates(scope) {
+    async relocationCandidates(scope) {
       const [where, params] = stageScope(scope);
       // 折叠与筛选与 `stageHistory` 逐字同源,只多一道「算得出指纹」:没有指纹的行
       // 找不回自己那扇窗口,重定位对它无从下手。
-      const rows = db
+      const rows = (await db
         .prepare(
           `WITH scoped AS (
              SELECT f.id AS id, f.file AS file,
@@ -8043,7 +7655,7 @@ export function openStore(dbPath: string): Store {
               AND s.fingerprint IS NOT NULL
             ORDER BY s.id`,
         )
-        .all(...params);
+        .all(...params));
       return rows.map((row) => ({
         findingId: Number(row["id"]),
         file: String(row["file"]),
@@ -8052,21 +7664,21 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    recordFindingRelocations(runId, placements) {
+    async recordFindingRelocations(runId, placements) {
       const update = db.prepare(
         "UPDATE finding SET placed_line = ?, placed_run_id = ? WHERE id = ?",
       );
-      for (const placement of placements) update.run(placement.line, runId, placement.findingId);
+      for (const placement of placements) (await update.run(placement.line, runId, placement.findingId));
     },
 
-    listRepoFindings(query, limit) {
+    async listRepoFindings(query, limit) {
       const conditions = ["run.owner = ?", "run.repo = ?"];
       const params: (string | number)[] = [query.owner, query.repo];
       if (query.disposition !== undefined) {
         conditions.push("s.disposition = ?");
         params.push(query.disposition);
       }
-      const rows = db
+      const rows = (await db
         .prepare(
           `WITH scoped AS (
              SELECT f.id AS id, f.file AS file, f.line AS line, f.title AS title,
@@ -8085,7 +7697,7 @@ export function openStore(dbPath: string): Store {
               ${query.disposition === undefined ? "" : "AND s.disposition = ?"}
             ORDER BY s.id DESC`,
         )
-        .all(...params);
+        .all(...params));
       const matched =
         query.pathGlob === undefined
           ? rows
@@ -8107,9 +7719,9 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    stageSummary(scope) {
+    async stageSummary(scope) {
       const [where, params] = stageScope(scope);
-      const runRows = db
+      const runRows = (await db
         .prepare(
           `SELECT run.id AS id, run.head_sha AS head_sha, run.started_at AS started_at,
                   run.finished_at AS finished_at, run.failed AS failed, run.failure AS failure,
@@ -8118,7 +7730,7 @@ export function openStore(dbPath: string): Store {
             WHERE ${where}
             ORDER BY run.id`,
         )
-        .all(...params);
+        .all(...params));
       if (runRows.length === 0) {
         return {
           findings: [],
@@ -8129,7 +7741,7 @@ export function openStore(dbPath: string): Store {
       }
       // 一个阶段的行数有界(轮次 × 每轮的 Finding),折叠在这里用 JS 做:延续要把两个
       // 指纹接成同一条 Identity,写成 SQL 只会让这一步看不出在做什么。
-      const findingRows = db
+      const findingRows = (await db
         .prepare(
           `SELECT f.id AS id, f.run_id AS run_id, f.file AS file, f.line AS line,
                   f.title AS title, f.severity AS severity, f.category AS category,
@@ -8149,8 +7761,8 @@ export function openStore(dbPath: string): Store {
             WHERE ${where}
             ORDER BY f.id`,
         )
-        .all(...params);
-      const attributionRows = db
+        .all(...params));
+      const attributionRows = (await db
         .prepare(
           `SELECT a.finding_id AS finding_id, a.model AS model, a.severity AS severity,
                   a.category AS category, a.description AS description,
@@ -8161,13 +7773,13 @@ export function openStore(dbPath: string): Store {
             WHERE ${where}
             ORDER BY a.finding_id, a.position`,
         )
-        .all(...params);
-      const carried = carriedByFinding(
+        .all(...params));
+      const carried = (await carriedByFinding(
         db,
         `SELECT f.id FROM finding f JOIN review_run run ON f.run_id = run.id WHERE ${where}`,
         params,
-      );
-      const verdictRows = db
+      ));
+      const verdictRows = (await db
         .prepare(
           `SELECT v.run_id AS run_id, v.finding_id AS finding_id, v.verdict AS verdict,
                   v.missing AS missing, v.missing_reason AS missing_reason
@@ -8175,7 +7787,7 @@ export function openStore(dbPath: string): Store {
              JOIN review_run run ON v.run_id = run.id
             WHERE ${where}`,
         )
-        .all(...params);
+        .all(...params));
 
       const models = new Map<number, string[]>();
       const attributions = new Map<number, RecordedFindingAttribution[]>();
@@ -8287,7 +7899,7 @@ export function openStore(dbPath: string): Store {
       );
       for (const group of groupRun === undefined
         ? []
-        : store.rootCauseGroups(Number(groupRun["id"]))) {
+        : (await store.rootCauseGroups(Number(groupRun["id"])))) {
         const findingIds: number[] = [];
         for (const memberId of group.findingIds) {
           const current = currentRowOf(memberId);
@@ -8462,9 +8074,9 @@ export function openStore(dbPath: string): Store {
       return { findings, counts, timeline: [...timeline.values()], rootCauseGroups };
     },
 
-    pendingLineAuthors(scope) {
+    async pendingLineAuthors(scope) {
       const [where, params] = stageScope(scope);
-      const rows = db
+      const rows = (await db
         .prepare(
           `SELECT f.id AS id, run.head_sha AS head_sha, f.file AS file, f.line AS line
              FROM finding f
@@ -8472,7 +8084,7 @@ export function openStore(dbPath: string): Store {
             WHERE ${where} AND f.line_author_sha IS NULL
             ORDER BY f.id`,
         )
-        .all(...params);
+        .all(...params));
       return rows.map((row) => ({
         findingId: Number(row["id"]),
         headSha: String(row["head_sha"]),
@@ -8481,7 +8093,7 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    recordLineAuthors(authors) {
+    async recordLineAuthors(authors) {
       const update = db.prepare(
         `UPDATE finding
             SET line_author_sha = ?, line_author_name = ?,
@@ -8489,34 +8101,34 @@ export function openStore(dbPath: string): Store {
           WHERE id = ? AND line_author_sha IS NULL`,
       );
       for (const entry of authors) {
-        update.run(
+        (await update.run(
           entry.lineAuthor.sha,
           entry.lineAuthor.name,
           entry.lineAuthor.email,
           entry.lineAuthor.authoredAt,
           entry.findingId,
-        );
+        ));
       }
     },
 
-    recordFindingComments(runId, refs) {
+    async recordFindingComments(runId, refs) {
       const update = db.prepare(
         `UPDATE finding SET comment_id = ?, comment_html_url = ?
           WHERE run_id = ? AND group_index = ?`,
       );
       // 一个合并组落成一条 Finding、一条评论:处置的载体就是它。
       for (const ref of refs) {
-        update.run(ref.commentId, ref.commentHtmlUrl, runId, ref.groupIndex);
+        (await update.run(ref.commentId, ref.commentHtmlUrl, runId, ref.groupIndex));
       }
     },
 
-    appendTrace(runId, event) {
+    async appendTrace(runId, event) {
       const at = new Date().toISOString();
       const payload = JSON.stringify(event.payload ?? null);
       const reviewer = event.reviewer ?? null;
       // 序号在这一句里算:子查询与插入在同一条语句内,SQLite 不会让两条并发的写拿到
       // 同一个号,先查后写才会。
-      const inserted = db
+      const inserted = (await db
         .prepare(
           `INSERT INTO review_trace (run_id, seq, at, scope, reviewer, kind, payload)
            VALUES (
@@ -8526,7 +8138,7 @@ export function openStore(dbPath: string): Store {
            )
            RETURNING seq`,
         )
-        .get(runId, runId, at, event.scope, reviewer, event.kind, payload);
+        .get(runId, runId, at, event.scope, reviewer, event.kind, payload));
       const seq = Number(inserted?.["seq"]);
       return {
         seq,
@@ -8539,15 +8151,15 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    listTrace(runId, afterSeq) {
-      const rows = db
+    async listTrace(runId, afterSeq) {
+      const rows = (await db
         .prepare(
           `SELECT seq, at, scope, reviewer, kind, payload
              FROM review_trace
             WHERE run_id = ? AND seq > ?
             ORDER BY seq`,
         )
-        .all(runId, afterSeq ?? 0);
+        .all(runId, afterSeq ?? 0));
       return rows.map((row) => ({
         seq: Number(row["seq"]),
         runId,
@@ -8559,10 +8171,10 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    startRuleTrace(repoId, source, payload) {
+    async startRuleTrace(repoId, source, payload) {
       const at = new Date().toISOString();
       // 任务标识与序号在同一句里算:先查后写会让并发的两次任务拿到同一个号。
-      const inserted = db
+      const inserted = (await db
         .prepare(
           `INSERT INTO rule_trace (task_id, repo_id, source, seq, at, kind, payload)
            VALUES (
@@ -8571,16 +8183,16 @@ export function openStore(dbPath: string): Store {
            )
            RETURNING task_id`,
         )
-        .get(repoId, source, at, JSON.stringify(payload ?? null));
+        .get(repoId, source, at, JSON.stringify(payload ?? null)));
       return Number(inserted?.["task_id"]);
     },
 
-    appendRuleTrace(taskId, event) {
+    async appendRuleTrace(taskId, event) {
       const at = new Date().toISOString();
       const payload = JSON.stringify(event.payload ?? null);
       // repo_id 与 source 从这条轨迹的头一行抄:它们描述的是整条轨迹,逐行重复只是
       // 为了让可见性与级联删除各只读一张表。
-      const inserted = db
+      const inserted = (await db
         .prepare(
           `INSERT INTO rule_trace (task_id, repo_id, source, seq, at, kind, payload)
            SELECT ?, repo_id, source,
@@ -8589,19 +8201,19 @@ export function openStore(dbPath: string): Store {
              FROM rule_trace WHERE task_id = ? ORDER BY seq LIMIT 1
            RETURNING seq`,
         )
-        .get(taskId, taskId, at, event.kind, payload, taskId);
+        .get(taskId, taskId, at, event.kind, payload, taskId));
       return { seq: Number(inserted?.["seq"]), taskId, at, kind: event.kind, payload: event.payload };
     },
 
-    listRuleTrace(taskId, afterSeq) {
-      return db
+    async listRuleTrace(taskId, afterSeq) {
+      return (await db
         .prepare(
           `SELECT seq, at, kind, payload
              FROM rule_trace
             WHERE task_id = ? AND seq > ?
             ORDER BY seq`,
         )
-        .all(taskId, afterSeq ?? 0)
+        .all(taskId, afterSeq ?? 0))
         .map((row) => ({
           seq: Number(row["seq"]),
           taskId,
@@ -8611,25 +8223,25 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    ruleTraceRepo(taskId) {
-      const row = db.prepare("SELECT repo_id FROM rule_trace WHERE task_id = ? LIMIT 1").get(taskId);
+    async ruleTraceRepo(taskId) {
+      const row = (await db.prepare("SELECT repo_id FROM rule_trace WHERE task_id = ? LIMIT 1").get(taskId));
       return row === undefined ? undefined : Number(row["repo_id"]);
     },
 
-    setRuleExplorationTrace(repoId, taskId) {
-      db.prepare("UPDATE rule_exploration SET trace_task_id = ? WHERE repo_id = ?")
-        .run(taskId, repoId);
+    async setRuleExplorationTrace(repoId, taskId) {
+      (await db.prepare("UPDATE rule_exploration SET trace_task_id = ? WHERE repo_id = ?")
+        .run(taskId, repoId));
     },
 
-    setRuleConsolidationTrace(repoId, taskId) {
-      db.prepare("UPDATE rule_consolidation SET trace_task_id = ? WHERE repo_id = ?")
-        .run(taskId, repoId);
+    async setRuleConsolidationTrace(repoId, taskId) {
+      (await db.prepare("UPDATE rule_consolidation SET trace_task_id = ? WHERE repo_id = ?")
+        .run(taskId, repoId));
     },
 
-    dispositionStats(from, to) {
+    async dispositionStats(from, to) {
       // 接在共同的 identity 折叠之后:labeled 给每条 Identity 取它首次报出那一行的
       // category(不进折叠键,跨轮改口不挪格,与时间窗归属同一轮)。
-      const rows = db
+      const rows = (await db
         .prepare(
           `${STATS_IDENTITY_CTE},
            labeled AS (
@@ -8652,7 +8264,7 @@ export function openStore(dbPath: string): Store {
             GROUP BY owner, repo, category
             ORDER BY owner, repo, category`,
         )
-        .all(from, to);
+        .all(from, to));
       // 逐字段取出:node:sqlite 返回的是 null 原型对象,直接外传会让调用方拿到
       // 一个没有 Object 方法的怪东西。
       return rows.map((row) => ({
@@ -8667,11 +8279,11 @@ export function openStore(dbPath: string): Store {
       }));
     },
 
-    modelParticipation(from, to, repos) {
+    async modelParticipation(from, to, repos) {
       const filter = repoPairCondition(repos, "s.");
       // 先摊成「模型 × Identity」再去重:一条 Identity 在一个阶段里有好几行,同一个
       // 模型在其中几行上都报过也只算这条一次;不同模型报同一条则各算一次。
-      const rows = db
+      const rows = (await db
         .prepare(
           `${STATS_IDENTITY_CTE}
            SELECT model, COUNT(*) AS findings
@@ -8688,16 +8300,16 @@ export function openStore(dbPath: string): Store {
             GROUP BY model
             ORDER BY model`,
         )
-        .all(from, to, ...filter.params);
+        .all(from, to, ...filter.params));
       return rows.map((row) => ({
         model: String(row["model"]),
         findings: Number(row["findings"]),
       }));
     },
 
-    usageStats(from, to, repos) {
+    async usageStats(from, to, repos) {
       const filter = repoPairCondition(repos, "");
-      const row = db
+      const row = (await db
         .prepare(
           `SELECT COUNT(*) AS usage_rows,
                   SUM(input_tokens) AS input_tokens,
@@ -8709,7 +8321,7 @@ export function openStore(dbPath: string): Store {
             WHERE total_tokens IS NOT NULL AND started_at >= ? AND started_at <= ?
               AND ${filter.sql}`,
         )
-        .get(from, to, ...filter.params)!;
+        .get(from, to, ...filter.params))!;
       const runs = Number(row["usage_rows"]);
       if (runs === 0) return undefined;
 
@@ -8723,7 +8335,7 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    listRuns(opts) {
+    async listRuns(opts) {
       const conditions: string[] = [];
       const params: (number | string)[] = [];
       if (opts.beforeId !== undefined) {
@@ -8748,7 +8360,7 @@ export function openStore(dbPath: string): Store {
         params.push(opts.id);
       }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-      const runs = db
+      const runs = (await db
         .prepare(
           `SELECT id, owner, repo, pull_number, head_sha, title, range_review_id, triggered_by,
                   trigger_source, directive, mode, started_at, finished_at, failed, failure,
@@ -8757,7 +8369,7 @@ export function openStore(dbPath: string): Store {
              FROM review_run ${where}
             ORDER BY id DESC LIMIT ?`,
         )
-        .all(...params, opts.limit);
+        .all(...params, opts.limit));
       if (runs.length === 0) return [];
 
       const ids = runs.map((run) => Number(run["id"]));
@@ -8765,28 +8377,28 @@ export function openStore(dbPath: string): Store {
       // 逐模型的行来自 reviewer_outcome:它一轮一模型一行并带 failure,失败的模型
       // 因此照样列出。Finding 数仍数 finding 表——outcome 上的 finding_count 是
       // Reviewer 自报的合并前条数,与落库行数不是同一个口径。
-      const byOutcome = db
+      const byOutcome = (await db
         .prepare(
           `SELECT run_id, model, failure, input_tokens, output_tokens,
                   cache_read_tokens, cache_write_tokens, total_tokens
              FROM reviewer_outcome
             WHERE run_id IN (${marks}) ORDER BY model`,
         )
-        .all(...ids);
+        .all(...ids));
       // 一个模型报了几条:数它的归属,不数 finding 行——一条 Finding 可以有几个归属
       // (ADR 0015),按行数会把合并掉的那几条从这个模型名下抹掉。
-      const byModel = db
+      const byModel = (await db
         .prepare(
           `SELECT f.run_id AS run_id, a.model AS model, COUNT(*) AS findings
              FROM finding_attribution a
              JOIN finding f ON f.id = a.finding_id
             WHERE f.run_id IN (${marks}) GROUP BY f.run_id, a.model ORDER BY a.model`,
         )
-        .all(...ids);
+        .all(...ids));
       // 已处置口径与处置率同源:只认行级承载。人工与自动分开数,面板据此把两者分开显示。
       // 「已延续」两头都不占:它既不是处置,也不该继续挂在这一轮的待处置里等人去点
       // ——那处 Finding 已经交接到新位置,要处置的是新位置那条。
-      const byGroup = db
+      const byGroup = (await db
         .prepare(
           `SELECT run_id,
                   COUNT(*) AS total,
@@ -8797,9 +8409,9 @@ export function openStore(dbPath: string): Store {
               AND disposition <> 'continued'
             GROUP BY run_id`,
         )
-        .all(...ids);
+        .all(...ids));
 
-      const byFinding = db
+      const byFinding = (await db
         .prepare(
           `SELECT id, run_id, file, line, severity, category, description,
                   impact, suggestion,
@@ -8809,8 +8421,8 @@ export function openStore(dbPath: string): Store {
              FROM finding
             WHERE run_id IN (${marks}) ORDER BY id`,
         )
-        .all(...ids);
-      const byAttribution = db
+        .all(...ids));
+      const byAttribution = (await db
         .prepare(
           `SELECT a.finding_id AS finding_id, a.model AS model, a.severity AS severity,
                   a.category AS category, a.description AS description,
@@ -8819,21 +8431,21 @@ export function openStore(dbPath: string): Store {
              JOIN finding f ON f.id = a.finding_id
             WHERE f.run_id IN (${marks}) ORDER BY a.finding_id, a.position`,
         )
-        .all(...ids);
-      const carried = carriedByFinding(
+        .all(...ids));
+      const carried = (await carriedByFinding(
         db,
         `SELECT id FROM finding WHERE run_id IN (${marks})`,
         ids,
-      );
+      ));
 
-      const byPin = db
+      const byPin = (await db
         .prepare(
           `SELECT run_id, identity, provider, model, model_service_version,
                   base_url, api, runtime_model_json, materialization_failure, thinking_level
              FROM review_run_reviewer_pin
             WHERE run_id IN (${marks}) ORDER BY run_id, position`,
         )
-        .all(...ids);
+        .all(...ids));
       const findingCounts = new Map<string, number>();
       for (const row of byModel) {
         findingCounts.set(
@@ -8987,7 +8599,7 @@ export function openStore(dbPath: string): Store {
       });
     },
 
-    listStages(opts) {
+    async listStages(opts) {
       // 归并、筛选、排序与切页都在这一条查询里:回到 JS 的只有这一页的那几行。
       const scoped = opts.owner !== undefined && opts.repo !== undefined;
       // 仓库过滤先合成一组 owner/repo 对:请求给的那一对与账号可见的那些是同一个维度。
@@ -9017,7 +8629,7 @@ export function openStore(dbPath: string): Store {
         params.push(opts.source);
       }
       params.push(opts.limit, opts.offset);
-      const rows = db
+      const rows = (await db
         .prepare(
           `SELECT * FROM (${pullStageQuery(repoFilter(""))}
                           UNION ALL
@@ -9027,51 +8639,53 @@ export function openStore(dbPath: string): Store {
             ORDER BY activity_at DESC, stage_id DESC
             LIMIT ? OFFSET ?`,
         )
-        .all(...params)
+        .all(...params))
         .map(stageRowEntry);
       // 警示也只为这一页算,而且一条查询算完这几轮,不跟着行数涨(issue #421)。
-      const alerts = stageRunAlerts(
+      const alerts = (await stageRunAlerts(
         db,
         rows.map((row) => alertRunId(row.item)).filter((id) => id !== null),
-      );
+      ));
       // 三个计数只为这一页算:每一行都要读一遍它整个阶段的 Finding。
-      return rows.map((row) => {
+      const stages: StageListItem[] = [];
+      for (const row of rows) {
         const runId = alertRunId(row.item);
-        return {
+        stages.push({
           ...row.item,
-          counts: store.stageSummary(row.scope).counts,
+          counts: (await store.stageSummary(row.scope)).counts,
           latestRunAlert: runId === null ? null : alerts.get(runId) ?? null,
-        };
-      });
+        });
+      }
+      return stages;
     },
 
-    stageDetail(stageId) {
-      const row = stageRowById(stageId);
+    async stageDetail(stageId) {
+      const row = (await stageRowById(stageId));
       if (row === undefined) return undefined;
       // 一次 `stageSummary` 同时给出这一行的三个计数与它的时间线:详情页上的汇总与
       // 时间线本来就是同一个阶段的两种看法,算两遍只会让两者有机会对不上。
-      const summary = store.stageSummary(row.scope);
+      const summary = (await store.stageSummary(row.scope));
       const comparisons =
         row.item.rangeReviewId === null
           ? []
-          : store.listRangeReviewComparisons(row.item.rangeReviewId);
+          : (await store.listRangeReviewComparisons(row.item.rangeReviewId));
       // 阶段那一行在详情里与列表里是同一份形状,警示因此照样带上(issue #421)。
       const runId = alertRunId(row.item);
       return {
         stage: {
           ...row.item,
           counts: summary.counts,
-          latestRunAlert: runId === null ? null : stageRunAlerts(db, [runId]).get(runId) ?? null,
+          latestRunAlert: runId === null ? null : (await stageRunAlerts(db, [runId])).get(runId) ?? null,
         },
         groups: groupStageRuns(summary.timeline, comparisons),
       };
     },
 
-    createRangeReview(record) {
+    async createRangeReview(record) {
       // 分支名要跟着记录一起可见:插入拿到 id 之后立刻补上,失败时整笔回滚。
       // 发起时的比较项同时进历史表:它是这个阶段审过的第一个 commit。
-      return transaction("deferred", () => {
-        const result = db
+      return transaction("deferred", async () => {
+        const result = (await db
           .prepare(
             `INSERT INTO range_review
                (repo_id, owner, repo, title, base_sha, comparison_sha,
@@ -9090,44 +8704,44 @@ export function openStore(dbPath: string): Store {
             record.comparisonSource?.name ?? null,
             record.createdBy,
             record.createdAt,
-          );
+          ));
         const id = Number(result.lastInsertRowid);
         const branches = containerBranches(id);
-        db.prepare(
+        (await db.prepare(
           "UPDATE range_review SET base_branch = ?, head_branch = ? WHERE id = ?",
-        ).run(branches.base, branches.head, id);
-        db.prepare(
+        ).run(branches.base, branches.head, id));
+        (await db.prepare(
           `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
            VALUES (?, ?, ?, ?)`,
-        ).run(id, record.comparisonSha, record.createdBy, record.createdAt);
+        ).run(id, record.comparisonSha, record.createdBy, record.createdAt));
         return id;
       });
     },
 
-    attachRangeReviewContainer(id, containerPullNumber) {
-      db.prepare(
+    async attachRangeReviewContainer(id, containerPullNumber) {
+      (await db.prepare(
         `UPDATE range_review
             SET container_pull_number = ?, last_forge_failure = NULL
           WHERE id = ?`,
-      ).run(containerPullNumber, id);
+      ).run(containerPullNumber, id));
     },
 
-    failRangeReview(id, failure) {
-      db.prepare(
+    async failRangeReview(id, failure) {
+      (await db.prepare(
         "UPDATE range_review SET state = 'failed', last_forge_failure = ? WHERE id = ?",
-      ).run(failure, id);
+      ).run(failure, id));
     },
 
-    recordRangeReviewForgeFailure(id, failure) {
-      db.prepare("UPDATE range_review SET last_forge_failure = ? WHERE id = ?").run(
+    async recordRangeReviewForgeFailure(id, failure) {
+      (await db.prepare("UPDATE range_review SET last_forge_failure = ? WHERE id = ?").run(
         failure,
         id,
-      );
+      ));
     },
 
-    advanceRangeReview(record) {
-      transaction("deferred", () => {
-        db.prepare(
+    async advanceRangeReview(record) {
+      await transaction("deferred", async () => {
+        (await db.prepare(
           `UPDATE range_review
               SET comparison_sha = ?, comparison_source_kind = ?,
                   comparison_source_name = ?, last_forge_failure = NULL
@@ -9137,29 +8751,29 @@ export function openStore(dbPath: string): Store {
           record.comparisonSource?.kind ?? null,
           record.comparisonSource?.name ?? null,
           record.id,
-        );
-        db.prepare(
+        ));
+        (await db.prepare(
           `INSERT INTO range_review_comparison (range_review_id, sha, recorded_by, recorded_at)
            VALUES (?, ?, ?, ?)`,
-        ).run(record.id, record.comparisonSha, record.advancedBy, record.advancedAt);
+        ).run(record.id, record.comparisonSha, record.advancedBy, record.advancedAt));
       });
     },
 
-    completeRangeReview(record) {
+    async completeRangeReview(record) {
       // 每日增量随阶段一起关掉(CONTEXT.md 每日增量):完成后的记录不该还写着「开着」。
-      db.prepare(
+      (await db.prepare(
         `UPDATE range_review
             SET state = 'completed', completed_by = ?, completed_at = ?,
                 last_forge_failure = NULL,
-                daily_increment_enabled = 0, daily_increment_branch = NULL,
+                daily_increment_enabled = false, daily_increment_branch = NULL,
                 daily_increment_enabled_at = NULL,
                 scheduled_check_time = '00:00', scheduled_check_mode = 'verdict-only'
           WHERE id = ?`,
-      ).run(record.completedBy, record.completedAt, record.id);
+      ).run(record.completedBy, record.completedAt, record.id));
     },
 
-    setRangeReviewDailyIncrement({ id, branch, time, mode, at }) {
-      db.prepare(
+    async setRangeReviewDailyIncrement({ id, branch, time, mode, at }) {
+      (await db.prepare(
         `UPDATE range_review
             SET daily_increment_enabled = ?, daily_increment_branch = ?,
                 daily_increment_enabled_at = ?, scheduled_check_time = ?, scheduled_check_mode = ?
@@ -9171,26 +8785,26 @@ export function openStore(dbPath: string): Store {
         branch === null ? "00:00" : time,
         branch === null ? "verdict-only" : mode,
         id,
-      );
+      ));
     },
 
-    recordRangeReviewScheduledCheck({ id, at, result }) {
-      db.prepare(
+    async recordRangeReviewScheduledCheck({ id, at, result }) {
+      (await db.prepare(
         `UPDATE range_review
             SET scheduled_check_at = ?, scheduled_check_result = ?
           WHERE id = ?`,
-      ).run(at, result, id);
+      ).run(at, result, id));
     },
 
-    listRangeReviewComparisons(rangeReviewId) {
-      return db
+    async listRangeReviewComparisons(rangeReviewId) {
+      return (await db
         .prepare(
           `SELECT id, sha, recorded_by, recorded_at
              FROM range_review_comparison
             WHERE range_review_id = ?
             ORDER BY id`,
         )
-        .all(rangeReviewId)
+        .all(rangeReviewId))
         .map((row) => ({
           id: Number(row["id"]),
           sha: String(row["sha"]),
@@ -9199,12 +8813,12 @@ export function openStore(dbPath: string): Store {
         }));
     },
 
-    getRangeReview(id) {
-      const row = db.prepare("SELECT * FROM range_review WHERE id = ?").get(id);
+    async getRangeReview(id) {
+      const row = (await db.prepare("SELECT * FROM range_review WHERE id = ?").get(id));
       return row === undefined ? undefined : rangeReviewRecord(row);
     },
 
-    listRangeReviews(opts) {
+    async listRangeReviews(opts) {
       const conditions: string[] = [];
       const params: (number | string)[] = [];
       if (opts.owner !== undefined && opts.repo !== undefined) {
@@ -9220,14 +8834,14 @@ export function openStore(dbPath: string): Store {
         params.push(opts.state);
       }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-      return db
+      return (await db
         .prepare(`SELECT * FROM range_review ${where} ORDER BY id DESC`)
-        .all(...params)
+        .all(...params))
         .map(rangeReviewRecord);
     },
 
-    getRunRange(id) {
-      const row = db
+    async getRunRange(id) {
+      const row = (await db
         .prepare(
           `SELECT run.id, run.owner, run.repo, run.pull_number, run.head_sha,
                   run.range_review_id, rr.base_sha
@@ -9235,7 +8849,7 @@ export function openStore(dbPath: string): Store {
              LEFT JOIN range_review rr ON run.range_review_id = rr.id
             WHERE run.id = ?`,
         )
-        .get(id) as Record<string, unknown> | undefined;
+        .get(id)) as Record<string, unknown> | undefined;
       if (row === undefined) return undefined;
       return {
         id: Number(row["id"]),
@@ -9249,8 +8863,8 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    getFinding(id) {
-      const row = db
+    async getFinding(id) {
+      const row = (await db
         .prepare(
           `SELECT f.id, f.comment_id, f.disposition, f.disposition_note,
                   f.file, f.line, f.title, f.description,
@@ -9259,7 +8873,7 @@ export function openStore(dbPath: string): Store {
              JOIN review_run run ON f.run_id = run.id
             WHERE f.id = ?`,
         )
-        .get(id) as Record<string, unknown> | undefined;
+        .get(id)) as Record<string, unknown> | undefined;
       if (row === undefined) return undefined;
       return {
         id: Number(row["id"]),
@@ -9276,8 +8890,8 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    recordDisposition(input) {
-      const result = db
+    async recordDisposition(input) {
+      const result = (await db
         .prepare(
           `UPDATE finding
               SET disposition = ?, disposed_by = ?, disposed_at = ?,
@@ -9293,28 +8907,30 @@ export function openStore(dbPath: string): Store {
           input.commentId,
           input.owner,
           input.repo,
-        );
+        ));
       return Number(result.changes);
     },
 
-    tableCounts() {
-      const tables = db
+    async tableCounts() {
+      const tables = (await db
         .prepare(
-          `SELECT name FROM sqlite_master
-            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-            ORDER BY name`,
+          `SELECT table_name AS name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+            ORDER BY table_name`,
         )
-        .all();
-      return tables.map((table) => {
+        .all());
+      const counts: { name: string; rows: number }[] = [];
+      for (const table of tables) {
         const name = String(table["name"]);
-        const count = db.prepare(`SELECT COUNT(*) AS c FROM "${name}"`).get() as {
+        const count = (await db.prepare(`SELECT COUNT(*) AS c FROM "${name}"`).get()) as {
           c: number;
         };
-        return { name, rows: Number(count.c) };
-      });
+        counts.push({ name, rows: Number(count.c) });
+      }
+      return counts;
     },
 
-    pendingAutoDispositions(findingIds) {
+    async pendingAutoDispositions(findingIds) {
       // 折叠键与读侧同源:`identityKey`——承载它的那条 Forge 评论,没有载体的退回
       // 「文件 + 指纹」。不按裸的「文件 + 指纹」扫:同一处可以有两条 Identity(ADR 0030),
       // 那样会把另一条的评论也 resolve 掉、另一条的行也记成已修复。PR 范围与
@@ -9337,28 +8953,30 @@ export function openStore(dbPath: string): Store {
           ORDER BY finding.id`,
       );
       const seen = new Set<number>();
-      return findingIds.flatMap((findingId) =>
-        identity.all(findingId).flatMap((row) => {
+      const candidates: { findingId: number; commentId: string }[] = [];
+      for (const findingId of findingIds) {
+        for (const row of await identity.all(findingId)) {
           const id = Number(row["id"]);
-          if (seen.has(id)) return [];
+          if (seen.has(id)) continue;
           seen.add(id);
-          return [{ findingId: id, commentId: String(row["comment_id"]) }];
-        }),
-      );
+          candidates.push({ findingId: id, commentId: String(row["comment_id"]) });
+        }
+      }
+      return candidates;
     },
 
-    recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt, note) {
+    async recordAutoDisposition(owner, repo, pullNumber, candidate, disposedAt, note) {
       // 只改候选那一行(issue #275):Identity 的展开在 `pendingAutoDispositions` 那一侧,
       // 每一行都各自先写过 Forge 才走到这里。按折叠键扫整条 Identity 会把没写 Forge 的
       // 那些行也记成已修复,而 Disposition 的权威状态在 Forge 上(ADR 0006)。
-      db.prepare(
+      (await db.prepare(
         `UPDATE finding SET disposition = 'fixed', disposed_at = ?,
                 disposition_note = COALESCE(?, disposition_note)
           WHERE id = ? AND ${AUTO_DISPOSABLE} AND ${PULL_REQUEST_SCOPE}`,
-      ).run(disposedAt, note ?? null, candidate.findingId, owner, repo, pullNumber);
+      ).run(disposedAt, note ?? null, candidate.findingId, owner, repo, pullNumber));
     },
 
-    historyPlacements(findingIds) {
+    async historyPlacements(findingIds) {
       const probe = db.prepare(
         `SELECT f.file AS file, f.line AS line, f.title AS title, f.description AS description,
                 f.fingerprint AS fingerprint, f.comment_id AS comment_id,
@@ -9377,39 +8995,38 @@ export function openStore(dbPath: string): Store {
             AND (impact IS NULL OR suggestion IS NULL OR impact <> '' OR suggestion <> '')
           ORDER BY position`,
       );
-      return findingIds.flatMap((findingId) => {
-        const row = probe.get(findingId);
-        if (row === undefined) return [];
+      const placements: HistoryPlacement[] = [];
+      for (const findingId of findingIds) {
+        const row = await probe.get(findingId);
+        if (row === undefined) continue;
         const from = { runId: Number(row["run_id"]), headSha: String(row["head_sha"]) };
-        const own = ownSaid.all(findingId).map((said) => ({
+        const own = (await ownSaid.all(findingId)).map((said) => ({
           ...from,
           model: String(said["model"]),
           description: String(said["description"]),
           impact: said["impact"] === null ? null : String(said["impact"]),
           suggestion: said["suggestion"] === null ? null : String(said["suggestion"]),
         }));
-        const inherited = carriedByFinding(db, "?", [findingId]).get(findingId) ?? [];
-        return [
-          {
-            findingId,
-            file: String(row["file"]),
-            line: Number(row["line"]),
-            title: row["title"] === null ? "" : String(row["title"]),
-            description: String(row["description"]),
-            fingerprint: String(row["fingerprint"]),
-            commentId: String(row["comment_id"]),
-            commentHtmlUrl: String(row["comment_html_url"]),
-            disposition: String(row["disposition"]) as Disposition,
-            carried: [...own, ...inherited],
-          },
-        ];
-      });
+        const inherited = (await carriedByFinding(db, "?", [findingId])).get(findingId) ?? [];
+        placements.push({
+          findingId,
+          file: String(row["file"]),
+          line: Number(row["line"]),
+          title: row["title"] === null ? "" : String(row["title"]),
+          description: String(row["description"]),
+          fingerprint: String(row["fingerprint"]),
+          commentId: String(row["comment_id"]),
+          commentHtmlUrl: String(row["comment_html_url"]),
+          disposition: String(row["disposition"]) as Disposition,
+          carried: [...own, ...inherited],
+        });
+      }
+      return placements;
     },
 
-    continuationCandidates(findingIds) {
+    async continuationCandidates(findingIds) {
       // 与 `historyPlacements` 同一批列同一道筛,只多一条:已经处置过的不再交接位置。
-      return store
-        .historyPlacements(findingIds)
+      return (await store.historyPlacements(findingIds))
         .filter(
           (placement) =>
             placement.disposition === "unknown" || placement.disposition === "unresolved",
@@ -9417,56 +9034,56 @@ export function openStore(dbPath: string): Store {
         .map(({ disposition: _disposition, ...candidate }) => candidate);
     },
 
-    recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate, handoffPending }) {
-      transaction("deferred", () => {
+    async recordContinuation({ owner, repo, pullNumber, runId, groupIndex, candidate, handoffPending }) {
+      await transaction("deferred", async () => {
         // 先把旧行的三列抄到新行上,再改旧行的处置值:两条语句都只碰自己那一侧,
         // 顺序其实无关,写成这样是让「谁继承谁」一眼看得出来。
-        db.prepare(
+        (await db.prepare(
           `UPDATE finding
               SET (disposed_by, disposed_at, disposition_note, continued_from) =
                     (SELECT prior.disposed_by, prior.disposed_at, prior.disposition_note, ?
                        FROM finding prior WHERE prior.id = ?)
             WHERE run_id = ? AND group_index = ?`,
-        ).run(candidate.commentHtmlUrl, candidate.findingId, runId, groupIndex);
+        ).run(candidate.commentHtmlUrl, candidate.findingId, runId, groupIndex));
         // 折叠键与读侧同源:`identityKey`——交接的是承载它的那条评论所指的那条 Finding,
         // 同一处的另一条 Identity 各有各的评论,不跟着这一次交接走(ADR 0030)。本轮新行
         // 的指纹必然与它不同——旧指纹在本轮 head 上算不出正是延续的前提,不会被这一笔一起
         // 改掉。交接未完成的标记与处置值同一笔写(ADR 0025):整条 Identity 一起带上。
-        db.prepare(
+        (await db.prepare(
           `UPDATE finding SET disposition = 'continued', handoff_pending = ?
             WHERE ${identityKey("")} =
                   (SELECT ${identityKey("prior.")} FROM finding prior WHERE prior.id = ?)
               AND disposition IN ('unknown', 'unresolved')
               AND ${PULL_REQUEST_SCOPE}`,
-        ).run(handoffPending ? 1 : null, candidate.findingId, owner, repo, pullNumber);
+        ).run(handoffPending ? 1 : null, candidate.findingId, owner, repo, pullNumber));
       });
     },
 
-    pendingHandoffs(owner, repo, pullNumber) {
+    async pendingHandoffs(owner, repo, pullNumber) {
       // 同一条评论在 Identity 的几行上都带着标记,按评论去重、取最新那一行的 id。
-      const rows = db
+      const rows = (await db
         .prepare(
           `SELECT id, comment_id FROM finding
-            WHERE handoff_pending = 1 AND comment_id IS NOT NULL AND ${PULL_REQUEST_SCOPE}
+            WHERE handoff_pending = true AND comment_id IS NOT NULL AND ${PULL_REQUEST_SCOPE}
             ORDER BY id`,
         )
-        .all(owner, repo, pullNumber);
+        .all(owner, repo, pullNumber));
       const byComment = new Map<string, number>();
       for (const row of rows) byComment.set(String(row["comment_id"]), Number(row["id"]));
       return [...byComment].map(([commentId, findingId]) => ({ findingId, commentId }));
     },
 
-    completeHandoff(owner, repo, pullNumber, findingId) {
-      db.prepare(
+    async completeHandoff(owner, repo, pullNumber, findingId) {
+      (await db.prepare(
         `UPDATE finding SET handoff_pending = NULL
           WHERE ${identityKey("")} =
                 (SELECT ${identityKey("prior.")} FROM finding prior WHERE prior.id = ?)
-            AND handoff_pending = 1
+            AND handoff_pending = true
             AND ${PULL_REQUEST_SCOPE}`,
-      ).run(findingId, owner, repo, pullNumber);
+      ).run(findingId, owner, repo, pullNumber));
     },
 
-    backfillDispositions(owner, repo, pullNumber, updates) {
+    async backfillDispositions(owner, repo, pullNumber, updates) {
       if (updates.length === 0) return;
       // 「已延续」两个方向都不覆盖:延续时旧评论被 resolve 过,读回的 resolved 是那次
       // 交接的痕迹,不是处置;人在 Forge 上把它 unresolve 也一样——这条 Finding 的当前
@@ -9494,46 +9111,46 @@ export function openStore(dbPath: string): Store {
       const handoffDone = db.prepare(
         `UPDATE finding SET handoff_pending = NULL
           WHERE ${BACKFILL_TARGET} AND disposition = 'continued'
-            AND handoff_pending = 1 AND ${PULL_REQUEST_SCOPE}`,
+            AND handoff_pending = true AND ${PULL_REQUEST_SCOPE}`,
       );
-      transaction("deferred", () => {
+      await transaction("deferred", async () => {
         for (const entry of updates) {
           // 三个参数一组,顺序与 `BACKFILL_TARGET` 里的三个 `?` 对齐。
           const target = [entry.commentId ?? null, entry.file, entry.fingerprint] as const;
           if (entry.disposition === undefined) {
-            placementOnly.run(entry.placement, ...target, owner, repo, pullNumber);
+            (await placementOnly.run(entry.placement, ...target, owner, repo, pullNumber));
           } else {
             const update =
               entry.disposition === "resolved" ? keepAutoDisposed : withDisposition;
-            update.run(entry.disposition, entry.placement, ...target, owner, repo, pullNumber);
+            (await update.run(entry.disposition, entry.placement, ...target, owner, repo, pullNumber));
             if (entry.disposition === "resolved") {
-              handoffDone.run(...target, owner, repo, pullNumber);
+              (await handoffDone.run(...target, owner, repo, pullNumber));
             }
           }
         }
       });
     },
 
-    markPullRequestState(owner, repo, pullNumber, state) {
-      db.prepare(
+    async markPullRequestState(owner, repo, pullNumber, state) {
+      (await db.prepare(
         `UPDATE review_run SET pr_state = ?
           WHERE owner = ? AND repo = ? AND pull_number = ?`,
-      ).run(state, owner, repo, pullNumber);
+      ).run(state, owner, repo, pullNumber));
     },
 
-    claimDelivery(owner, repo, headSha) {
-      const result = db
+    async claimDelivery(owner, repo, headSha) {
+      const result = (await db
         .prepare(
-          `INSERT OR IGNORE INTO webhook_delivery (owner, repo, head_sha, claimed_at)
-           VALUES (?, ?, ?, ?)`,
+          `INSERT INTO webhook_delivery (owner, repo, head_sha, claimed_at)
+           VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`,
         )
-        .run(owner, repo, headSha, new Date().toISOString());
+        .run(owner, repo, headSha, new Date().toISOString()));
       return Number(result.changes) > 0;
     },
 
-    close() {
-      db.close();
-    },
+    // 连接池活到进程结束,这里不关任何东西(ADR 0036)。调用点仍留着:它们标着「这一段用完
+    // 了」,而池的关闭是 `closeStorePools()` 的事。
+    async close() {},
   };
-  return asyncStore(store);
+  return store;
 }

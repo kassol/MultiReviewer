@@ -10,7 +10,7 @@
  */
 import { EventEmitter } from "node:events";
 
-import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store.ts";
+import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store/index.ts";
 
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
 export type TraceScope = "run" | "reviewer";

@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,

@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { PRODUCT_TICKET_LABELS } from "../review/store.ts";
+import { PRODUCT_TICKET_LABELS } from "../review/store/index.ts";
 import type { SessionWorkerMessage, TrackerRequest } from "./session-protocol.ts";
 import { toolText } from "./worker-tools.ts";
 

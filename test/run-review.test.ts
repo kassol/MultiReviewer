@@ -17,7 +17,7 @@ import {
   containerPullRequestBody,
   containerPullRequestTitle,
 } from "../src/review/range-review.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import {

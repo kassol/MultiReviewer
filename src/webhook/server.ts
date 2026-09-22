@@ -168,7 +168,7 @@ import {
   type ScheduledCheckResult,
   type StageScope,
   type Store,
-} from "../review/store.ts";
+} from "../review/store/index.ts";
 import {
   agentSessionChannel,
   beginTrace,

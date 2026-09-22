@@ -18,7 +18,7 @@ import { rmSync } from "node:fs";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { MISSING_IMAGE_TEXT } from "../src/reviewer/session-images.ts";
 import { disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import { GITEA_REPO, type PanelHarness } from "./support/panel-harness.ts";

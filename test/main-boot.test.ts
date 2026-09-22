@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";

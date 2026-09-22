@@ -15,7 +15,7 @@ import {
   DEFAULT_MAX_FILES_PER_BATCH,
   DEFAULT_MAX_PARALLEL_BATCHES,
 } from "../src/review/batch.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../src/reviewer/evidence.ts";
 import {
   GITEA_REPO,
