@@ -1263,7 +1263,7 @@ function repoPairCondition(
   pairs: readonly { owner: string; repo: string }[] | undefined,
   prefix: string,
 ): { sql: string; params: string[] } {
-  if (pairs === undefined) return { sql: "1", params: [] };
+  if (pairs === undefined) return { sql: "true", params: [] };
   if (pairs.length === 0) return { sql: "false", params: [] };
   return {
     sql: `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`,
@@ -1411,7 +1411,7 @@ export type OutcomeRecord = {
 /**
  * 来源类型、行作者与读回来的归属这三样同时是阶段汇总的契约字段,因此住在
  * `src/contracts/finding.ts` 里、从这里再导出(issue #429)。面板引得动契约,引不动本
- * 模块——那会把 `node:sqlite` 拖进前端的类型检查。服务端的调用点照旧引 `store.ts`。
+ * 模块——那会把库层的运行时依赖拖进前端的类型检查。服务端的调用点照旧引 `store/index.ts`。
  */
 import type {
   FindingPlacement,
@@ -2946,8 +2946,8 @@ function rangeReviewRecord(row: Record<string, unknown>): RangeReviewRecord {
 }
 
 /**
- * 库的内部实现形状:方法一律同步跑完(底下是 `node:sqlite`)。它不出这个文件——
- * 对外的 `Store` 是它的异步门面,`openStore` 返回的就是门面(spec #445)。
+ * 181 个方法的签名写在这里,一律写成同步形状——对外的 `Store` 是它的映射类型,每个方法
+ * 返回 `Promise`(spec #445)。这样写只是免得逐个手抄一遍 `Promise<…>`;实现按 `Store` 写。
  */
 type SyncStore = {
   listPanelRoles(): PanelRoleRecord[];
@@ -4306,7 +4306,7 @@ async function stageRunAlerts(
                SELECT run_id, 1 AS batch_failed, 0 AS model_failed, NULL AS failure
                  FROM review_trace t
                 WHERE run_id IN (${marks}) AND kind = 'reviewer_batch_finished'
-                  AND json_extract(payload, '$.failed') = 1
+                  AND payload->>'failed' = 'true'
                   AND NOT EXISTS (SELECT 1 FROM reviewer_outcome o
                                    WHERE o.run_id = t.run_id AND o.model = t.reviewer
                                      AND o.failure IS NOT NULL)
@@ -4893,6 +4893,9 @@ export function openStore(databaseUrl: string): Store {
     write: (version: number, at: string) => Promise<T>,
   ): Promise<T> => {
     return transaction("deferred", async () => {
+      // 先锁住这个仓库那一行(ADR 0036):版本号是 `MAX + 1`,不锁的话两次并发的确认会算出
+      // 同一个号,主键当场撞上。SQLite 那一版靠的是单写者锁。
+      (await db.prepare("SELECT 1 FROM repo WHERE id = ? FOR UPDATE").get(repoId));
       const current = (await db
         .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
         .get(repoId))?.["version"];
@@ -7843,7 +7846,7 @@ export function openStore(databaseUrl: string): Store {
           commentHtmlUrl:
             row["comment_html_url"] === null ? null : String(row["comment_html_url"]),
           continuedFrom: row["continued_from"] === null ? null : String(row["continued_from"]),
-          handoffPending: row["handoff_pending"] === 1,
+          handoffPending: row["handoff_pending"] === true,
           row,
         };
         const key = `${entry.file}\n${entry.fp}`;
@@ -7989,7 +7992,7 @@ export function openStore(databaseUrl: string): Store {
                     email: String(row["line_author_email"]),
                     authoredAt: String(row["line_author_at"]),
                     // 升级前的行与补录路径写的那些是 NULL:那时判的就是落点自己那一行。
-                    adjacent: row["line_author_adjacent"] === 1,
+                    adjacent: row["line_author_adjacent"] === true,
                   },
             firstRunId: identity.firstRow.runId,
             firstReportedAt: startedAt.get(identity.firstRow.runId)!,
@@ -8278,7 +8281,7 @@ export function openStore(databaseUrl: string): Store {
             ORDER BY owner, repo, category`,
         )
         .all(from, to));
-      // 逐字段取出:node:sqlite 返回的是 null 原型对象,直接外传会让调用方拿到
+      // 逐字段取出:驱动返回的行对象直接外传会让调用方拿到
       // 一个没有 Object 方法的怪东西。
       return rows.map((row) => ({
         owner: String(row["owner"]),
@@ -8575,7 +8578,7 @@ export function openStore(databaseUrl: string): Store {
           note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
           continuedFrom:
             row["continued_from"] === null ? null : String(row["continued_from"]),
-          handoffPending: row["handoff_pending"] === 1,
+          handoffPending: row["handoff_pending"] === true,
         });
         findings.set(runId, list);
       }

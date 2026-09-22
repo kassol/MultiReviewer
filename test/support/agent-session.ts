@@ -118,8 +118,8 @@ export async function startSessionHarness(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
   );
-  seedReviewRule(h.db.url, GITEA_REPO.id, { type: "rule", scope: "", statement: RULE });
-  seedReviewRule(h.db.url, GITEA_REPO.id, { type: "fact", scope: "src", statement: FACT });
+  await seedReviewRule(h.db.url, GITEA_REPO.id, { type: "rule", scope: "", statement: RULE });
+  await seedReviewRule(h.db.url, GITEA_REPO.id, { type: "fact", scope: "src", statement: FACT });
 
   const created = await h.api("POST", "/products", { name: "报销系统" });
   assert.equal(created.status, 201);

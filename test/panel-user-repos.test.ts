@@ -5,7 +5,6 @@
  * 这一票只管录入、回显与级联,读接口按分配过滤不在范围内。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
@@ -20,7 +19,7 @@ import {
   userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, seedRun as seedRunRow, withTestDb } from "./support/git-fixture.ts";
 
 const PASSWORD = "user-repos-test-password";
 
@@ -134,11 +133,9 @@ test("删除用户与移除仓库都不留分配行", async () => {
   assert.deepEqual(await assignedRepoIds(h, "reviewer"), [alpha]);
 
   assert.equal((await h.api("DELETE", "/users/reviewer")).status, 204);
-  const sqlite = new DatabaseSync(h.db.url, { readOnly: true });
-  const remaining = Number(
-    sqlite.prepare("SELECT COUNT(*) AS c FROM panel_user_repo").get()!["c"],
+  const remaining = await withTestDb(h.db.url, async (sql) =>
+    Number((await sql("SELECT COUNT(*) AS c FROM panel_user_repo"))[0]!["c"]),
   );
-  sqlite.close();
   assert.equal(remaining, 0);
 });
 
@@ -464,16 +461,17 @@ test("直达分配外的阶段页、汇总、轨迹与 diff 一律 404", async (
 
 test("分配外的处置、重跑、发起、推进、完成、配置与移除一律 404", async () => {
   const { h, alpha, beta, cookie } = await twoRepoHarness();
-  const sqlite = new DatabaseSync(h.db.url, { readOnly: true });
-  const finding = Number(
-    sqlite
-      .prepare(
-        `SELECT f.id AS id FROM finding f JOIN review_run r ON r.id = f.run_id
-          WHERE r.repo = ? ORDER BY f.id LIMIT 1`,
-      )
-      .get("beta")!["id"],
+  const finding = await withTestDb(h.db.url, async (sql) =>
+    Number(
+      (
+        await sql(
+          `SELECT f.id AS id FROM finding f JOIN review_run r ON r.id = f.run_id
+            WHERE r.repo = $1 ORDER BY f.id LIMIT 1`,
+          "beta",
+        )
+      )[0]!["id"],
+    ),
   );
-  sqlite.close();
   const theirRange = await seedRangeReview(h, beta, "acme", "beta");
   const mineRange = await seedRangeReview(h, alpha, "acme", "alpha");
 

@@ -365,6 +365,10 @@ export function makeCacheDir(): { dir: string; cleanup(): void } {
  * 一个库一次调用,不共用:测试之间的数据隔离靠库本身,而不是靠每个用例自己清表。
  * `dataDir` 是会话图片附件的落点(issue #336),库不再是文件之后它另占一个临时目录。
  */
+// 一个测试文件会建好几个库、好几个池,几路并发跑起来就会把 PostgreSQL 的 `max_connections`
+// 占满。每个测试库上同时在跑的查询本来也只有几条,把池收到 3 条连接。
+process.env["MULTIREVIEWER_DB_POOL_MAX"] ??= "3";
+
 export async function makeTestDatabase(): Promise<{
   url: string;
   dataDir: string;

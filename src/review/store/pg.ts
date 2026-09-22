@@ -252,7 +252,12 @@ export function storeDb(pool: PgPool, tablesWithId: ReadonlySet<string>): StoreD
 
 /**
  * 连接池。启动时建一个,进程内共用——每请求开关库的 `withStore` 到此退役(ADR 0036)。
+ *
+ * 池的上限由 `MULTIREVIEWER_DB_POOL_MAX` 给,默认 10。测试要调小它:一个测试文件建好几个库、
+ * 好几个池,几路并发跑起来就会把 PostgreSQL 的 `max_connections` 占满(报 too many clients),
+ * 而每个测试库上同时在跑的查询本来也只有几条。
  */
 export function createPool(databaseUrl: string): PgPool {
-  return new Pool({ connectionString: databaseUrl });
+  const max = Number(process.env["MULTIREVIEWER_DB_POOL_MAX"] ?? 10);
+  return new Pool({ connectionString: databaseUrl, max: Number.isFinite(max) && max > 0 ? max : 10 });
 }
