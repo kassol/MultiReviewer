@@ -41,5 +41,14 @@ export function toIso(value: string): string {
 export const jsonText = customType<{ data: string; driverData: string }>({
   dataType: () => "jsonb",
   fromDriver: (value) => value,
-  toDriver: (value) => value,
+  toDriver: withoutNul,
 });
+
+/**
+ * PostgreSQL 的 `text` 与 `jsonb` 都收不了 NUL(`\u0000`,报 22P05):Reviewer 读到二进制味的
+ * 文件时,Finding 的代码片段里就会带一个。00-test 的彩排在 `review_trace.payload` 上真撞到过。
+ * 写入侧一律换成 U+FFFD,JSON 文本里它是转义形式 `\u0000`,裸字符串里是字符本身。
+ */
+export function withoutNul(value: string): string {
+  return value.replace(/\\u0000/g, "\\ufffd").replace(/\0/g, "\ufffd");
+}

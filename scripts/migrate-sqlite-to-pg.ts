@@ -20,6 +20,7 @@ import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
 import pg from "pg";
 
 import * as schema from "../src/review/schema/index.ts";
+import { withoutNul } from "../src/review/schema/columns.ts";
 
 /** 一次 INSERT 带多少行。PostgreSQL 的参数上限是 65535,列最多的表也塞得下这个数。 */
 const CHUNK = 500;
@@ -92,8 +93,13 @@ function toValues(
     if (value === undefined) continue;
     // 时刻与 JSON 两类由自定义列类型原样交给驱动,PostgreSQL 认 ISO 文本与 JSON 文本;
     // 布尔在 SQLite 里是 0/1,得自己翻。
+    // NUL 两种库的 text 与 jsonb 都收不了(22P05),旧库里 Finding 片段带过,换成 U+FFFD。
     values[property] =
-      column.getSQLType() === "boolean" && value !== null ? value !== 0 : value;
+      column.getSQLType() === "boolean" && value !== null
+        ? value !== 0
+        : typeof value === "string"
+          ? withoutNul(value)
+          : value;
   }
   return values;
 }

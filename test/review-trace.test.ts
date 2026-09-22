@@ -361,6 +361,32 @@ test("两个连接并发往同一轮次追加事件:序号不撞,一条不丢", 
   }
 });
 
+test("payload 里带 NUL 的事件照样落库:PostgreSQL 收不了 \\u0000,写入侧换成 U+FFFD", async () => {
+  const { cache, db, forge } = (await setup());
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID] })],
+    cacheDir: cache.dir,
+    databaseUrl: db.url,
+  });
+
+  // 00-test 的彩排在真实轨迹上撞过 22P05:Reviewer 读到二进制味的文件,Finding 片段里带一个 NUL。
+  const store = openStore(db.url);
+  try {
+    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+    const event = await store.appendTrace(runId, {
+      scope: "run",
+      kind: "batch_started",
+      payload: { snippet: "a\u0000b" },
+    });
+    const stored = (await store.listTrace(runId)).find((entry) => entry.seq === event.seq);
+    assert.deepEqual(stored?.payload, { snippet: "a\ufffdb" });
+  } finally {
+    await store.close();
+  }
+});
+
 test("afterSeq 只回它之后的那些事件", async () => {
   const { cache, db, forge } = (await setup());
 
