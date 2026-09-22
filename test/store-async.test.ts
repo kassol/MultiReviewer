@@ -10,9 +10,11 @@ import { test } from "node:test";
 
 import { startRuleTrace } from "../src/review/trace.ts";
 import { asyncStore, openStore, type Store } from "../src/review/store.ts";
+import { runTrackerRequest } from "../src/webhook/product-tracker.ts";
 import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
 
 const cleanups = testCleanups();
+const AT = "2026-09-22T00:00:00.000Z";
 
 function store(): Store {
   const db = makeDbPath();
@@ -67,6 +69,50 @@ test("中途回滚把这一笔写进去的东西退回去,返回值仍是调用�
   );
   assert.equal(opened.countPanelUsers(), 1);
   assert.equal(opened.getPanelUser("second"), undefined);
+});
+
+test("tracker 的读写在异步门面上走同一段判定,返回 Promise(issue #447)", async () => {
+  const opened = store();
+  const product = opened.createProduct({ name: "评审验证产品", createdAt: AT });
+  const async = asyncStore(opened);
+
+  // 一次写、一次读、一次先读后写:三种形状各走一遍,同步那一路由别处的用例守着。
+  const created = await runTrackerRequest(
+    async,
+    product.id,
+    1,
+    { kind: "create-spec", title: "一条 spec", body: "正文" },
+    AT,
+  );
+  assert.match(created, /^recorded as spec \d+;/);
+  const specId = Number(created.match(/spec (\d+)/)![1]);
+
+  assert.match(
+    await runTrackerRequest(async, product.id, 1, { kind: "list" }, AT),
+    /1 spec\(s\) and 0 ticket\(s\)/,
+  );
+  assert.equal(
+    await runTrackerRequest(
+      async,
+      product.id,
+      1,
+      { kind: "close", target: { kind: "spec", id: specId } },
+      AT,
+    ),
+    `spec ${specId} is closed`,
+  );
+  // 打回那一路同样走得通:别的产品的 spec 读作没有。
+  assert.equal(
+    await runTrackerRequest(
+      async,
+      product.id + 1,
+      1,
+      { kind: "close", target: { kind: "spec", id: specId } },
+      AT,
+    ),
+    `there is no spec ${specId} in this product's tracker; call tracker_list to see what is there`,
+  );
+  assert.equal(opened.getProductSpec(specId)?.state, "closed");
 });
 
 test("startRuleTrace 收到异步的 withStore 时整条链路返回 Promise", async () => {

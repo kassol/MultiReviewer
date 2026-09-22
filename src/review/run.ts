@@ -1,3 +1,4 @@
+import { relay } from "../async.ts";
 import type { ReviewerSpec, ReviewRunReviewerPin } from "../config.ts";
 import type { Drain } from "../drain.ts";
 import {
@@ -75,9 +76,11 @@ import {
   type HunkChange,
 } from "./position.ts";
 import {
+  asyncStore,
   DEFAULT_MIN_REPORT_SEVERITY,
   openStore,
   runFailureText,
+  type AsyncStore,
   type ContinuationCandidate,
   type DispositionUpdate,
   type FindingCommentRef,
@@ -449,10 +452,35 @@ const SEVERITY_ORDER: readonly Severity[] = ["P0", "P1", "P2"];
  * 缺则全局设置,再缺即默认 P2(全报)。别处不重复判。
  *
  * 不给 `repoId` 就只有全局这一档:注册表行认不出来时按跟随全局跑,而不是把这一轮拦下来。
+ *
+ * 同步的 `Store` 与异步门面都接得住(issue #447):前者当场算完、返回值仍是一个等级,
+ * 后者返回 Promise。两路共用同一段判定——取值的唯一入口不允许分叉成两份。收缩那一票
+ * (#449)删掉同步那一路之后,这里就只剩一个 `async` 函数。
  */
-export function effectiveMinReportSeverity(store: Store, repoId?: number): Severity {
-  const override = repoId === undefined ? null : store.getRepo(repoId)?.minReportSeverity ?? null;
-  return override ?? store.getGlobalSettings().minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY;
+export function effectiveMinReportSeverity(store: Store, repoId?: number): Severity;
+export function effectiveMinReportSeverity(store: AsyncStore, repoId?: number): Promise<Severity>;
+export function effectiveMinReportSeverity(
+  store: Store | AsyncStore,
+  repoId?: number,
+): Severity | Promise<Severity> {
+  const rethrow = (error: unknown): never => {
+    throw error;
+  };
+  // 两次读取顺序取,异步那一路因此是一个跟着另一个的 Promise;`await` 会把嵌套的那层
+  // 摊平。仓库覆盖在就不读全局,与 `??` 短路那一版逐字一致。
+  return relay(
+    () => (repoId === undefined ? undefined : store.getRepo(repoId)),
+    (repo) => {
+      const override = repo?.minReportSeverity ?? null;
+      if (override !== null) return override;
+      return relay(
+        () => store.getGlobalSettings(),
+        (settings) => settings.minReportSeverity ?? DEFAULT_MIN_REPORT_SEVERITY,
+        rethrow,
+      );
+    },
+    rethrow,
+  ) as Severity | Promise<Severity>;
 }
 
 /**
@@ -890,15 +918,15 @@ function stillOnHead(
  *
  * 解析不到(代码被改写)、或者最近的两处一样近时位置原样不动,复核与延续照旧收口。
  */
-function relocateHistory(
-  store: Store,
+async function relocateHistory(
+  store: AsyncStore,
   scope: StageScope,
   worktreePath: string,
-): FindingRelocation[] {
+): Promise<FindingRelocation[]> {
   // 按文件缓存,理由同 `stillOnHead`:一个文件的全部指纹要通读整份文件再逐行 hash。
   const cache = new Map<string, Map<string, number[]>>();
   const placements: FindingRelocation[] = [];
-  for (const candidate of store.relocationCandidates(scope)) {
+  for (const candidate of await store.relocationCandidates(scope)) {
     let fingerprints = cache.get(candidate.file);
     if (fingerprints === undefined) {
       fingerprints = fileFingerprints(worktreePath, candidate.file);
@@ -1077,9 +1105,9 @@ async function applyContinuations(
 async function retryPendingHandoffs(
   forge: Forge,
   event: PullRequestEvent,
-  store: ReturnType<typeof openStore>,
+  store: AsyncStore,
 ): Promise<void> {
-  for (const pending of store.pendingHandoffs(event.owner, event.repo, event.number)) {
+  for (const pending of await store.pendingHandoffs(event.owner, event.repo, event.number)) {
     try {
       await forge.resolveComment({ owner: event.owner, repo: event.repo }, pending.commentId);
     } catch (error) {
@@ -1089,7 +1117,7 @@ async function retryPendingHandoffs(
       );
       continue;
     }
-    store.completeHandoff(event.owner, event.repo, event.number, pending.findingId);
+    await store.completeHandoff(event.owner, event.repo, event.number, pending.findingId);
   }
 }
 
@@ -1272,7 +1300,7 @@ export async function findingLineAuthors(
 async function autoDispose(
   forge: Forge,
   event: PullRequestEvent,
-  store: ReturnType<typeof openStore>,
+  store: Store | AsyncStore,
   findingIds: readonly number[],
   note?: string,
 ): Promise<{ findingIds: number[]; commentIds: string[] }> {
@@ -1280,7 +1308,7 @@ async function autoDispose(
   const resolved = new Set<string>();
   const failed = new Set<string>();
   for (const findingId of findingIds) {
-    const candidates = store.pendingAutoDispositions([findingId]);
+    const candidates = await store.pendingAutoDispositions([findingId]);
     // 一条候选都没有即这条 Identity 已经处置过、或没有评论载体:两种都不算这一趟关掉的。
     let whole = candidates.length > 0;
     for (const candidate of candidates) {
@@ -1302,7 +1330,7 @@ async function autoDispose(
         }
         resolved.add(candidate.commentId);
       }
-      store.recordAutoDisposition(
+      await store.recordAutoDisposition(
         event.owner,
         event.repo,
         event.number,
@@ -1359,11 +1387,14 @@ export function absentHistory(
  * 开跑那一步与只复核的三处准入闸共用它(issue #276):备注、处置档与失败规则因此不会分叉。
  * 返回各原因处置成功的 finding id(开跑那一步据它记轨迹、把条目从这一轮的历史里去掉;
  * 准入闸只数条数)与这一趟真正 resolve 掉的评论(回填据它修正开跑时那份过期的评论状态)。
+ *
+ * 同步的 `Store` 与异步门面都接得住(issue #447):库调用一律 `await`,同步那一路等的
+ * 是一个已经算好的值,行为与异步化之前逐字一致。
  */
 export async function disposeAbsentHistory(
   forge: Forge,
   event: PullRequestEvent,
-  store: ReturnType<typeof openStore>,
+  store: Store | AsyncStore,
   absent: readonly { findingId: number; reason: AbsenceReason }[],
 ): Promise<{ disposed: Record<AbsenceReason, number[]>; commentIds: string[] }> {
   const disposed: Record<AbsenceReason, number[]> = { deleted: [], reverted: [] };
@@ -2015,12 +2046,12 @@ export async function runReview(
   // 走到核对那一步的续跑状态,计划一定在(issue #253):没有计划的轮次在这里就退回改判。
   let resume: (ResumeState & { plan: string[][] }) | undefined;
   if (resumeRunId !== undefined) {
-    const resumeStore = openStore(deps.dbPath);
+    const resumeStore = asyncStore(openStore(deps.dbPath));
     let stored: ResumeState | undefined;
     try {
-      stored = resumeStore.resumeState(resumeRunId);
+      stored = await resumeStore.resumeState(resumeRunId);
     } finally {
-      resumeStore.close();
+      await resumeStore.close();
     }
     // 快照不在(轮次已不在库里,或它是升级前落的旧行)就没有「与原轮各批一致的历史」
     // 可给,续跑到此为止。
@@ -2081,14 +2112,14 @@ export async function runReview(
     // 句柄的存活期覆盖整段审查(时长没有总上限,兜底的是子进程那道连续静默闸,
     // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
     // 泄漏的连接会一次次攒下来。
-    const store = openStore(deps.dbPath);
+    const store = asyncStore(openStore(deps.dbPath));
     // 从这里到 `startRun` 之间的每一处抛(读历史、只复核过滤成空、分批、落库)都在下面
     // 那个 `finally` 盖不到的地方,句柄在这一段里统一归还。
-    const opened = <T>(step: () => T): T => {
+    const opened = async <T>(step: () => T | Promise<T>): Promise<T> => {
       try {
-        return step();
+        return await step();
       } catch (error) {
-        store.close();
+        await store.close();
         throw error;
       }
     };
@@ -2103,7 +2134,9 @@ export async function runReview(
     // 轮次 id——位置属于哪一轮与位置本身是一格事实的两半,分开写就又回到这一票要修的病。
     // 续跑不做:它接着跑的是原来那一轮,位置在那一轮开跑时已经定过(issue #248)。
     const relocations =
-      resume === undefined ? opened(() => relocateHistory(store, stageScope, worktree.path)) : [];
+      resume === undefined
+        ? await opened(() => relocateHistory(store, stageScope, worktree.path))
+        : [];
     const relocatedLines = new Map(relocations.map((one) => [one.findingId, one.line]));
 
     // 本阶段已经报过的 Finding,注入给这一轮的每个 Reviewer(ADR 0016)。读在开跑之前:
@@ -2113,11 +2146,12 @@ export async function runReview(
     // 拿到的历史仍与原轮各批一致。
     let history: readonly HistoryFinding[] =
       resume?.history ??
-      opened(() =>
-        store
-          .stageHistory(stageScope)
-          .map((entry) => ({ ...entry, line: relocatedLines.get(entry.id) ?? entry.line })),
-      );
+      (await opened(async () =>
+        (await store.stageHistory(stageScope)).map((entry) => ({
+          ...entry,
+          line: relocatedLines.get(entry.id) ?? entry.line,
+        })),
+      ));
 
     // 所在文件不在本轮可审文件集里的未处置历史,开跑就地自动处置(issue #272):它们
     // 谁都复核不到,不处置就永远悬在未处置列表里。判据用的是过滤之前的那份可审文件集,
@@ -2133,7 +2167,7 @@ export async function runReview(
         disposedByAbsence = done.disposed;
         for (const commentId of done.commentIds) resolvedByAbsence.add(commentId);
       } catch (error) {
-        store.close();
+        await store.close();
         throw error;
       }
       // 处置成功的不再是未处置历史:它不进快照、不注入、也不再被要结论。写 Forge 失败的
@@ -2143,22 +2177,24 @@ export async function runReview(
     }
     // 本轮的最低报告等级(issue #271)在开跑这一刻读一次:之后改设置追不上已经开跑的
     // 这一轮,与分批上限那几项同律。它随轮次落库,续跑据它核对阈值有没有改过。
-    const minReportSeverity = opened(() => effectiveMinReportSeverity(store, deps.repoId));
+    const minReportSeverity = await opened(() =>
+      effectiveMinReportSeverity(store, deps.repoId),
+    );
 
     // 这个仓库归在哪个产品下(CONTEXT.md 产品,issue #362)。目录在开跑这一刻算一次,
     // 每一批注入同一份;条目的正文不预读——`query_knowledge` 按名字现取,产品页上刚写下
     // 的那一条因此当轮就读得到(写下即生效,ADR 0035)。仓库不属于任何产品即 undefined,
     // 那时 Reviewer 的请求形状与这一票之前逐字一致。
-    const productId = opened(
-      () =>
-        deps.repoId === undefined
-          ? undefined
-          : store.listProducts().find((one) => one.repos.some((row) => row.repoId === deps.repoId))
-              ?.id,
+    const productId = await opened(async () =>
+      deps.repoId === undefined
+        ? undefined
+        : (await store.listProducts()).find((one) =>
+            one.repos.some((row) => row.repoId === deps.repoId),
+          )?.id,
     );
-    const productKnowledge: ProductKnowledgeContents | undefined = opened(() => {
+    const productKnowledge: ProductKnowledgeContents | undefined = await opened(async () => {
       if (productId === undefined) return undefined;
-      const contents = productKnowledgeContents(store.listProductKnowledge(productId));
+      const contents = productKnowledgeContents(await store.listProductKnowledge(productId));
       return knowledgeContentsEmpty(contents) ? undefined : contents;
     });
     /**
@@ -2166,12 +2202,13 @@ export async function runReview(
      * 开着;产品层按名字取整条、`relationships` 为真时整段取仓库关系,不封顶——按名字问,
      * 问几个回几条。仓库层在这一侧恒为空:评审规则与项目事实已经整段注入了本批提示。
      */
-    const queryKnowledge = (query: SessionKnowledgeQuery): SessionKnowledgeEntries => {
+    const queryKnowledge = async (
+      query: SessionKnowledgeQuery,
+    ): Promise<SessionKnowledgeEntries> => {
       if (productId === undefined) return { product: [], repo: [] };
       const names = new Set(query.names ?? []);
       return {
-        product: store
-          .listProductKnowledge(productId)
+        product: (await store.listProductKnowledge(productId))
           .filter((entry) =>
             entry.kind === "relationship" ? query.relationships === true : names.has(entry.name),
           )
@@ -2196,7 +2233,11 @@ export async function runReview(
       const withOpenHistory = new Set(openHistory(history).map((entry) => entry.file));
       range.files = range.files.filter((file) => withOpenHistory.has(file));
       // 一轮什么都不做的 Review Run 不该被开出来:落库之前抛,接口层据这句话转 409。
-      if (range.files.length === 0) opened(() => { throw new Error(VERDICT_ONLY_NO_HISTORY); });
+      if (range.files.length === 0) {
+        await opened(() => {
+          throw new Error(VERDICT_ONLY_NO_HISTORY);
+        });
+      }
     }
 
     const batches = splitIntoBatches(
@@ -2223,13 +2264,13 @@ export async function runReview(
         deps.reviewers,
       );
       if (reason !== undefined) {
-        opened(() => {
+        await opened(() => {
           throw new Error(`${RESUME_NOT_VIABLE}:${reason}`);
         });
       }
     }
 
-    const runId = resumeRunId ?? opened(() => store.startRun({
+    const runId = resumeRunId ?? (await opened(() => store.startRun({
       owner: event.owner,
       repo: event.repo,
       pullNumber: event.number,
@@ -2267,12 +2308,14 @@ export async function runReview(
       // 开跑时解析出的辅助模型随这一轮冻结(issue #304):合并 agent 用的就是它,
       // 之后改配置追不上这一轮,续跑读这一行而不重新解析。
       auxiliaryModel: deps.auxiliaryModel ?? null,
-    }));
+    })));
 
     // 重定位落库(issue #368):紧接 `startRun` 写下,不是同一笔——两次写入之间崩溃,这一
     // 轮的位置就缺失,下一轮开跑时按内容指纹重算补回。这一步不建行、不写评论、不写复核
     // 结论、不写处置——它只回答「这条 Finding 此刻在哪一行」。
-    if (relocations.length > 0) opened(() => store.recordFindingRelocations(runId, relocations));
+    if (relocations.length > 0) {
+      await opened(() => store.recordFindingRelocations(runId, relocations));
+    }
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
     // 而第一条编排事件紧接着就发出来了。
@@ -2311,7 +2354,9 @@ export async function runReview(
       // 这一轮声称要做的事(issue #201)。范围审查的标题来自它自己,不是容器 PR 的标题
       // ——那个标题与正文都由本工具拼出(`range-review.ts`),不含任何作者意图。
       const rangeReview =
-        deps.rangeReviewId === undefined ? undefined : store.getRangeReview(deps.rangeReviewId);
+        deps.rangeReviewId === undefined
+          ? undefined
+          : await store.getRangeReview(deps.rangeReviewId);
       const intent = await readIntent(
         worktree.path,
         { baseSha: worktree.mergeBaseSha, headSha: pullRequest.headSha },
@@ -2443,7 +2488,7 @@ export async function runReview(
             // 落库排在收尾事件之前:两者之间进程停下时,先落库的那一侧丢的是轨迹上的
             // 一行(这一批的收尾事件缺席),先发事件的那一侧丢的是结果——续跑会重跑这个
             // 模型,同一个(模型,批)上因此出现两条收尾,而这一趟模型调用白花。
-            store.recordBatchOutcome(runId, index, reviewer.model, timed);
+            await store.recordBatchOutcome(runId, index, reviewer.model, timed);
             // 这个模型这一批的收尾(issue #408):在这一刻落,不等整轮跑完——一个模型在
             // 某几批上无声收工时,轮次级那条收尾只汇总得出总数,说不出是哪一批。
             // 失败与正常同一档,由 `failed` 分;「给出 / 应给」指的就是复核结论。
@@ -2550,7 +2595,7 @@ export async function runReview(
 
       // 历史此刻的落点与指纹(issue #307):位置提示与「agent 判为不同问题」那一档都读它。
       // 读在合并之前,只用位置与指纹两格;折叠要认的处置状态另在回填之后重读一次。
-      const anchors = store.historyPlacements(history.map((entry) => entry.id));
+      const anchors = await store.historyPlacements(history.map((entry) => entry.id));
 
       const { merged: allMerged, usage: mergeUsage, agentPlan, rootCauses } = await mergeFindings(
         trace,
@@ -2601,7 +2646,7 @@ export async function runReview(
 
       // 顺手回写(ADR 0006):这批读回的 resolve 状态本来用完即弃,现在覆盖到这个 PR
       // 名下全部历史 finding 上。以 Forge 最新状态为准——resolve 后又 unresolve,跟着改。
-      store.backfillDispositions(
+      await store.backfillDispositions(
         event.owner,
         event.repo,
         event.number,
@@ -2611,11 +2656,11 @@ export async function runReview(
       // 合并 agent 命中的那些历史(issue #240):按落库 id 取回它此刻的位置与载体。读在
       // 回填之后——折叠到已处置还是未处置,认的是刚从 Forge 读回的那一份状态。
       const hits = new Map(
-        store
-          .historyPlacements([
+        (
+          await store.historyPlacements([
             ...new Set(merged.flatMap((f) => (f.history === undefined ? [] : [f.history.id]))),
           ])
-          .map((placement) => [placement.findingId, placement]),
+        ).map((placement) => [placement.findingId, placement]),
       );
       // 「旧指纹在本轮 head 上算不算得出」这一问,折叠与延续问的是同一批文件,共用一份
       // 指纹表(issue #240)。
@@ -2724,9 +2769,9 @@ export async function runReview(
       const plan = failed
         ? { plans: [], synthesized: [] }
         : planContinuations(
-            store
-              .continuationCandidates(presentFindingIds(verdicts))
-              .filter((candidate) => !carriedIds.has(candidate.findingId)),
+            (await store.continuationCandidates(presentFindingIds(verdicts))).filter(
+              (candidate) => !carriedIds.has(candidate.findingId),
+            ),
             groups,
             diffRanges,
             worktree.path,
@@ -2878,7 +2923,7 @@ export async function runReview(
         .filter((timed) => timed.startedAt < startedAt.getTime());
 
       // 先落库再发布:发布失败不该把这次 Review Run 的过程记录一并丢掉。
-      const rootCauseGroupIds = store.finishRun(runId, {
+      const rootCauseGroupIds = await store.finishRun(runId, {
         finishedAt: new Date().toISOString(),
         // 轮次级耗时 = 续跑这一段 + 崩溃前各批时间区间的并集(issue #422),与单模型耗时
         // (issue #415)从此同一条规则。只算续跑这一段会让轮次耗时小于其中某个模型的耗时,
@@ -2959,12 +3004,12 @@ export async function runReview(
           // 先定形再用(issue #436):这一句同时进 `review_run.failure` 与轨迹事件。
           publishFailure = runFailureText(publishFailureReason(error));
           console.error("[review] 发布 review 失败,本轮结果已落库:", publishFailure);
-          store.recordRunFailure(runId, publishFailure);
+          await store.recordRunFailure(runId, publishFailure);
           trace.run("run_failed", { reason: publishFailure });
         }
         if (published !== undefined) {
           const refs = commentRefs(comments, commentGroups, published);
-          store.recordFindingComments(runId, refs);
+          await store.recordFindingComments(runId, refs);
           trace.run("review_posted", { findingCount: findings.length });
 
           // 新评论的标识与链接读回来了,交接才开始:resolve 旧评论,再落库延续。承接那条
@@ -2986,7 +3031,7 @@ export async function runReview(
           // 延续落库要等本轮的行插进去:旧行的备注、处置人与处置时刻随 Identity 抄到承接
           // 它的那一行上,旧行改记「已延续」,resolve 没成的带上「交接未完成」。
           for (const { plan, handoffPending } of applied) {
-            store.recordContinuation({
+            await store.recordContinuation({
               owner: event.owner,
               repo: event.repo,
               pullNumber: event.number,
@@ -3030,10 +3075,13 @@ export async function runReview(
         inlineCount: publishFailure === undefined ? comments.length : 0,
       };
     } finally {
+      // 排在前面的轨迹事件先落完(issue #447):写入口把落库排成一条链,不等它就会连同
+      // 关库一起把还没落的那几条丢掉,订阅者也会先收到结束信号再收到事件。
+      await trace.settle();
       // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。
       // 抛异常那一档没有 `run_finished` 落库——这一轮确实没跑完,轨迹照实停在崩溃前。
       endTrace(runChannel(runId));
-      store.close();
+      await store.close();
       // 「正在审查」一定要撤掉:成功、失败、中途抛异常都要。留着它 PR 上会永远挂着
       // 一只眼睛,看起来像审查卡死了。
       await tryReaction(() => forge.removeReaction(event, "eyes"));
