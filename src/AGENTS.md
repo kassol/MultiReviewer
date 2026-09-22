@@ -18,10 +18,58 @@
 
 ## 模块规范
 
-- 只有 `Forge`、`Reviewer`、`RuleAgent` 与 `MergeAgent` 是注入边界。git 与 SQLite 直接使用实现,不加接口。数据库位置经 `ReviewRunDeps.dbPath` 传入。
-- SQLite 用 Node 内置的 `node:sqlite`(`DatabaseSync`)。运行时第三方依赖只有 Pi、它的 `typebox` 与 `pi-subagents` 三个,不为持久化再引入驱动。它会打 `ExperimentalWarning`,这是已知且接受的代价。**这一条随 spec #445 的第二票作废**:持久化迁 PostgreSQL、经 Drizzle 读写(ADR 0036)。
-- **Store 全异步:每个方法返回 Promise**(spec #445)。`openStore(dbPath)` 给回的就是它——库的内部实现 `SyncStore` 不出 `store.ts`,一个 Proxy 把它每个方法裹成 `async`(181 个方法不手抄,新增方法自动有它的异步形状)。这一版底下仍是 `node:sqlite` 的同步调用、SQL 一个字没动;签名先异步是为了第二段换 Drizzle 与 PostgreSQL 时调用点一个字都不用再改。**调用点一律 `await`**:漏一个 tsc 多半会报,但 `!promise` 恒为 false、`{ x: promise }` 序列化成 `{}` 这两种它一个都不报,摆在 `if` 里的闸会因此静默失效。`store.close()` 同样是异步的,关连接之前该等的都得等完——`withStore` 那种「开库、跑一段、关掉」的写法,回调里最后一次写要 `await` 到,不然写落在关之后。
-- **事务是回调式的,方法体里不写 `BEGIN` / `COMMIT` / `ROLLBACK`**。`openStore` 内的 `transaction(mode, run)` 开事务 → 跑回调 → 提交;回调抛错即回滚后重抛,按业务判定中途回滚的走 `tx.rollback(值)`——它抛一个私有信号,`transaction` 捕获后回滚并把那个值当返回值交回去。`mode` 是 `"deferred"` 或 `"immediate"`,后者一开头就拿写锁,给「先读后判再写」那几处用(issue #401)。**回调是同步的**:它跑在门面底下那份同步实现里,`await` 一次就等于在没提交的事务中间让别的请求插进来。
+- 只有 `Forge`、`Reviewer`、`RuleAgent` 与 `MergeAgent` 是注入边界。git 与数据库直接使用实现,不加接口。库的连接串经 `ReviewRunDeps.databaseUrl` 传入。
+- **持久化是 PostgreSQL,经 Drizzle 读写**(ADR 0036,spec #445 第二段)。运行时第三方依赖因此是
+五个:Pi、它的 `typebox`、`pi-subagents`,加上 `drizzle-orm` 与 `pg`;`drizzle-kit` 是开发依赖。
+`node:sqlite` 与「不为持久化再引入驱动」那条规范一并作废。库的位置经
+`ReviewRunDeps.databaseUrl`(一条连接串)传入,会话图片附件的目录另经 `dataDir` 传入——库不再
+是文件,推不出那个目录。
+- **表的声明在 `review/schema/`,按域一个文件**(`accounts` / `repos` / `runs` / `stages` /
+`knowledge` / `products` / `sessions`),`schema/index.ts` 汇总给 drizzle-kit 与运行时。改 schema
+就是改这里:改完跑 `pnpm exec drizzle-kit generate` 生成一份进版本库的迁移 SQL(`drizzle/`),
+服务在开始监听之前执行它(`migrateStore`,失败即拒绝启动)。开库时的全量 DDL、
+`PRAGMA user_version` 与按 `pragma_table_info` 补列的升级路径全部退役。
+`schema/columns.ts` 有两个自定义列类型:`isoTimestamp` 是 `timestamptz`、JS 侧仍是 ISO 字符串,
+`jsonText` 是 `jsonb`、JS 侧仍是 JSON 文本——两头都靠 `store/pg.ts` 装的全局读取解析器,三百多处
+调用点的读法因此一个字没动。布尔列是真 `boolean`:`Number(x) === 1` 照样成立(`Number(true)` 是
+1),裸 `x === 1` 不成立,写入侧给 `1` / `0` PostgreSQL 也认。
+- **连接池一个,事务绑在同一条连接上**。`openStore(databaseUrl)` 按连接串取进程内共用的池,
+`store.close()` 不再关任何东西,池由 `closeStorePools()` 关(服务退出一次、测试每个文件一次)。
+`transaction(mode, run)` 从池里取一条连接、`BEGIN` → 跑回调 → `COMMIT`,回调抛错即回滚后重抛,
+按业务判定中途回滚的走 `tx.rollback(值)`;**回调现在是 async 的**,里面可以 `await`。
+事务里直接用 `db`(而不是 `tx`)照样落在同一条连接上:`store/pg.ts` 用 `AsyncLocalStorage` 记着
+当前事务的连接,Drizzle 的 `orm` 走同一条判断。嵌套 `transaction` 并进外层,不再 `BEGIN`。
+`mode` 的 `"immediate"` 在 PostgreSQL 上不起作用,留着是九处「这里要拿写锁」的记号。
+- **各域迁 Drizzle 的施工指南**(#451–#457)。账号域(`store/accounts.ts`)是迁完的那一份,照它写:
+  - **先把自己这一域的方法从 `store/index.ts` 搬进 `store/<域>.ts`**,导出一个收 context 的工厂
+    (`accountsMethods({ orm, transaction, store })`),`index.ts` 里一行 `...xMethods(ctx)`。
+    七票各碰各的文件,`index.ts` 上只冲突那一行。类型从 `./index.ts` 一律 `import type`(运行时
+    擦掉,不成环);要用的运行时常量先抽进 `store/shared.ts` 再两边引。
+  - **读写优先 Drizzle builder**,行类型由 `typeof 表.$inferSelect` 推导,不再手抄列名字符串。
+    builder 表达不了的(CTE、窗口、复杂聚合)用 `sql` 模板,**模板里仍引 schema 的列对象**
+    (`sql\`${t.owner} = ${owner}\``),别写裸字符串。
+  - **列类型换过之后要删的读写侧包装**:时刻与 JSON 两类由自定义列类型接住了,不必动;
+    布尔列上的 `Number(x) === 1` 可以直接写成 `x`,写入侧的 `? 1 : 0` 直接给布尔。
+  - **`immediate` 事务改成事务内 `SELECT … FOR UPDATE` 锁父行**(ADR 0036),锁不到父行的那一档
+    (零行时的 bootstrap)显式 `LOCK TABLE`,见 `accounts.ts` 的 `registerFirstPanelUser`。
+  - **乐观并发按 `rowCount` 判**:`await orm.update(...).where(eq(t.version, expected)).returning(...)`
+    回空数组即版本对不上,回 409。shim 那一侧读 `run().changes`。
+  - **`ON CONFLICT`**:`INSERT OR IGNORE` 换 `.onConflictDoNothing()`,`DO UPDATE SET … = excluded.…`
+    换 `.onConflictDoUpdate({ target, set })`。**取新主键不靠 `lastInsertRowid`**:builder 用
+    `.returning({ id: t.id })`;走 shim 的旧 SQL 由 `store/pg.ts` 按表自动补 `RETURNING id`。
+  - **`GROUP BY` 里的裸列在 PostgreSQL 上不成立**:「取每组 id 最大的那一行」写成
+    `DISTINCT ON (键) … ORDER BY 键, id DESC`(见 `pullStageQuery`);它带自己的 `ORDER BY`,
+    进 `UNION` 时两段都要加括号。`ORDER BY` 里输出列名只能单独出现,嵌在表达式里
+    (`(last_activity IS NULL)`)要把排序挪到外层子查询(见 `listRepos`)。
+  - **SQLite 的 JSON 函数一个都不认**:`json_each` → `jsonb_array_elements`,
+    `json_extract(x, '$.k')` → `x->>'k'`,`json_array_length` → `jsonb_array_length`,
+    `json_type` → `jsonb_typeof`。`char(10)` → `chr(10)`,`sqlite_master` → `information_schema.tables`。
+    「永假」的过滤条件写 `false`,不写 `0`——PostgreSQL 的 `WHERE` 只收布尔。
+  - **用例里的 `new DatabaseSync` 换 `withTestDb(db.url, async (sql) => …)`**(`test/support/git-fixture.ts`),
+    占位符是 `$1`、`$2`。库由 `makeTestDatabase()` 建:一个测试文件一个真库,跑完删,
+    连接串读 `MULTIREVIEWER_TEST_DATABASE_URL`(`docker compose -f docker-compose.test.yml up -d`)。
+    跑单文件:`MULTIREVIEWER_TEST_DATABASE_URL=… node --test test/<file>.test.ts`。
+- **Store 全异步:每个方法返回 Promise**(spec #445)。`SyncStore` 只是这 181 个签名的写法,`Store` 是它的映射类型;实现直接按 `Store` 写,门面那层 Proxy 随第二段删掉。**调用点一律 `await`**:漏一个 tsc 多半会报,但 `!promise` 恒为 false、`{ x: promise }` 序列化成 `{}` 这两种它一个都不报,摆在 `if` 里的闸会因此静默失效。`store.close()` 同样是异步的,关连接之前该等的都得等完——`withStore` 那种「开库、跑一段、关掉」的写法,回调里最后一次写要 `await` 到,不然写落在关之后。
 - **`webhook/agent-session.ts` 的落库排着两条队**。**条目落库有一条链**(`RuntimeEntry.recording`):`child.on("message")` 是同步回调等不了落库,而条目的会话内序号由落库那一刻定,每一批因此接在这条链后面——一批里顺序 `await`,两批之间也不交错;链上挂一个 `catch`,断了就接不上下一批。请求-回应那几对(历史 Finding、知识查询与读写、tracker)各带 `requestId`、互相无序,各走各的。**`reclaim` 等排队消息落完再收子进程**:`persistQueue` 与 `clearAgentSessionQueue` 都是真 `await`,调用方跟着一路异步(`reclaimAgentSession` / `agentSessionSlot` / `reclaimIdle`,计时器那两处 `void` 掉)。`deliverAgentSessionMessage` 的登记仍是同步的——接口已经回了 202,下一条消息要在这一刻就看得到它在跑;它换模型那一路调 `reclaim` 不等,靠的是登记表的摘除排在 `reclaim` 第一个 `await` 之前,后面那句 `registry.set` 因此仍是「先删后设」。
 - **`Array.map` 里不调 Store**:顺序要紧的改成 `for` + `await`(仓库分配的那份 refs、同根因组的成员、一条 spec 各票的评论三处),`.map(async …)` 会交出一数组 Promise,而 `{ x: promise }` 序列化成 `{}`、`!promise` 恒为 false,这两种错 tsc 一个都不报。测试夹具同律。
 - Finding Identity 是「同一处的同一问题」,不含模型(ADR 0030 修订 ADR 0015)。「同一处」由代码定(pull request + 文件 + 内容指纹,±3 行容差),「同一问题」由合并 agent 判(见下)。同一处问题不论由几个 Reviewer 报出都是同一条:`finding` 落一行,报出它的每个模型在 `finding_attribution` 上落一行(模型、各自的严重度、分类、表述、影响与建议,`position` 记首报先后;`impact` / `suggestion` 为 NULL 只出现在升级前落的行上,空串是模型没给,issue #266)。延续承接来的历史说法另落 `finding_carried_attribution`(issue #267,见延续那条):每段记原模型、来源轮次 `run_id`、问题、影响与建议,它不是归属——参与条数与各处统计都不读它,两份投影以 `carried` 带出。合并后的严重度取各归属里最高的、分类取首报的;`title` / `description` / `impact` / `suggestion` 是这一条的代表段,取描述最长那条归属的四段,同出一条(issue #278),`finding` 表上另有 `impact` / `suggestion` 两列存后两段(NULL 只出现在升级前落的行上,读侧按同一规则从归属现算)。同一轮内的合并与跨轮折叠共用一个判据;库里按 Identity 折叠的键是**承载它的那条 Forge 评论**(`store.ts` 的 `identityKey`,没有评论载体的行退回「文件 + 指纹」),同一「文件 + 指纹」下因此可以有两条 Identity;`finding.group_index` 仍是本轮的合并组序号,发布之后按它把评论标识记回来。

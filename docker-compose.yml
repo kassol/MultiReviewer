@@ -34,6 +34,8 @@ services:
       - "${MULTIREVIEWER_HOST_PORT:-3000}:3000"
 
     volumes:
-      # SQLite 与工作副本缓存。工作副本是每个仓库一份完整 clone,磁盘占用看仓库大小。
+      # 会话图片附件与工作副本缓存。工作副本是每个仓库一份完整 clone,磁盘占用看仓库大小。
       # 路径相对于本文件所在目录,部署目录放哪里都行。
+      # 库不在这里:PostgreSQL 由部署方提供,连接串写在 `.env` 的 MULTIREVIEWER_DATABASE_URL
+      # (ADR 0036)。备份范围因此是「pg_dump 加这个目录」。
       - ./data:/data
