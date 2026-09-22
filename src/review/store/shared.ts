@@ -27,7 +27,6 @@ import type {
   AgentSessionEntryRecord,
   ModelSupplementSource,
   AgentSessionPendingMessage,
-  ModelServiceVersionCommit,
   ReviewRuleInput,
   RuleProposal,
   RuleProposalInput,
@@ -319,9 +318,9 @@ export const STAGE_ID_FROM_RUN = `CASE
  *   同一条连接上,混用没有问题。
  * - `transaction(mode, async tx => …)` 见 `store/pg.ts`。
  * - `store()` 惰性取整份 store:方法之间互相调用时用它(装配那一刻 store 还没拼好)。
- * - 其余是开库时建出来的共用闭包。**只被一个域用到的那些**(知识域的 13 个、仓库域的 6 个、
- *   阶段域的 1 个)也在这里:它们本来长在 `openStore` 里,留在那儿会让六票都去改同一段。
- *   哪一票把自己那一域搬走,就顺手把它那几个也搬走。
+ * - 其余是开库时建出来的共用闭包。**只被一个域用到的那些**(知识域的 13 个、阶段域的 1 个)
+ *   也在这里:它们本来长在 `openStore` 里,留在那儿会让六票都去改同一段。哪一票把自己那一域
+ *   搬走,就顺手把它那几个也搬走(仓库域那 6 个已随 issue #451 搬进 `store/repos.ts`)。
  */
 export type StoreContext = StoreHelpers & {
   db: Db;
@@ -543,121 +542,6 @@ export function storeHelpers(base: {
     } catch {
       return null;
     }
-  };
-
-  const availableModel = db.prepare(`
-    SELECT 1
-      FROM model_service service
-      JOIN model_service_credential credential ON credential.provider = service.provider
-     WHERE service.provider = ?
-       AND service.target_fingerprint IS NOT NULL
-       AND credential.state = 'verified'
-       AND credential.api_key_encrypted IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM model_service_model_state state
-          WHERE state.provider = service.provider
-            AND state.model = ?
-            AND state.enabled = false
-       )
-       AND (
-         EXISTS (
-           SELECT 1 FROM model_directory_model automatic
-            WHERE automatic.provider = service.provider
-              AND automatic.model = ?
-              AND automatic.service_version = service.version
-              -- 绑了目标集合的内置版本(ADR 0027):目录行按自己的 api/baseUrl 对集合,
-              -- 对不上的行(刷新拉进来、还没经验证的目标)不算可用。
-              AND (
-                service.targets_json IS NULL
-                OR (automatic.api IS NOT NULL AND automatic.base_url IS NOT NULL
-                    AND EXISTS (
-                      SELECT 1 FROM jsonb_array_elements(service.targets_json) bound
-                       WHERE bound.value->>'api' = automatic.api
-                         AND bound.value->>'baseUrl' = rtrim(automatic.base_url, '/')
-                    ))
-                OR ((automatic.api IS NULL OR automatic.base_url IS NULL)
-                    AND jsonb_array_length(service.targets_json) = 1)
-              )
-         )
-         OR EXISTS (
-           SELECT 1 FROM model_supplement supplement
-            WHERE supplement.provider = service.provider
-              AND supplement.model = ?
-              AND (
-                (supplement.source = 'migration-retention'
-                  AND (service.targets_json IS NULL
-                       OR jsonb_array_length(service.targets_json) = 1))
-                OR (supplement.source = 'manual'
-                    AND (
-                      (service.targets_json IS NULL
-                        AND supplement.target_fingerprint = service.target_fingerprint)
-                      OR EXISTS (
-                        SELECT 1 FROM jsonb_array_elements(service.targets_json) bound
-                         WHERE bound.value->>'fingerprint' = supplement.target_fingerprint
-                      )
-                    ))
-              )
-         )
-       )
-  `);
-  const specAvailable = async (spec: ReviewerSpec): Promise<boolean> =>
-    (await availableModel.get(spec.provider, spec.model, spec.model, spec.model)) !== undefined;
-  const modelCombinationAvailable = async (reviewersJson: string, context: string): Promise<boolean> => {
-    const reviewers = parseStoredReviewers(reviewersJson, context);
-    return reviewers.length > 0 && reviewers.every(specAvailable);
-  };
-  /** 一处辅助模型引用当前跑不跑得动(issue #303)。判据与组合里的一项逐字相同。 */
-  const auxiliaryModelAvailable = async (auxiliaryModelJson: string): Promise<boolean> => {
-    const spec = parseAuxiliaryModel(auxiliaryModelJson);
-    return spec !== null && (await specAvailable(spec));
-  };
-  /**
-   * 这一家服务此刻被引用着的模型。判据与 `listModelReferences` 是同一份收集逻辑——事务内
-   * 的兜底另写一遍就会漏掉位置(issue #303 的辅助模型两处当初就是这么漏的)。
-   */
-  const referencedModels = async (provider: string): Promise<Set<string>> =>
-    new Set(
-      (await store().listModelReferences())
-        .filter((reference) => reference.provider === provider)
-        .map((reference) => reference.model),
-    );
-  const recordSupportsCurrentReferences = async (record: ModelServiceVersionCommit): Promise<boolean> => {
-    const references = new Set<string>();
-    for (const model of await referencedModels(record.provider)) {
-      const row = await availableModel.get(record.provider, model, model, model);
-      if (row !== undefined) references.add(model);
-    }
-    if (references.size === 0) return true;
-    if (
-      record.targetFingerprint === null ||
-      record.credential.state !== "verified" ||
-      record.credential.apiKeyEncrypted === null
-    ) return false;
-    const models = new Set<string>();
-    if (record.targets != null) {
-      // 绑了目标集合的版本按 `boundTargetForModel` 判,与 `availableModel` 同一条规则。
-      const targets = normalizeModelServiceTargets(record.targets);
-      const supplementByModel = new Map(record.supplements.map((entry) => [entry.model, entry]));
-      for (const model of record.automaticModels) {
-        if (boundTargetForModel(targets, model, supplementByModel.get(model.id)) !== undefined) {
-          models.add(model.id);
-        }
-      }
-      for (const supplement of record.supplements) {
-        if (boundTargetForModel(targets, undefined, supplement) !== undefined) {
-          models.add(supplement.model);
-        }
-      }
-      return [...references].every((model) => models.has(model));
-    }
-    for (const model of record.automaticModels) models.add(model.id);
-    for (const supplement of record.supplements) {
-      if (
-        supplement.source === "migration-retention" ||
-        supplement.targetFingerprint === record.targetFingerprint
-      ) models.add(supplement.model);
-    }
-    return [...references].every((model) => models.has(model));
   };
 
   /**
@@ -892,12 +776,6 @@ export function storeHelpers(base: {
   return {
     parseStoredReviewers,
     parseAuxiliaryModel,
-    availableModel,
-    specAvailable,
-    modelCombinationAvailable,
-    auxiliaryModelAvailable,
-    referencedModels,
-    recordSupportsCurrentReferences,
     stageRowById,
     repoExists,
     activeRule,

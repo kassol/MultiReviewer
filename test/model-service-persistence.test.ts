@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { reviewerPin, type ReviewerRuntimePlan } from "../src/config.ts";
@@ -8,7 +7,7 @@ import {
   openStore,
   type ModelServiceVersionCommit,
 } from "../src/review/store/index.ts";
-import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups, withTestDb } from "./support/git-fixture.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
@@ -167,25 +166,27 @@ test("自动目录快照往返稀疏可信字段", async () => {
     },
   ]);
   await reopened.close();
-  const sqlite = new DatabaseSync(db.url, { readOnly: true });
-  const idOnly = sqlite.prepare(
-    `SELECT name, api, base_url, input_json, reasoning, context_window, max_tokens
-       FROM model_directory_model WHERE provider = ? AND model = ?`,
-  ).get("corp-gateway", "id-only-model")!;
-  assert.deepEqual(
-    [
-      idOnly["name"],
-      idOnly["api"],
-      idOnly["base_url"],
-      idOnly["input_json"],
-      idOnly["reasoning"],
-      idOnly["context_window"],
-      idOnly["max_tokens"],
-    ],
-    [null, null, null, null, null, null, null],
-    "运行基线被写成了自动发现事实",
-  );
-  sqlite.close();
+  await withTestDb(db.url, async (sql) => {
+    const [idOnly] = await sql(
+      `SELECT name, api, base_url, input_json, reasoning, context_window, max_tokens
+         FROM model_directory_model WHERE provider = $1 AND model = $2`,
+      "corp-gateway",
+      "id-only-model",
+    );
+    assert.deepEqual(
+      [
+        idOnly!["name"],
+        idOnly!["api"],
+        idOnly!["base_url"],
+        idOnly!["input_json"],
+        idOnly!["reasoning"],
+        idOnly!["context_window"],
+        idOnly!["max_tokens"],
+      ],
+      [null, null, null, null, null, null, null],
+      "运行基线被写成了自动发现事实",
+    );
+  });
 });
 
 test("模型服务当前版本把目标、凭据证据、目录与补录作为一个原子快照保存", async () => {
@@ -578,34 +579,46 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   }), true);
   await store.close();
 
-  const sqlite = new DatabaseSync(db.url);
-  const run = sqlite.prepare(
-    `INSERT INTO review_run
-       (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count, failed)
-     VALUES (?, ?, ?, ?, ?, 1, 2, 1, 0)`,
-  ).run("acme", "first", 7, "head", "2026-08-20T11:00:00.000Z");
-  sqlite.prepare(
-    `INSERT INTO reviewer_outcome
-       (run_id, model, failure, finding_count, anomaly_count, rejected_tool_calls, duration_ms)
-     VALUES (?, ?, NULL, 1, 0, 0, 23)`,
-  ).run(run.lastInsertRowid, "openai:global-model");
-  const finding = sqlite.prepare(
-    `INSERT INTO finding
-       (run_id, file, line, severity, category, description, fingerprint, group_index)
-     VALUES (?, 'src/a.ts', 3, 'P1', 'correctness', 'history', 'stable-fingerprint', 0)`,
-  ).run(run.lastInsertRowid);
-  sqlite.prepare(
-    `INSERT INTO finding_attribution
-       (finding_id, position, model, severity, category, description)
-     VALUES (?, 0, ?, 'P1', 'correctness', 'history')`,
-  ).run(finding.lastInsertRowid, "openai:global-model");
-  const historyBefore = {
-    runs: sqlite.prepare("SELECT * FROM review_run").all(),
-    outcomes: sqlite.prepare("SELECT * FROM reviewer_outcome").all(),
-    findings: sqlite.prepare("SELECT * FROM finding").all(),
-    attributions: sqlite.prepare("SELECT * FROM finding_attribution").all(),
-  };
-  sqlite.close();
+  const historyBefore = await withTestDb(db.url, async (sql) => {
+    const [run] = await sql(
+      `INSERT INTO review_run
+         (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count, failed)
+       VALUES ($1, $2, $3, $4, $5, 1, 2, 1, false) RETURNING id`,
+      "acme",
+      "first",
+      7,
+      "head",
+      "2026-08-20T11:00:00.000Z",
+    );
+    const runId = run!["id"];
+    await sql(
+      `INSERT INTO reviewer_outcome
+         (run_id, model, failure, finding_count, anomaly_count, rejected_tool_calls, duration_ms)
+       VALUES ($1, $2, NULL, 1, 0, 0, 23)`,
+      runId,
+      "openai:global-model",
+    );
+    const [finding] = await sql(
+      `INSERT INTO finding
+         (run_id, file, line, severity, category, description, fingerprint, group_index)
+       VALUES ($1, 'src/a.ts', 3, 'P1', 'correctness', 'history', 'stable-fingerprint', 0)
+       RETURNING id`,
+      runId,
+    );
+    await sql(
+      `INSERT INTO finding_attribution
+         (finding_id, position, model, severity, category, description)
+       VALUES ($1, 0, $2, 'P1', 'correctness', 'history')`,
+      finding!["id"],
+      "openai:global-model",
+    );
+    return {
+      runs: await sql("SELECT * FROM review_run"),
+      outcomes: await sql("SELECT * FROM reviewer_outcome"),
+      findings: await sql("SELECT * FROM finding"),
+      attributions: await sql("SELECT * FROM finding_attribution"),
+    };
+  });
 
   const reopened = openStore(db.url);
   const result = await reopened.renameConflictingCustomModelService(
@@ -636,14 +649,14 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   ]);
   await reopened.close();
 
-  const history = new DatabaseSync(db.url, { readOnly: true });
-  assert.deepEqual({
-    runs: history.prepare("SELECT * FROM review_run").all(),
-    outcomes: history.prepare("SELECT * FROM reviewer_outcome").all(),
-    findings: history.prepare("SELECT * FROM finding").all(),
-    attributions: history.prepare("SELECT * FROM finding_attribution").all(),
-  }, historyBefore);
-  history.close();
+  await withTestDb(db.url, async (sql) => {
+    assert.deepEqual({
+      runs: await sql("SELECT * FROM review_run"),
+      outcomes: await sql("SELECT * FROM reviewer_outcome"),
+      findings: await sql("SELECT * FROM finding"),
+      attributions: await sql("SELECT * FROM finding_attribution"),
+    }, historyBefore);
+  });
 });
 
 test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", async () => {
@@ -654,11 +667,12 @@ test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", asyn
     ...availableService("openai", ["kept"]),
     disabledReason: "name-conflict",
   }), 1);
-  const sqlite = new DatabaseSync(db.url);
-  sqlite.prepare(
-    "INSERT INTO global_setting (key, value) VALUES ('reviewers', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-  ).run(JSON.stringify([{ provider: "openai", model: "missing" }]));
-  sqlite.close();
+  await withTestDb(db.url, async (sql) => {
+    await sql(
+      "INSERT INTO global_setting (key, value) VALUES ('reviewers', $1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      JSON.stringify([{ provider: "openai", model: "missing" }]),
+    );
+  });
 
   const before = JSON.stringify({
     service: await store.getModelService("openai"),
@@ -888,9 +902,8 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
     reviewerPins: [reviewerPin(plan)],
   });
 
-  const sqlite = new DatabaseSync(db.url, { readOnly: true });
-  const persisted = sqlite.prepare("SELECT * FROM review_run_reviewer_pin").get()!;
-  sqlite.close();
+  const persisted = (await withTestDb(db.url, async (sql) =>
+    await sql("SELECT * FROM review_run_reviewer_pin")))[0]!;
   const serialized = JSON.stringify(persisted);
   assert.equal(serialized.includes("plaintext-reviewer-secret"), false);
   assert.equal(serialized.includes("ciphertext"), false);

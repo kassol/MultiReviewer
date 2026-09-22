@@ -18,15 +18,22 @@ export const repo = pgTable("repo", {
   id: integer().primaryKey(),
   owner: text().notNull(),
   repo: text().notNull(),
-  /** 模型覆盖(ReviewerSpec 的 JSON 数组),NULL 即跟随全局模型组合。 */
-  reviewers: jsonText(),
+  /**
+   * 模型覆盖(ReviewerSpec 的 JSON 数组),NULL 即跟随全局模型组合。
+   *
+   * 存 `text` 不存 `jsonb`:这一格与它的写入侧是按**文本**比的(「这一次换没换组合」,
+   * issue #302),而 `jsonb` 存进去会重排键、改空白,读回来与 `JSON.stringify` 出来的那一份
+   * 永不相等,每一次保存都会被判成换了组合。SQL 里也从不查它的内容,全在 JS 侧解析。
+   * `global_setting.value` 同理留着 text。
+   */
+  reviewers: text(),
   /** 工作副本的准备状态(issue #184):preparing / ready / failed,NULL 按 unknown 读。 */
   worktreeState: text("worktree_state"),
   worktreeFailure: text("worktree_failure"),
   worktreeCheckedAt: isoTimestamp("worktree_checked_at"),
   registeredAt: isoTimestamp("registered_at").notNull(),
-  /** 这个仓库自己的辅助模型覆盖,NULL 即跟随全局。 */
-  auxiliaryModel: jsonText("auxiliary_model"),
+  /** 这个仓库自己的辅助模型覆盖,NULL 即跟随全局。与 `reviewers` 同理存 `text`。 */
+  auxiliaryModel: text("auxiliary_model"),
   /** 最低报告等级覆盖(issue #273),NULL 即跟随全局。 */
   minReportSeverity: text("min_report_severity"),
   /** 默认分支(ADR 0033,issue #350),NULL 即跟随 Gitea 的默认分支。 */

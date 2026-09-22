@@ -25,8 +25,15 @@
 `ReviewRunDeps.databaseUrl`(一条连接串)传入,会话图片附件的目录另经 `dataDir` 传入——库不再
 是文件,推不出那个目录。
 - **`review/store/` 的分工**:`index.ts` 是装配处(连接池、迁移、`openStore`、各域接入点)与
-还没搬走的那六域方法,`pg.ts` 是连接池 / 事务 / 旧 SQL 的方言 shim,`shared.ts` 是跨域共用的
-SQL 片段、行读法与 `StoreContext`,`accounts.ts` 是迁完 Drizzle 的面板账号域。
+还没搬走的那几域方法,`pg.ts` 是连接池 / 事务 / 旧 SQL 的方言 shim,`shared.ts` 是跨域共用的
+SQL 片段、行读法与 `StoreContext`,`accounts.ts` 是迁完 Drizzle 的面板账号域,`repos.ts` 是迁完
+Drizzle 的仓库域(注册表与它的 Key、仓库配置、审查策略、模型服务与凭据、目录快照、模型补录与
+模型状态;`storedReviewersEmpty` / `CUSTOM_PROVIDER_NAME_PATTERN` / `BatchLimitField` /
+`toReviewRule` / `toProjectFact` 跟着搬进去,由 `index.ts` 原路再导出)。
+- **`repo.reviewers` 与 `repo.auxiliary_model` 存 `text` 不存 `jsonb`**(issue #451)。这两格与
+`global_setting.value` 一样是按**文本**比的——「这一次换没换模型组合」决定要不要重判模型可用性
+(issue #302),而 `jsonb` 存进去会重排键、改空白,读回来与 `JSON.stringify` 出来的那一份永不
+相等,每一次保存都会被失效模型连坐。SQL 里从不查它们的内容,全在 JS 侧解析。
 - **表的声明在 `review/schema/`,按域一个文件**(`accounts` / `repos` / `runs` / `stages` /
 `knowledge` / `products` / `sessions`),`schema/index.ts` 汇总给 drizzle-kit 与运行时。改 schema
 就是改这里:改完跑 `pnpm exec drizzle-kit generate` 生成一份进版本库的迁移 SQL(`drizzle/`),

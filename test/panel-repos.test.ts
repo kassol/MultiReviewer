@@ -7,13 +7,18 @@
  */
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewerSpec } from "../src/config.ts";
 import { openStore } from "../src/review/store/index.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
-import { confirmEmptyRuleSet, makeCacheDir, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
+import {
+  confirmEmptyRuleSet,
+  makeCacheDir,
+  makeTestDatabase,
+  testCleanups,
+  withTestDb,
+} from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_PR as PR,
@@ -107,15 +112,14 @@ test("移除删掉 hook 并摘注册表,历史保留,投递从此 401", async ()
   assert.equal((await h.deliverViaHook("sha-2", snapshot)).status, 401);
 
   // 评审记录一行不动:模型选型的历史不因下线而断。
-  const sqlite = new DatabaseSync(h.db.url);
-  try {
-    const row = sqlite
-      .prepare("SELECT COUNT(*) AS count FROM review_run WHERE owner = ? AND repo = ?")
-      .get(PR.owner, PR.repo) as { count: number };
-    assert.equal(Number(row.count), 1);
-  } finally {
-    sqlite.close();
-  }
+  await withTestDb(h.db.url, async (sql) => {
+    const [row] = await sql(
+      "SELECT COUNT(*) AS count FROM review_run WHERE owner = $1 AND repo = $2",
+      PR.owner,
+      PR.repo,
+    );
+    assert.equal(Number(row!["count"]), 1);
+  });
 });
 
 test("hook 删除失败时移除被阻止,注册保持原样", async () => {
@@ -157,18 +161,13 @@ test("配置了模型覆盖的仓库,Review Run 用覆盖后的组合", async ()
     h.runtimePlans.map((plans) => plans.map((plan) => plan.spec)),
     [override],
   );
-  const sqlite = new DatabaseSync(h.db.url);
-  try {
-    const rows = sqlite.prepare("SELECT model FROM reviewer_outcome").all() as {
-      model: string;
-    }[];
+  await withTestDb(h.db.url, async (sql) => {
+    const rows = await sql("SELECT model FROM reviewer_outcome");
     assert.deepEqual(
-      rows.map((row) => row.model),
+      rows.map((row) => row["model"]),
       ["override-model"],
     );
-  } finally {
-    sqlite.close();
-  }
+  });
 });
 
 /**
@@ -255,15 +254,10 @@ test("仓库配置一次写两项:版本加一、null 即跟随全局、坏取�
   // 注册后的下一次投递真实生效:用的是覆盖后的模型。
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
-  const sqlite = new DatabaseSync(h.db.url);
-  try {
-    const models = (
-      sqlite.prepare("SELECT model FROM reviewer_outcome").all() as { model: string }[]
-    ).map((row) => row.model);
+  await withTestDb(h.db.url, async (sql) => {
+    const models = (await sql("SELECT model FROM reviewer_outcome")).map((row) => row["model"]);
     assert.deepEqual(models, ["swapped-model"]);
-  } finally {
-    sqlite.close();
-  }
+  });
 
   // 坏取值整次拒绝:版本与两项原样不动。跟随全局那一份写在这里,逐例只换要试的那一格。
   const follow = {
@@ -385,37 +379,6 @@ test("默认分支:设成仓库真有的一条即读得回来,远端没有的那
   assert.equal((await repoSettingsRow(h)).defaultBranch, null);
 });
 
-test("升级前的旧库:开库补上默认分支那一列,每个仓库都读作跟随 Gitea 默认", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const follow = { reviewers: null, auxiliaryModel: null, minReportSeverity: null };
-  assert.equal(
-    (await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
-      ...follow,
-      defaultBranch: "feature",
-      expectedVersion: 0,
-    })).status,
-    200,
-  );
-
-  // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——理由与 `product_repo`
-  // 那一处相同(建表语句里有中文注释,丢最后一列要重写它)。
-  const sqlite = new DatabaseSync(h.db.url);
-  sqlite.exec("ALTER TABLE repo RENAME COLUMN default_branch TO before_upgrade_default_branch");
-  sqlite.close();
-
-  // 下一次开库补列:注册行一条不少,默认分支是「跟随 Gitea 默认」。
-  assert.equal((await repoSettingsRow(h)).defaultBranch, null);
-  assert.equal(
-    (await h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, {
-      ...follow,
-      defaultBranch: "feature",
-      expectedVersion: 1,
-    })).status,
-    200,
-  );
-  assert.equal((await repoSettingsRow(h)).defaultBranch, "feature");
-});
-
 test("仓库配置的期望版本过期即 409,响应带当前值", async () => {
   const h = await startPanelHarness();
   await seedAvailableModelService(h, "test", ["global-model", "swapped-model"]);
@@ -491,12 +454,9 @@ test("仓库覆盖里已有失效模型:只改等级与辅助模型照常保存,
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
   // 升级前留下的一份覆盖,里面的模型此刻已经失效(播种走库,与 harness 播种全局组合同律)。
   const stale: ReviewerSpec[] = [{ provider: "vanished-service", model: "missing" }];
-  const fixture = new DatabaseSync(h.db.url);
-  fixture.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(
-    JSON.stringify(stale),
-    GITEA_REPO.id,
-  );
-  fixture.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("UPDATE repo SET reviewers = $1 WHERE id = $2", JSON.stringify(stale), GITEA_REPO.id);
+  });
   const put = (body: unknown): Promise<Response> =>
     h.api("PUT", `/repos/${GITEA_REPO.id}/settings`, body);
   const auxiliary = { provider: "test", model: "global-model" };
@@ -692,17 +652,15 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
   await seedAvailableModelService(h, "repo-healthy", ["keep"]);
   await seedAvailableModelService(h, "repo-broken", ["saved"]);
 
-  const sqlite = new DatabaseSync(h.db.url);
-  try {
-    sqlite.prepare(
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
       `UPDATE model_service_credential
           SET state = 'pending-reverification', verified_at = NULL,
               validation_model = NULL, verification_source = NULL
-        WHERE provider = ?`,
-    ).run("repo-broken");
-  } finally {
-    sqlite.close();
-  }
+        WHERE provider = $1`,
+      "repo-broken",
+    );
+  });
 
   const invalidRegister = await h.api("POST", "/repos", {
     owner: PR.owner,

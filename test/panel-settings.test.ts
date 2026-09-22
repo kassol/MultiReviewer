@@ -6,7 +6,6 @@
  * `buildReviewers` 就是服务真用的那一个入口,这里传真实实现。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { buildReviewers } from "../src/config.ts";
@@ -25,7 +24,7 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, withTestDb } from "./support/git-fixture.ts";
 
 type SettingsBody = {
   reviewers: { provider: string; model: string; thinkingLevel?: string }[];
@@ -204,78 +203,6 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
   });
 });
 
-test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失,值一格不变", async () => {
-  const h = await startPanelHarness();
-  const legacy = new DatabaseSync(h.db.url);
-  try {
-    const legacyRows: [string, string][] = [
-      ["reviewers_version", "7"],
-      ["max_changed_lines_per_batch", "777"],
-      ["max_changed_lines_per_batch_version", "3"],
-      ["max_parallel_batches_version", "2"],
-      ["max_files_per_batch_version", "2"],
-      ["max_evidence_calls_per_batch_version", "2"],
-      ["min_report_severity", "P1"],
-      ["min_report_severity_version", "5"],
-    ];
-    for (const [key, value] of legacyRows) {
-      legacy.prepare(
-        `INSERT INTO global_setting (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      ).run(key, value);
-    }
-  } finally {
-    legacy.close();
-  }
-
-  // 开库即一次性合并。跑两遍是为了证明它幂等:第二遍旧键早没了,值仍不变。
-  for (const pass of [1, 2]) {
-    const store = openStore(h.db.url);
-    try {
-      assert.deepEqual(await store.getGlobalSettings(), {
-        reviewersJson: JSON.stringify(SEEDED_REVIEWERS),
-        auxiliaryModelJson: null,
-        maxChangedLinesPerBatch: 777,
-        maxParallelBatches: null,
-        maxFilesPerBatch: null,
-        maxEvidenceCallsPerBatch: null,
-        minReportSeverity: "P1",
-        version: 1,
-      }, `第 ${pass} 遍`);
-    } finally {
-      await store.close();
-    }
-  }
-
-  const remaining = new DatabaseSync(h.db.url);
-  try {
-    assert.deepEqual(
-      remaining.prepare(
-        "SELECT key FROM global_setting WHERE key LIKE '%_version' AND key <> 'settings_version'",
-      ).all(),
-      [],
-      "逐项版本键一个都不该留下",
-    );
-    // 旧键换成整页那一个,值从 1 起:缺行也读作 1,但迁移把它显式建起来。
-    assert.equal(
-      remaining.prepare("SELECT value FROM global_setting WHERE key = 'settings_version'")
-        .get()?.["value"],
-      "1",
-    );
-  } finally {
-    remaining.close();
-  }
-
-  assert.deepEqual(await readSettings(h), {
-    reviewers: SEEDED_REVIEWERS,
-    ...UNSET_SETTINGS,
-    maxChangedLinesPerBatch: 777,
-    minReportSeverity: "P1",
-    version: 1,
-    defaults: DEFAULTS,
-  });
-});
-
 test("整份对象缺任一项即 400:缺项不当作跟随默认", async () => {
   const h = await startPanelHarness();
   const { version, defaults: _defaults, ...current } = await readSettings(h);
@@ -344,31 +271,30 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   await seedAvailableModelService(h, "healthy-service", ["keep"]);
   await seedAvailableModelService(h, "recovering-service", ["saved"]);
 
-  const setRecoveringCredential = (state: "verified" | "pending-reverification"): void => {
-    const sqlite = new DatabaseSync(h.db.url);
-    try {
+  const setRecoveringCredential = async (
+    state: "verified" | "pending-reverification",
+  ): Promise<void> => {
+    await withTestDb(h.db.url, async (sql) => {
       if (state === "pending-reverification") {
-        sqlite.prepare(
+        await sql(
           `UPDATE model_service_credential
               SET state = 'pending-reverification', verified_at = NULL,
                   validation_model = NULL, verification_source = NULL
-            WHERE provider = ?`,
-        ).run("recovering-service");
+            WHERE provider = $1`,
+          "recovering-service",
+        );
       } else {
-        sqlite.prepare(
+        await sql(
           `UPDATE model_service_credential
-              SET state = 'verified', verified_at = ?, validation_model = ?,
+              SET state = 'verified', verified_at = $1, validation_model = $2,
                   verification_source = 'inference'
-            WHERE provider = ?`,
-        ).run(
+            WHERE provider = $3`,
           "2026-08-20T00:01:00.000Z",
           "recovering-service:saved",
           "recovering-service",
         );
       }
-    } finally {
-      sqlite.close();
-    }
+    });
   };
   const serviceState = async () => {
     const store = openStore(h.db.url);
@@ -382,7 +308,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
     }
   };
 
-  setRecoveringCredential("pending-reverification");
+  await setRecoveringCredential("pending-reverification");
   const projectionResponse = await h.api("GET", "/model-services");
   assert.equal(projectionResponse.status, 200);
   const projection = (await projectionResponse.json()) as {
@@ -435,7 +361,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   });
   assert.deepEqual(await serviceState(), beforeBlockedWrites, "组合与上限写入不应改服务或模型来源");
 
-  setRecoveringCredential("verified");
+  await setRecoveringCredential("verified");
   const recoveredResponse = await h.api("GET", "/model-services");
   const recoveredBody = (await recoveredResponse.json()) as {
     candidates: { identity: string; available: boolean }[];
@@ -460,7 +386,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   });
   assert.deepEqual(await serviceState(), beforeMissingRemoval);
 
-  setRecoveringCredential("pending-reverification");
+  await setRecoveringCredential("pending-reverification");
   const beforeUnavailableRemoval = await serviceState();
   const removedUnavailable = await putSettings(h, { reviewers: [selected[0]!] });
   assert.equal(removedUnavailable.status, 200);
@@ -675,16 +601,11 @@ test("空库、没配模型组合时投递留下一条失败的 Review Run,原�
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.failed, true);
 
-  const sqlite = new DatabaseSync(h.db.url);
-  try {
-    const rows = sqlite.prepare("SELECT failure FROM reviewer_outcome").all() as {
-      failure: string | null;
-    }[];
+  await withTestDb(h.db.url, async (sql) => {
+    const rows = await sql("SELECT failure FROM reviewer_outcome");
     assert.equal(rows.length, 1);
-    assert.match(rows[0]!.failure ?? "", /还没有配置模型组合/);
-  } finally {
-    sqlite.close();
-  }
+    assert.match(String(rows[0]!["failure"] ?? ""), /还没有配置模型组合/);
+  });
 });
 
 /**
