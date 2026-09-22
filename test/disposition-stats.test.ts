@@ -1,7 +1,7 @@
 /**
  * 处置率统计的口径(issue #36,ADR 0006;主维度改仓库 × category 见 issue #169
  * 与 ADR 0015)。表格驱动:每条口径一组入库数据对一个期望矩阵,模型那一维只剩
- * 参与条数。SQLite 临时库是既定测试缝,数据直接经 store 种入。
+ * 参与条数。一次性 PostgreSQL 库是既定测试缝,数据直接经 store 种入。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

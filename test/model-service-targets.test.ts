@@ -3,7 +3,7 @@
  *
  * 当前依赖里 Pi 内置的 OpenRouter 表只有 Chat Completions 一种协议,所以混合协议的目录用
  * 发现桩造出来:同一家里一行走 Anthropic Messages、一行走 Chat Completions。每条用例走真实的
- * HTTP 端点与临时 SQLite,只把目录发现与模型端点打桩。
+ * HTTP 端点与一次性 PostgreSQL 库,只把目录发现与模型端点打桩。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

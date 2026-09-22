@@ -2,7 +2,7 @@
  * 注册后后台备工作副本(issue #184)。
  *
  * 三条缝各就各位:面板 API 走真实 HTTP,clone 落在临时缓存目录里的 git fixture 上,
- * 仓库注册表在临时 SQLite。「注册不等 clone」这一条靠拦住 Forge 的读仓库来证:后台
+ * 仓库注册表在一次性 PostgreSQL 库。「注册不等 clone」这一条靠拦住 Forge 的读仓库来证:后台
  * 那一步还卡着,注册响应已经回来了。
  */
 import assert from "node:assert/strict";

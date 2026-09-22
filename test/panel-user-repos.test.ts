@@ -1,7 +1,7 @@
 /**
  * 仓库分配的落库与录入(issue #191)。
  *
- * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,分配行落临时 SQLite。
+ * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,分配行落一次性 PostgreSQL 库。
  * 这一票只管录入、回显与级联,读接口按分配过滤不在范围内。
  */
 import assert from "node:assert/strict";

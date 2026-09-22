@@ -5,7 +5,7 @@
  * 发布明确失败不 resolve、不记延续,轮次记失败原因;发布成功而 resolve 失败仍记延续、
  * 带「交接未完成」并由下一轮重试;发布结果不确定按发布失败处理,禁止自动重发。
  *
- * 打在 `runReview` 入口上:内存 Forge 注入失败,真实 git 与 SQLite 落在临时目录,
+ * 打在 `runReview` 入口上:内存 Forge 注入失败,真实 git 落在临时目录、库是一次性的 PostgreSQL 库,
  * 观察评论写入、持久化状态与重启选择结果。
  */
 import assert from "node:assert/strict";

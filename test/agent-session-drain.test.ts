@@ -163,7 +163,7 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     });
     assert.equal(response.status, 202, await response.text());
   };
-  /** 这个会话此刻落库的记录。进程在不在都读得到:SQLite 是唯一真相(ADR 0031)。 */
+  /** 这个会话此刻落库的记录。进程在不在都读得到:库是唯一真相(ADR 0031)。 */
   const records = async (): Promise<{ type: string; entry: unknown }[]> => {
     const read = openStore(databaseUrl);
     try {

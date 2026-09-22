@@ -574,7 +574,7 @@ test("最终提交重新发现并真实推理后原子写入加密凭据、目�
     assert.equal(record.directory.failure, null);
     assert.deepEqual(record.automaticModels.map((model) => model.id), preview.models.map((model) => model.id));
     assert.equal(responseText.includes(record.credential.apiKeyEncrypted!), false);
-    // 库里存的是密文:明文一个字都不该落在凭据那张表上(原先按 SQLite 库文件的字节判)。
+    // 库里存的是密文:明文一个字都不该落在凭据那张表上(原先按库文件的字节判)。
     await withTestDb(h.db.url, async (sql) => {
       const rows = await sql("SELECT * FROM model_service_credential");
       assert.equal(JSON.stringify(rows).includes(credential), false);

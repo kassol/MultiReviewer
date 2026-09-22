@@ -186,7 +186,7 @@ async function latestRunId(databaseUrl: string): Promise<number> {
   }
 }
 
-/** 库里每条 Finding 的处置与延续来源,按文件。`node:sqlite` 的行是空原型,逐格抄出来再比。 */
+/** 库里每条 Finding 的处置与延续来源,按文件。`pg` 的行是空原型,逐格抄出来再比。 */
 async function findingRows(databaseUrl: string): Promise<{ file: string; disposition: string; continuedFrom: unknown }[]> {
   return (await query(databaseUrl, "SELECT file, disposition, continued_from FROM finding ORDER BY file")).map(
     (row) => ({

@@ -2,7 +2,7 @@
  * 仓库注册与移除全流程(issue #31)。
  *
  * 三条缝各就各位:面板 API 走真实 HTTP,hook 操作打到假 Gitea HTTP server,评审
- * 记录落在临时 SQLite。投递用「从假 Gitea 读回的 hook secret 与 ?k=」来签——注册
+ * 记录落在一次性 PostgreSQL 库。投递用「从假 Gitea 读回的 hook secret 与 ?k=」来签——注册
  * 写进 hook 的 Key 与准入认的 Key 必须是同一把,这条链路本身就是被测行为。
  */
 import assert from "node:assert/strict";
@@ -744,7 +744,7 @@ test("仓库列表带累计量,按最近活动排序,没跑过的排最后", asy
   assert.equal((await h.deliverViaHook("sha-1")).status, 200);
   await h.settledAtLeast(1);
 
-  // 另外两个仓库直接种进库(SQLite 临时库是既定测试缝):一个活动时间在遥远的未来,
+  // 另外两个仓库直接种进库(一次性 PostgreSQL 库是既定测试缝):一个活动时间在遥远的未来,
   // 一个从没跑过 Review Run。
   const seed = openStore(h.db.url);
   await seed.registerRepo({ repoId: 555, owner: "acme", repo: "gadgets", generation: 1, key: "kb" });

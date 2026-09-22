@@ -2,7 +2,7 @@
  * 会话页右栏那一份:这一场会话写进产品 tracker 的 spec 与票(CONTEXT.md 产品 tracker,
  * issue #366)。
  *
- * 缝与 #333 那一票相同:面板 API 走真实 HTTP,会话与 tracker 落临时 SQLite。压的是票的
+ * 缝与 #333 那一票相同:面板 API 走真实 HTTP,会话与 tracker 落一次性 PostgreSQL 库。压的是票的
  * 验收里打在 HTTP 与开库上的那几条:读会话回得出它写过的 spec 与票、别的会话写的不算、
  * 退役的定稿端点回 404,以及升级前的旧库开起来之后产出与定稿两张表不在、旧的需求拆分会话
  * 照样打得开读得动。写入那一侧(工具与打回)在 `agent-session-subprocess.test.ts`。

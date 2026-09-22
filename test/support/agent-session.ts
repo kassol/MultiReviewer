@@ -39,7 +39,7 @@ export const AT = "2026-09-12T00:00:00.000Z";
 
 /** 知识集里的两条。陈述不进提示(issue #344),断言因此落在那一行条数上。 */
 export const RULE = "每个导出函数都要有 JSDoc 注释";
-export const FACT = "这个仓库的持久化只用 node:sqlite";
+export const FACT = "这个仓库的持久化只经 Store 一层";
 
 /** 发给 agent 的那句话。同样独一无二。 */
 export const MESSAGE = "把「报销单可以撤回」拆成可实现的条目";

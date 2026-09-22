@@ -137,13 +137,14 @@ finish() {
 #   docker-compose.yml  本仓库根目录那一份,拷过来
 #   setup.sh            本脚本
 #   .env                由本脚本生成
-#   data/               由本脚本创建,SQLite 与工作副本缓存落在这里
+#   data/               由本脚本创建,会话图片附件与工作副本缓存落在这里
 #
+# 库不在这里:PostgreSQL 实例由部署方提供,本脚本只问一条连接串(ADR 0036)。
 # 镜像在开发机上构建后推到 registry(`scripts/build-push.sh`),这里只负责拉取。
 # 你从笔记本 SSH 进来,浏览器留在笔记本上——脚本给出的网址在笔记本上打开,把值粘回来。
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=6
+TOTAL_STAGES=7
 
 # 脚本自己所在的目录就是部署目录。在仓库里直接跑时它在 scripts/ 下,compose 文件在
 # 上一级,这里一并认掉。
@@ -213,8 +214,9 @@ pause
 
 # ── 2. 数据目录 ───────────────────────────────────────────────────────────
 stage "数据目录"
-say "SQLite 与工作副本缓存落在 $DEPLOY_DIR/data,绑进容器的 /data。"
+say "会话图片附件与工作副本缓存落在 $DEPLOY_DIR/data,绑进容器的 /data。"
 note "工作副本是每个仓库一份完整 clone,磁盘占用看仓库大小。"
+note "库不在这里:PostgreSQL 由你自己提供,下一阶段问连接串。"
 
 mkdir -p data
 
@@ -239,7 +241,63 @@ else
 fi
 pause
 
-# ── 3. Gitea 实例与 bot 凭据 ──────────────────────────────────────────────
+# ── 3. 数据库 ─────────────────────────────────────────────────────────────
+stage "数据库"
+
+# 旧 `.env` 原样带上来时服务会直接拒绝启动(src/main.ts),而那要等到阶段 6 才显形,
+# 报出来的只是「没等到监听」。当场拦掉并说清删哪一行。
+if [[ -n "$(_existing MULTIREVIEWER_DB || true)" ]]; then
+  printf '  %s✗ %s 里还留着 MULTIREVIEWER_DB%s\n' "$RED" "$ENV_FILE" "$RESET"
+  say "它随 ADR 0036 废弃,服务读到它会拒绝启动。删掉那一行再重跑本脚本:"
+  printf '      %ssed -i.bak "/^MULTIREVIEWER_DB=/d" %s%s\n' "$BOLD" "$ENV_FILE" "$RESET"
+  exit 1
+fi
+
+say "持久化是 PostgreSQL,实例由你提供(ADR 0036)。本服务只要一条连接串,"
+say "启动时会在开始监听之前自己把 schema 迁移跑完。"
+note "库与角色先建好,角色对这个库要有建表权限——迁移要 CREATE TABLE。"
+note "形如 postgres://用户:口令@主机:5432/库名。口令里有 @ : / 这些字符时先 URL 编码。"
+note "库跑在另一台机器上时,这台服务器要连得过去(容器走宿主机网络出去)。"
+
+ask MULTIREVIEWER_DATABASE_URL "连接串:"
+case "$MULTIREVIEWER_DATABASE_URL" in
+  postgres://* | postgresql://*) ;;
+  *)
+    printf '  %s✗ 连接串要以 postgres:// 或 postgresql:// 开头%s\n' "$RED" "$RESET"
+    exit 1 ;;
+esac
+write_env MULTIREVIEWER_DATABASE_URL "$MULTIREVIEWER_DATABASE_URL"
+
+# 拿容器自己连一次:服务器上没有 psql,而镜像里的 `pg` 正是服务用的那个驱动,连得通
+# 就是服务连得通。容器与宿主机的网络视角不同,这一步因此必须在容器里做。
+say "拿容器连一次,当场验证连接串。"
+DB_PROBE_ERR=$(mktemp)
+DB_VERSION=$(docker compose run --rm -T --entrypoint node multireviewer \
+  --input-type=module -e '
+    import pg from "pg";
+    const client = new pg.Client({ connectionString: process.env["MULTIREVIEWER_DATABASE_URL"] });
+    await client.connect();
+    const { rows } = await client.query("select current_setting($1) as v", ["server_version"]);
+    await client.end();
+    console.log(rows[0].v);
+  ' 2>"$DB_PROBE_ERR" | tail -n 1) || DB_VERSION=""
+
+[[ "$DB_VERSION" =~ ^[0-9]+(\.[0-9]+)* ]] || DB_VERSION=""
+if [[ -z "$DB_VERSION" ]]; then
+  printf '  %s✗ 连不上%s\n' "$RED" "$RESET"
+  tail -n 5 "$DB_PROBE_ERR" | sed 's/^/      /'
+  rm -f "$DB_PROBE_ERR"
+  say "主机、端口、库名、用户与口令逐项核一遍;口令里的特殊字符要 URL 编码。"
+  say "库只监听 127.0.0.1 时容器连不过去,让它监听这台机器上容器够得着的地址。"
+  exit 1
+fi
+rm -f "$DB_PROBE_ERR"
+printf '  %s✓%s 连上了,PostgreSQL %s\n' "$GREEN" "$RESET" "$DB_VERSION"
+note "迁移在服务启动时跑,起服务那一步之后本脚本会核对迁移表在不在。"
+note "备份规程:pg_dump 这个库,外加 $DEPLOY_DIR/data(会话图片附件在它下面)。"
+pause
+
+# ── 4. Gitea 实例与 bot 凭据 ──────────────────────────────────────────────
 stage "Gitea 实例与 bot 凭据"
 if have_all MULTIREVIEWER_GITEA_URL MULTIREVIEWER_GITEA_TOKEN; then
   MULTIREVIEWER_GITEA_URL=$(_existing MULTIREVIEWER_GITEA_URL)
@@ -280,7 +338,7 @@ note "下限:社区版 1.26.0 / 企业版 26.0.0。Disposition 依赖的 resolve
 note "服务启动时会再检查一次,不合格会直接退出。"
 pause
 
-# ── 4. 面板密钥与基地址 ───────────────────────────────────────────────────
+# ── 5. 面板密钥与基地址 ───────────────────────────────────────────────────
 stage "面板密钥与基地址"
 
 say "面板的凭据页用一枚主密钥加解密模型凭据(ADR 0008)。缺它时那一页整体不可用,"
@@ -331,7 +389,7 @@ esac
 write_env MULTIREVIEWER_BASE_URL "$MULTIREVIEWER_BASE_URL"
 pause
 
-# ── 5. 起服务并自检 ───────────────────────────────────────────────────────
+# ── 6. 起服务并自检 ───────────────────────────────────────────────────────
 stage "起服务并自检"
 say "起服务。"
 docker compose up -d
@@ -346,7 +404,7 @@ done
 if [[ -z "$BOOTED" ]]; then
   printf '  %s✗ 没等到监听%s\n' "$RED" "$RESET"
   docker compose logs --tail 30 multireviewer
-  say "上面是容器日志。Gitea 版本不够、凭据缺失都会在这里直说。"
+  say "上面是容器日志。库连不上、迁移跑不过、Gitea 版本不够、凭据缺失都会在这里直说。"
   exit 1
 fi
 printf '  %s✓%s 服务已监听\n' "$GREEN" "$RESET"
@@ -366,7 +424,27 @@ else
   exit 1
 fi
 
-say "再问会话端点当前是不是零用户,期望 401——这同时验路由、SQLite 与初始化状态。"
+say "再核对迁移表:服务在开始监听之前跑完了迁移,表就位即证明它连得上库、schema 也建出来了。"
+if docker compose run --rm -T --entrypoint node multireviewer \
+  --input-type=module -e '
+    import pg from "pg";
+    const client = new pg.Client({ connectionString: process.env["MULTIREVIEWER_DATABASE_URL"] });
+    await client.connect();
+    const { rows } = await client.query("select to_regclass($1) is not null as ok", [
+      "drizzle.__drizzle_migrations",
+    ]);
+    await client.end();
+    if (!rows[0].ok) process.exit(1);
+  ' >/dev/null 2>&1; then
+  printf '  %s✓%s 迁移表 drizzle.__drizzle_migrations 就位\n' "$GREEN" "$RESET"
+else
+  printf '  %s✗ 迁移表不在%s\n' "$RED" "$RESET"
+  say "服务监听了却没建出迁移表,多半是它连的库与这里探的不是同一个。查看日志:"
+  printf '      %sdocker compose logs multireviewer%s\n' "$BOLD" "$RESET"
+  exit 1
+fi
+
+say "再问会话端点当前是不是零用户,期望 401——这同时验路由、库读取与初始化状态。"
 SESSION_BODY=$(mktemp)
 SESSION_STATUS=$(curl -sS -o "$SESSION_BODY" -w '%{http_code}' -m 10 \
   "${LOCAL_PANEL}api/session" 2>/dev/null) || SESSION_STATUS="connect-failed"
@@ -386,7 +464,7 @@ case "$SESSION_STATUS:$FRESH_INSTANCE" in
     ;;
   *)
     printf '  %s✗ 会话探测回了 %s,预期 401%s\n' "$RED" "$SESSION_STATUS" "$RESET"
-    say "这一步还会读 SQLite;路由、数据库或容器任一处报错都不能算部署完成。查看日志:"
+    say "这一步还会读库;路由、数据库或容器任一处报错都不能算部署完成。查看日志:"
     printf '      %sdocker compose logs multireviewer%s\n' "$BOLD" "$RESET"
     exit 1
     ;;
@@ -445,7 +523,7 @@ case "$PROBE" in
 esac
 pause
 
-# ── 6. 交付清单 ───────────────────────────────────────────────────────────
+# ── 7. 交付清单 ───────────────────────────────────────────────────────────
 stage "交付清单"
 say "部署边界到「面板能用」为止。仓库接入、Key 轮转、模型覆盖都在面板上做。"
 say ""
@@ -471,7 +549,7 @@ say "  只有 anthropic / openai / deepseek / openrouter 这几家保存时会�
 say "  其余 provider 照样能保存,只是跳过验证并标「未验证」。key 只写不回显。"
 note "  凭据没配全,投递进来会建一次失败的 Run 并在时间线上写明缺哪一家——不是故障。"
 step "仓库页搜关键字选仓库——面板会验 bot 权限、生成 Key、创建 webhook,"
-say "  一步到位。前置:bot 在该仓库是 admin(阶段 3 说过,每个仓库都要)。"
+say "  一步到位。前置:bot 在该仓库是 admin(阶段 4 说过,每个仓库都要)。"
 step "访问控制页先建角色、勾权限格,再给同事建号并授角色;系统不预置角色,新号没授角色就是零权限。"
 step "注册完开一个 PR,第一轮审查自动触发;评审记录页能看到它。"
 note "要用一个此前没被本工具评论过的 PR:旧 PR 上留着指纹锚点,Finding 会被折叠进正文。"
@@ -489,4 +567,6 @@ note "  仓库注册 403 → bot 不是该仓库 admin。"
 note "  投递没反应 → Gitea 仓库 设置 → Web 钩子 → 最近投递的响应码;401 时:仓库没注册就先注册,注册过的到面板点「轮转推平」。"
 note "  Gitea 拦投递(allowed HTTP servers)→ app.ini [webhook] ALLOWED_HOST_LIST = external, ${PUBLIC_HOST}"
 note "  审查失败 → docker compose logs 里「Review Run 失败」带原因;模型没余额、标识拼错都在这。"
-note "  查库 → sqlite3 data/multireviewer.db 'select model, count(*) from finding group by model;'"
+note "  查库 → psql \"\$MULTIREVIEWER_DATABASE_URL\" -c 'select model, count(*) from finding_attribution group by model;'"
+note "        这台机器没有 psql 时:docker exec -it <PostgreSQL 容器> psql -U <用户> <库名>"
+note "  备份 → pg_dump 那个库,外加 $DEPLOY_DIR/data(会话图片附件);两样缺一不可。"

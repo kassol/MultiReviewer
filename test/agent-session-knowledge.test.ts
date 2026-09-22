@@ -38,7 +38,7 @@ const MESSAGE = "订单金额的折算要改,先看看这块有什么约定";
 
 /** 会话根里那个仓库的三条知识,作用范围各不相同。 */
 const FINANCE_RULE = "折算金额一律按分存";
-const WHOLE_REPO_FACT = "这个仓库的持久化只用 node:sqlite";
+const WHOLE_REPO_FACT = "这个仓库的持久化只经 Store 一层";
 const WEB_RULE = "页面上的金额都过同一个格式化函数";
 
 /** 另一个仓库的一条。会话根里没有它,它一条都不该回来。 */

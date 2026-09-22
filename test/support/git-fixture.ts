@@ -52,7 +52,7 @@ export async function runCleanups(
 after(() => runCleanups(fileCleanups));
 
 /**
- * 删一个临时目录。**要重试**:后台任务(工作副本准备的 `git clone`、SQLite 的 `-wal`)
+ * 删一个临时目录。**要重试**:后台任务(工作副本准备的 `git clone`)
  * 可能正往里写,`rmSync` 走到一半目录又多出文件就抛 ENOTEMPTY。
  */
 function removeTempDir(dir: string): void {
