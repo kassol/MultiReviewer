@@ -337,7 +337,7 @@ function productRepos(dbPath: string, productId: number) {
   }
 }
 
-test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库关系取,glob 不碰产品条目", () => {
+test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库关系取,glob 不碰产品条目", async () => {
   const { dbPath, productId, repoIds } = storeWithProduct();
   const [widgets, orders] = repoIds as [number, number, number, number];
   seedProductKnowledge(dbPath, productId, { kind: "term", name: "订单", body: PRODUCT_TERM });
@@ -355,7 +355,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   seedReviewRule(dbPath, orders, { type: "rule", scope: "", statement: OTHER_REPO_RULE });
   const repos = productRepos(dbPath, productId);
 
-  const both = sessionKnowledge(dbPath, productId, repos, {
+  const both = await sessionKnowledge(dbPath, productId, repos, {
     repos: ["acme/widgets", "acme/orders"],
     names: ["订单"],
     relationships: true,
@@ -374,7 +374,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   );
 
   // 只问一个仓库、不问产品层:产品条目一条不回,只有它自己的规则。
-  const one = sessionKnowledge(dbPath, productId, repos, { repos: ["acme/widgets"] });
+  const one = await sessionKnowledge(dbPath, productId, repos, { repos: ["acme/widgets"] });
   assert.deepEqual(one.product, []);
   assert.deepEqual(
     one.repo.map((entry) => entry.statement),
@@ -382,7 +382,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   );
 
   // 只问名字、不问仓库:产品层回整条,仓库层空着。
-  const named = sessionKnowledge(dbPath, productId, repos, { names: ["签名统一在一处"] });
+  const named = await sessionKnowledge(dbPath, productId, repos, { names: ["签名统一在一处"] });
   assert.deepEqual(
     named.product.map((entry) => [entry.kind, entry.body]),
     [["decision", PRODUCT_DECISION]],
@@ -390,7 +390,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   assert.deepEqual(named.repo, []);
 
   // 路径 glob:重叠不上的仓库条目被收掉,产品条目不受它影响。
-  const narrowed = sessionKnowledge(dbPath, productId, repos, {
+  const narrowed = await sessionKnowledge(dbPath, productId, repos, {
     repos: ["acme/widgets", "acme/orders"],
     pathGlob: "src/finance/rate.ts",
     relationships: true,
@@ -404,14 +404,14 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
     narrowed.repo.map((entry) => entry.statement),
     [FINANCE_RULE, OTHER_REPO_RULE],
   );
-  const elsewhere = sessionKnowledge(dbPath, productId, repos, {
+  const elsewhere = await sessionKnowledge(dbPath, productId, repos, {
     repos: ["acme/widgets"],
     pathGlob: "web/**",
   });
   assert.deepEqual(elsewhere.repo, []);
 });
 
-test("仓库层封顶在历史 Finding 查询那一个常量,产品层按名字取不封顶", () => {
+test("仓库层封顶在历史 Finding 查询那一个常量,产品层按名字取不封顶", async () => {
   const { dbPath, productId, repoIds } = storeWithProduct();
   const [widgets] = repoIds as [number, number, number, number];
   const names: string[] = [];
@@ -424,7 +424,7 @@ test("仓库层封顶在历史 Finding 查询那一个常量,产品层按名字�
       body: `第 ${index} 条定义`,
     });
   }
-  const entries = sessionKnowledge(dbPath, productId, productRepos(dbPath, productId), {
+  const entries = await sessionKnowledge(dbPath, productId, productRepos(dbPath, productId), {
     repos: ["acme/widgets"],
     names,
   });
