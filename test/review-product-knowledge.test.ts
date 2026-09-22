@@ -6,12 +6,11 @@
  * 这里只钉编排层——仓库归在产品下才有目录与查询回调,不在产品下时请求形状一格不变。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store/index.ts";
-import { testCleanups } from "./support/git-fixture.ts";
+import { testCleanups, withTestDb } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -219,9 +218,13 @@ test("一次 query_knowledge 调用进这一轮的审查轨迹", async () => {
   });
   await runReview(EVENT, { ...deps, reviewers: [reviewer] });
 
-  const rows = new DatabaseSync(db.url, { readOnly: true })
-    .prepare("SELECT payload FROM review_trace WHERE scope = 'reviewer' AND kind = 'tool_call'")
-    .all() as unknown as { payload: string }[];
+  const rows = await withTestDb(
+    db.url,
+    async (sql) =>
+      (await sql(
+        "SELECT payload FROM review_trace WHERE scope = 'reviewer' AND kind = 'tool_call'",
+      )) as { payload: string }[],
+  );
   const tools = rows.map((row) => (JSON.parse(row.payload) as { tool: string }).tool);
   assert.deepEqual(tools, ["query_knowledge"]);
 });
