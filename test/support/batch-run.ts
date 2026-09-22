@@ -75,11 +75,13 @@ export async function setup(
   return { repo, cache, db, forge };
 }
 
+/** 绕过 Store 直连测试库跑一句 SQL。占位符是 `$1`、`$2`;写语句回空数组。 */
 export async function query(
   databaseUrl: string,
   sql: string,
+  ...params: unknown[]
 ): Promise<Record<string, unknown>[]> {
-  return await withTestDb(databaseUrl, async (run) => await run(sql));
+  return await withTestDb(databaseUrl, async (run) => await run(sql, ...params));
 }
 
 function findingAt(file: string, said?: { impact: string; suggestion: string }): Omit<Finding, "model"> {

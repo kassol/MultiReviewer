@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type {
@@ -682,7 +681,8 @@ test("Reviewer 作用域的轨迹事件带批次序号", async () => {
 async function verdictRows(databaseUrl: string): Promise<Record<string, unknown>[]> {
   return (await query(
     databaseUrl,
-    "SELECT model, finding_id, verdict, missing FROM finding_verdict ORDER BY rowid",
+    // 主键三列即落库顺序:PostgreSQL 没有 rowid。布尔列取成 0/1 再断言。
+    "SELECT model, finding_id, verdict, missing::int AS missing FROM finding_verdict\n      ORDER BY run_id, model, finding_id",
   )).map((row) => ({
     model: row["model"],
     findingId: row["finding_id"],
@@ -841,11 +841,10 @@ test("只复核时批次只含有未处置历史的文件,每批的 Reviewer 都
     ["verdict-only", "verdict-only"],
   );
   // 改动行数与文件数同一口径:只复核那一轮记的是过滤后那两个文件的行数,不是整段范围的。
-  const runsDb = new DatabaseSync(fixture.db.url);
-  const runs = runsDb
-    .prepare("SELECT changed_files, changed_lines FROM review_run ORDER BY id")
-    .all() as { changed_files: number; changed_lines: number }[];
-  runsDb.close();
+  const runs = (await query(
+    fixture.db.url,
+    "SELECT changed_files, changed_lines FROM review_run ORDER BY id",
+  )) as unknown as { changed_files: number; changed_lines: number }[];
   assert.deepEqual(runs.map((run) => ({ ...run })), [
     { changed_files: 3, changed_lines: 15 },
     { changed_files: 2, changed_lines: 10 },

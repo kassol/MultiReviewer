@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { createDrain, type Drain } from "../src/drain.ts";
@@ -14,7 +13,14 @@ import {
   type Platform,
 } from "../src/webhook/server.ts";
 import { openStore } from "../src/review/store/index.ts";
-import { confirmEmptyRuleSet, makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import {
+  confirmEmptyRuleSet,
+  makeCacheDir,
+  makeTestDatabase,
+  makeRepo,
+  testCleanups,
+  withTestDb,
+} from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
@@ -685,31 +691,20 @@ test("closed 投递触发全量回填并落 PR 状态,不跑审查", async () =>
   // 回填不是 Review Run:没有第二次 getPullRequest,也不占幂等键。
   assert.equal(h.dispatched.length, 1);
 
-  const readState = (): unknown[] => {
-    const sqlite = new DatabaseSync(h.db.url);
-    try {
-      return (sqlite.prepare("SELECT pr_state FROM review_run").all() as {
-        pr_state: unknown;
-      }[]).map((row) => row.pr_state);
-    } finally {
-      sqlite.close();
-    }
-  };
+  const readState = async (): Promise<unknown[]> =>
+    (await withTestDb(h.db.url, async (sql) => await sql("SELECT pr_state FROM review_run"))).map(
+      (row) => row["pr_state"],
+    );
 
-  const sqlite = new DatabaseSync(h.db.url);
-  try {
-    const dispositions = (
-      sqlite.prepare("SELECT disposition FROM finding").all() as { disposition: string }[]
-    ).map((row) => row.disposition);
-    assert.deepEqual(dispositions, ["resolved"]);
-  } finally {
-    sqlite.close();
-  }
-  assert.deepEqual(readState(), ["closed"]);
+  const dispositions = (
+    await withTestDb(h.db.url, async (sql) => await sql("SELECT disposition FROM finding"))
+  ).map((row) => row["disposition"]);
+  assert.deepEqual(dispositions, ["resolved"]);
+  assert.deepEqual(await readState(), ["closed"]);
 
   // 重开:关闭标记清掉,unknown 回到「还在流程中」的档。
   assert.equal((await h.deliver("gitea", "reopened", { headSha: h.repo.headSha })).status, 200);
-  assert.deepEqual(readState(), [null]);
+  assert.deepEqual(await readState(), [null]);
 
   // 转草稿后再关闭:回填不受草稿拦截——评审记录来自 PR 转草稿之前。
   assert.equal(
@@ -718,7 +713,7 @@ test("closed 投递触发全量回填并落 PR 状态,不跑审查", async () =>
   );
   await h.settledAtLeast(3);
   assert.equal(h.settled[2]!.error, undefined);
-  assert.deepEqual(readState(), ["closed"]);
+  assert.deepEqual(await readState(), ["closed"]);
 });
 
 test("未注册仓库的投递回 401,按仓库只记首次", async () => {
@@ -847,9 +842,9 @@ test("容器 PR 的事件按分支前缀丢弃,不触发审查也不进幂等表
   assert.equal((await container("synchronized")).status, 200);
   assert.deepEqual(h.dispatched, []);
 
-  const sqlite = new DatabaseSync(h.db.url);
-  const rows = sqlite.prepare("SELECT COUNT(*) AS n FROM webhook_delivery").all();
-  sqlite.close();
+  const rows = await withTestDb(h.db.url, async (sql) =>
+    await sql("SELECT COUNT(*) AS n FROM webhook_delivery"),
+  );
   assert.equal(Number(rows[0]!["n"]), 0);
 });
 
@@ -870,11 +865,8 @@ test("服务正在排空:投递回 503、不开跑,幂等键也不被占走", as
   assert.ok(h.deliveries.some((line) => line.includes("排空")));
 
   // 排空期间那个 head commit 的幂等键没被占走:起回来之后它仍然审得了。
-  const sqlite = new DatabaseSync(h.db.url);
-  const claimed = sqlite
-    .prepare("SELECT head_sha FROM webhook_delivery")
-    .all()
-    .map((row) => String((row as Record<string, unknown>)["head_sha"]));
-  sqlite.close();
+  const claimed = (
+    await withTestDb(h.db.url, async (sql) => await sql("SELECT head_sha FROM webhook_delivery"))
+  ).map((row) => String(row["head_sha"]));
   assert.deepEqual(claimed, ["sha-1"]);
 });

@@ -13,9 +13,8 @@ import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store/index.ts";
 import { EVENT, FILES, batchReviewer, query, setup } from "./support/batch-run.ts";
-import { testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
 import { HARNESS_PR, startPanelHarness } from "./support/panel-harness.ts";
 
@@ -133,12 +132,13 @@ test("服务正在排空:面板重跑回 503,不开新一轮", async () => {
 test("没有进行中轮次时 SIGTERM 立即退出,退出码 0", async () => {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-drain-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const seed = openStore(join(dir, "multireviewer.db"));
-  await seed.close();
+  const database = await makeTestDatabase();
+  cleanups.push(database.cleanup);
 
   const { child, output, listening } = spawnMain(dir, {
     ...process.env,
-    MULTIREVIEWER_DB: join(dir, "multireviewer.db"),
+    MULTIREVIEWER_DATABASE_URL: database.url,
+    MULTIREVIEWER_DATA_DIR: dir,
     MULTIREVIEWER_CACHE_DIR: join(dir, "worktrees"),
     MULTIREVIEWER_BASE_URL: "http://localhost:3000",
     // 0 让内核挑一个空闲端口,并发跑测试时不会撞上。

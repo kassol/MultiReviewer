@@ -7,7 +7,6 @@
  * 记下 resolve 收到的评论 id,处置结果由 `GET /stage-summary` 读回。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
@@ -21,6 +20,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 
 const PASSWORD = "root-cause-group-test-password";
 
@@ -115,15 +115,10 @@ async function seedRun(
       verdicts: [],
       ...(rootCauses.length === 0 ? {} : { rootCauses }),
     });
-    const findingIds = new DatabaseSync(h.db.url, { readOnly: true });
-    try {
-      const rows = findingIds
-        .prepare("SELECT id FROM finding WHERE run_id = ? ORDER BY group_index")
-        .all(runId) as unknown as { id: number }[];
-      return { runId, findingIds: rows.map((row) => Number(row.id)), groupIds };
-    } finally {
-      findingIds.close();
-    }
+    const rows = await withTestDb(h.db.url, async (sql) =>
+      await sql("SELECT id FROM finding WHERE run_id = $1 ORDER BY group_index", runId),
+    );
+    return { runId, findingIds: rows.map((row) => Number(row["id"])), groupIds };
   } finally {
     await store.close();
   }
@@ -280,14 +275,9 @@ test("成员映完只剩一条:整组不出现,剩下那条按未入组列出", 
     [{ reason: REASON, members: [0, 1] }],
   );
   // a 那条整条交接掉而没有承接者:它映不到当前列表里的任何一行,组只剩 b 一个成员。
-  const db = new DatabaseSync(h.db.url);
-  try {
-    db.prepare("UPDATE finding SET disposition = 'continued' WHERE id = ?").run(
-      seeded.findingIds[0]!,
-    );
-  } finally {
-    db.close();
-  }
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("UPDATE finding SET disposition = 'continued' WHERE id = $1", seeded.findingIds[0]!);
+  });
 
   const body = await summary(h);
   assert.deepEqual(body.rootCauseGroups, []);

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -42,16 +41,18 @@ test("历史审查策略读回整页初始版本，整份替换推一版，陈�
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   await openStore(db.url).close();
-  const seed = new DatabaseSync(db.url);
-  seed.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+  await query(
+    db.url,
+    "INSERT INTO global_setting (key, value) VALUES ($1, $2)",
     "reviewers",
     JSON.stringify([{ provider: "test", model: "legacy" }]),
   );
-  seed.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+  await query(
+    db.url,
+    "INSERT INTO global_setting (key, value) VALUES ($1, $2)",
     "max_changed_lines_per_batch",
     "777",
   );
-  seed.close();
 
   const store = openStore(db.url);
   const legacyJson = JSON.stringify([{ provider: "test", model: "legacy" }]);
@@ -126,7 +127,8 @@ test("Review Run 的元数据落库:仓库、PR、head commit、起止时间、�
     databaseUrl: db.url,
   });
 
-  const rows = (await query(db.url, "SELECT * FROM review_run"));
+  // 布尔列取成 0/1 再断言:断言说的是「这一轮有没有失败」,与列的存储类型无关。
+  const rows = (await query(db.url, "SELECT *, failed::int AS failed FROM review_run"));
   assert.equal(rows.length, 1);
   const run = rows[0]!;
   assert.equal(run["owner"], "acme");
@@ -171,10 +173,8 @@ test("Review Run 的触发者快照可空且不引用用户表", async () => {
   await store.close();
   assert.equal((await query(db.url, "SELECT triggered_by FROM review_run"))[0]!["triggered_by"], "deleted-operator");
 
-  const sqlite = new DatabaseSync(db.url);
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  sqlite.prepare("DELETE FROM panel_user WHERE username = ?").run("deleted-operator");
-  sqlite.close();
+  // PostgreSQL 一律强制外键:删得掉这个账号,正说明 `triggered_by` 只是快照、不是引用。
+  await query(db.url, "DELETE FROM panel_user WHERE username = $1", "deleted-operator");
   assert.equal((await query(db.url, "SELECT triggered_by FROM review_run"))[0]!["triggered_by"], "deleted-operator");
 });
 

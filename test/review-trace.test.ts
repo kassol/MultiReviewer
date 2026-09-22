@@ -326,6 +326,41 @@ test("两轮各记各的轨迹,序号各自从 1 起", async () => {
   }
 });
 
+test("两个连接并发往同一轮次追加事件:序号不撞,一条不丢", async () => {
+  const { cache, db, forge } = (await setup());
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID] })],
+    cacheDir: cache.dir,
+    databaseUrl: db.url,
+  });
+
+  // 两份 store 各开各的连接(池里一条事务占一条连接),同时往同一轮次追加:序号是
+  // `MAX + 1`,不在事务里先锁轮次那一行的话两条会算出同一个号,主键当场撞上(ADR 0036)。
+  const writers = [openStore(db.url), openStore(db.url)];
+  try {
+    const runId = (await writers[0]!.listRuns({ limit: 1 }))[0]!.id;
+    const before = (await writers[0]!.listTrace(runId)).length;
+    const appended = await Promise.all(
+      Array.from({ length: 12 }, (_value, index) =>
+        writers[index % writers.length]!.appendTrace(runId, {
+          scope: "run",
+          kind: "batch_started",
+          payload: { index },
+        }),
+      ),
+    );
+
+    const seqs = appended.map((event) => event.seq).sort((a, b) => a - b);
+    assert.equal(new Set(seqs).size, seqs.length, "并发追加不该拿到同一个序号");
+    assert.deepEqual(seqs, Array.from({ length: 12 }, (_value, i) => before + 1 + i));
+    assert.equal((await writers[0]!.listTrace(runId)).length, before + 12);
+  } finally {
+    for (const writer of writers) await writer.close();
+  }
+});
+
 test("afterSeq 只回它之后的那些事件", async () => {
   const { cache, db, forge } = (await setup());
 

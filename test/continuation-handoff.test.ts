@@ -80,7 +80,8 @@ async function findingRows(databaseUrl: string): Promise<{
 }[]> {
   return (await query(
     databaseUrl,
-    "SELECT disposition, continued_from, handoff_pending FROM finding ORDER BY id",
+    // 布尔列取成 0/1 再断言:断言说的是「标记在不在」,与列的存储类型无关。
+    "SELECT disposition, continued_from, handoff_pending::int AS handoff_pending FROM finding ORDER BY id",
   )).map((row) => ({
     disposition: String(row["disposition"]),
     continuedFrom: row["continued_from"],
