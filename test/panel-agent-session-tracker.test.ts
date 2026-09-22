@@ -8,7 +8,6 @@
  * 照样打得开读得动。写入那一侧(工具与打回)在 `agent-session-subprocess.test.ts`。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
@@ -28,8 +27,6 @@ type Wrote = {
   specs: { id: number; title: string }[];
   tickets: { id: number; title: string }[];
 };
-
-type Record = { seq: number; type: string; entry: { customType?: string; content?: string } };
 
 function as(h: PanelHarness, cookie: string, method: string, path: string): Promise<Response> {
   return fetch(`${h.serverUrl}/api${path}`, { method, headers: { cookie } });
@@ -59,12 +56,6 @@ async function wrote(h: PanelHarness, cookie: string, sessionId: number): Promis
   const text = await response.text();
   assert.equal(response.status, 200, text);
   return (JSON.parse(text) as { wrote: Wrote }).wrote;
-}
-
-async function records(h: PanelHarness, cookie: string, sessionId: number): Promise<Record[]> {
-  const response = await as(h, cookie, "GET", `/agent-sessions/${sessionId}/records`);
-  assert.equal(response.status, 200);
-  return ((await response.json()) as { records: Record[] }).records;
 }
 
 /** 往 tracker 里落一条 spec 与一张票,记在这一场会话名下。写入那一侧由子进程用例把关。 */
@@ -137,103 +128,3 @@ test("定稿与产出两个端点退役:路径不在了,回 404", async () => {
   }
 });
 
-test("升级前的旧库:产出与定稿两张表丢掉,旧的需求拆分会话照样打得开", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const productId = await productWithRepo(h, "报销系统");
-  const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
-  const sessionId = await createSession(h, cookie, productId);
-
-  // 把库退回升级之前的样子:两张旧表带着行,会话记录里也有那时落下的两条条目。
-  const db = new DatabaseSync(h.db.url);
-  db.exec(`CREATE TABLE agent_session_output (
-    session_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    payload TEXT NOT NULL,
-    tool_call_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, kind, version)
-  )`);
-  db.exec(`CREATE TABLE agent_session_output_finalization (
-    session_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    seq INTEGER NOT NULL,
-    from_version INTEGER,
-    to_version INTEGER NOT NULL,
-    finalized_by TEXT NOT NULL,
-    finalized_at TEXT NOT NULL,
-    PRIMARY KEY (session_id, kind, seq)
-  )`);
-  db.prepare(
-    `INSERT INTO agent_session_output (session_id, kind, version, payload, tool_call_id, created_at)
-     VALUES (?, 'requirement-breakdown', 1, '{"summary":"旧的一版"}', 'call-1', ?)`,
-  ).run(sessionId, AT);
-  db.prepare(
-    `INSERT INTO agent_session_output_finalization
-       (session_id, kind, seq, from_version, to_version, finalized_by, finalized_at)
-     VALUES (?, 'requirement-breakdown', 1, NULL, 1, 'member', ?)`,
-  ).run(sessionId, AT);
-  db.close();
-
-  const ZERO = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    totalTokens: 0,
-  };
-  const store = openStore(h.db.url);
-  try {
-    // 旧会话那两条条目:一条产出卡片标记,一条定稿那句话。
-    await store.appendAgentSessionEntry(sessionId, {
-      type: "custom",
-      at: AT,
-      entry: {
-        type: "custom",
-        id: "old-output",
-        parentId: null,
-        customType: "multireviewer-session-output",
-        data: { kind: "requirement-breakdown", version: 1 },
-      },
-      usage: ZERO,
-    });
-    await store.appendAgentSessionEntry(sessionId, {
-      type: "custom_message",
-      at: AT,
-      entry: {
-        type: "custom_message",
-        id: "old-note",
-        parentId: "old-output",
-        customType: "multireviewer-session-note",
-        content: "需求拆分 v1 已定稿。",
-        display: true,
-      },
-      usage: ZERO,
-    });
-  } finally {
-    await store.close();
-  }
-
-  // 下一次开库:两张旧表丢掉,会话读得动、记录一条不少。
-  assert.deepEqual(await wrote(h, cookie, sessionId), { specs: [], tickets: [] });
-  const landed = await records(h, cookie, sessionId);
-  assert.deepEqual(
-    landed.map((record) => record.type),
-    ["custom", "custom_message"],
-  );
-  assert.equal(landed[1]!.entry.content, "需求拆分 v1 已定稿。");
-
-  // 两张旧表真的没了,不是留着不读。
-  const check = new DatabaseSync(h.db.url);
-  try {
-    for (const table of ["agent_session_output", "agent_session_output_finalization"]) {
-      assert.equal(
-        check.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
-        undefined,
-        `${table} 还在`,
-      );
-    }
-  } finally {
-    check.close();
-  }
-});

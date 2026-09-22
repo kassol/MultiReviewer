@@ -6,7 +6,6 @@
  * 系统管理员读得到全部但发消息被拒,以及删会话与删产品级联的条数。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { effectivePanelPermissions, PANEL_PERMISSIONS } from "../src/panel/permissions.ts";
@@ -18,6 +17,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 
 const PASSWORD = "agent-session-test-password";
 const AT = "2026-09-12T00:00:00.000Z";
@@ -373,63 +373,21 @@ test("建会话选基点:外仓库、解析不出的 sha 与形状不对都回�
   assert.deepEqual(await sessions(h, cookie, productId), []);
 });
 
-test("升级前的旧库:开库补上会话那一列,既有会话读作没记过开在哪个 commit", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const productId = await productWithRepo(h, "报销系统");
-  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
-  const created = await createSession(h, owner, productId);
-  const read = async (): Promise<AgentSessionBaseline[]> => {
-    const response = await as(h, owner, "GET", `/agent-sessions/${created.id}`);
-    const text = await response.text();
-    assert.equal(response.status, 200, text);
-    return (JSON.parse(text) as { session: AgentSession }).session.baselines;
-  };
-  const record = async (baselines: AgentSessionBaseline[]): Promise<void> => {
-    const store = openStore(h.db.url);
-    try {
-      await store.setAgentSessionBaselines(created.id, baselines);
-    } finally {
-      await store.close();
-    }
-  };
-  const opened: AgentSessionBaseline = {
-    owner: GITEA_REPO.owner,
-    repo: GITEA_REPO.repo,
-    sha: h.repo.headSha,
-    branch: "feature",
-    kind: "branch",
-  };
-  await record([opened]);
-  assert.deepEqual(await read(), [opened]);
-
-  // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——理由与 `product_repo`
-  // 那一处相同(建表语句里有中文注释,丢最后一列要重写它)。
-  const db = new DatabaseSync(h.db.url);
-  db.exec("ALTER TABLE agent_session RENAME COLUMN baselines TO before_upgrade_baselines");
-  db.close();
-
-  // 下一次开库补列:会话行一条不少,开在哪个 commit 读作没记过,面板因此什么都不显示。
-  assert.deepEqual(await read(), []);
-  assert.deepEqual((await sessions(h, owner, productId)).map((row) => row.id), [created.id]);
-  // 补回来的这一列照样写得进去:下一条消息备好工作树就记上。
-  await record([opened]);
-  assert.deepEqual(await read(), [opened]);
-});
-
 test("来源种类之前记下的基点:行里没有 kind,读回来一律是分支", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const productId = await productWithRepo(h, "报销系统");
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const created = await createSession(h, owner, productId);
   // 直接播种这一票之前那种形状的行:只有 owner / repo / sha / branch。不回填,读时补上。
-  const db = new DatabaseSync(h.db.url);
-  db.prepare("UPDATE agent_session SET baselines = ? WHERE id = ?").run(
-    JSON.stringify([
-      { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
-    ]),
-    created.id,
-  );
-  db.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      "UPDATE agent_session SET baselines = $1 WHERE id = $2",
+      JSON.stringify([
+        { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
+      ]),
+      created.id,
+    );
+  });
 
   const response = await as(h, owner, "GET", `/agent-sessions/${created.id}`);
   const text = await response.text();

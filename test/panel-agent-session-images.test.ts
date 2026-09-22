@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
@@ -135,7 +135,7 @@ async function imageInput(h: PanelHarness, cookie: string, sessionId: number): P
 
 /** 这个会话的图片目录。落点就是库文件所在目录下的 `agent-sessions/<会话 id>`。 */
 function imageDir(h: PanelHarness, sessionId: number): string {
-  return join(dirname(h.db.url), "agent-sessions", String(sessionId));
+  return join(h.db.dataDir, "agent-sessions", String(sessionId));
 }
 
 test("传一张图:文件落 data 目录,库里只有路径与 mimeType,取图走同一道门", async () => {

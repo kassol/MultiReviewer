@@ -8,7 +8,6 @@ import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
@@ -18,6 +17,7 @@ import {
   disposeAgentSessions,
   killChild,
 } from "../src/webhook/agent-session.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 import { HARNESS_SPEC } from "./support/panel-harness.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 import { type StubTurn } from "./support/model-stub.ts";
@@ -144,14 +144,15 @@ test("记录缺了中间一条:重建按截断续得下去,会话上报得出前
     await disposeAgentSessions();
 
     // 人为删掉中间那一条(人说的那句),模拟记录缺损。
-    const db = new DatabaseSync(h.db.url);
     const landed = await records(h, cookie, sessionId);
     const userRow = landed.find((record) => record.entry.message?.role === "user")!;
-    db.prepare("DELETE FROM agent_session_entry WHERE session_id = ? AND seq = ?").run(
-      sessionId,
-      userRow.seq,
-    );
-    db.close();
+    await withTestDb(h.db.url, async (sql) => {
+      await sql(
+        "DELETE FROM agent_session_entry WHERE session_id = $1 AND seq = $2",
+        sessionId,
+        userRow.seq,
+      );
+    });
 
     // 剩下四条:末条顺 parentId 上行一步就指空,它之前的三条因此不在上下文里。
     assert.equal(await droppedFromContext(h, cookie, sessionId), 3);
