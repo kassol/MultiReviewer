@@ -7,14 +7,27 @@ import { customType } from "drizzle-orm/pg-core";
  * 的字典序碰巧对上。JS 侧不跟着换成 `Date`:全项目写入侧一律 `new Date().toISOString()`,
  * 读出来的值要进 JSON 响应、进 prompt、进比较,换成 `Date` 会把三百多处调用点全牵动一遍。
  *
- * 两头都是恒等函数,因为 `store/pg.ts` 已经给 `timestamptz` 装了全局读取解析器:驱动交上来
- * 的就是 ISO 字符串。写入侧把 ISO 字符串原样交给 PostgreSQL 解析。
+ * 读回来的东西有两种形状,因此这里自己归一:走 `store/pg.ts` 那份全局解析器的(旧 SQL)
+ * 拿到的已经是 ISO 字符串;走 Drizzle builder 的拿到的是 PostgreSQL 的原文
+ * (`2026-09-22 03:35:51.705+00`)——Drizzle 给自己装了一份读取解析器,把时刻原样交给列的
+ * `fromDriver`,全局那一份在它的查询上不生效。
  */
 export const isoTimestamp = customType<{ data: string; driverData: string }>({
   dataType: () => "timestamp with time zone",
-  fromDriver: (value) => value,
+  fromDriver: (value) => toIso(value),
   toDriver: (value) => value,
 });
+
+/**
+ * PostgreSQL 的时刻原文换成 ISO。默认 DateStyle 下它长这样:`2026-09-22 03:35:51.705+00`
+ * ——空格分日期与时间,时区只有两位,两处都不是合法的 ISO。已经是 ISO 的原样返回。
+ */
+function toIso(value: string): string {
+  if (value.endsWith("Z")) return value;
+  const spaced = value.replace(" ", "T");
+  const normalized = /[+-]\d\d$/.test(spaced) ? `${spaced}:00` : spaced;
+  return new Date(normalized).toISOString();
+}
 
 /**
  * JSON 列(ADR 0036):库里是 `jsonb`,JS 侧仍是 JSON 文本。
