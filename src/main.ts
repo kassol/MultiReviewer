@@ -116,7 +116,8 @@ const drainTimeoutMs =
     ? drainTimeoutSeconds
     : DEFAULT_DRAIN_TIMEOUT_SECONDS) * 1000;
 
-const server = createWebhookServer({
+// 起服务要先开一次库(bootstrap 口令、改判上一次没跑完的活),因此是异步的(issue #446)。
+const server = await createWebhookServer({
   drain,
   forges: {
     ...(github === undefined ? {} : { github: createGitHubForge({ auth: github }) }),

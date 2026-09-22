@@ -29,7 +29,7 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
     });
     store.close();
   }
-  const server = createWebhookServer({
+  const server = await createWebhookServer({
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,

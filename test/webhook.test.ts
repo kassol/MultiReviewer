@@ -159,7 +159,7 @@ async function startHarness(options: HarnessOptions = {}) {
   const deliveries: string[] = [];
   let waiting: { count: number; resolve: () => void }[] = [];
 
-  const server = createWebhookServer({
+  const server = await createWebhookServer({
     forges: options.omitGiteaForge ? { github: forge } : { github: forge, gitea: forge },
     ...(options.drain === undefined ? {} : { drain: options.drain }),
     // 组装桩:本文件测的是投递链路,不起真的 Pi 子进程,凭据快照也不看。

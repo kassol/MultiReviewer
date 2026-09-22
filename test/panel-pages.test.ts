@@ -37,7 +37,7 @@ async function startPages(options: { withDist?: boolean } = {}) {
     writeFileSync(join(dist, "secret.txt"), "not-served");
   }
 
-  const server = createWebhookServer({
+  const server = await createWebhookServer({
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,
