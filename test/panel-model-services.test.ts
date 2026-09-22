@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { decryptCredential, encryptCredential } from "../src/panel/credential-crypto.ts";
@@ -19,6 +17,7 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
 const PASSWORD = "model-service-reader-password";
@@ -575,7 +574,11 @@ test("最终提交重新发现并真实推理后原子写入加密凭据、目�
     assert.equal(record.directory.failure, null);
     assert.deepEqual(record.automaticModels.map((model) => model.id), preview.models.map((model) => model.id));
     assert.equal(responseText.includes(record.credential.apiKeyEncrypted!), false);
-    assert.equal(readFileSync(h.db.url).includes(Buffer.from(credential)), false);
+    // 库里存的是密文:明文一个字都不该落在凭据那张表上(原先按 SQLite 库文件的字节判)。
+    await withTestDb(h.db.url, async (sql) => {
+      const rows = await sql("SELECT * FROM model_service_credential");
+      assert.equal(JSON.stringify(rows).includes(credential), false);
+    });
     const settingsAfter = await (await h.api("GET", "/settings")).json();
     assert.deepEqual(settingsAfter, settingsBefore, "创建模型服务不得自动修改全局模型组合");
   } finally {
@@ -1017,16 +1020,18 @@ test("删除内置凭据列出全部引用位置，清空引用后才原子推�
     key: "explicit-key",
   }), true);
   await seed.close();
-  const legacyReferences = new DatabaseSync(h.db.url);
-  legacyReferences.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
-    "reviewers",
-    JSON.stringify([{ provider: "deepseek", model: "global-model" }]),
-  );
-  legacyReferences.prepare("UPDATE repo SET reviewers = ? WHERE id = ?").run(
-    JSON.stringify([{ provider: "deepseek", model: "override-model" }]),
-    1352,
-  );
-  legacyReferences.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      "INSERT INTO global_setting (key, value) VALUES ($1, $2)",
+      "reviewers",
+      JSON.stringify([{ provider: "deepseek", model: "global-model" }]),
+    );
+    await sql(
+      "UPDATE repo SET reviewers = $1 WHERE id = $2",
+      JSON.stringify([{ provider: "deepseek", model: "override-model" }]),
+      1352,
+    );
+  });
 
   const forbidden = await mutation(
     h,
@@ -1129,16 +1134,18 @@ test("辅助模型与模型组合同等受引用保护:两处位置进引用清�
   }), true);
   await seed.close();
   // 两处辅助模型,谁都不在任何模型组合里:引用保护认它们,与组合那两处同等(issue #303)。
-  const fixture = new DatabaseSync(h.db.url);
-  fixture.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
-    "auxiliary_model",
-    JSON.stringify({ provider: "aux-service", model: "global-auxiliary" }),
-  );
-  fixture.prepare("UPDATE repo SET auxiliary_model = ? WHERE id = ?").run(
-    JSON.stringify({ provider: "aux-service", model: "repo-auxiliary", thinkingLevel: "high" }),
-    1361,
-  );
-  fixture.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      "INSERT INTO global_setting (key, value) VALUES ($1, $2)",
+      "auxiliary_model",
+      JSON.stringify({ provider: "aux-service", model: "global-auxiliary" }),
+    );
+    await sql(
+      "UPDATE repo SET auxiliary_model = $1 WHERE id = $2",
+      JSON.stringify({ provider: "aux-service", model: "repo-auxiliary", thinkingLevel: "high" }),
+      1361,
+    );
+  });
 
   const blocked = await mutation(
     h,
@@ -1172,10 +1179,10 @@ test("辅助模型与模型组合同等受引用保护:两处位置进引用清�
   );
 
   // 两处都清掉之后才删得动。
-  const clear = new DatabaseSync(h.db.url);
-  clear.prepare("DELETE FROM global_setting WHERE key = 'auxiliary_model'").run();
-  clear.prepare("UPDATE repo SET auxiliary_model = NULL WHERE id = ?").run(1361);
-  clear.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("DELETE FROM global_setting WHERE key = 'auxiliary_model'");
+    await sql("UPDATE repo SET auxiliary_model = NULL WHERE id = $1", 1361);
+  });
   const deleted = await mutation(
     h,
     writerCookie,
@@ -2827,15 +2834,17 @@ test("冲突 provider 改名同事务重写辅助模型引用:全局与仓库覆
   await seed.close();
   // 两处辅助模型引用这家服务,模型组合一处都没有:改名要连它们一起换,不然引用指向一个
   // 不存在的 provider(CONTEXT.md 自定义 provider)。
-  const fixture = new DatabaseSync(h.db.url);
-  fixture.prepare("INSERT INTO global_setting (key, value) VALUES ('auxiliary_model', ?)").run(
-    JSON.stringify({ provider: "openai", model: "automatic-model" }),
-  );
-  fixture.prepare("UPDATE repo SET auxiliary_model = ? WHERE id = ?").run(
-    JSON.stringify({ provider: "openai", model: "automatic-model", thinkingLevel: "high" }),
-    1371,
-  );
-  fixture.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      "INSERT INTO global_setting (key, value) VALUES ('auxiliary_model', $1)",
+      JSON.stringify({ provider: "openai", model: "automatic-model" }),
+    );
+    await sql(
+      "UPDATE repo SET auxiliary_model = $1 WHERE id = $2",
+      JSON.stringify({ provider: "openai", model: "automatic-model", thinkingLevel: "high" }),
+      1371,
+    );
+  });
 
   const renamed = await mutation(
     h,
@@ -2889,20 +2898,22 @@ test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数�
     disabledReason: "name-conflict",
   })), 1);
   await seed.close();
-  const sqlite = new DatabaseSync(h.db.url);
-  sqlite.prepare(
-    "INSERT INTO global_setting (key, value) VALUES ('reviewers', ?)",
-  ).run(JSON.stringify([{ provider: "openai", model: "missing-global" }]));
-  sqlite.prepare(
-    `INSERT INTO repo (id, owner, repo, reviewers, registered_at)
-     VALUES (71, 'acme', 'blocked', ?, '2026-08-20T12:00:00.000Z')`,
-  ).run(JSON.stringify([{ provider: "openai", model: "missing-repo" }]));
-  const before = {
-    services: sqlite.prepare("SELECT * FROM model_service ORDER BY provider").all(),
-    settings: sqlite.prepare("SELECT * FROM global_setting ORDER BY key").all(),
-    repos: sqlite.prepare("SELECT * FROM repo ORDER BY id").all(),
-  };
-  sqlite.close();
+  const before = await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      "INSERT INTO global_setting (key, value) VALUES ('reviewers', $1)",
+      JSON.stringify([{ provider: "openai", model: "missing-global" }]),
+    );
+    await sql(
+      `INSERT INTO repo (id, owner, repo, reviewers, registered_at)
+       VALUES (71, 'acme', 'blocked', $1, '2026-08-20T12:00:00.000Z')`,
+      JSON.stringify([{ provider: "openai", model: "missing-repo" }]),
+    );
+    return {
+      services: await sql("SELECT * FROM model_service ORDER BY provider"),
+      settings: await sql("SELECT * FROM global_setting ORDER BY key"),
+      repos: await sql("SELECT * FROM repo ORDER BY id"),
+    };
+  });
 
   const response = await mutation(
     h,
@@ -2934,13 +2945,13 @@ test("冲突 provider 改名返回完整缺失引用并保持 HTTP 前后的数�
     },
   ]);
 
-  const after = new DatabaseSync(h.db.url, { readOnly: true });
-  assert.deepEqual({
-    services: after.prepare("SELECT * FROM model_service ORDER BY provider").all(),
-    settings: after.prepare("SELECT * FROM global_setting ORDER BY key").all(),
-    repos: after.prepare("SELECT * FROM repo ORDER BY id").all(),
-  }, before);
-  after.close();
+  await withTestDb(h.db.url, async (sql) => {
+    assert.deepEqual({
+      services: await sql("SELECT * FROM model_service ORDER BY provider"),
+      settings: await sql("SELECT * FROM global_setting ORDER BY key"),
+      repos: await sql("SELECT * FROM repo ORDER BY id"),
+    }, before);
+  });
 });
 
 test("自定义服务删除返回完整引用阻断，失败整笔回滚，成功后历史 Review Run 保留", async () => {
@@ -3063,15 +3074,14 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   assert.equal(await putGlobalSettings(unlink, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
   assert.equal(await putRepoReviewers(unlink, 8202, null), true);
   await unlink.close();
-  const sqlite = new DatabaseSync(h.db.url);
-  sqlite.exec(`
-    CREATE TRIGGER reject_corp_delete
-    BEFORE DELETE ON model_directory
-    WHEN OLD.provider = 'corp-delete'
-    BEGIN
-      SELECT RAISE(ABORT, 'injected model service delete failure');
-    END
-  `);
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(`CREATE FUNCTION reject_corp_delete() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'injected model service delete failure'; END $$ LANGUAGE plpgsql`);
+    await sql(`CREATE TRIGGER reject_corp_delete
+      BEFORE DELETE ON model_directory FOR EACH ROW
+      WHEN (OLD.provider = 'corp-delete')
+      EXECUTE FUNCTION reject_corp_delete()`);
+  });
   const failedResponse = await mutation(
     h,
     cookie,
@@ -3085,7 +3095,10 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   const afterFailure = openStore(h.db.url);
   assert.deepEqual(await afterFailure.getModelService(provider), before);
   await afterFailure.close();
-  sqlite.exec("DROP TRIGGER reject_corp_delete");
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("DROP TRIGGER reject_corp_delete ON model_directory");
+    await sql("DROP FUNCTION reject_corp_delete");
+  });
 
   const staleResponse = await mutation(
     h,
@@ -3105,19 +3118,21 @@ test("自定义服务删除返回完整引用阻断，失败整笔回滚，成�
   const deletedText = await deletedResponse.text();
   assert.equal(deletedResponse.status, 200, deletedText);
   assert.deepEqual(JSON.parse(deletedText), { provider, deleted: true });
-  for (const table of [
-    "model_service",
-    "model_service_credential",
-    "model_directory",
-    "model_directory_model",
-    "model_supplement",
-  ]) {
-    const count = sqlite
-      .prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE provider = ?`)
-      .get(provider);
-    assert.equal(Number(count?.["count"]), 0, `${table} 仍有被删服务的行`);
-  }
-  sqlite.close();
+  await withTestDb(h.db.url, async (sql) => {
+    for (const table of [
+      "model_service",
+      "model_service_credential",
+      "model_directory",
+      "model_directory_model",
+      "model_supplement",
+    ]) {
+      const [count] = await sql(
+        `SELECT COUNT(*) AS count FROM ${table} WHERE provider = $1`,
+        provider,
+      );
+      assert.equal(Number(count?.["count"]), 0, `${table} 仍有被删服务的行`);
+    }
+  });
   const historyStore = openStore(h.db.url);
   const history = await historyStore.listRuns({ limit: 10 });
   await historyStore.close();
