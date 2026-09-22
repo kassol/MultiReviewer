@@ -14,7 +14,6 @@ import { assertReviewerSpecs, type ReviewerSpec } from "../../config.ts";
 import type {
   CarriedAttribution,
   Category,
-  KnowledgeType,
   ReviewerUsage,
   ReviewTriggerSource,
   Severity,
@@ -28,10 +27,6 @@ import type {
   ModelSupplementSource,
   AgentSessionPendingMessage,
   ModelServiceVersionCommit,
-  ReviewRuleInput,
-  RuleProposal,
-  RuleProposalInput,
-  RuleProposalSourceInput,
   StageRowEntry,
   StageScope,
   Store,
@@ -319,9 +314,9 @@ export const STAGE_ID_FROM_RUN = `CASE
  *   同一条连接上,混用没有问题。
  * - `transaction(mode, async tx => …)` 见 `store/pg.ts`。
  * - `store()` 惰性取整份 store:方法之间互相调用时用它(装配那一刻 store 还没拼好)。
- * - 其余是开库时建出来的共用闭包。**只被一个域用到的那些**(知识域的 13 个、仓库域的 6 个、
- *   阶段域的 1 个)也在这里:它们本来长在 `openStore` 里,留在那儿会让六票都去改同一段。
- *   哪一票把自己那一域搬走,就顺手把它那几个也搬走。
+ * - 其余是开库时建出来的共用闭包。**只被一个域用到的那些**(仓库域的 6 个、阶段域的 1 个)
+ *   也在这里:它们本来长在 `openStore` 里,留在那儿会让六票都去改同一段。哪一票把自己那
+ *   一域搬走,就顺手把它那几个也搬走——知识域那 13 个已经随 #454 搬进 `knowledge.ts`。
  */
 export type StoreContext = StoreHelpers & {
   db: Db;
@@ -509,23 +504,13 @@ export function boundTargetForModel(
   return bound === undefined ? undefined : { target: bound, source: "service-target" };
 }
 
-/**
- * 一条提案采纳前算得出来的全部东西:队列里那一条、实际要落的内容、以及修改与废止的
- * 目标条目此刻的出处。单条与批量共用它,判据因此只有一份;算不出来即这一条采纳不了。
- */
-export type PlannedAcceptance = {
-  queued: RuleProposal;
-  content: ReviewRuleInput;
-  targetOrigin: string | undefined;
-};
-
 export function storeHelpers(base: {
   db: Db;
   orm: Orm;
   transaction<T>(mode: TransactionMode, run: (tx: StoreTransaction) => Promise<T>): Promise<T>;
   store: () => Store;
 }) {
-  const { db, transaction } = base;
+  const { db } = base;
   // 惰性取 store:`storeHelpers` 跑在装配那一刻,那时 store 还没拼好。
   const store = (): Store => base.store();
   const parseStoredReviewers = (reviewersJson: string, context: string): ReviewerSpec[] =>
@@ -689,206 +674,6 @@ export function storeHelpers(base: {
     return entry.item.stageId === stageId ? entry : undefined;
   };
 
-  const repoExists = async (repoId: number): Promise<boolean> =>
-    (await db.prepare("SELECT 1 FROM repo WHERE id = ?").get(repoId)) !== undefined;
-
-  /**
-   * 这条知识条目还生效吗:生效即回它的出处与两型之一(改一条要沿用出处、废止一条要
-   * 说得出它是规则还是事实),否则回 undefined。
-   */
-  const activeRule = async (
-    repoId: number,
-    ruleId: number,
-  ): Promise<{ origin: string; type: KnowledgeType } | undefined> => {
-    const row = (await db
-      .prepare(
-        "SELECT origin, type FROM review_rule WHERE id = ? AND repo_id = ? AND retired_version IS NULL",
-      )
-      .get(ruleId, repoId));
-    return row === undefined
-      ? undefined
-      : { origin: String(row["origin"]), type: String(row["type"]) as KnowledgeType };
-  };
-
-  const insertReviewRule = async (
-    repoId: number,
-    input: ReviewRuleInput,
-    origin: string,
-    version: number,
-    at: string,
-  ): Promise<void> => {
-    // layer 是退役的层标签,列还在(NOT NULL)但没人读:新行一律写空串。
-    (await db.prepare(
-      `INSERT INTO review_rule
-         (repo_id, type, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
-       VALUES (?, ?, ?, ?, '', 'active', ?, ?, NULL, ?)`,
-    ).run(repoId, input.type, input.scope, input.statement, origin, version, at));
-  };
-
-  /**
-   * 这个仓库此刻有没有规则 agent 任务在跑(issue #284)。「同仓库同时只跑一个」跨基点
-   * 探索与知识整理两张表:两者都要读这个仓库的知识集与队列,同时跑会互相看着对方的
-   * 中间态。判据只有这一份,两个发起口共用。
-   */
-  const ruleTaskRunning = async (repoId: number): Promise<boolean> =>
-    (await db
-      .prepare(
-        `SELECT 1 FROM rule_exploration WHERE repo_id = ? AND state = 'running'
-         UNION ALL
-         SELECT 1 FROM rule_consolidation WHERE repo_id = ? AND state = 'running'`,
-      )
-      .get(repoId, repoId)) !== undefined;
-
-  const completeRuleExploration = async (repoId: number, at: string): Promise<void> => {
-    (await db.prepare(
-      "UPDATE rule_exploration SET state = 'completed', failure = NULL, finished_at = ? WHERE repo_id = ?",
-    ).run(at, repoId));
-  };
-
-  /** 往一条提案上追加一条出处附注(issue #281)。入队与之后的每一次来源共用它。 */
-  const insertRuleProposalSource = async (
-    proposalId: number,
-    source: RuleProposalSourceInput,
-    at: string,
-  ): Promise<void> => {
-    (await db.prepare(
-      `INSERT INTO rule_proposal_source
-         (proposal_id, origin, note, evidence, finding_id, trace_task_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      proposalId,
-      source.origin,
-      source.note,
-      source.evidence,
-      source.findingId,
-      source.traceTaskId,
-      at,
-    ));
-  };
-
-  const insertRuleProposal = async (repoId: number, input: RuleProposalInput, at: string): Promise<number> => {
-    const inserted = (await db
-      .prepare(
-        `INSERT INTO rule_proposal
-           (repo_id, type, change, target_rule_ids, scope, statement, layer, state, created_at,
-            decided_at)
-         VALUES (?, ?, ?, ?, ?, ?, '', 'pending', ?, NULL)`,
-      )
-      .run(
-        repoId,
-        input.type,
-        input.change,
-        JSON.stringify(input.targetRuleIds),
-        input.scope,
-        input.statement,
-        at,
-      ));
-    const proposalId = Number(inserted.lastInsertRowid);
-    for (const source of input.sources) (await insertRuleProposalSource(proposalId, source, at));
-    return proposalId;
-  };
-
-  /** 这条提案还等着裁决吗:是即回它自己,否则回 undefined(裁决过的裁不了第二次)。 */
-  const pendingProposal = async (repoId: number, proposalId: number): Promise<RuleProposal | undefined> =>
-    (await store().getRuleProposals(repoId))
-      .find((row) => row.id === proposalId && row.state === "pending");
-
-  const plannedAcceptance = async (
-    repoId: number,
-    proposalId: number,
-  ): Promise<PlannedAcceptance | undefined> => {
-    const queued = (await pendingProposal(repoId, proposalId));
-    if (queued === undefined) return undefined;
-    const content = {
-      type: queued.type,
-      scope: queued.scope,
-      statement: queued.statement,
-    };
-    // 修改、废止与合并都要目标条目此刻仍然生效:其中一条已经被人废止掉时,这条提案
-    // 落不下去(合并那一档同一条判据,只是要逐条都还生效,issue #282)。
-    const targets: ({ origin: string; type: KnowledgeType } | undefined)[] = [];
-    for (const id of queued.targetRuleIds) targets.push(await activeRule(repoId, id));
-    if (queued.change !== "add" && targets.some((target) => target === undefined)) {
-      return undefined;
-    }
-    const target = targets[0];
-    // 修改不许翻型(评审复核):采纳一条 modify 把规则悄悄变成事实,那条从此不再产
-    // Finding,面板上只是换了个徽章。要改型走「废止 + 新增」两条,意图才看得见。
-    // 合并不设这道闸:几条目标本来就可能两型混杂,合成的那一条是哪一型由人裁决时看。
-    if (queued.change === "modify" && target !== undefined && content.type !== target.type) {
-      return undefined;
-    }
-    return { queued, content, targetOrigin: target?.origin };
-  };
-
-  /** 采纳一条提案在写事务里做的那几笔。版本号由调用方给:批量采纳全组共用同一个。 */
-  const applyAcceptance = async (
-    repoId: number,
-    planned: PlannedAcceptance,
-    version: number,
-    at: string,
-  ): Promise<void> => {
-    const { queued, content, targetOrigin } = planned;
-    if (queued.change === "add") {
-      // 新条目的出处取第一条附注的来源(issue #281):那一次是提出它的那一次,之后追加
-      // 的附注说的是「同一件事又被提了一遍」,不改变它当初从哪来。附注至少有一条。
-      (await insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at));
-    } else {
-      for (const targetId of queued.targetRuleIds) (await retireRuleRow(targetId, version));
-      // 修改沿用旧行的出处:改文字不改变这条条目当初从哪来(issue #203 同一条口径)。
-      if (queued.change === "modify") {
-        (await insertReviewRule(repoId, content, targetOrigin!, version, at));
-      }
-      // 合并的那一条是新写的一句,不是哪一条目标的延续:出处与新增同一条口径,取提案
-      // 第一条附注的来源(issue #282)。几条目标的出处各不相同时也没有一份可沿用。
-      if (queued.change === "merge") {
-        (await insertReviewRule(repoId, content, queued.sources[0]!.origin, version, at));
-      }
-    }
-    (await db.prepare(
-      `UPDATE rule_proposal
-          SET state = 'accepted', type = ?, scope = ?, statement = ?, decided_at = ?
-        WHERE id = ?`,
-    ).run(content.type, content.scope, content.statement, at, queued.id));
-  };
-
-  const rejectProposalRow = async (proposalId: number, at: string): Promise<void> => {
-    (await db.prepare("UPDATE rule_proposal SET state = 'rejected', decided_at = ? WHERE id = ?").run(
-      at,
-      proposalId,
-    ));
-  };
-
-  const retireRuleRow = async (ruleId: number, version: number): Promise<void> => {
-    (await db.prepare(
-      "UPDATE review_rule SET state = 'retired', retired_version = ? WHERE id = ?",
-    ).run(version, ruleId));
-  };
-
-  /**
-   * 推进一版知识集版本,在同一个写事务里跑规则那几行改动。知识集版本与它带来的规则
-   * 变更必须一起落:落了版本没落规则,那一版的快照就是错的。
-   */
-  const inRuleSetVersion = async <T>(
-    repoId: number,
-    write: (version: number, at: string) => Promise<T>,
-  ): Promise<T> => {
-    return transaction("deferred", async () => {
-      // 先锁住这个仓库那一行(ADR 0036):版本号是 `MAX + 1`,不锁的话两次并发的确认会算出
-      // 同一个号,主键当场撞上。SQLite 那一版靠的是单写者锁。
-      (await db.prepare("SELECT 1 FROM repo WHERE id = ? FOR UPDATE").get(repoId));
-      const current = (await db
-        .prepare("SELECT MAX(version) AS version FROM rule_set_version WHERE repo_id = ?")
-        .get(repoId))?.["version"];
-      const version = (current === null || current === undefined ? 0 : Number(current)) + 1;
-      const at = new Date().toISOString();
-      (await db.prepare(
-        "INSERT INTO rule_set_version (repo_id, version, created_at) VALUES (?, ?, ?)",
-      ).run(repoId, version, at));
-      const result = write(version, at);
-      return result;
-    });
-  };
   return {
     parseStoredReviewers,
     parseAuxiliaryModel,
@@ -899,18 +684,5 @@ export function storeHelpers(base: {
     referencedModels,
     recordSupportsCurrentReferences,
     stageRowById,
-    repoExists,
-    activeRule,
-    insertReviewRule,
-    ruleTaskRunning,
-    completeRuleExploration,
-    insertRuleProposalSource,
-    insertRuleProposal,
-    pendingProposal,
-    plannedAcceptance,
-    applyAcceptance,
-    rejectProposalRow,
-    retireRuleRow,
-    inRuleSetVersion,
   };
 }
