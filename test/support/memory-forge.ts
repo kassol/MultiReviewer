@@ -252,7 +252,7 @@ export function scriptedReviewer(
         productKnowledge,
       });
       for (const query of extra?.reads ?? []) {
-        if (queryKnowledge !== undefined) knowledgeReads.push(queryKnowledge(query));
+        if (queryKnowledge !== undefined) knowledgeReads.push(await queryKnowledge(query));
       }
       for (const event of extra?.events ?? []) onEvent?.(event);
       return {

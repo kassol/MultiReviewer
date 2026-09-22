@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 
+import { relay } from "../async.ts";
 import type {
   Finding,
   FindingVerdict,
@@ -44,31 +45,37 @@ export function createPiReviewer(config: PiReviewerConfig): Reviewer {
  * ——查不动时带上原因,不然子进程那边的工具调用永远等下去。
  *
  * 查询回调缺席时也回一条:那时子进程本不该注册这件工具,回一句比让它挂着强。
+ *
+ * 回调可同步可异步(issue #447):同步那一份当场回音(与异步化之前逐字一致),异步那一
+ * 份查完再回,失败的那一档两路同形。
  */
-function knowledgeAnswer(
+function answerKnowledgeQuery(
   requestId: string,
   query: SessionKnowledgeQuery,
-  read: ((query: SessionKnowledgeQuery) => SessionKnowledgeEntries) | undefined,
-): ReviewerCommand {
-  const empty = { product: [], repo: [] };
+  read:
+    | ((query: SessionKnowledgeQuery) => SessionKnowledgeEntries | Promise<SessionKnowledgeEntries>)
+    | undefined,
+  reply: (command: ReviewerCommand) => void,
+): void {
+  const failed = (failure: string): void => {
+    reply({
+      kind: "knowledge-query-result",
+      requestId,
+      entries: { product: [], repo: [] },
+      failure,
+    });
+  };
   if (read === undefined) {
-    return {
-      kind: "knowledge-query-result",
-      requestId,
-      entries: empty,
-      failure: "this repository is not in a product, so nothing is written down to read",
-    };
+    failed("this repository is not in a product, so nothing is written down to read");
+    return;
   }
-  try {
-    return { kind: "knowledge-query-result", requestId, entries: read(query) };
-  } catch (error) {
-    return {
-      kind: "knowledge-query-result",
-      requestId,
-      entries: empty,
-      failure: error instanceof Error ? error.message : String(error),
-    };
-  }
+  relay(
+    () => read(query),
+    (entries) => {
+      reply({ kind: "knowledge-query-result", requestId, entries });
+    },
+    (error) => failed(error instanceof Error ? error.message : String(error)),
+  );
 }
 
 /**
@@ -154,7 +161,7 @@ export async function runInChild(
     payload: request,
     onMessage: (message, reply) => {
       if (message.kind === "knowledge-query") {
-        reply(knowledgeAnswer(message.requestId, message.query, queryKnowledge));
+        answerKnowledgeQuery(message.requestId, message.query, queryKnowledge, reply);
         return;
       }
       if (message.kind === "finding") {

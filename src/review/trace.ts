@@ -10,8 +10,13 @@
  */
 import { EventEmitter } from "node:events";
 
-import { relay } from "../async.ts";
-import type { AgentSessionEntryRecord, RuleTraceSource, Store } from "./store.ts";
+import { isThenable, relay } from "../async.ts";
+import type {
+  AgentSessionEntryRecord,
+  AsyncStore,
+  RuleTraceSource,
+  Store,
+} from "./store.ts";
 
 /** 事件挂在轮次上还是挂在某个 Reviewer 上。 */
 export type TraceScope = "run" | "reviewer";
@@ -272,38 +277,58 @@ export function endTrace(channel: string): void {
   emitter.emit("end");
 }
 
-/** 一轮的轨迹写入口。落库与广播是同一个动作,不可能只做一半。 */
+/**
+ * 一轮的轨迹写入口。落库与广播是同一个动作,不可能只做一半。
+ *
+ * 三个方法的返回值是 `void | Promise<void>`(issue #447):库是同步的那一路当场落完
+ * (与异步化之前逐字一致),是异步门面的那一路给回这一条的落库承诺。调用方不 await
+ * 也不乱序——落库排在写入口自己的那条链上,见 `createTraceRecorder`。
+ */
 export type TraceRecorder = {
   /** 轮次级的编排事件。 */
-  run(kind: RunTraceKind, payload: unknown): void;
+  run(kind: RunTraceKind, payload: unknown): void | Promise<void>;
   /** 某个 Reviewer 的事件。`reviewer` 是模型标识。 */
-  reviewer(reviewer: string, kind: ReviewerTraceKind, payload: unknown): void;
+  reviewer(reviewer: string, kind: ReviewerTraceKind, payload: unknown): void | Promise<void>;
+  /** 排在前面的事件都落完了。关库与 `endTrace` 之前等它,否则会把还没落的那几条丢掉。 */
+  settle(): void | Promise<void>;
 };
 
 /**
  * 建一轮的轨迹写入口。事件落库失败只记日志:少一条过程记录是小事,一次审查因此白跑
  * 不是——轨迹记的是过程,处置与统计不读它。
+ *
+ * 落库排成一条链(issue #447):下一条等上一条落完再写。事件流一多半来自 `onEvent`
+ * 这类同步回调,它们 await 不了;不串起来的话异步那一路的 seq 与 SSE 发出的顺序都会
+ * 跟着调度走。同步那一路链上恒是空的,每一条当场落完。
  */
-export function createTraceRecorder(store: Store, runId: number): TraceRecorder {
+export function createTraceRecorder(store: Store | AsyncStore, runId: number): TraceRecorder {
   const channel = runChannel(runId);
-  const append = (input: TraceEventInput): void => {
-    let event: TraceEvent;
-    try {
-      event = store.appendTrace(runId, input);
-    } catch (error) {
-      console.error(
-        "[review] 审查轨迹落库失败,审查照常:",
-        error instanceof Error ? error.message : String(error),
+  const failed = (error: unknown): void => {
+    console.error(
+      "[review] 审查轨迹落库失败,审查照常:",
+      error instanceof Error ? error.message : String(error),
+    );
+  };
+
+  let tail: void | Promise<void>;
+  const append = (input: TraceEventInput): void | Promise<void> => {
+    const write = (): void | Promise<void> =>
+      relay(
+        () => store.appendTrace(runId, input),
+        (event: TraceEvent) => {
+          publishTrace(channel, event);
+        },
+        failed,
       );
-      return;
-    }
-    publishTrace(channel, event);
+    tail = isThenable(tail) ? tail.then(write) : write();
+    return tail;
   };
 
   return {
     run: (kind, payload) => append({ scope: "run", kind, payload }),
     reviewer: (reviewer, kind, payload) =>
       append({ scope: "reviewer", reviewer, kind, payload }),
+    settle: () => tail,
   };
 }
 
