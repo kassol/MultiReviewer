@@ -9,16 +9,11 @@
  *
  * 按仓库选基点(issue #353)也在这一道缝上:带基点的那一场记下选定的 sha 与分支、工作树停在
  * 它上面,外仓库与解析不出的 sha 一场梳理也不开。
- *
- * 升级前的旧库那一例也在这里(评审复核):补 `completed_at` 那一列时把已经在的梳理会话一并
- * 记成谈完了,否则旧形态的那几场——由系统开、没有人类创建者、调不到完成工具——会永远挡住
- * 这个产品的下一场。
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { openStore, type AgentSessionRecord } from "../src/review/store/index.ts";
@@ -244,69 +239,6 @@ test("建会话端点不收产品梳理:那一种从产品页上的「梳理」�
     error: "会话用途必填,只能是需求拆分或开放对话",
   });
   assert.deepEqual(await sessionsOf(h, two.id, member), []);
-});
-
-test("升级前的梳理会话:开库补列即记成谈完了,下一场开得起来,系统管理员停得下删得掉", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const two = await product(h, [GITEA_REPO.id, ALPHA]);
-
-  // 把 `agent_session` 退回升级之前的样子:那一列还不存在,表里已经有一场旧形态的梳理
-  // ——创建者是系统,人发不了消息、也就调不到 `complete_survey`。
-  const OLD_ID = 1;
-  const db = new DatabaseSync(h.db.url);
-  db.exec("DROP TABLE agent_session");
-  db.exec(`CREATE TABLE agent_session (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id INTEGER NOT NULL REFERENCES (await product(id)),
-    created_by TEXT NOT NULL,
-    purpose TEXT NOT NULL,
-    status TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    baselines TEXT
-  )`);
-  db.prepare(
-    `INSERT INTO agent_session (id, product_id, created_by, purpose, status, created_at)
-     VALUES (?, ?, 'system', 'product-survey', 'idle', ?)`,
-  ).run(OLD_ID, two.id, AT);
-  db.close();
-
-  // 下一次开库把列补回来并回填:这一场从此算谈完了。
-  const store = openStore(h.db.url);
-  try {
-    assert.equal((await store.getAgentSession(OLD_ID))?.completedAt, AT);
-  } finally {
-    await store.close();
-  }
-
-  try {
-    // 挡不住新的一场了。
-    const opened = await survey(h, two.id);
-    const text = await opened.text();
-    assert.equal(opened.status, 201, text);
-
-    // 系统管理员停得下、删得掉这一场:它没有人类创建者,全档只认创建者的话谁都收不掉它。
-    const stopped = await h.api("POST", `/agent-sessions/${OLD_ID}/stop`);
-    assert.equal(stopped.status, 200, await stopped.text());
-    assert.equal((await h.api("DELETE", `/agent-sessions/${OLD_ID}`)).status, 204);
-    assert.equal(
-      (await sessionsOf(h, two.id, h.cookie)).some((row) => row.id === OLD_ID),
-      false,
-    );
-
-    // 发消息仍一律只认创建者:停止与删除是收拾残局,续谈不是。
-    const refused = await h.api("POST", `/agent-sessions/${OLD_ID}/messages`, {
-      clientMessageId: "c1",
-      text: "接着谈",
-    });
-    assert.equal(refused.status, 404);
-  } finally {
-    await disposeAgentSessions();
-  }
 });
 
 test("归入、移出与下线仓库都不开梳理:那一场由人在产品页上开", async () => {

@@ -7,7 +7,7 @@
  * 投递。harness 那套在进程内起服务,测不到信号与退出;先例是 `drain.test` / `main-boot.test`。
  *
  * 库按 schema 直接播种(用户、角色、注册表、产品、会话、模型服务):要的是一个「已经在用」的
- * 实例,而不是把面板的建表流程再走一遍。
+ * 实例,而不是把面板的建表流程再走一遍。真进程与用例连的是同一个测试库。
  */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -15,15 +15,15 @@ import type { AddressInfo } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { CREDENTIAL_MASTER_KEY_ENV } from "../src/panel/credential-crypto.ts";
 import { openStore } from "../src/review/store/index.ts";
-import { makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { makeRepo, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { startFakeGitea } from "./support/fake-gitea.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
 import { startModelStub, type StubTurn } from "./support/model-stub.ts";
+import { putGlobalSettings } from "./support/store-seed.ts";
 import {
   GITEA_REPO,
   HARNESS_SPEC,
@@ -64,7 +64,9 @@ async function until(what: string, ready: () => boolean | Promise<boolean>): Pro
 test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启后发消息时重建并投递中止前的队列", async () => {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-session-drain-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const databaseUrl = join(dir, "multireviewer.db");
+  const database = await makeTestDatabase();
+  cleanups.push(() => database.cleanup());
+  const databaseUrl = database.url;
   const repo = makeRepo({
     base: { "src/answer.ts": "export const answer = 1;\n" },
     head: { "src/answer.ts": "export const answer = 2;\n" },
@@ -117,6 +119,8 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     purpose: "requirement-breakdown",
     createdAt: AT,
   });
+  // 全局模型组合代表升级前已存在的状态,与 harness 同一做法:运行期写要走设置页的门禁。
+  await putGlobalSettings(store, { reviewersJson: JSON.stringify([HARNESS_SPEC]) });
   await store.close();
   await seedAvailableModelService(
     { db: { url: databaseUrl } },
@@ -125,17 +129,11 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
     {},
     stub.baseUrl,
   );
-  // 全局模型组合代表升级前已存在的状态,与 harness 同一做法:运行期写要走设置页的门禁。
-  const seed = new DatabaseSync(databaseUrl);
-  seed
-    .prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)")
-    .run("reviewers", JSON.stringify([HARNESS_SPEC]));
-  seed.close();
-
   const port = await freePort();
   const env = {
     ...process.env,
-    MULTIREVIEWER_DB: databaseUrl,
+    MULTIREVIEWER_DATABASE_URL: databaseUrl,
+    MULTIREVIEWER_DATA_DIR: database.dataDir,
     MULTIREVIEWER_CACHE_DIR: join(dir, "worktrees"),
     MULTIREVIEWER_BASE_URL: `http://localhost:${port}`,
     MULTIREVIEWER_PORT: String(port),

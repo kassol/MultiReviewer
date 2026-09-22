@@ -1278,16 +1278,21 @@ async function boot(
         void answerTrackerRequest(deps, child, session, message.requestId, message.request);
         return;
       case "turn-end":
-        entry.status = "idle";
-        // 这一回合投出去的图都该被认领过了。没认领的不留到下一回合:那只会把图串到别的消息上。
-        entry.imageRefs.length = 0;
-        // 闸换档:执行中计静默,空闲计回收(issue #335)。
-        rearm(session.id, entry);
-        // 这一回合的最后一截流式内容该出去了:下一次开跑之前不会再有帧把窗口推开。
-        flushStream(session.id, entry);
-        if (message.failure !== undefined) {
-          console.error(`[agent-session] 会话 ${session.id} 这一回合失败:${message.failure}`);
-        }
+        // 接在记录链后面(spec #445 第二段):置成空闲的那一刻起下一条消息就开跑,而这一回合
+        // 最后那一批条目还排在链上等着落库。库是异步的之后这两件事会真撞上——下一回合的条目
+        // 会抢在上一回合前面拿到序号。
+        entry.recording = entry.recording.then(() => {
+          entry.status = "idle";
+          // 这一回合投出去的图都该被认领过了。没认领的不留到下一回合:那只会把图串到别的消息上。
+          entry.imageRefs.length = 0;
+          // 闸换档:执行中计静默,空闲计回收(issue #335)。
+          rearm(session.id, entry);
+          // 这一回合的最后一截流式内容该出去了:下一次开跑之前不会再有帧把窗口推开。
+          flushStream(session.id, entry);
+          if (message.failure !== undefined) {
+            console.error(`[agent-session] 会话 ${session.id} 这一回合失败:${message.failure}`);
+          }
+        });
         return;
       case "failed":
         failed?.(new Error(message.failure));
