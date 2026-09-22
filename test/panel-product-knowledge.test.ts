@@ -1,13 +1,12 @@
 /**
  * 产品知识的那一段面板接口(CONTEXT.md 产品知识,ADR 0032 与 0035,issue #360)。
  *
- * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,产品与产品知识行落临时 SQLite。
- * 压的是这一票的验收:产品页读到的三种条目连出处附注与决策状态一起回、写与确认那几个端点
- * 已经没有了(条目只由会话写下,ADR 0035)、库层的写与撤回(改写、取代、同名与撤回两遍),
- * 以及升级前的旧库开起来只剩空的新表。
+ * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,产品与产品知识行落这个测试文件
+ * 自己那个临时 PostgreSQL 库。压的是这一票的验收:产品页读到的三种条目连出处附注与决策状态
+ * 一起回、写与确认那几个端点已经没有了(条目只由会话写下,ADR 0035),以及库层的写与撤回
+ * (改写、取代、同名与撤回两遍)。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { openStore, type ProductKnowledgeKind } from "../src/review/store/index.ts";
@@ -252,65 +251,4 @@ test("读产品知识不要权限格:看得到产品的人就读得到", async (
   });
   assert.equal(hidden.status, 404);
   assert.deepEqual(await hidden.json(), { error: "没有这个产品" });
-});
-
-test("升级前的旧库:旧的一句话条目、提案与驳回记忆一并丢掉,新表在且为空", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const product = await productWithTwoRepos(h);
-  await write(h, product.id, { kind: "term", name: "订单", body: "一次购买请求。" });
-
-  // 把库退回升级之前的样子:新表还不存在,旧的两张表带着行。
-  const db = new DatabaseSync(h.db.url);
-  db.exec("DROP TABLE product_knowledge_entry");
-  db.exec(`CREATE TABLE product_knowledge (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id INTEGER NOT NULL,
-    statement TEXT NOT NULL,
-    repo_ids TEXT NOT NULL,
-    state TEXT NOT NULL,
-    proposed_by TEXT,
-    proposed_session_id INTEGER,
-    created_at TEXT NOT NULL,
-    state_changed_at TEXT NOT NULL,
-    retires_id INTEGER
-  )`);
-  db.exec(`CREATE TABLE product_knowledge_rejection (
-    product_id INTEGER NOT NULL,
-    statement TEXT NOT NULL,
-    rejected_at TEXT NOT NULL,
-    PRIMARY KEY (product_id, statement)
-  )`);
-  db.prepare(
-    `INSERT INTO product_knowledge
-       (product_id, statement, repo_ids, state, proposed_by, created_at, state_changed_at)
-     VALUES (?, ?, ?, 'active', 'kassol', ?, ?)`,
-  ).run(product.id, "acme/alpha 的网关转发 acme/widgets 的订单", "[1,2]", AT, AT);
-  db.close();
-
-  // 下一次开库:旧表丢掉,新表建起来,一条条目都没有,产品与它的仓库一格不动。
-  const after = await detail(h, product.id);
-  assert.deepEqual(after.knowledge, []);
-  assert.deepEqual(
-    after.product.repos.map((row) => row.repoId),
-    [ALPHA, GITEA_REPO.id].sort((a, b) => a - b),
-  );
-  assert.equal(after.product.name, "报销系统");
-
-  // 旧表真的没了,不是留着不读。
-  const check = new DatabaseSync(h.db.url);
-  try {
-    for (const table of ["product_knowledge", "product_knowledge_rejection"]) {
-      assert.equal(
-        check.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
-        undefined,
-        `${table} 还在`,
-      );
-    }
-  } finally {
-    check.close();
-  }
-
-  // 新表空着,写照样走得通。
-  await write(h, product.id, { kind: "relationship", body: "网关向订单服务要状态。" });
-  assert.equal((await detail(h, product.id)).knowledge.length, 1);
 });
