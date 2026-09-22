@@ -75,10 +75,16 @@ RUN pnpm install --prod --frozen-lockfile --filter multireviewer \
 # agentDir。升级 skill 就是重拷一遍 vendor/ 再出一版镜像,运行时不联网取。
 COPY src ./src
 COPY vendor ./vendor
+# 迁移文件(ADR 0036):服务启动时在监听之前跑它们,镜像里必须有。
+COPY drizzle ./drizzle
+# 一次性搬迁脚本随这一版镜像走(issue #457 / #458):切换时在服务器上 `docker compose run` 它。
+# 线上切完即连脚本一起删,下一版镜像不再带。
+COPY scripts/migrate-sqlite-to-pg.ts ./scripts/migrate-sqlite-to-pg.ts
 COPY --from=webbuild /app/web/dist ./web/dist
 
-# 数据落这两处,compose 把宿主机目录绑上来。
-ENV MULTIREVIEWER_DB=/data/multireviewer.db \
+# 数据落这两处,compose 把宿主机目录绑上来。库本身不在这里:PostgreSQL 由部署方提供,
+# 连接串经 `.env` 的 MULTIREVIEWER_DATABASE_URL 进来(ADR 0036)。
+ENV MULTIREVIEWER_DATA_DIR=/data \
     MULTIREVIEWER_CACHE_DIR=/data/worktrees \
     MULTIREVIEWER_PANEL_DIST=/app/web/dist \
     MULTIREVIEWER_PORT=3000

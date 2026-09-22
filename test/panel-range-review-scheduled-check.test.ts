@@ -10,12 +10,11 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import type { ReviewRange } from "../src/review/finding.ts";
-import { openStore, type ScheduledCheckResult } from "../src/review/store.ts";
+import { openStore, type ScheduledCheckResult } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -94,7 +93,7 @@ async function startedHarness(
     201,
   );
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return harness;
 }
 
@@ -156,7 +155,7 @@ async function runsOf(
   h: PanelHarness,
   rangeReviewId: number,
 ): Promise<{ headSha: string; mode: string; triggerSource: string; triggeredBy: string | null }[]> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     return (await store
       .listRuns({ limit: 30, rangeReviewId }))
@@ -210,7 +209,7 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
   assert.deepEqual(recorded.historyEntries.at(-1), ["src/answer.ts:unknown"]);
 
   // 历次比较项那一行没有记录人:面板据此显示「定时检查」。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const comparisons = await store.listRangeReviewComparisons(rangeReview.id);
   await store.close();
   assert.deepEqual(
@@ -370,7 +369,7 @@ test("这个范围审查有轮次在跑:跳过并记原因", async () => {
   await enableDailyIncrement(h, rangeReview.id, "feature");
 
   // 一轮停在没有结束时间的状态:人点的那一次,或等着续跑的那一轮。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.startRun({
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
@@ -594,44 +593,4 @@ test("tick 处理前一条期间人工推进了后一条:后一条开检查前�
     writeFileSync(join(signals, "release"), "");
     rmSync(signals, { recursive: true, force: true });
   }
-});
-
-test("升级前的旧库:开库补上每日增量那几列,开关照常能开", async () => {
-  const clock = makeClock();
-  const recorded: Recorded = { ranges: [], historyEntries: [] };
-  const h = await startedHarness(recorded, clock, REPORTED_FINDINGS);
-  const rangeReview = await startRangeReview(h, h.repo.baseSha, h.repo.headSha);
-
-  // 把库退回升级之前的样子:那时这五列还不存在。改名而不是 DROP——SQLite 丢一张表的
-  // 最后一列时要重写建表语句,而 `range_review` 的建表语句里有中文注释,重写会截断并
-  // 报 `incomplete input`。改名之后 `pragma_table_info` 同样查不到这几个名字,补列那段
-  // 走的是同一条路。
-  const db = new DatabaseSync(h.db.path);
-  for (const column of [
-    "daily_increment_enabled",
-    "daily_increment_branch",
-    "daily_increment_enabled_at",
-    "scheduled_check_at",
-    "scheduled_check_result",
-    "scheduled_check_time",
-    "scheduled_check_mode",
-  ]) {
-    db.exec(`ALTER TABLE range_review RENAME COLUMN ${column} TO before_upgrade_${column}`);
-  }
-  db.close();
-
-  // 下一次打开补列:读得回来,值是「开关没开过、也没检查过」。
-  const detail = await detailRangeReview(h, rangeReview.id);
-  assert.equal(detail.dailyIncrementEnabled, false);
-  assert.equal(detail.dailyIncrementBranch, null);
-  assert.equal(detail.dailyIncrementEnabledAt, null);
-  assert.equal(detail.scheduledCheckAt, null);
-  assert.equal(detail.scheduledCheckResult, null);
-  assert.equal(detail.scheduledCheckTime, "00:00");
-  assert.equal(detail.scheduledCheckMode, "verdict-only");
-
-  await enableDailyIncrement(h, rangeReview.id, "feature");
-  const opened = await detailRangeReview(h, rangeReview.id);
-  assert.equal(opened.dailyIncrementEnabled, true);
-  assert.equal(opened.dailyIncrementBranch, "feature");
 });

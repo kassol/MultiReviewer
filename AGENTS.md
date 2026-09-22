@@ -8,7 +8,7 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.86.0 与 pi-subagents 0.70.0:`@earendil-works/pi-server` 已不在依赖树里——Pi 的根入口不引用它,pi-subagents 0.68 起也不再捆绑它(只有后台子会话用得到,本项目一律前台)。运行时第三方依赖只有这两个加上 Pi 工具 schema 用的 `typebox`,共三个。持久化用 SQLite。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.86.0 与 pi-subagents 0.70.0:`@earendil-works/pi-server` 已不在依赖树里——Pi 的根入口不引用它,pi-subagents 0.68 起也不再捆绑它(只有后台子会话用得到,本项目一律前台)。运行时第三方依赖是这两个加上 Pi 工具 schema 用的 `typebox`、库层的 `drizzle-orm` 与 `pg`,共五个(`drizzle-kit` 是开发依赖)。**持久化用 PostgreSQL,经 Drizzle 读写(ADR 0036)**:只接外部实例,schema 用 TS 写在 `src/review/schema/`,迁移文件由 drizzle-kit 生成进 `drizzle/` 并在服务启动时执行。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
 
 ## 目录索引
 
@@ -16,11 +16,13 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `src/` — 编排服务源码,结构约定见 `src/AGENTS.md`。进程入口是 `src/main.ts`。
 - `web/` — 管理面板前端(Vite + TanStack Router/Query),结构约定见 `web/AGENTS.md`。产物在 Docker 多阶段构建里生成,不进版本库。
 - `vendor/skills/` — 随镜像发的会话 skill(CONTEXT.md 会话 skill)。作者机器上 `~/.claude/skills/{ask-matt,grilling,domain-modeling,to-spec,to-tickets}` 的副本,上游是 mattpocock-skills 插件 1.2.3(MIT;`grilling` 在它的 `skills/productivity/`,其余四个在 `skills/engineering/`),作者在上游基础上改过标点,vendor 的是作者那一份。只拷 `SKILL.md` 与它引用的格式文件(`ask-matt/PHASE-BOUNDARIES.md`、`domain-modeling/{CONTEXT,ADR}-FORMAT.md`);各 skill 目录下的 `agents/` 是别的 harness 的元数据,不拷。升级 skill = 重拷一遍这个目录再出一版镜像,运行时不联网取。
-- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / SQLite 临时库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)、SSE 响应的逐帧读取、面板 harness,以及 Agent 会话与跨轮次这两组拆开之后的公用 harness。
+- `test/` — 测试,打在三条验收边界上(HTTP 端点 / 假 Gitea / 一次性 PostgreSQL 库)。`test/support/` 是内存 Forge、脚本化 Reviewer、git fixture、假 Gitea、假模型服务(本机 SSE,给真实 SDK 链路用)、SSE 响应的逐帧读取、面板 harness,以及 Agent 会话与跨轮次这两组拆开之后的公用 harness。
 - `Dockerfile` / `.dockerignore` — 运行镜像。`node:24-slim` 加 git、ripgrep 与 fd(fd 是 release 的静态 musl 二进制,版本钉在 `FD_VERSION`,单独一层按目标架构取包再拷进运行镜像——Debian 的 fd-find 是 8.6,不认 Pi 传的 `--no-require-git`),依赖在镜像内重装(宿主机的 `node_modules` 含平台专属产物,不进镜像)。装 ripgrep 与 fd 是给 Reviewer 的 `grep` / `find` 工具用:缺二进制时 Pi 会去 GitHub 下载,容器里下不动就各卡满 120 秒超时,一轮 Review Run 白等约 4 分钟。
-- `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。
+- `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。库不在这里:PostgreSQL 实例由部署方提供(ADR 0036)。
+- `docker-compose.test.yml` — 跑测试用的本机 PostgreSQL(端口 54329),只服务开发机。
+- `drizzle/` — 库的迁移文件,由 `pnpm exec drizzle-kit generate` 按 `src/review/schema/` 生成,服务启动时执行。改 schema 就要生成一份新的并提交。
 - `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。每次推两个 tag:给定的那一个与当前提交的短 sha(回滚点,见「部署」)。
-- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出 Forge 凭据与面板配置、写 `.env`、拉镜像起容器、以「面板能用」为验收自检;新实例从日志抽出一次性 bootstrap 口令交给第一个系统管理员,仓库接入、用户与角色、模型凭据及模型组合在面板上做。
+- `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出库的连接串、Forge 凭据与面板配置、写 `.env`、拉镜像起容器、以「面板能用」为验收自检;新实例从日志抽出一次性 bootstrap 口令交给第一个系统管理员,仓库接入、用户与角色、模型凭据及模型组合在面板上做。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
 - `docs/agents/` — Agent skills 的仓库级配置:issue tracker、triage 标签、domain docs 消费规则、并行 worktree 批次的检查分工。
@@ -31,9 +33,9 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `pnpm start` — 起 webhook 服务,环境变量见「部署」
 - `pnpm --filter @multireviewer/web dev` — 面板前端本地联调:与 `pnpm start` 双进程,Vite proxy 把 `/api` 转本机后端(端口读同一份 `.env` 的 `MULTIREVIEWER_PORT`)
 - `pnpm --filter @multireviewer/web build` — 前端构建(镜像里自动做,本地跑服务要面板时手动跑一次)
-- `pnpm check` — 类型检查加全部测试(含前端纯函数单测 `pnpm --filter @multireviewer/web test`),提交前跑它(并行 worktree 批次里的实现子代理除外,见「并行 worktree 批次」)(不含前端类型检查,改 `web/` 后另跑 `pnpm --filter @multireviewer/web typecheck`)
+- `pnpm check` — 类型检查加全部测试(含前端纯函数单测 `pnpm --filter @multireviewer/web test`),提交前跑它。**它包含 `pnpm test`,因此同样要一个真的 PostgreSQL**,见下面那一条(并行 worktree 批次里的实现子代理除外,见「并行 worktree 批次」)(不含前端类型检查,改 `web/` 后另跑 `pnpm --filter @multireviewer/web typecheck`)
 - `pnpm typecheck` — 仅类型检查
-- `pnpm test` — 仅测试
+- `pnpm test` — 仅测试。**要一个真的 PostgreSQL**(ADR 0036):`docker compose -f docker-compose.test.yml up -d` 起一个本机实例,再 `export MULTIREVIEWER_TEST_DATABASE_URL=postgres://multireviewer:multireviewer@127.0.0.1:54329/multireviewer`。没设即整套拒跑并打印这两行。夹具按测试文件建库、跑迁移、跑完删库
 - `MULTIREVIEWER_LIVE_PR=owner/repo#123 GITHUB_TOKEN=$(gh auth token) pnpm test` — 追加运行对真实 GitHub pull request 的验证,它会真实发布评论并改动 resolve 状态
 - `MULTIREVIEWER_GITEA_URL=https://gitea.example.com MULTIREVIEWER_GITEA_TOKEN=<bot 的 PAT> MULTIREVIEWER_GITEA_LIVE_PR=owner/repo#123 pnpm test` — 追加运行对真实 Gitea pull request 的验证,同样会真实发布评论并改动 resolve 状态。它覆盖本实现用到的全部端点,因此跑通即证明这枚 PAT 的 scope 够用
 - `MULTIREVIEWER_SMOKE_PROVIDER=deepseek MULTIREVIEWER_SMOKE_MODEL=deepseek-flash MULTIREVIEWER_SMOKE_ENV=DEEPSEEK_API_KEY pnpm test` — 追加运行 `report_finding`、复核工具与真实模型之间的契约验证,它会真实调用模型并产生费用
@@ -46,7 +48,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 # 开发机:构建并推送。开发机 arm64、服务器 amd64 时必须交叉构建,脚本已默认 linux/amd64
 scripts/build-push.sh registry.example.com/team/multireviewer:latest
 
-# 服务器:首次部署跑向导,六步问出配置、拉镜像、起容器,自检面板与 SQLite 并交付 bootstrap 口令
+# 服务器:首次部署跑向导,七步问出配置、拉镜像、起容器,自检面板与 PostgreSQL 并交付 bootstrap 口令
 bash setup.sh
 
 # 服务器:后续更新
@@ -55,7 +57,7 @@ docker compose pull && docker compose up -d
 
 **每次构建推两个 tag,回滚靠改 `.env` 一行。**`scripts/build-push.sh` 除了给定的那个 tag(通常是 `:latest`),再推一个当前提交的短 sha(工作区有改动时带 `-dirty` 后缀,免得同一个 sha 指向两份不一样的产物;不在 git 仓库里时只推给定的那一个)。部署目录的 `.env` 里 `MULTIREVIEWER_IMAGE` **写具体的 sha tag**,不写 `:latest`——这样「现在跑的是哪一版」在服务器上答得出,回滚也只是把那一行改回上一个 sha 再 `docker compose up -d`,不必回开发机重新构建。脚本推完会把这一版的 sha tag 打在屏幕上。`:latest` 仍然推,给「随便拉个最新的」用;`.env` 指着它的实例回滚不了,只能重新构建。**回滚不回滚库**:schema 只增列不删列,回上一版镜像读得动新库,但那一版之后加的列与表它不认——带 schema 变更的那几次发版回滚前先看变更日志。
 
-向导的边界收在「面板能用」:生成凭据主密钥、问基地址,起服务后打登录页并探测 `GET /api/session`。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook。它只写自己这一轮问出来的那几项,`.env` 里别的行原样留着——早年那些废弃变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` 等)的自动清理已经取消,服务不读它们,留着也只是几行陈迹;要清自己删。
+向导的边界收在「面板能用」:问库的连接串并当场拿容器里的 `pg` 连一次读版本(服务器上没有 psql,而镜像里那个驱动正是服务用的),生成凭据主密钥、问基地址,起服务后核对迁移表 `drizzle.__drizzle_migrations` 在不在、打登录页并探测 `GET /api/session`。`.env` 里还留着 `MULTIREVIEWER_DB` 时向导当场拦下并说明删哪一行——服务读到它会拒绝启动,不拦的话要等到起容器那一步才显形,报出来的只是「没等到监听」。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook。它只写自己这一轮问出来的那几项,`.env` 里别的行原样留着——早年那些废弃变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` 等)的自动清理已经取消,服务不读它们,留着也只是几行陈迹;要清自己删。
 
 **发版会等评审跑完当前批次。**`docker compose up -d` 换容器时 Docker 先发 SIGTERM,服务进入排空:新的 webhook 投递与面板重跑一律回 503 且不占幂等键,已开跑的轮次跑完手上那一批、把结果落库之后才停(issue #249)。排空期间 HTTP 照常收连接,面板 API 读得动——发版时人要看得见「谁还在跑、跑到第几批」;端口到全部轮次停下之后才关。因此一次发版最长要等 `stop_grace_period`(默认 900 秒,与 `MULTIREVIEWER_DRAIN_TIMEOUT_SECONDS` 同值,issue #411)——没有在跑的轮次时立即退出,不必等。900 秒取自线上实测:大仓库的范围审查一批要跑 725–751 秒,原先的 300 秒等不到批次结束。到上限仍没停下时丢的是「还没跑完的那个模型在那一批上的工作」:同批里已经跑完的模型结果已落库(issue #410),下一次启动续跑只重跑缺结果的那几个。被排空停下的轮次没有结束时间,新容器起来时按批次续跑(issue #248),已经花掉的 token 保得住;排空期间被回绝的那次投递不占幂等键,人重投或下一次 push 照常触发。
 
@@ -70,6 +72,7 @@ webhook 指向 `POST /webhook?k=<代次>` 这一个端点(路径固定,其余路
 
 必需的环境变量:
 
+- `MULTIREVIEWER_DATABASE_URL` — PostgreSQL 的连接串(ADR 0036)。实例由部署方提供,本服务只读这一条串;启动时在开始监听之前跑一遍迁移(`drizzle/`),失败即拒绝启动。缺它启动失败
 - `MULTIREVIEWER_BASE_URL` — 服务对外的基地址(实例根,不含路径)。明文 http 且非 localhost 时拒绝启动:Secure cookie 发不出去,面板会打得开却登不进。它取代向导旧变量 `MULTIREVIEWER_PUBLIC_URL`——旧值含 `/webhook` 后缀,同名不同义会静默出错,故换名弃用
 
 Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起得来却一次审查都跑不了比起不来更难发现:
@@ -83,7 +86,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 - `MULTIREVIEWER_PORT` — 监听端口,默认 3000。镜像里已设为 3000,走容器时不要再改
 - `MULTIREVIEWER_PANEL_DIST` — 前端构建产物目录,默认 `web/dist`。镜像里是 `/app/web/dist`。产物不在时面板页面回 503(与 404 分开)。**发版后人刷新一次就拿到新版**(issue #439):`/assets` 下的产物按永不过期缓存(文件名带内容哈希),面板页面本身是 `no-cache`,刷新总去服务端取一次新的入口,它引的是新哈希的那批文件。开着面板不刷新的那些标签页仍停在旧版,与这一票之前一样
-- `MULTIREVIEWER_DB` — SQLite 文件位置,默认 `multireviewer.db`。镜像里是 `/data/multireviewer.db`。**它所在的目录就是 data 目录**:Agent 会话的图片附件落在同目录下的 `agent-sessions/<会话 id>/`(issue #336),备份范围因此是这个目录而不只是那一个 `.db` 文件——只备份库文件会让会话记录里的图片引用指向不存在的文件(重建时那一块变成占位文本「[图片已丢失]」,会话照样续得上)。图片随会话或产品删除一并删掉,不另设保留期
+- `MULTIREVIEWER_DATA_DIR` — data 目录,默认 `/data`(镜像里也是它)。Agent 会话的图片附件落在它下面的 `agent-sessions/<会话 id>/`(issue #336)。**备份范围是「`pg_dump` 加这个目录」**——只备份库会让会话记录里的图片引用指向不存在的文件(重建时那一块变成占位文本「[图片已丢失]」,会话照样续得上)。图片随会话或产品删除一并删掉,不另设保留期。`MULTIREVIEWER_DB` 随 ADR 0036 废弃:还设着它服务拒绝启动,错误信息指向 `MULTIREVIEWER_DATABASE_URL`
 - `MULTIREVIEWER_CACHE_DIR` — 工作副本缓存根目录,默认 `.cache/worktrees`;镜像里是 `/data/worktrees`。模型服务显式发现 Pi 内置 provider 时,其下 `pi-models/models-store.json` 只作可丢弃的远程目录输入缓存;数据库里的模型服务版本与目录快照才是面板和 Review Run 的事实。Reviewer 不读取这份缓存,服务也不再生成或读取共享的 `models.json` 当前配置。schema-v0 迁移提交后会先删除旧 `models.json` 与 `models-store.json`,后者只会在之后的显式发现中按新规则重建。填相对路径也能用,不过部署时建议直接写绝对路径,省得跟着工作目录变。**仓库注册成功后服务在后台把它的工作副本 clone 到这里**(issue #184),之后的 Review Run、diff、分支列表与提交列表都在这份副本上只做 fetch;副本不在时仍会按需现 clone,只是那一次慢一些。副本的准备状态在首页左栏的行操作里显示,失败可重试。要读代码的每一次调用(一轮 Review Run、一次基点探索、一次处置反哺)从这份副本另派生一份一次性工作树,放在同一个根下的 `.checkouts/<owner>/<仓库>/` 里,用完即删——同一个仓库上并发的几件事因此各读各的那个 commit(issue #212)。这些目录是可弃的中间物,进程被杀留下的那些由下一次准备清掉;持久卷要保的仍是缓存副本本身。**磁盘代价按并发数算**:同一个仓库上并发的每个参与者各持一份完整工作副本,峰值占用是缓存副本加上并发数乘以一份工作副本,持久卷容量按这个峰值预估。**这个目录被清掉会丢历史轮次的 diff**:每一轮 Review Run 的两端靠本地 clone 里的 `refs/multireviewer/runs/<轮次 id>/base` 与 `/head` 保持可达(issue #161),范围审查完成后容器 PR 的分支已删,远端再没有第二处存着它们。清掉之后新的审查照常跑,打不开的只是已完成阶段那些历史轮次的 diff(面板显示 409 加一句说明),各仓库的工作副本会在下一次用到时重新 clone;要保留就把它放进持久卷,镜像里的 `/data/worktrees` 已经是
 - `PI_OFFLINE` — Pi 的离线开关,设成任意值(例如 `1`)即关闭模型服务发现中的外部目录增量。显式预览或刷新 Pi 内置 provider 时仍可读 Pi 随包目录,但不请求 pi.dev 或 OpenRouter;未设置时这两层只作为发现输入,成功结果整份写入当前模型服务版本的数据库快照,Review Run 不在运行途中刷新目录
 - `MULTIREVIEWER_CREDENTIAL_MASTER_KEY` — 模型凭据的加密主密钥(ADR 0008),模型服务页用它加解密。**向导会自动生成一枚并写进 `.env`**(已有值时沿用,`FORCE=1` 也不重新生成),手工部署时取一串随机材料即可,例如 `openssl rand -hex 32`。没设时服务照常启动,模型服务页仍可读模型状态,但不能执行凭据动作并会说明差什么——起不来就进不了面板。换掉它等于把已存的凭据作废,模型服务显示未配置,重新粘一次 key 即可
@@ -102,9 +105,28 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 向导可以中断后重跑:已经写进 `.env` 的值会被认出来,对应阶段直接跳过,只补没做完的部分。`FORCE=1 bash setup.sh` 强制每个阶段都重做。
 
+### 从 SQLite 切到 PostgreSQL
+
+一次性的停机切换(ADR 0036,spec #445)。现役实例只有 00-test;这一段在切完并过了回滚窗口之后可以删。
+
+**先彩排一次。**拿线上库文件的一份备份副本,在 PG 上另建一个临时库跑搬迁脚本,核逐表行数、把服务指过去开面板翻几个历史阶段。彩排过了再定正式窗口——搬迁脚本第一次在真实数据上跑出来的问题,不该在停机窗口里发现。
+
+**选窗口。**挑没人跑审查、且避开每日增量检查时刻(`TZ` 加范围审查各自配的那个钟点)的时段,提前通知评审人:窗口多长、回滚窗口多长、以及「回滚会丢掉 PG 上这段时间的写入」这一条代价。
+
+切换按这个顺序走,每一步都等上一步真的完成:
+
+1. `docker compose stop` —— Docker 发 SIGTERM,服务排空,在跑的轮次跑完当前批次并落库之后才停,最长等 `stop_grace_period`(900 秒)。
+2. 备份:`cp` 出那个 SQLite 库文件,另把 `./data` 整个打包。**两样都要**——图片附件不在库里。
+3. 改 `.env`:`MULTIREVIEWER_IMAGE` 换成新版的 sha tag、加 `MULTIREVIEWER_DATABASE_URL`、**删掉 `MULTIREVIEWER_DB`**(留着服务拒绝启动);`MULTIREVIEWER_DATA_DIR` 不必写,镜像里就是 `/data`。
+4. `docker compose up -d` 起新容器,它在开始监听之前把 `drizzle/` 下的迁移跑完,建出空表。
+5. 跑搬迁脚本(`scripts/migrate-sqlite-to-pg.ts`,收两个参数:旧库路径与目标连接串),把旧库文件搬进新库,核它打印的逐表行数对照表——有一行对不上就停下来查,别往下走。它随这一版镜像走(`Dockerfile` 单独拷了这一个文件),在服务器上这样跑:`docker compose run --rm -T --entrypoint node multireviewer scripts/migrate-sqlite-to-pg.ts /data/multireviewer.db "$MULTIREVIEWER_DATABASE_URL"`(旧库文件在 `./data` 里,容器里就是 `/data`);切完即删脚本,下一版镜像不再带。
+6. 面板登录,翻一个迁库前的历史阶段(轮次 diff、审查轨迹、Finding 处置记录都要打得开),再投一个真实 PR 跑一轮、推进一次范围审查、续谈一次 Agent 会话。
+
+**回滚窗口。**窗口内出问题就把 `.env` 的 `MULTIREVIEWER_IMAGE` 改回上一个 sha tag、把 `MULTIREVIEWER_DATABASE_URL` 换回 `MULTIREVIEWER_DB`,再 `docker compose up -d` 即回到 SQLite——旧库文件一直没动过。代价是 **PG 上这段时间的写入全部丢掉**(新跑的轮次、新做的处置、新写的会话),所以窗口要短、要事先讲清。窗口一过不再回滚,旧库文件归档留存,搬迁脚本从仓库删除。
+
 ### 面板门禁的运维
 
-- **怀疑某个人的会话 cookie 泄露时,由系统管理员在访问控制页重置那个人的密码。**重置会只作废该用户的全部会话,并要求他用临时密码登录后立即改密,不牵连其他人。会话已经落 SQLite,所以**重启容器不再清空会话**;登出只作废当前会话,用户自己改密码会保留当前会话并踢掉其余会话。
+- **怀疑某个人的会话 cookie 泄露时,由系统管理员在访问控制页重置那个人的密码。**重置会只作废该用户的全部会话,并要求他用临时密码登录后立即改密,不牵连其他人。会话已经落库,所以**重启容器不再清空会话**;登出只作废当前会话,用户自己改密码会保留当前会话并踢掉其余会话。
 - **HTTPS 是门禁的前提,不是可选项。**会话 cookie 带 `Secure`,明文 HTTP 下浏览器根本不发它;`MULTIREVIEWER_BASE_URL` 是明文 http 且非 localhost 时服务直接拒绝启动(localhost 放行,浏览器把它当安全上下文)。本服务自己不终止 TLS,证书与 https 由外部反代负责,归部署方。
 - **面板挂在基地址的根路径上,没有隐匿层。**未认证的 API 请求一律 401,端点存在与否都一样;门禁是用户账号与会话 cookie。随机面板前缀在 2026-08-31 移除:它只挡扫描器枚举,内部部署下的运维摩擦大于收益。
 
@@ -140,7 +162,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 - forge adapter 的接口以 Gitea 能力为基准;GitHub 实现已封存,新增方法不补 GitHub 侧(ADR 0014)
 - Gitea 最低支持社区版 1.26.0 / 企业版 26.0.0(review comment 的 resolve / unresolve 端点自该版本提供)
 - 调用 Gitea API 一律携带凭据,目标实例要求登录后才能调用
-- 测试只验证外部可观察的行为,打在三条验收边界上(issue #26 的测试决策):HTTP 端点(起真服务打 HTTP,注入假 Forge、临时库路径与时钟)、`runReview` 入口(经 `Forge`、`Reviewer` 与 `MergeAgent` 三个注入边界)、SQLite 临时库;git 与 SQLite 用真实实现,落在临时目录。面板的组件与交互仍不做程序化测试,**`web/src/lib/` 下不含 JSX 的纯函数是第四条边界**(`pnpm --filter @multireviewer/web test`,已在 `pnpm check` 里):两页共用一份判据的那种规则值得一条断言钉住
+- 测试只验证外部可观察的行为,打在三条验收边界上(issue #26 的测试决策):HTTP 端点(起真服务打 HTTP,注入假 Forge、临时库路径与时钟)、`runReview` 入口(经 `Forge`、`Reviewer` 与 `MergeAgent` 三个注入边界)、一次性 PostgreSQL 库;git 与数据库用真实实现,git 落在临时目录、库按测试文件建一个。面板的组件与交互仍不做程序化测试,**`web/src/lib/` 下不含 JSX 的纯函数是第四条边界**(`pnpm --filter @multireviewer/web test`,已在 `pnpm check` 里):两页共用一份判据的那种规则值得一条断言钉住
 - 需要真实凭据或真实平台的测试默认跳过,由环境变量显式开启
 - **交付前的验证一律在部署实例上做,不在开发机起服务。**自动化测试照旧在本机跑(那是验收边界上的断言,与实例无关),但「改完之后人去确认它真的能用」这一步走部署实例:面板操作、webhook 投递、真实 Review Run 都在那里验。本机 dev 双进程验不出这类东西——它没有真 Gitea、没有已注册的仓库、没有模型凭据,补齐这些的成本比推一次镜像高,而验完的结论还不能代表实例。开发机因此不常驻 `.env` 里的面板变量(基地址 / 凭据主密钥);要在本机起面板时临时补,验完删掉
 
@@ -171,6 +193,16 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-22: **文档与部署向导改口到 PostgreSQL**(issue #458,spec #445 第二段)。向导从六步变七步,新增「数据库」一阶段:拦下 `.env` 里残留的 `MULTIREVIEWER_DB`(服务读到它拒绝启动),问一条连接串,再拿容器里镜像自带的 `pg` 连一次读版本——服务器上没有 psql,而容器的网络视角才是服务的视角。起服务那一步的自检多一道「迁移表 `drizzle.__drizzle_migrations` 就位」,「读 SQLite」改成「读库」,查库提示换 `psql`,排障速查加一条备份(`pg_dump` 加 data 目录)。「部署」新增「从 SQLite 切到 PostgreSQL」一节:先拿线上库的备份副本彩排一次,正式窗口按「停容器排空 → 备份库文件与 `./data` → 改 `.env` → 起新容器跑迁移 → 跑搬迁脚本核行数 → 面板验」六步走,回滚窗口内改回旧 tag 与 `MULTIREVIEWER_DB` 即回 SQLite、代价是 PG 上这段时间的写入全丢,窗口过后旧库归档。搬迁脚本随这一版镜像走,切完即删。`README.md` 的 Requirements 加一条「需要一个 PostgreSQL 实例」,`CONTEXT.md` 的会话记录词条点明 data 目录是 `MULTIREVIEWER_DATA_DIR`、与库分开配。
+- 2026-09-22: **库层收口**(spec #445 第二段,七票合并之后)。方言 shim 与两段退役的 SQLite DDL 删净,七域方法全部经 Drizzle;`store/index.ts` 从 3612 行降到 2637 行,只剩类型与装配。另修 `agent-session-drain` 用例的播种顺序。七票各自生成的迁移合并时按「初始迁移即当前 schema」重新生成为单一 `drizzle/0000_init.sql`(49 张表)。
+- 2026-09-22: **存量搬迁脚本**(issue #457,spec #445 第二段)。`scripts/migrate-sqlite-to-pg.ts` 读一个旧 SQLite 库文件、按新 schema 经 Drizzle 写进 PostgreSQL,跑在镜像里:`node scripts/migrate-sqlite-to-pg.ts <旧库路径> <目标连接串>`。整笔是一个事务:目标库非空即拒绝执行,写完逐表比源与目标的行数,任一表不等就回滚并非零退出,目标库保持空。表、列与列类型全部从 `src/review/schema/` 现问,两侧表名列名逐字相同,转的只有列类型(ISO 文本 → `timestamptz`、0/1 → `boolean`、JSON 文本 → `jsonb`)。原 id 保留,identity 序列搬完推到最大 id 之后。搬完即删。
+- 2026-09-22: **Agent 会话域改 Drizzle**(issue #456,spec #445 第二段)。会话、会话记录、排队消息、图片与基点这一域的库层换成 Drizzle。两处并发点按 ADR 0036 在事务里先锁会话那一行:会话记录的序号是 `MAX(seq) + 1`,排队消息的取走是「先读后删」——两个连接同时取时后到的那个排在提交之后读,同一条消息不会被投两遍。回合结束置成空闲改到记录落库之后,下一条消息不再抢在上一批条目前面拿序号。测「SQLite 旧库开库补列 / 开库 DROP 旧表」的三条用例随升级路径一起退役。
+- 2026-09-22: **产品、产品知识与产品 tracker 这一域改走 Drizzle**(issue #455,spec #445 第二段)。产品与仓库归属、三种产品知识条目、spec / 票 / 阻塞边 / 评论 / 认领的读写全部换成 builder,在 PostgreSQL 上跑通;行为、响应体与用例断言一字未改。四条压 SQLite 旧库升级路径的用例随之删掉——那些路径已经退役,初始迁移就是当前 schema;「系统管理员停得下、删得掉系统开的梳理会话」另补一条用例守着。
+- 2026-09-22: **知识域改 Drizzle**(issue #454,spec #445 第二段)。知识集、知识草案、基点探索、知识整理、修订提案与出处附注、修订意图、知识轨迹这一域的 43 个 Store 方法搬进 `src/review/store/knowledge.ts` 并全部走 Drizzle builder。知识轨迹的任务号改由 identity 列发号(原先是全表 `MAX(task_id) + 1`,并发起头的两条会撞主键),条内序号在事务里先锁这条轨迹的头一行再取。知识轨迹的写入口也把落库排成一条链,与审查轨迹同一写法。
+- 2026-09-22: **范围审查、审查阶段列表与详情、阶段汇总、每日增量定时检查、处置率与用量统计这一域改走 Drizzle**(issue #453,spec #445 第二段)。库体量从「stat 库文件」换成 `pg_database_size`——库不再是一个文件。同一份夹具数据在 SQLite 与 PostgreSQL 两侧各跑一遍阶段列表与阶段详情,11 组分页 / 筛选 / 仓库分配参数的响应体逐字相同。连接池补 `pool.on("error")`:空闲连接被 PostgreSQL 踢掉(库重启、管理员断连)时没有监听者会让整个进程倒下。两条只为 SQLite 补列而存在的用例删掉。
+- 2026-09-22: **Review Run、Finding 与审查轨迹这一域改走 Drizzle**(issue #452,spec #445 第二段)。轮次、Reviewer 结果、批次中间态、Finding 与归属、承接说法、复核结论、同根因组与审查轨迹的读写都经 Drizzle,本域不再有旧 SQL。审查轨迹的序号改成事务内先锁轮次那一行再取 `MAX + 1`:两个连接并发往同一轮次追加时不会拿到同一个号(补一条 12 路并发用例,把锁注掉即红)。响应体、断言与处置口径一格未动;一条压 SQLite 补列路径的用例删掉。
+- 2026-09-22: **仓库、审查策略、模型服务与凭据这一域改走 Drizzle**(issue #451,spec #445 第二段)。本域 Store 方法不再有旧 SQL;乐观并发按驱动回的行数判,读-判-写一律事务内 `SELECT … FOR UPDATE` 锁父行(仓库行、模型服务行,审查策略整页锁 `global_setting` 表)。顺带修两处:模型组合可用性判定曾用 `Array.every` 收异步结果而恒为真;`repo.reviewers` 与 `repo.auxiliary_model` 由 `jsonb` 改回 `text`——这两格按文本比「换没换组合」,jsonb 会重排键。两条压 SQLite 升级路径的用例删掉。
+- 2026-09-22: **持久化换成 PostgreSQL,经 Drizzle 读写**(issue #450,ADR 0036,spec #445 第二段)。49 张表的 schema 用 TS 写在 `src/review/schema/`(按域一个文件),迁移由 drizzle-kit 生成进 `drizzle/`,服务在开始监听之前跑它、失败即拒绝启动;开库时的全量 DDL、`PRAGMA user_version` 与按列补齐的升级路径全部退役。列类型换成 `timestamptz` / `boolean` / `jsonb`,JS 侧仍收发 ISO 字符串与 JSON 文本(自定义列类型加驱动读取解析器接住)。每请求开关库的 `withStore` 换成进程内共用的连接池;事务回调改成 async,事务里的每一次查询靠 `AsyncLocalStorage` 落在同一条连接上。**变量**:`MULTIREVIEWER_DATABASE_URL` 必填,`MULTIREVIEWER_DATA_DIR` 给会话图片目录(默认 `/data`),`MULTIREVIEWER_DB` 废弃——还设着就拒绝启动并指向新变量;备份范围从「库文件所在目录」变成「`pg_dump` 加 data 目录」。**测试跑真 PG**:`docker-compose.test.yml` 起一个本机实例,夹具按测试文件建库、跑迁移、跑完删库,没设 `MULTIREVIEWER_TEST_DATABASE_URL` 时 `pnpm test` 整套拒跑并打印起法。面板账号域先迁完作样板,其余六域随 #451–#456 迁完。一处真实并发缺陷顺带修掉:`inRuleSetVersion` 的 `MAX(version)+1` 在 PG 的 read committed 下两次并发确认会算出同一个号,事务里先锁 `repo` 那一行。
 - 2026-09-22: **Store 的同步门面删掉,库只剩异步 API**(issue #449,spec #445 第一段的收缩;第一段 #459 / #446 / #447 / #448 / #449 至此收口,发版 00-test 作为第二段换库前的基线)。`openStore` 返回的就是异步那一份,`AsyncStore` 这个名字连同 Proxy 的导出一起收掉——调用点仍然写 `Store`、写 `await`,拼写一个字没改;SQL、事务语义与 `node:sqlite` 一格未动。过渡期那几处双路形状一并清掉:`src/async.ts`、`effectiveMinReportSeverity` 与 `runTrackerRequest` 的重载与生成器、`createTraceRecorder` / `startRuleTrace` 的两路回调、`withStore` 回调的第二个参数、`queryKnowledge` 放宽过的类型,以及 `agent-session.ts` 最后四个同步导出。补 `await` 的过程中收口两道原先会静默失效的闸:`if (!agentSessionSlot(...))` 对 Promise 恒假,`clearAgentSessionQueue` 不等就读回队列。**发版多一个回滚点**:`scripts/build-push.sh` 除给定的那个 tag 外再推一个当前提交的短 sha,部署目录 `.env` 的 `MULTIREVIEWER_IMAGE` 写具体 sha tag,回滚即改这一行加 `docker compose up -d`,不必回开发机重新构建。发版 `c10eccf` 到 00-test(库备份 `data/multireviewer.db.bak-20260922-449`),在 zhangxu/review 上验过:PR #54 投递一轮(Run 132,6 条 Finding)、范围审查 #23 发起并增量评审推进一轮(Run 134 / 135,被修那条自动处置为已修复)、开放对话会话 #35 续谈两轮记录 seq 连续,日志无报错。细节见 `src/AGENTS.md`。
 - 2026-09-22: **`webhook/server.ts` 的调用点迁到 Store 的异步门面**(issue #446,spec #445 第一段)。`withStore` 开库、把 `asyncStore(store)` 交给回调、等它跑完再关,198 个调用点各加一个 `await`;SQL 一个字没动,响应体、状态码与落库结果与迁移前逐字一致。`Array.map` 里调 Store 的三处改成顺序 `for` + `await`。顺带修掉一类 tsc 看不见的错:Promise 落在 `!x`、`x === undefined` 或被 `sendJson` 序列化的位置时不报错而行为是错的,按 AST 扫出 10 处(投递幂等判重、两处 404 守卫、定时检查结果写入、审查策略响应体等)逐条修。
 - 2026-09-22: **Review Run 编排、审查轨迹与产品 tracker 改走 Store 的异步方法**(issue #447,spec #445 第一段)。SQL、响应与断言一格未动;开库那一处包 `asyncStore`,调用前加 `await`。轨迹的落库排成一条链,SSE 发出的顺序与 seq 一致。

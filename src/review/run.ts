@@ -91,7 +91,7 @@ import {
   type StageScope,
   type Store,
   type VerdictRecord,
-} from "./store.ts";
+} from "./store/index.ts";
 import {
   beginTrace,
   createTraceRecorder,
@@ -193,8 +193,8 @@ export type ReviewRunDeps = {
   reviewers: readonly Reviewer[];
   /** 工作副本的缓存根目录,按仓库分子目录。 */
   cacheDir: string;
-  /** SQLite 数据库文件的位置。 */
-  dbPath: string;
+  /** 数据库连接串。 */
+  databaseUrl: string;
   /**
    * 这一轮的注册表仓库 id(issue #273)。给了它才取得到仓库级的最低报告等级覆盖;
    * 不传即只按全局阈值跑。
@@ -2024,7 +2024,7 @@ export async function runReview(
   // 走到核对那一步的续跑状态,计划一定在(issue #253):没有计划的轮次在这里就退回改判。
   let resume: (ResumeState & { plan: string[][] }) | undefined;
   if (resumeRunId !== undefined) {
-    const resumeStore = openStore(deps.dbPath);
+    const resumeStore = openStore(deps.databaseUrl);
     let stored: ResumeState | undefined;
     try {
       stored = await resumeStore.resumeState(resumeRunId);
@@ -2090,7 +2090,7 @@ export async function runReview(
     // 句柄的存活期覆盖整段审查(时长没有总上限,兜底的是子进程那道连续静默闸,
     // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
     // 泄漏的连接会一次次攒下来。
-    const store = openStore(deps.dbPath);
+    const store = openStore(deps.databaseUrl);
     // 从这里到 `startRun` 之间的每一处抛(读历史、只复核过滤成空、分批、落库)都在下面
     // 那个 `finally` 盖不到的地方,句柄在这一段里统一归还。
     const opened = async <T>(step: () => T | Promise<T>): Promise<T> => {

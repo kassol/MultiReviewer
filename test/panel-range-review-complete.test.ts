@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Forge, PullRequestRef } from "../src/forge/forge.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   PANEL_ADMIN_USERNAME,
@@ -65,7 +65,7 @@ async function registeredHarness(
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return harness;
 }
 
@@ -193,7 +193,7 @@ test("Forge 步骤失败:记下失败原因,状态不变,改好之后重试成�
 
   const failed = await h.api("POST", `/range-reviews/${rangeReview.id}/complete`);
   assert.equal(failed.status, 502);
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const record = (await store.getRangeReview(rangeReview.id))!;
   await store.close();
   assert.equal(record.state, "in-progress");
@@ -218,7 +218,7 @@ test("没有 review:complete 的用户标记不了审查完成", async () => {
   const h = await registeredHarness();
   const rangeReview = await startRangeReview(h);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   // 有发起权限、没有完成权限:两格互相独立。
   const role = await store.createPanelRole({
     name: "只发起的角色",
@@ -262,7 +262,7 @@ test("持有旧格 finding:dispose 但没有 review:complete:标记不了审查�
   const h = await registeredHarness();
   const rangeReview = await startRangeReview(h);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   // 拆格之后(ADR 0023)处置权限不再蕴含完成权限:两格互相独立。
   const role = await store.createPanelRole({
     name: "只处置的角色",

@@ -211,7 +211,7 @@ function verdictHarness() {
 
 /** 与 Pi 同一个顺序:校验不过就到此为止,过了才执行。 */
 async function invokeVerdict(
-  harness: ReturnType<typeof verdictHarness>,
+  harness: Awaited<ReturnType<typeof verdictHarness>>,
   toolCallId: string,
   args: unknown,
 ): Promise<{ rejected: string[] } | { text: string }> {

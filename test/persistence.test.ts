@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { Reviewer, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
-import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { openStore } from "../src/review/store/index.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { query, setup as setupRepo } from "./support/batch-run.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -29,31 +28,33 @@ const cleanups = testCleanups();
 
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 
-function setup(head: string = HEAD) {
-  return setupRepo(cleanups, {
+async function setup(head: string = HEAD) {
+  return (await setupRepo(cleanups, {
     tree: { base: { "src/calc.js": BASE }, head: { "src/calc.js": head } },
     pullNumber: EVENT.number,
     changedFiles: [{ path: "src/calc.js", status: "modified" }],
-  });
+  }));
 }
 
 
 test("历史审查策略读回整页初始版本，整份替换推一版，陈旧版本不得覆盖", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  await openStore(db.path).close();
-  const seed = new DatabaseSync(db.path);
-  seed.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+  await openStore(db.url).close();
+  await query(
+    db.url,
+    "INSERT INTO global_setting (key, value) VALUES ($1, $2)",
     "reviewers",
     JSON.stringify([{ provider: "test", model: "legacy" }]),
   );
-  seed.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
+  await query(
+    db.url,
+    "INSERT INTO global_setting (key, value) VALUES ($1, $2)",
     "max_changed_lines_per_batch",
     "777",
   );
-  seed.close();
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const legacyJson = JSON.stringify([{ provider: "test", model: "legacy" }]);
   assert.deepEqual(await store.getGlobalSettings(), {
     reviewersJson: legacyJson,
@@ -117,16 +118,17 @@ const FINDING = {
 };
 
 test("Review Run 的元数据落库:仓库、PR、head commit、起止时间、预估规模、批数", async () => {
-  const { repo, cache, db, forge } = setup();
+  const { repo, cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const rows = query(db.path, "SELECT * FROM review_run");
+  // 布尔列取成 0/1 再断言:断言说的是「这一轮有没有失败」,与列的存储类型无关。
+  const rows = (await query(db.url, "SELECT *, failed::int AS failed FROM review_run"));
   assert.equal(rows.length, 1);
   const run = rows[0]!;
   assert.equal(run["owner"], "acme");
@@ -144,8 +146,8 @@ test("Review Run 的元数据落库:仓库、PR、head commit、起止时间、�
 });
 
 test("Review Run 的触发者快照可空且不引用用户表", async () => {
-  const { cache, db, forge } = setup();
-  const seed = openStore(db.path);
+  const { cache, db, forge } = (await setup());
+  const seed = openStore(db.url);
   await seed.createPanelUser({
     username: "deleted-operator",
     displayName: null,
@@ -161,25 +163,23 @@ test("Review Run 的触发者快照可空且不引用用户表", async () => {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     triggeredBy: "deleted-operator",
   });
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   assert.equal(await store.hasHistoricalRunTrigger("deleted-operator"), true);
   assert.equal(await store.hasHistoricalRunTrigger("never-used"), false);
   await store.close();
-  assert.equal(query(db.path, "SELECT triggered_by FROM review_run")[0]!["triggered_by"], "deleted-operator");
+  assert.equal((await query(db.url, "SELECT triggered_by FROM review_run"))[0]!["triggered_by"], "deleted-operator");
 
-  const sqlite = new DatabaseSync(db.path);
-  sqlite.exec("PRAGMA foreign_keys = ON");
-  sqlite.prepare("DELETE FROM panel_user WHERE username = ?").run("deleted-operator");
-  sqlite.close();
-  assert.equal(query(db.path, "SELECT triggered_by FROM review_run")[0]!["triggered_by"], "deleted-operator");
+  // PostgreSQL 一律强制外键:删得掉这个账号,正说明 `triggered_by` 只是快照、不是引用。
+  await query(db.url, "DELETE FROM panel_user WHERE username = $1", "deleted-operator");
+  assert.equal((await query(db.url, "SELECT triggered_by FROM review_run"))[0]!["triggered_by"], "deleted-operator");
 });
 
 test("同一处的 Finding 落一行,报出它的每个模型各落一条归属", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -188,11 +188,11 @@ test("同一处的 Finding 落一行,报出它的每个模型各落一条归属"
       scriptedReviewer("model-b", [{ ...FINDING, description: "减法结果偏移" }]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   // Finding Identity 不含模型(ADR 0015):同一处不论几个模型报出都是一条。
-  const rows = query(db.path, "SELECT * FROM finding");
+  const rows = (await query(db.url, "SELECT * FROM finding"));
   assert.equal(rows.length, 1);
   const row = rows[0]!;
   assert.equal(row["file"], "src/calc.js");
@@ -203,10 +203,10 @@ test("同一处的 Finding 落一行,报出它的每个模型各落一条归属"
   // Disposition 的权威状态在 Forge,本地默认未知。
   assert.equal(row["disposition"], "unknown");
 
-  const attributions = query(
-    db.path,
+  const attributions = (await query(
+    db.url,
     "SELECT * FROM finding_attribution ORDER BY position",
-  );
+  ));
   assert.deepEqual(
     attributions.map((a) => ({
       finding: a["finding_id"],
@@ -243,14 +243,14 @@ test("内容指纹只看指向行前后 3 行的代码,不看空白", async () =
   const outside = HEAD.replace("return a * b;", "return a * b * 2;");
 
   const fingerprintOf = async (head: string): Promise<string> => {
-    const { cache, db, forge } = setup(head);
+    const { cache, db, forge } = (await setup(head));
     await runReview(EVENT, {
       forge: forge.forge,
       reviewers: [scriptedReviewer("model-a", [FINDING])],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     });
-    return query(db.path, "SELECT fingerprint FROM finding")[0]!["fingerprint"] as string;
+    return (await query(db.url, "SELECT fingerprint FROM finding"))[0]!["fingerprint"] as string;
   };
 
   const base = await fingerprintOf(HEAD);
@@ -260,7 +260,7 @@ test("内容指纹只看指向行前后 3 行的代码,不看空白", async () =
 });
 
 test("每个 Reviewer 的执行结果与失败原因落库", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -269,10 +269,10 @@ test("每个 Reviewer 的执行结果与失败原因落库", async () => {
       scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const rows = query(db.path, "SELECT * FROM reviewer_outcome ORDER BY model");
+  const rows = (await query(db.url, "SELECT * FROM reviewer_outcome ORDER BY model"));
   assert.equal(rows.length, 2);
   assert.equal(rows[0]!["model"], "model-a");
   assert.equal(rows[0]!["failure"], null);
@@ -284,8 +284,8 @@ test("每个 Reviewer 的执行结果与失败原因落库", async () => {
 });
 
 /** 时间流一页的逐模型行。测试只看外部可观察的那三个字段。 */
-async function runModels(dbPath: string): Promise<{ model: string; findings: number; failure: string | null }[]> {
-  const store = openStore(dbPath);
+async function runModels(databaseUrl: string): Promise<{ model: string; findings: number; failure: string | null }[]> {
+  const store = openStore(databaseUrl);
   try {
     return (await store.listRuns({ limit: 30 }))[0]!.models;
   } finally {
@@ -294,7 +294,7 @@ async function runModels(dbPath: string): Promise<{ model: string; findings: num
 }
 
 test("时间流:一个模型失败一个成功时两行都在,失败那行带原因", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -303,10 +303,10 @@ test("时间流:一个模型失败一个成功时两行都在,失败那行带原
       scriptedReviewer("model-b", [], { failure: "403 This model is not available in your region." }),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const run = (await store.listRuns({ limit: 30 }))[0]!;
   await store.close();
   // 部分失败不是这一轮失败:Finding 是真的,处置照做。
@@ -318,7 +318,7 @@ test("时间流:一个模型失败一个成功时两行都在,失败那行带原
 });
 
 test("时间流:全部模型失败时每行都带原因,这一轮标失败", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -327,10 +327,10 @@ test("时间流:全部模型失败时每行都带原因,这一轮标失败", asy
       scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const run = (await store.listRuns({ limit: 30 }))[0]!;
   await store.close();
   assert.equal(run.failed, true);
@@ -341,39 +341,39 @@ test("时间流:全部模型失败时每行都带原因,这一轮标失败", asy
 });
 
 test("时间流:一条 Finding 都没报的成功模型照样列出", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  assert.deepEqual(await runModels(db.path), [{ model: "model-a", findings: 0, failure: null }]);
+  assert.deepEqual(await runModels(db.url), [{ model: "model-a", findings: 0, failure: null }]);
 });
 
 test("时间流:失败原因压成一行并截断,原文仍在库里", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
   const long = `403 {\n  "error": {\n    "message": "${"x".repeat(400)}"\n  }\n}`;
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING]), scriptedReviewer("model-b", [], { failure: long })],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const failure = (await runModels(db.path)).find((entry) => entry.model === "model-b")!.failure!;
+  const failure = (await runModels(db.url)).find((entry) => entry.model === "model-b")!.failure!;
   assert.equal(failure.length, 201, "节选是 200 字加一个省略号");
   assert.ok(failure.endsWith("…"));
   assert.ok(!failure.includes("\n"), "换行压成空格,卡片上只占一句话");
   assert.match(failure, /^403 \{ "error": \{ "message": "x+…$/);
-  assert.equal(query(db.path, "SELECT failure FROM reviewer_outcome WHERE model = 'model-b'")[0]!["failure"], long);
+  assert.equal((await query(db.url, "SELECT failure FROM reviewer_outcome WHERE model = 'model-b'"))[0]!["failure"], long);
 });
 
 test("锚定打回次数落库,与被拒的工具调用分列两列", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -381,16 +381,16 @@ test("锚定打回次数落库,与被拒的工具调用分列两列", async () =
       scriptedReviewer("model-a", [FINDING], { rejectedToolCalls: 2, anchorRejections: 5 }),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const rows = query(db.path, "SELECT * FROM reviewer_outcome");
+  const rows = (await query(db.url, "SELECT * FROM reviewer_outcome"));
   assert.equal(rows[0]!["rejected_tool_calls"], 2);
   assert.equal(rows[0]!["anchor_rejections"], 5);
 });
 
 test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   const usage: ReviewerUsage = {
     inputTokens: 1200,
@@ -418,16 +418,16 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING], { usage }), slow],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const outcomes = query(db.path, "SELECT * FROM reviewer_outcome ORDER BY model");
+  const outcomes = (await query(db.url, "SELECT * FROM reviewer_outcome ORDER BY model"));
   assert.equal(outcomes[0]!["total_tokens"], 2500);
   const slowRow = outcomes.find((r) => r["model"] === "slow-model")!;
   // 定时器可能比 Date.now 的差值早一两毫秒触发,下限留出余量。
   assert.ok((slowRow["duration_ms"] as number) >= 25, "Reviewer 的耗时没有被记录");
 
-  const run = query(db.path, "SELECT * FROM review_run")[0]!;
+  const run = (await query(db.url, "SELECT * FROM review_run"))[0]!;
   assert.equal(run["input_tokens"], 2400);
   assert.equal(run["total_tokens"], 5000);
   assert.ok((run["duration_ms"] as number) >= 30);
@@ -435,12 +435,12 @@ test("用量与耗时落库,Review Run 一级是各 Reviewer 之和", async () =
 
 
 test("同一数据库上的第二次 Review Run 追加一行,不覆盖上一次", async () => {
-  const { repo, cache, db, forge } = setup();
+  const { repo, cache, db, forge } = (await setup());
   const deps = {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   await runReview(EVENT, deps);
@@ -449,23 +449,23 @@ test("同一数据库上的第二次 Review Run 追加一行,不覆盖上一次"
   });
   await runReview(EVENT, deps);
 
-  const runs = query(db.path, "SELECT id, head_sha FROM review_run ORDER BY id");
+  const runs = (await query(db.url, "SELECT id, head_sha FROM review_run ORDER BY id"));
   assert.equal(runs.length, 2);
   assert.notEqual(runs[0]!["head_sha"], runs[1]!["head_sha"]);
-  assert.equal(query(db.path, "SELECT * FROM finding").length, 2);
+  assert.equal((await query(db.url, "SELECT * FROM finding")).length, 2);
 });
 test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   const published = forge.publishedComments[0]!;
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const run = (await store.listRuns({ limit: 10 }))[0]!;
   await store.close();
   assert.deepEqual(run.findings, [
@@ -504,9 +504,9 @@ test("时间流带上每条 Finding 的 Forge 评论 id 与链接", async () => 
 });
 
 test("正常收尾的轮次没有轮次级失败原因;recordRunFailure 只写原因,failed 与结束时间不动", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const runId = await store.startRun({
       owner: "acme",
@@ -543,9 +543,9 @@ test("正常收尾的轮次没有轮次级失败原因;recordRunFailure 只写�
 test("轮次级失败原因通篇空白时落的是「未记录原因」,正常原因原样落库", async () => {
   // 「非空即收尾失败」这一档不能在没有任何原因的情况下成立(issue #432):轮次侧滑
   // 原样渲染这一列,空原因就是一句尾巴空着的话。两条写入路径各验一遍。
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const start = (pullNumber: number) =>
     store.startRun({
       owner: "acme",

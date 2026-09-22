@@ -1,7 +1,7 @@
 /**
  * 阶段详情的批量处置(issue #274):一次处置这个阶段里低于生效最低报告等级的未处置项。
  *
- * 打在面板 API 的真实 HTTP 缝上:阶段的轮次与 Finding 直接落临时 SQLite(这几条用例要
+ * 打在面板 API 的真实 HTTP 缝上:阶段的轮次与 Finding 直接落一次性 PostgreSQL 库(这几条用例要
  * 的是选条目与逐条处置的行为,不是 Reviewer 怎么跑出来的),内存 Forge 记下 resolve 收到
  * 的评论 id,处置结果由 `GET /stage-summary` 读回。
  */
@@ -10,7 +10,7 @@ import { test } from "node:test";
 
 import type { Forge } from "../src/forge/forge.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -53,7 +53,7 @@ async function seedStage(
   ref: { owner: string; repo: string; pullNumber: number },
   findings: readonly SeedFinding[],
 ): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const runId = await store.startRun({
       owner: ref.owner,
@@ -176,7 +176,7 @@ async function scopedCookie(
   permissions: readonly PanelPermission[],
   repoIds?: readonly number[],
 ): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const role = await store.createPanelRole({
       name: `角色-${username}`,

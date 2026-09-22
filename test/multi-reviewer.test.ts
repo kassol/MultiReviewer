@@ -3,8 +3,8 @@ import { test } from "node:test";
 
 import { buildReviewers } from "../src/config.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { openStore } from "../src/review/store/index.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -33,12 +33,12 @@ const HEAD = BASE.replace("return a - b;", "return a - b - 1;").replace(
 
 const cleanups = testCleanups();
 
-function setup() {
-  const { cache, db, forge } = setupRepo(cleanups, {
+async function setup() {
+  const { cache, db, forge } = (await setupRepo(cleanups, {
     tree: { base: { "src/m.js": BASE }, head: { "src/m.js": HEAD } },
     pullNumber: 1,
     changedFiles: [{ path: "src/m.js", status: "modified" }],
-  });
+  }));
 
   return { cache, db, forge, event: { owner: "acme", repo: "widgets", number: 1 } };
 }
@@ -52,7 +52,7 @@ const AT_LINE_2 = {
 };
 
 test("同一轮两个模型报同一处:一条评论、一份代表段加归属一行、严重度取最高、分类取首报", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -64,7 +64,7 @@ test("同一轮两个模型报同一处:一条评论、一份代表段加归属�
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 1, "同一处该合成一条 Finding");
@@ -82,7 +82,7 @@ test("同一轮两个模型报同一处:一条评论、一份代表段加归属�
   assert.match(body, /\n\n由 2 个模型报出:model-a、model-b/);
 
   // 库里是一条 Finding 加两条归属,各带自己的严重度、分类与表述。
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const findings = (await store.listRuns({ limit: 1 }))[0]!.findings;
     assert.equal(findings.length, 1);
@@ -95,7 +95,7 @@ test("同一轮两个模型报同一处:一条评论、一份代表段加归属�
 });
 
 test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -108,7 +108,7 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 2);
@@ -119,7 +119,7 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
 });
 
 test("同一个模型分开报的两条相邻 Finding 不合并,标题共享套话也不合并", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   // PR #21 的实况:opus 分开报了余额校验(P0)与类型校验(P1)两个问题,标题共享
   // 「删除…校验」套话,相似度过了弱阈值,P1 被吞进 P0 组、评论里痕迹全无。同一个
@@ -143,7 +143,7 @@ test("同一个模型分开报的两条相邻 Finding 不合并,标题共享套�
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 2);
@@ -154,7 +154,7 @@ test("同一个模型分开报的两条相邻 Finding 不合并,标题共享套�
 });
 
 test("同模型同一行的两条不同内容合并后归属全保留,重复内容折叠", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   // Run 47 的实况:小 hunk 把不同问题的锚点汇流到同一行,同行硬证据合组之后,旧折叠
   // 规则(一个模型一条归属)把其中一条整条吞掉。修订 ADR 0015:内容不同的归属全留。
@@ -183,7 +183,7 @@ test("同模型同一行的两条不同内容合并后归属全保留,重复内�
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 1);
@@ -197,7 +197,7 @@ test("同模型同一行的两条不同内容合并后归属全保留,重复内�
 });
 
 test("相距 3 行但内容明显不同的两条 Finding 不合并", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   // PR #3 的实况:`new Function` 的 RCE 与 `summary()` 越界相距 3 行,只看行距时被
   // 合成一条,评论正文讲的是其中一个问题,来源里却装着两个。
@@ -221,7 +221,7 @@ test("相距 3 行但内容明显不同的两条 Finding 不合并", async () =>
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 2);
@@ -235,7 +235,7 @@ test("相距 3 行但内容明显不同的两条 Finding 不合并", async () =>
 });
 
 test("同一缺陷的不同表述相距 2 行仍合并为一条", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -257,7 +257,7 @@ test("同一缺陷的不同表述相距 2 行仍合并为一条", async () => {
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 1);
@@ -265,7 +265,7 @@ test("同一缺陷的不同表述相距 2 行仍合并为一条", async () => {
 });
 
 test("标题为空时改用描述判断,描述讲的不是一回事就不合并", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   // 模型没给标题时归一化补空串。空标题不能让内容判据失效——那会让缺标题的模型
   // 退回只看行距的老行为。
@@ -280,7 +280,7 @@ test("标题为空时改用描述判断,描述讲的不是一回事就不合并"
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 2);
@@ -292,7 +292,7 @@ test("不同文件的同一行号不合并", async () => {
     head: { "src/m.js": HEAD, "src/n.js": HEAD },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -318,7 +318,7 @@ test("不同文件的同一行号不合并", async () => {
         scriptedReviewer("model-a", [AT_LINE_2, { ...AT_LINE_2, file: "src/n.js" }]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
@@ -326,7 +326,7 @@ test("不同文件的同一行号不合并", async () => {
 });
 
 test("一个 Reviewer 失败时其余结果照常发布,正文列出缺席的模型", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -335,7 +335,7 @@ test("一个 Reviewer 失败时其余结果照常发布,正文列出缺席的模
       scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.failed, false);
@@ -347,7 +347,7 @@ test("一个 Reviewer 失败时其余结果照常发布,正文列出缺席的模
 });
 
 test("全部 Reviewer 失败时记录为失败,且不发布空的 review", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   const result = await runReview(event, {
     forge: forge.forge,
@@ -356,7 +356,7 @@ test("全部 Reviewer 失败时记录为失败,且不发布空的 review", async
       scriptedReviewer("model-b", [], { failure: "402" }),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.failed, true);
@@ -364,13 +364,13 @@ test("全部 Reviewer 失败时记录为失败,且不发布空的 review", async
 });
 
 test("零 Finding 但 Reviewer 都成功时,不算失败", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
 
   const result = await runReview(event, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.failed, false);
@@ -385,7 +385,7 @@ test("零 Finding 但 Reviewer 都成功时,不算失败", async () => {
  * 「组装时按失败处理」与「Review Run 留下这条记录」之间那一段真实链路。
  */
 test("撞名的 provider 留下失败记录,其余 Reviewer 照常跑完,整轮不算失败", async () => {
-  const { cache, db, forge, event } = setup();
+  const { cache, db, forge, event } = (await setup());
   const collided = { provider: "corp-gateway", model: "corp-qwen3-max" };
   const [conflicting] = buildReviewers([
     {
@@ -402,14 +402,14 @@ test("撞名的 provider 留下失败记录,其余 Reviewer 照常跑完,整轮�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2]), conflicting!],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.failed, false, "一个模型撞名把整轮 Run 判成失败了");
   assert.equal(forge.createdReviews.length, 1);
   assert.equal(forge.createdReviews[0]!.comments.length, 1, "其余 Reviewer 的 Finding 没发出去");
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const models = (await store.listRuns({ limit: 1 }))[0]!.models;
     const failed = models.find((row) => row.model === "corp-gateway:corp-qwen3-max");

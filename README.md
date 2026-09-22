@@ -8,6 +8,8 @@ Real coding agents review each pull request. Each reviewer runs on a full workin
 
 **Gitea 1.26.0 or later (Enterprise: 26.0.0 or later).** Disposition tracking is built on the resolve / unresolve endpoints for review comments, which exist only from these versions. The service checks the instance version at startup and refuses to run on older instances.
 
+**A PostgreSQL instance.** The service stores everything in PostgreSQL and connects to an instance you provide. Give it one connection string; it runs its schema migrations at startup. It does not ship a database.
+
 A GitHub adapter exists for development and testing, but repository admission is Gitea-only: only registered Gitea repositories are reviewed.
 
 ## How it works

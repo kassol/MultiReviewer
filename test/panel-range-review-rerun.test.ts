@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChangedFile } from "../src/forge/forge.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   hashTestPassword,
@@ -38,7 +38,7 @@ async function registeredHarness(
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return harness;
 }
 
@@ -49,7 +49,7 @@ async function startRangeReview(h: PanelHarness): Promise<RangeReview> {
 
 /** 登录一个自定义权限的用户,拿它的会话 cookie。仓库一并分给他:可见才能操作。 */
 async function userCookie(h: PanelHarness, username: string, permissions: string[]): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const role = await store.createPanelRole({
     name: `${username}-角色`,
     permissions: permissions as Parameters<typeof store.createPanelRole>[0]["permissions"],
@@ -95,7 +95,7 @@ test("范围审查重跑:在当前比较项上多跑一轮,归入同一个阶段
   await h.settledAtLeast(2);
   assert.equal(h.settled[1]!.error, undefined);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
   const record = (await store.getRangeReview(rangeReview.id))!;
   await store.close();
@@ -165,7 +165,7 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
   assert.equal(allowed.status, 202);
   await h.settledAtLeast(2);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
   await store.close();
   assert.equal(runs.length, 2);
@@ -185,7 +185,7 @@ const reportingReviewers: NonNullable<
 
 /** 库里每一轮的模式,按开跑先后。 */
 async function modes(h: PanelHarness, rangeReviewId: number): Promise<string[]> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     return (await store
       .listRuns({ limit: 30, rangeReviewId }))
@@ -308,7 +308,7 @@ test("未处置历史全落在回退文件上:只复核重跑先自动处置再 
 
   // 处置写回了容器 PR 上那条评论,库里那一条记「已修复」并带上回退那句备注。
   assert.deepEqual(h.memory.resolvedIds, [carried.id]);
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const history = (await store
     .stageHistory({ rangeReviewId: rangeReview.id }))
     .map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null }));

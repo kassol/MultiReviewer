@@ -8,23 +8,23 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { startRuleTrace } from "../src/review/trace.ts";
-import { openStore, type Store } from "../src/review/store.ts";
+import { openStore, type Store } from "../src/review/store/index.ts";
 import { runTrackerRequest } from "../src/webhook/product-tracker.ts";
-import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 
 const cleanups = testCleanups();
 const AT = "2026-09-22T00:00:00.000Z";
 
-function store(): Store {
-  const db = makeDbPath();
+async function store(): Promise<Store> {
+  const db = await makeTestDatabase();
   cleanups.push(() => db.cleanup());
-  const opened = openStore(db.path);
+  const opened = openStore(db.url);
   cleanups.push(() => opened.close());
   return opened;
 }
 
 test("每个方法返回 Promise,等出来的是它那一份记录", async () => {
-  const opened = store();
+  const opened = (await store());
   await opened.createPanelRole({ name: "评审", permissions: ["review:rerun"], createdAt: "2026-09-22T00:00:00.000Z" });
 
   const roles = opened.listPanelRoles();
@@ -34,12 +34,12 @@ test("每个方法返回 Promise,等出来的是它那一份记录", async () =>
 });
 
 test("方法里抛的错变成 reject", async () => {
-  const opened = store();
+  const opened = (await store());
   await assert.rejects(() => opened.getReviewRunSnapshot(404), /不在注册表里/);
 });
 
 test("中途回滚把这一笔写进去的东西退回去,返回值仍是调用方给的那一个", async () => {
-  const opened = store();
+  const opened = (await store());
   const created = "2026-09-22T00:00:00.000Z";
   assert.equal(
     await opened.registerFirstPanelUser({
@@ -71,7 +71,7 @@ test("中途回滚把这一笔写进去的东西退回去,返回值仍是调用�
 });
 
 test("tracker 的读写走同一段判定,返回 Promise", async () => {
-  const opened = store();
+  const opened = (await store());
   const product = await opened.createProduct({ name: "评审验证产品", createdAt: AT });
 
   // 一次写、一次读、一次先读后写:三种形状各走一遍。
@@ -114,7 +114,7 @@ test("tracker 的读写走同一段判定,返回 Promise", async () => {
 });
 
 test("startRuleTrace 的 withStore 是异步的,整条链路跟着返回 Promise", async () => {
-  const opened = store();
+  const opened = (await store());
   await opened.registerRepo({ repoId: 7, owner: "acme", repo: "widgets", generation: 1, key: "k" });
   const recorder = await startRuleTrace(
     (use) => use(opened),

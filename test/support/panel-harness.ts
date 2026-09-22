@@ -8,7 +8,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { DatabaseSync } from "node:sqlite";
 
 import type { ReviewerRuntimePlan, ReviewerSpec } from "../../src/config.ts";
 import type { Drain } from "../../src/drain.ts";
@@ -27,14 +26,15 @@ import {
   modelServiceTargetFingerprint,
   openStore,
   type ScheduledCheckResult,
-} from "../../src/review/store.ts";
+} from "../../src/review/store/index.ts";
 import { startFakeGitea, type FakeGitea } from "./fake-gitea.ts";
 import {
   confirmEmptyRuleSet,
   makeCacheDir,
-  makeDbPath,
+  makeTestDatabase,
   makeRepo,
   testCleanups,
+  withTestDb,
   type RepoFixture,
 } from "./git-fixture.ts";
 import { memoryForge, scriptedReviewer, type MemoryForge } from "./memory-forge.ts";
@@ -77,7 +77,7 @@ export type PanelHarness = {
   repo: RepoFixture;
   /** 内存 Forge 的记录面:建了哪些分支、开了哪些 PR、发了哪些 review。 */
   memory: MemoryForge;
-  db: { path: string };
+  db: { url: string; dataDir: string };
   /** 工作副本缓存根。本地 clone 在它下面的 `<owner>/<repo>`。 */
   cacheDir: string;
   dispatched: PullRequestRef[];
@@ -132,7 +132,7 @@ export const HARNESS_SPEC: ReviewerSpec = {
  * 支持的思考档位只有 `off`)。要一个思考得起来的模型就显式给 `reasoning: true`。
  */
 export async function seedAvailableModelService(
-  harness: Pick<PanelHarness, "db">,
+  harness: { db: { url: string } },
   provider: string,
   models: readonly string[],
   fields: DiscoveredModel["fields"] = {},
@@ -143,7 +143,7 @@ export async function seedAvailableModelService(
   const baseUrl = serviceBaseUrl ?? `https://${provider}.models.example.test/v1`;
   const api = "openai-completions";
   const at = "2026-08-20T00:00:00.000Z";
-  const store = openStore(harness.db.path);
+  const store = openStore(harness.db.url);
   try {
     assert.equal(await store.commitModelServiceVersion(null, {
       provider,
@@ -270,13 +270,13 @@ export async function startPanelHarness(
     },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   const gitea = await startFakeGitea(GITEA_REPO);
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup, gitea.close);
 
   // 全局模型组合在库里(issue #66),服务起来之前先播种。
   const reviewers = options.reviewers ?? [HARNESS_SPEC];
-  const seed = openStore(db.path);
+  const seed = openStore(db.url);
   await seed.createPanelUser({
     username: PANEL_ADMIN_USERNAME,
     displayName: "Panel Admin",
@@ -289,12 +289,13 @@ export async function startPanelHarness(
   await seed.close();
   // Harness 初始组合代表升级前已存在的状态；运行期组合写必须走 Store 的原子可用性门禁。
   if (reviewers.length > 0) {
-    const fixtureDb = new DatabaseSync(db.path);
-    fixtureDb.prepare("INSERT INTO global_setting (key, value) VALUES (?, ?)").run(
-      "reviewers",
-      JSON.stringify(reviewers),
-    );
-    fixtureDb.close();
+    await withTestDb(db.url, async (sql) => {
+      await sql(
+        "INSERT INTO global_setting (key, value) VALUES ($1, $2)",
+        "reviewers",
+        JSON.stringify(reviewers),
+      );
+    });
   }
 
   const base = memoryForge({
@@ -378,7 +379,8 @@ export async function startPanelHarness(
       options.buildMergeAgent ??
       (() => async () => ({ groups: [], failure: "harness 没有注入合并 agent" })),
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
+    dataDir: db.dataDir,
     bootstrapSecret: "panel-harness-bootstrap",
     baseUrl: PANEL_BASE_URL,
     panelDist: `${cache.dir}/no-dist`,
@@ -548,10 +550,10 @@ export async function startReadyPanelHarness(
 
 /** 播种升级前已经存在的仓库，用于验证注册门禁不能改变历史投递。 */
 export async function seedHistoricalRepo(
-  harness: Pick<PanelHarness, "db">,
+  harness: { db: { url: string } },
   key = "historical-repo-key",
 ): Promise<{ url: string; secret: string }> {
-  const store = openStore(harness.db.path);
+  const store = openStore(harness.db.url);
   try {
     assert.equal(await store.registerRepo({
       repoId: GITEA_REPO.id,
@@ -564,7 +566,7 @@ export async function seedHistoricalRepo(
     await store.close();
   }
   // 「升级前已经存在」的另一半:存量迁移把这些仓库写成已确认空知识集(issue #206)。
-  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return { url: `${PANEL_BASE_URL}/webhook?k=1`, secret: key };
 }
 
@@ -573,14 +575,14 @@ export async function seedHistoricalRepo(
  * 同名角色套上去,省略或空数组即不建角色、留系统默认的无角色态。
  */
 export async function scopedUser(
-  h: Pick<PanelHarness, "db" | "serverUrl">,
+  h: { db: { url: string }; serverUrl: string },
   username: string,
   password: string,
   at: string,
   repoIds: readonly number[],
   permissions: readonly PanelPermission[] = [],
 ): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     await store.createPanelUser({
       username,
@@ -621,12 +623,12 @@ export async function scopedUser(
 
 /** 直接落一行注册表,不建 hook。返回 `repoId` 供调用方接着用。 */
 export async function seedRepo(
-  h: Pick<PanelHarness, "db">,
+  h: { db: { url: string } },
   repoId: number,
   owner: string,
   repo: string,
 ): Promise<number> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(
       await store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),

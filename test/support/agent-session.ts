@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 
 import type { ReviewerUsage } from "../../src/review/finding.ts";
-import { openStore } from "../../src/review/store.ts";
+import { openStore } from "../../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_SPEC,
@@ -39,7 +39,7 @@ export const AT = "2026-09-12T00:00:00.000Z";
 
 /** 知识集里的两条。陈述不进提示(issue #344),断言因此落在那一行条数上。 */
 export const RULE = "每个导出函数都要有 JSDoc 注释";
-export const FACT = "这个仓库的持久化只用 node:sqlite";
+export const FACT = "这个仓库的持久化只经 Store 一层";
 
 /** 发给 agent 的那句话。同样独一无二。 */
 export const MESSAGE = "把「报销单可以撤回」拆成可实现的条目";
@@ -91,7 +91,7 @@ export async function startSessionHarness(
   /** 这个产品下另外几个会话的 id(`extraSessions` 给了才有),按建立顺序。 */
   extraSessionIds: number[];
   productId: number;
-  requests: Awaited<ReturnType<typeof startModelStub>>["requests"];
+  requests: Awaited<Awaited<ReturnType<typeof startModelStub>>>["requests"];
   close: () => Promise<void>;
 }> {
   const stub = await startModelStub(turns);
@@ -118,8 +118,8 @@ export async function startSessionHarness(
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
   );
-  seedReviewRule(h.db.path, GITEA_REPO.id, { type: "rule", scope: "", statement: RULE });
-  seedReviewRule(h.db.path, GITEA_REPO.id, { type: "fact", scope: "src", statement: FACT });
+  await seedReviewRule(h.db.url, GITEA_REPO.id, { type: "rule", scope: "", statement: RULE });
+  await seedReviewRule(h.db.url, GITEA_REPO.id, { type: "fact", scope: "src", statement: FACT });
 
   const created = await h.api("POST", "/products", { name: "报销系统" });
   assert.equal(created.status, 201);
@@ -130,7 +130,7 @@ export async function startSessionHarness(
     await seedRepo(h, extra.repoId, extra.owner, extra.repo);
     // 第二个仓库直接落归属行:走归入端点会自己开一场梳理(issue #347),而这几例要的是它们
     // 自己投的那一条消息,不是那一场。
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     try {
       assert.equal(await store.attachProductRepo(product.id, extra.repoId, AT), "attached");
     } finally {
@@ -238,9 +238,9 @@ export function messageRoles(landed: readonly Record[]): (string | undefined)[] 
 }
 
 /** 等到这个会话至少落了这么多条消息记录。等的是库里的行,不猜子进程的时序。 */
-export async function messagesAtLeast(dbPath: string, sessionId: number, count: number): Promise<void> {
+export async function messagesAtLeast(databaseUrl: string, sessionId: number, count: number): Promise<void> {
   for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
-    const store = openStore(dbPath);
+    const store = openStore(databaseUrl);
     const landed = (await store.listAgentSessionEntries(sessionId)) as unknown as Record[];
     await store.close();
     if (messageRoles(landed).length >= count) return;

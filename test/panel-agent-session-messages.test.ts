@@ -1,7 +1,7 @@
 /**
  * 发消息、会话记录与记录流的面板接口(issue #333)。
  *
- * 缝与 #332 那一票相同:面板 API 走真实 HTTP,会话与记录落临时 SQLite。压的是票的验收里
+ * 缝与 #332 那一票相同:面板 API 走真实 HTTP,会话与记录落一次性 PostgreSQL 库。压的是票的验收里
  * 打在 HTTP 上的那几条:同一个客户端消息 id 重发回原受理结果不重入队、执行中的新消息按模式
  * 进队列、排队列表与整队清空、空闲时停止是空操作、会话根里一个仓库都没有时开不起来、记录
  * 与记录流的可见性、用量按记录累加并在统计页单列一行。真子进程那条链路在
@@ -15,7 +15,7 @@ import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import type { ReviewerUsage } from "../src/review/finding.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { agentSessionRepos, disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
@@ -67,7 +67,7 @@ async function productWithRepos(
   const { product } = (await created.json()) as { product: { id: number } };
   // 归属行直接落库:走归入端点在第二个仓库上会自己开一场梳理(issue #347),这几例压的是
   // 发消息。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     for (const repoId of repoIds) {
       assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
@@ -112,8 +112,8 @@ async function queueOf(
 }
 
 /** 直接往记录表里落一条(ADR 0031)。这几条用例要的是用量累加,不是子进程。 */
-async function seedEntry(dbPath: string, sessionId: number, usage: Partial<ReviewerUsage>): Promise<void> {
-  const store = openStore(dbPath);
+async function seedEntry(databaseUrl: string, sessionId: number, usage: Partial<ReviewerUsage>): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     const full: ReviewerUsage = {
       inputTokens: usage.inputTokens ?? 0,
@@ -147,10 +147,10 @@ test("会话根只挂创建者有分配的仓库:产品里别的仓库不出现"
   // 系统管理员不受分配限制:产品的全部仓库都在他的会话根里。
   const admin = await createSession(h, h.cookie, productId);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const names = async (sessionId: number): Promise<string[]> =>
-      (await agentSessionRepos(h.db.path, (await store.getAgentSession(sessionId))!)).map(
+      (await agentSessionRepos(h.db.url, (await store.getAgentSession(sessionId))!)).map(
         (repo) => `${repo.owner}/${repo.repo}`,
       );
     assert.deepEqual(await names(mine), ["acme/widgets"]);
@@ -328,7 +328,7 @@ test("服务正在排空:发消息回 503,不起新的子进程", async () => {
   assert.equal(response.status, 503);
   assert.deepEqual(await response.json(), { error: "服务正在排空,等它起回来再发" });
   // 受理判在这道闸之后:排空结束、服务起回来之后,人重发的还是同一条消息。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   assert.equal(await store.acceptedAgentSessionMessage(sessionId, "c1"), undefined);
   await store.close();
 });
@@ -434,7 +434,7 @@ test("记录与记录流只有创建者与系统管理员读得到", async () =>
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const other = await scopedUser(h, "other", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, owner, productId);
-  await seedEntry(h.db.path, sessionId, { inputTokens: 10, outputTokens: 2 });
+  await seedEntry(h.db.url, sessionId, { inputTokens: 10, outputTokens: 2 });
 
   // 创建者:记录读得到。
   const mine = await as(h, owner, "GET", `/agent-sessions/${sessionId}/records`);
@@ -479,8 +479,8 @@ test("记录流的 ?after=seq 只补它之后的落库条目", async () => {
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, owner, productId);
-  await seedEntry(h.db.path, sessionId, { inputTokens: 10 });
-  await seedEntry(h.db.path, sessionId, { inputTokens: 20 });
+  await seedEntry(h.db.url, sessionId, { inputTokens: 10 });
+  await seedEntry(h.db.url, sessionId, { inputTokens: 20 });
 
   const stream = await fetch(
     `${h.serverUrl}/api/agent-sessions/${sessionId}/stream?after=1`,
@@ -502,8 +502,8 @@ test("用量按记录累加到会话上,统计页单列一行", async () => {
   const other = await scopedUser(h, "other", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, owner, productId);
 
-  await seedEntry(h.db.path, sessionId, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5 });
-  await seedEntry(h.db.path, sessionId, { inputTokens: 30, outputTokens: 4, cacheWriteTokens: 1 });
+  await seedEntry(h.db.url, sessionId, { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5 });
+  await seedEntry(h.db.url, sessionId, { inputTokens: 30, outputTokens: 4, cacheWriteTokens: 1 });
   const expected = {
     inputTokens: 130,
     outputTokens: 24,
@@ -555,7 +555,7 @@ test("更新基点:换到记下的那条分支此刻的 head,落一条基点更�
   const productId = await productWithRepos(h, "报销系统", [GITEA_REPO.id]);
   const cookie = await scopedUser(h, "member", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const sessionId = await createSession(h, cookie, productId);
-  await seedEntry(h.db.path, sessionId, { inputTokens: 1 });
+  await seedEntry(h.db.url, sessionId, { inputTokens: 1 });
   const previous = (await recordsOf(h, cookie, sessionId)).at(-1)!;
   // 建会话之后 `main` 往前走了一步。
   const moved = h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });
@@ -618,7 +618,7 @@ test("更新基点:换到记下的那条分支此刻的 head,落一条基点更�
       text: "拆一下这个需求",
     });
     assert.equal(sent.status, 202, await sent.text());
-    assert.deepEqual(await sessionWorktreeHeads(h, [GITEA_REPO]), [moved]);
+    assert.deepEqual((await sessionWorktreeHeads(h, [GITEA_REPO])), [moved]);
   } finally {
     await disposeAgentSessions();
   }
@@ -636,7 +636,7 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
     { owner: "acme", repo: "widgets", sha: h.repo.baseSha, branch: "v1", kind: "tag" },
   ]);
   const sessionId = await createSession(h, owner, productId);
-  await seedEntry(h.db.path, sessionId, { inputTokens: 1 });
+  await seedEntry(h.db.url, sessionId, { inputTokens: 1 });
   // 分支往前走了:每一道闸若没挡住,基点就会变。
   h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });
   const baselines = (await session(h, owner, sessionId)).baselines;
@@ -650,10 +650,10 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
   };
 
   // 同事连这个会话在不在都问不到;系统管理员看得到但不是创建者。
-  await refused(await updateBaseline(h, other, sessionId), 404, "没有这个 Agent 会话");
-  await refused(await updateBaseline(h, h.cookie, sessionId), 403, "只有会话的创建者能做");
+  await refused((await updateBaseline(h, other, sessionId)), 404, "没有这个 Agent 会话");
+  await refused((await updateBaseline(h, h.cookie, sessionId)), 403, "只有会话的创建者能做");
   // 产品梳理与别的用途同律(issue #365):只有开这一场的那个人动得了它的基点。
-  const store0 = openStore(h.db.path);
+  const store0 = openStore(h.db.url);
   const survey = (await store0.createAgentSession({
     productId,
     createdBy: "owner",
@@ -661,7 +661,7 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
     createdAt: AT,
   })).id;
   await store0.close();
-  await refused(await updateBaseline(h, h.cookie, survey), 403, "只有会话的创建者能做");
+  await refused((await updateBaseline(h, h.cookie, survey)), 403, "只有会话的创建者能做");
   // 会话里没有这个仓库的会话基点(创建者没有 alpha 的仓库分配)。
   await refused(
     await updateBaseline(h, owner, sessionId, { owner: "acme", repo: "alpha" }),
@@ -677,11 +677,11 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
   await unchanged();
 
   // 有排队的消息(回收时落库的那一种):等它投出去再更新。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: "再补一句" }]);
   await store.close();
   const busy = "会话在跑或还有排队的消息,等它空闲再更新基点";
-  await refused(await updateBaseline(h, owner, sessionId), 409, busy);
+  await refused((await updateBaseline(h, owner, sessionId)), 409, busy);
   await unchanged();
   assert.equal((await as(h, owner, "DELETE", `/agent-sessions/${sessionId}/queue`)).status, 200);
 
@@ -692,7 +692,7 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
       text: "拆一下这个需求",
     });
     assert.equal(sent.status, 202, await sent.text());
-    await refused(await updateBaseline(h, owner, sessionId), 409, busy);
+    await refused((await updateBaseline(h, owner, sessionId)), 409, busy);
     assert.deepEqual((await session(h, owner, sessionId)).baselines, baselines);
   } finally {
     await disposeAgentSessions();
@@ -700,7 +700,7 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
 
   // 排空中。
   drain.begin();
-  await refused(await updateBaseline(h, owner, sessionId), 503, "服务正在排空,等它起回来再发");
+  await refused((await updateBaseline(h, owner, sessionId)), 503, "服务正在排空,等它起回来再发");
   assert.deepEqual((await session(h, owner, sessionId)).baselines, baselines);
 });
 

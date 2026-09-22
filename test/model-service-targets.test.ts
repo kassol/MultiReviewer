@@ -3,7 +3,7 @@
  *
  * 当前依赖里 Pi 内置的 OpenRouter 表只有 Chat Completions 一种协议,所以混合协议的目录用
  * 发现桩造出来:同一家里一行走 Anthropic Messages、一行走 Chat Completions。每条用例走真实的
- * HTTP 端点与临时 SQLite,只把目录发现与模型端点打桩。
+ * HTTP 端点与一次性 PostgreSQL 库,只把目录发现与模型端点打桩。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -16,7 +16,7 @@ import {
   modelServiceTargetSetFingerprint,
   openStore,
   type ModelServiceVersionCommit,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import type { DiscoveredModel, ModelDiscoveryResult } from "../src/reviewer/model-service-runtime.ts";
 import {
   HARNESS_PR,
@@ -117,7 +117,7 @@ async function seedBuiltin(
   },
 ): Promise<void> {
   const at = "2026-09-05T00:00:00.000Z";
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await store.commitModelServiceVersion(null, {
       provider: PROVIDER,
@@ -220,7 +220,7 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
 
     const expectedTargets = [ANTHROPIC_TARGET, OPENAI_TARGET];
     const setFingerprint = modelServiceTargetSetFingerprint(expectedTargets);
-    let store = openStore(h.db.path);
+    let store = openStore(h.db.url);
     let record = (await store.getModelService(PROVIDER))!;
     await store.close();
     assert.equal(record.version, 1);
@@ -240,7 +240,7 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
     assert.equal(stub.calls.length, 2);
     assert.equal(stub.calls[1]!.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(stub.calls[1]!.bearer, `Bearer ${credential}`);
-    store = openStore(h.db.path);
+    store = openStore(h.db.url);
     record = (await store.getModelService(PROVIDER))!;
     await store.close();
     assert.equal(record.version, 2);
@@ -307,7 +307,7 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
       { model: "retained/only", source: "migration-retention", targetFingerprint: null, createdAt: "2026-09-05T00:00:00.000Z" },
     ],
   });
-  const store = openStore(proven.db.path);
+  const store = openStore(proven.db.url);
   assert.equal((await store.getModelService(PROVIDER))!.targets, null, "夹具必须是没有目标集合的旧格式版本");
   await store.close();
 
@@ -411,7 +411,7 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
     assert.equal(refreshed.models.find((model) => model.id === OPENAI_MODEL)!.available, true);
 
     // 组合写入的库内判据与投影同一口径:待验证目标的模型进不了组合,已绑目标的可以。
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     assert.equal(
       await putGlobalSettings(store, {
         reviewersJson: JSON.stringify([{ provider: PROVIDER, model: ANTHROPIC_MODEL }]),
@@ -465,7 +465,7 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.match(error, /绑定 2 个调用目标/);
     assert.match(error, /改用自定义模型服务/);
     assert.equal(stub.calls.length, 0);
-    let store = openStore(mixed.db.path);
+    let store = openStore(mixed.db.url);
     assert.equal((await store.getModelService(PROVIDER))!.version, 1);
     await store.close();
 
@@ -476,7 +476,7 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     });
     assert.equal(own.status, 200, await own.text());
     assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages?beta=true");
-    store = openStore(mixed.db.path);
+    store = openStore(mixed.db.url);
     let record = (await store.getModelService(PROVIDER))!;
     await store.close();
     assert.equal(record.version, 2);
@@ -493,7 +493,7 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(fromTable.status, 200, await fromTable.text());
     assert.equal(stub.calls[1]!.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(stub.calls[1]!.body?.["model"], PI_TABLE_MODEL);
-    store = openStore(mixed.db.path);
+    store = openStore(mixed.db.url);
     record = (await store.getModelService(PROVIDER))!;
     await store.close();
     assert.equal(
@@ -525,7 +525,7 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(singleStub.calls.length, 1);
     assert.equal(singleStub.calls[0]!.url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(singleStub.calls[0]!.body?.["model"], "unknown/model");
-    const store = openStore(single.db.path);
+    const store = openStore(single.db.url);
     const record = (await store.getModelService(PROVIDER))!;
     await store.close();
     assert.equal(

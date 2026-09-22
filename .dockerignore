@@ -16,6 +16,8 @@ data
 docs
 test
 scripts
+# 一次性搬迁脚本例外(issue #458),线上切完即删。
+!scripts/migrate-sqlite-to-pg.ts
 AGENTS.md
 CONTEXT.md
 README.md

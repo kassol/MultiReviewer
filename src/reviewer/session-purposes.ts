@@ -8,7 +8,7 @@
  * 段落用英文写,与现有 prompt 同一风格;要求产出用中文,与产出工具字段 description 里
  * 那几句「written in Chinese」同一口径。
  */
-import { PRODUCT_TICKET_LABELS } from "../review/store.ts";
+import { PRODUCT_TICKET_LABELS } from "../review/store/index.ts";
 import {
   QUERY_KNOWLEDGE_TOOL,
   WITHDRAW_KNOWLEDGE_TOOL,

@@ -12,7 +12,7 @@ export const MAIN = fileURLToPath(new URL("../../src/main.ts", import.meta.url))
 export const LISTENING = "MultiReviewer webhook 监听";
 
 export type MainProcess = {
-  child: ReturnType<typeof spawn>;
+  child: Awaited<ReturnType<typeof spawn>>;
   /** 到此刻为止的 stdout 加 stderr。 */
   output: () => string;
   /** 监听行首次出现时 resolve。进程没起来就一直不 resolve,也不 reject。 */

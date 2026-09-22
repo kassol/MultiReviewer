@@ -6,7 +6,6 @@
  * `buildReviewers` 就是服务真用的那一个入口,这里传真实实现。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { buildReviewers } from "../src/config.ts";
@@ -15,7 +14,7 @@ import {
   DEFAULT_MAX_FILES_PER_BATCH,
   DEFAULT_MAX_PARALLEL_BATCHES,
 } from "../src/review/batch.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { EVIDENCE_SESSION_BUDGET } from "../src/reviewer/evidence.ts";
 import {
   GITEA_REPO,
@@ -25,7 +24,7 @@ import {
   startPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, withTestDb } from "./support/git-fixture.ts";
 
 type SettingsBody = {
   reviewers: { provider: string; model: string; thinkingLevel?: string }[];
@@ -150,7 +149,7 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
   // 整页一起校验,保存要求组合里的模型当前可用:先把 harness 播种的那一个坐实。
   await seedAvailableModelService(h, "test", ["global-model"]);
   // harness 的库这几格从没写过,与升级前的库同一形态:读出来全是 null。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const stored = await store.getGlobalSettings();
     assert.deepEqual(
@@ -200,78 +199,6 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
     maxEvidenceCallsPerBatch: 4,
     minReportSeverity: null,
     version: 3,
-    defaults: DEFAULTS,
-  });
-});
-
-test("带逐项版本键的旧库开起来:整页只剩一个版本,旧键消失,值一格不变", async () => {
-  const h = await startPanelHarness();
-  const legacy = new DatabaseSync(h.db.path);
-  try {
-    const legacyRows: [string, string][] = [
-      ["reviewers_version", "7"],
-      ["max_changed_lines_per_batch", "777"],
-      ["max_changed_lines_per_batch_version", "3"],
-      ["max_parallel_batches_version", "2"],
-      ["max_files_per_batch_version", "2"],
-      ["max_evidence_calls_per_batch_version", "2"],
-      ["min_report_severity", "P1"],
-      ["min_report_severity_version", "5"],
-    ];
-    for (const [key, value] of legacyRows) {
-      legacy.prepare(
-        `INSERT INTO global_setting (key, value) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      ).run(key, value);
-    }
-  } finally {
-    legacy.close();
-  }
-
-  // 开库即一次性合并。跑两遍是为了证明它幂等:第二遍旧键早没了,值仍不变。
-  for (const pass of [1, 2]) {
-    const store = openStore(h.db.path);
-    try {
-      assert.deepEqual(await store.getGlobalSettings(), {
-        reviewersJson: JSON.stringify(SEEDED_REVIEWERS),
-        auxiliaryModelJson: null,
-        maxChangedLinesPerBatch: 777,
-        maxParallelBatches: null,
-        maxFilesPerBatch: null,
-        maxEvidenceCallsPerBatch: null,
-        minReportSeverity: "P1",
-        version: 1,
-      }, `第 ${pass} 遍`);
-    } finally {
-      await store.close();
-    }
-  }
-
-  const remaining = new DatabaseSync(h.db.path);
-  try {
-    assert.deepEqual(
-      remaining.prepare(
-        "SELECT key FROM global_setting WHERE key LIKE '%_version' AND key <> 'settings_version'",
-      ).all(),
-      [],
-      "逐项版本键一个都不该留下",
-    );
-    // 旧键换成整页那一个,值从 1 起:缺行也读作 1,但迁移把它显式建起来。
-    assert.equal(
-      remaining.prepare("SELECT value FROM global_setting WHERE key = 'settings_version'")
-        .get()?.["value"],
-      "1",
-    );
-  } finally {
-    remaining.close();
-  }
-
-  assert.deepEqual(await readSettings(h), {
-    reviewers: SEEDED_REVIEWERS,
-    ...UNSET_SETTINGS,
-    maxChangedLinesPerBatch: 777,
-    minReportSeverity: "P1",
-    version: 1,
     defaults: DEFAULTS,
   });
 });
@@ -344,34 +271,33 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   await seedAvailableModelService(h, "healthy-service", ["keep"]);
   await seedAvailableModelService(h, "recovering-service", ["saved"]);
 
-  const setRecoveringCredential = (state: "verified" | "pending-reverification"): void => {
-    const sqlite = new DatabaseSync(h.db.path);
-    try {
+  const setRecoveringCredential = async (
+    state: "verified" | "pending-reverification",
+  ): Promise<void> => {
+    await withTestDb(h.db.url, async (sql) => {
       if (state === "pending-reverification") {
-        sqlite.prepare(
+        await sql(
           `UPDATE model_service_credential
               SET state = 'pending-reverification', verified_at = NULL,
                   validation_model = NULL, verification_source = NULL
-            WHERE provider = ?`,
-        ).run("recovering-service");
+            WHERE provider = $1`,
+          "recovering-service",
+        );
       } else {
-        sqlite.prepare(
+        await sql(
           `UPDATE model_service_credential
-              SET state = 'verified', verified_at = ?, validation_model = ?,
+              SET state = 'verified', verified_at = $1, validation_model = $2,
                   verification_source = 'inference'
-            WHERE provider = ?`,
-        ).run(
+            WHERE provider = $3`,
           "2026-08-20T00:01:00.000Z",
           "recovering-service:saved",
           "recovering-service",
         );
       }
-    } finally {
-      sqlite.close();
-    }
+    });
   };
   const serviceState = async () => {
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     try {
       return {
         services: await store.listModelServices(),
@@ -382,7 +308,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
     }
   };
 
-  setRecoveringCredential("pending-reverification");
+  await setRecoveringCredential("pending-reverification");
   const projectionResponse = await h.api("GET", "/model-services");
   assert.equal(projectionResponse.status, 200);
   const projection = (await projectionResponse.json()) as {
@@ -435,7 +361,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   });
   assert.deepEqual(await serviceState(), beforeBlockedWrites, "组合与上限写入不应改服务或模型来源");
 
-  setRecoveringCredential("verified");
+  await setRecoveringCredential("verified");
   const recoveredResponse = await h.api("GET", "/model-services");
   const recoveredBody = (await recoveredResponse.json()) as {
     candidates: { identity: string; available: boolean }[];
@@ -460,7 +386,7 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   });
   assert.deepEqual(await serviceState(), beforeMissingRemoval);
 
-  setRecoveringCredential("pending-reverification");
+  await setRecoveringCredential("pending-reverification");
   const beforeUnavailableRemoval = await serviceState();
   const removedUnavailable = await putSettings(h, { reviewers: [selected[0]!] });
   assert.equal(removedUnavailable.status, 200);
@@ -573,7 +499,7 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
     200,
   );
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const frozen = await store.getReviewRunSnapshot(GITEA_REPO.id);
     assert.equal(frozen.maxParallelBatches, 5);
@@ -645,7 +571,7 @@ test("改过的全局组合下一次投递就生效", async () => {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal(
     (
       await putSettings(h, { reviewers: [{ provider: "test", model: "swapped-model" }] })
@@ -669,22 +595,17 @@ test("空库、没配模型组合时投递留下一条失败的 Review Run,原�
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30 });
   await store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.failed, true);
 
-  const sqlite = new DatabaseSync(h.db.path);
-  try {
-    const rows = sqlite.prepare("SELECT failure FROM reviewer_outcome").all() as {
-      failure: string | null;
-    }[];
+  await withTestDb(h.db.url, async (sql) => {
+    const rows = await sql("SELECT failure FROM reviewer_outcome");
     assert.equal(rows.length, 1);
-    assert.match(rows[0]!.failure ?? "", /还没有配置模型组合/);
-  } finally {
-    sqlite.close();
-  }
+    assert.match(String(rows[0]!["failure"] ?? ""), /还没有配置模型组合/);
+  });
 });
 
 /**
@@ -705,7 +626,7 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
     buildReviewers,
   });
   // 只为撞名那一家提交模型服务；另一家完全缺服务，作为独立失败原因的对照。
-  const seed = openStore(h.db.path);
+  const seed = openStore(h.db.url);
   assert.equal(await seed.commitModelServiceVersion(null, {
     provider: collided.provider,
     type: "custom",
@@ -740,7 +661,7 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const models = (await store.listRuns({ limit: 1 }))[0]!.models;
   await store.close();
   const failure = (model: string): string =>

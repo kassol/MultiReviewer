@@ -13,7 +13,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 
@@ -44,11 +44,12 @@ export function agentSessionImageMimeType(contentType: string | undefined): stri
 }
 
 /**
- * 这个会话的图片目录:`<data 目录>/agent-sessions/<会话 id>`。data 目录就是库文件所在的
- * 目录(容器里是 `/data`),备份范围因此不变——库与图片在同一个目录下(spec #329 的部署约定)。
+ * 这个会话的图片目录:`<data 目录>/agent-sessions/<会话 id>`。data 目录由
+ * `MULTIREVIEWER_DATA_DIR` 给(容器里是 `/data`)——库换成 PostgreSQL 之后没有库文件路径可
+ * 以推它了(ADR 0036),备份范围因此是「`pg_dump` 加这个目录」。
  */
-export function agentSessionImageDir(dbPath: string, sessionId: number): string {
-  return join(dirname(resolve(dbPath)), "agent-sessions", String(sessionId));
+export function agentSessionImageDir(dataDir: string, sessionId: number): string {
+  return join(resolve(dataDir), "agent-sessions", String(sessionId));
 }
 
 /** 落好盘的一张图。`path` 与 `mimeType` 进库,宽高只回给上传方看一眼缩成了多少。 */
@@ -68,7 +69,7 @@ export type StoredAgentSessionImage = {
  * 那一份,不取上传时声明的。
  */
 export async function storeAgentSessionImage(
-  dbPath: string,
+  dataDir: string,
   sessionId: number,
   bytes: Uint8Array,
   mimeType: string,
@@ -77,7 +78,7 @@ export async function storeAgentSessionImage(
   if (resized === null) return undefined;
   const extension = IMAGE_EXTENSIONS[resized.mimeType] ?? IMAGE_EXTENSIONS[mimeType]!;
   const imageId = randomUUID();
-  const dir = agentSessionImageDir(dbPath, sessionId);
+  const dir = agentSessionImageDir(dataDir, sessionId);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${imageId}.${extension}`);
   writeFileSync(path, Buffer.from(resized.data, "base64"));
@@ -91,8 +92,8 @@ export async function storeAgentSessionImage(
 }
 
 /** 这个会话的图片目录连里面的文件一起删。目录不存在不是错误。 */
-export function removeAgentSessionImages(dbPath: string, sessionId: number): void {
-  rmSync(agentSessionImageDir(dbPath, sessionId), { recursive: true, force: true });
+export function removeAgentSessionImages(dataDir: string, sessionId: number): void {
+  rmSync(agentSessionImageDir(dataDir, sessionId), { recursive: true, force: true });
 }
 
 /**

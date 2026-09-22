@@ -1,10 +1,11 @@
 /**
- * 进程入口。读环境变量建出 Forge,起 webhook 服务。模型组合与批次上限在库里,
+ * 进程入口。读环境变量建出 Forge、跑库迁移、起 webhook 服务。模型组合与批次上限在库里,
  * 由面板的设置页管(issue #66)。
  */
 import { readFileSync } from "node:fs";
 import { buildReviewers } from "./config.ts";
 import { createDrain } from "./drain.ts";
+import { closeStorePools, migrateStore } from "./review/store/index.ts";
 
 import {
   assertSupportedVersion,
@@ -86,7 +87,17 @@ function assertUsableBaseUrl(value: string): void {
 }
 
 const port = Number(process.env["MULTIREVIEWER_PORT"] ?? DEFAULT_PORT);
-const dbPath = process.env["MULTIREVIEWER_DB"] ?? "multireviewer.db";
+// `MULTIREVIEWER_DB` 随 ADR 0036 废弃。留着这道拒绝启动:旧 `.env` 原样带上来时,服务
+// 会连到别处(或者根本连不上),而库里空空如也看着像「数据没了」。
+if (process.env["MULTIREVIEWER_DB"] !== undefined) {
+  throw new Error(
+    "MULTIREVIEWER_DB 已废弃(ADR 0036:持久化迁 PostgreSQL)。" +
+      "把库的连接串写进 MULTIREVIEWER_DATABASE_URL,再把这一行删掉。",
+  );
+}
+const databaseUrl = required("MULTIREVIEWER_DATABASE_URL");
+// 会话图片附件的落点(issue #336)。原先从库文件路径推出来,换库之后没有那条路径了。
+const dataDir = process.env["MULTIREVIEWER_DATA_DIR"] ?? "/data";
 const cacheDir = process.env["MULTIREVIEWER_CACHE_DIR"] ?? ".cache/worktrees";
 
 const baseUrl = required("MULTIREVIEWER_BASE_URL");
@@ -116,6 +127,10 @@ const drainTimeoutMs =
     ? drainTimeoutSeconds
     : DEFAULT_DRAIN_TIMEOUT_SECONDS) * 1000;
 
+// 迁移在开始监听之前跑完(ADR 0036):schema 与代码对不上时,起得来却每一条查询都报错
+// 比起不来更难查。
+await migrateStore(databaseUrl);
+
 // 起服务要先开一次库(bootstrap 口令、改判上一次没跑完的活),因此是异步的(issue #446)。
 const server = await createWebhookServer({
   drain,
@@ -124,7 +139,8 @@ const server = await createWebhookServer({
     ...(gitea === undefined ? {} : { gitea: createGiteaForge(gitea) }),
   },
   cacheDir,
-  dbPath,
+  databaseUrl,
+  dataDir,
   baseUrl,
   panelDist: process.env["MULTIREVIEWER_PANEL_DIST"] ?? "web/dist",
   // 模型凭据的主密钥(ADR 0008)。没配不拦启动:凭据页会说明差什么,而服务起不来
@@ -179,6 +195,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   server.close();
   // 长连接不会自己断开(面板的 SSE 就是),不主动关掉的话 close 永远等不到。
   server.closeIdleConnections();
+  await closeStorePools();
   console.log("[drain] 排空结束,退出");
   process.exit(0);
 }

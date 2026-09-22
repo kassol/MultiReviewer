@@ -38,16 +38,16 @@ test("空闲满门槛即回收:再发消息从记录重建,此前全部消息都
   });
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
     // 空闲门槛 50ms:过了它子进程已经被回收(登记表摘掉、工作树与会话根释放)。
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     // 重建时取的是当下的知识集:这一条是回收之后才录进去的。
-    seedReviewRule(h.db.path, GITEA_REPO.id, { type: "rule", scope: "", statement: LATER_RULE });
+    (await seedReviewRule(h.db.url, GITEA_REPO.id, { type: "rule", scope: "", statement: LATER_RULE }));
 
     assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 4);
+    await messagesAtLeast(h.db.url, sessionId, 4);
     await idle(h, cookie, sessionId);
 
     assert.equal(requests.length, 2);

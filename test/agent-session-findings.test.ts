@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import {
   GITEA_REPO,
@@ -54,11 +54,11 @@ type SeedFinding = {
  * `review_run` 的 owner / repo 是两列文本,不引用仓库注册表——会话根外那个仓库因此播得进去。
  */
 async function seedFindings(
-  dbPath: string,
+  databaseUrl: string,
   ref: { owner: string; repo: string },
   findings: readonly SeedFinding[],
 ): Promise<void> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     const runId = await store.startRun({
       owner: ref.owner,
@@ -119,7 +119,7 @@ async function startSessionHarness(
   h: PanelHarness;
   cookie: string;
   sessionId: number;
-  requests: Awaited<ReturnType<typeof startModelStub>>["requests"];
+  requests: Awaited<Awaited<ReturnType<typeof startModelStub>>>["requests"];
   close: () => Promise<void>;
 }> {
   const stub = await startModelStub(turns);
@@ -239,19 +239,19 @@ const SEEDED: SeedFinding[] = [
 
 test("历史 Finding 工具按仓库、路径 glob 与处置状态过滤,会话根外的仓库问不到", async () => {
   const turns: StubTurn[] = [
-    query({ repo: REPO }),
-    query({ repo: REPO, pathGlob: "src/finance/**" }),
-    query({ repo: REPO, disposition: "resolved" }),
-    query({ repo: REPO, pathGlob: "src/finance/**", disposition: "unresolved" }),
-    query({ repo: "acme/elsewhere" }),
-    query({ repo: REPO, disposition: "已处置" }),
+    (await query({ repo: REPO })),
+    (await query({ repo: REPO, pathGlob: "src/finance/**" })),
+    (await query({ repo: REPO, disposition: "resolved" })),
+    (await query({ repo: REPO, pathGlob: "src/finance/**", disposition: "unresolved" })),
+    (await query({ repo: "acme/elsewhere" })),
+    (await query({ repo: REPO, disposition: "已处置" })),
     { text: "查完了,我按这些提醒写验收要点", usage: { input: 10, output: 2 } },
   ];
   const { h, cookie, sessionId, close } = await startSessionHarness(turns);
   try {
-    await seedFindings(h.db.path, GITEA_REPO, SEEDED);
+    await seedFindings(h.db.url, GITEA_REPO, SEEDED);
     // 会话根外的那个仓库也有历史,它一条都不该回来。
-    await seedFindings(h.db.path, { owner: "acme", repo: "elsewhere" }, [SEEDED[0]!]);
+    await seedFindings(h.db.url, { owner: "acme", repo: "elsewhere" }, [SEEDED[0]!]);
 
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     await idle(h, cookie, sessionId);
@@ -315,12 +315,12 @@ test("历史 Finding 工具一次最多回 50 条,并说还有更多", async () 
     disposition: "unresolved" as const,
   }));
   const turns: StubTurn[] = [
-    query({ repo: REPO }),
+    (await query({ repo: REPO })),
     { text: "条数太多,我缩小范围再查", usage: { input: 10, output: 2 } },
   ];
   const { h, cookie, sessionId, close } = await startSessionHarness(turns);
   try {
-    await seedFindings(h.db.path, GITEA_REPO, many);
+    await seedFindings(h.db.url, GITEA_REPO, many);
 
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     await idle(h, cookie, sessionId);

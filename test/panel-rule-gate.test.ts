@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   HARNESS_PR,
@@ -37,7 +37,7 @@ async function freshlyRegistered(): Promise<PanelHarness> {
  * 来的与它无关。
  */
 async function confirmRules(h: PanelHarness): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(
       (await store.appendRuleDraftItems(
@@ -71,7 +71,7 @@ test("知识集未确认时手动重跑回 409,知识确认后同一个入口放
   assert.equal(await errorOf(blocked), UNCONFIRMED);
 
   // 挡在开跑之前:一行 Review Run 都没落。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   assert.equal((await store.listRuns({ limit: 30 })).length, 0);
   await store.close();
 
@@ -126,7 +126,7 @@ test("零条目的知识确认:未确认的仓库确认空知识集之后,同一
   assert.equal(confirmed.status, 200);
   assert.deepEqual(await confirmed.json(), { version: 1 });
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const ruleSet = (await store.getRuleSet(GITEA_REPO.id))!;
   await store.close();
   assert.equal(ruleSet.version, 1);

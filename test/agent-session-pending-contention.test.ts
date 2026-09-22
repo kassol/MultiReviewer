@@ -1,45 +1,34 @@
 /**
- * 排队消息的「取出即删」在别的连接正写库时不能当场报 `database is locked`(issue #401)。
+ * 排队消息的「取出即删」在两个连接上同时发生时,每条只被取走一次(issue #401 在 PG 上的
+ * 对应物)。
  *
- * 延迟 `BEGIN` 先读后写:读拿了共享锁,轮到删要升级成写锁,而另一个连接正等着提交——SQLite
- * 认出这是死锁,不走 busy timeout 直接报忙。真实场景是排空那条用例:测试进程取排队消息的那
- * 一刻,`main.ts` 进程还在往同一个库里写会话记录。
+ * 「读出来再删掉」两句之间隔着一次往返:不锁的话两个连接会各读到同一批消息、各自投递一遍,
+ * 人写下的一句话于是被 agent 跑两遍。`takeAgentSessionPendingMessages` 因此在事务里先对会话
+ * 那一行 `SELECT … FOR UPDATE`,后到的那一个排在提交之后读,看到的是空队列。
  *
- * 只有另一个**进程**在写才测得出:同进程的同步调用插不进读与删之间。
+ * 要两条**连接**同时跑才测得出:同一条连接上的两次调用本来就是排队的。
  */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 
 const AT = "2026-09-12T00:00:00.000Z";
 
-/** 不停地开写事务、提交,每次之间让出 1 毫秒:像一个正在落会话记录的服务进程。 */
-const WRITER = `
-  const { DatabaseSync } = require("node:sqlite");
-  const db = new DatabaseSync(process.argv[1], { timeout: 5000 });
-  const pause = new Int32Array(new SharedArrayBuffer(4));
-  const upsert = db.prepare(
-    "INSERT INTO global_setting (key, value) VALUES ('contention', ?) " +
-      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-  );
-  for (let i = 0; ; i += 1) {
-    db.exec("BEGIN IMMEDIATE");
-    upsert.run(String(i));
-    db.exec("COMMIT");
-    Atomics.wait(pause, 0, 0, 1);
-  }
-`;
+const cleanups = testCleanups();
 
-test("另一个进程不停写库时,排队消息的放与取都不报 database is locked", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "multireviewer-pending-contention-"));
-  const dbPath = join(dir, "multireviewer.db");
-  const store = openStore(dbPath);
-  const role = await store.createPanelRole({ name: "拆需求的人", permissions: ["agent:chat"], createdAt: AT });
+test("两个连接同时取走同一会话的排队消息时,每条只被取走一次", async () => {
+  const db = await makeTestDatabase();
+  cleanups.push(() => db.cleanup());
+  const store = openStore(db.url);
+  cleanups.push(() => store.close());
+
+  const role = await store.createPanelRole({
+    name: "拆需求的人",
+    permissions: ["agent:chat"],
+    createdAt: AT,
+  });
   await store.createPanelUser({
     username: "member",
     displayName: null,
@@ -57,20 +46,21 @@ test("另一个进程不停写库时,排队消息的放与取都不报 database 
     createdAt: AT,
   });
 
-  const writer = spawn(process.execPath, ["-e", WRITER, dbPath], { stdio: "ignore" });
-  try {
-    // 写进程连上库、开始写。
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    // 修复前每 3000 轮里稳定出 1–4 次。
-    for (let round = 0; round < 3000; round += 1) {
-      await store.putAgentSessionPendingMessages(session.id, [{ mode: "followUp", text: "排着的那一句" }]);
-      assert.deepEqual(await store.takeAgentSessionPendingMessages(session.id), [
-        { mode: "followUp", text: "排着的那一句" },
-      ]);
-    }
-  } finally {
-    writer.kill("SIGKILL");
-    await store.close();
-    rmSync(dir, { recursive: true, force: true });
+  const queued = [
+    { mode: "followUp", text: "排着的第一句" },
+    { mode: "steer", text: "排着的第二句" },
+  ];
+
+  for (let round = 0; round < 50; round += 1) {
+    await store.putAgentSessionPendingMessages(session.id, queued);
+    // 同一个 store 的两次调用各自从连接池里取一条连接:真的两个连接在抢。
+    const [left, right] = await Promise.all([
+      store.takeAgentSessionPendingMessages(session.id),
+      store.takeAgentSessionPendingMessages(session.id),
+    ]);
+    // 取走的合起来恰好是排着的那两条:一条都不少(谁都没丢),一条都不多(没人投两遍)。
+    assert.deepEqual([...left, ...right], queued);
+    // 取完队列是空的。
+    assert.deepEqual(await store.listAgentSessionPendingMessages(session.id), []);
   }
 });

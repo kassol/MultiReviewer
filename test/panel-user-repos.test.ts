@@ -1,15 +1,14 @@
 /**
  * 仓库分配的落库与录入(issue #191)。
  *
- * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,分配行落临时 SQLite。
+ * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,分配行落一次性 PostgreSQL 库。
  * 这一票只管录入、回显与级联,读接口按分配过滤不在范围内。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   PANEL_ADMIN_USERNAME,
@@ -20,7 +19,7 @@ import {
   userCookie as userCookieRow,
   type PanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, seedRun as seedRunRow, withTestDb } from "./support/git-fixture.ts";
 
 const PASSWORD = "user-repos-test-password";
 
@@ -134,11 +133,9 @@ test("删除用户与移除仓库都不留分配行", async () => {
   assert.deepEqual(await assignedRepoIds(h, "reviewer"), [alpha]);
 
   assert.equal((await h.api("DELETE", "/users/reviewer")).status, 204);
-  const sqlite = new DatabaseSync(h.db.path, { readOnly: true });
-  const remaining = Number(
-    sqlite.prepare("SELECT COUNT(*) AS c FROM panel_user_repo").get()!["c"],
+  const remaining = await withTestDb(h.db.url, async (sql) =>
+    Number((await sql("SELECT COUNT(*) AS c FROM panel_user_repo"))[0]!["c"]),
   );
-  sqlite.close();
   assert.equal(remaining, 0);
 });
 
@@ -157,7 +154,7 @@ async function seedRun(
   },
 ): Promise<number> {
   const model = meta.model ?? "model-a";
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runId = await seedRunRow(
     store,
     {
@@ -215,7 +212,7 @@ async function seedRun(
 
 /** 播种一个范围审查:推进、审查完成与重跑三个动作的目标。容器 PR 不建,不碰 Forge。 */
 async function seedRangeReview(h: PanelHarness, repoId: number, owner: string, repo: string): Promise<number> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const id = await store.createRangeReview({
       repoId,
@@ -240,7 +237,7 @@ async function scopedUser(
   repoIds: readonly number[],
   permissions: readonly PanelPermission[],
 ): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const role = await store.createPanelRole({
       name: `role-${username}`,
@@ -260,7 +257,7 @@ async function scopedUser(
   } finally {
     await store.close();
   }
-  return userCookie(h, username);
+  return (await userCookie(h, username));
 }
 
 /** 全部面板权限格。可见范围由分配决定,这些用例要的是「权限不挡路」。 */
@@ -439,7 +436,7 @@ test("系统管理员不受分配限制,三份列表都看得到两个仓库", a
 
 test("直达分配外的阶段页、汇总、轨迹与 diff 一律 404", async () => {
   const { h, cookie } = await twoRepoHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const mine = (await store.listRuns({ limit: 30, owner: "acme", repo: "alpha" }))[0]!.id;
   const theirs = (await store.listRuns({ limit: 30, owner: "acme", repo: "beta" }))[0]!.id;
   await store.close();
@@ -464,16 +461,17 @@ test("直达分配外的阶段页、汇总、轨迹与 diff 一律 404", async (
 
 test("分配外的处置、重跑、发起、推进、完成、配置与移除一律 404", async () => {
   const { h, alpha, beta, cookie } = await twoRepoHarness();
-  const sqlite = new DatabaseSync(h.db.path, { readOnly: true });
-  const finding = Number(
-    sqlite
-      .prepare(
-        `SELECT f.id AS id FROM finding f JOIN review_run r ON r.id = f.run_id
-          WHERE r.repo = ? ORDER BY f.id LIMIT 1`,
-      )
-      .get("beta")!["id"],
+  const finding = await withTestDb(h.db.url, async (sql) =>
+    Number(
+      (
+        await sql(
+          `SELECT f.id AS id FROM finding f JOIN review_run r ON r.id = f.run_id
+            WHERE r.repo = $1 ORDER BY f.id LIMIT 1`,
+          "beta",
+        )
+      )[0]!["id"],
+    ),
   );
-  sqlite.close();
   const theirRange = await seedRangeReview(h, beta, "acme", "beta");
   const mineRange = await seedRangeReview(h, alpha, "acme", "alpha");
 
@@ -555,9 +553,9 @@ test("webhook 投递不经过仓库分配", async () => {
     (await post(h, cookie, "POST", "/repos", { owner: PR.owner, repo: PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   // 谁都没分到这个仓库也照样投递:webhook 路径不经过过滤层。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.setPanelUserAssignment("maintainer", []);
   await store.close();
 

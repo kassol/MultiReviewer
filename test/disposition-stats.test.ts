@@ -1,7 +1,7 @@
 /**
  * 处置率统计的口径(issue #36,ADR 0006;主维度改仓库 × category 见 issue #169
  * 与 ADR 0015)。表格驱动:每条口径一组入库数据对一个期望矩阵,模型那一维只剩
- * 参与条数。SQLite 临时库是既定测试缝,数据直接经 store 种入。
+ * 参与条数。一次性 PostgreSQL 库是既定测试缝,数据直接经 store 种入。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -12,8 +12,8 @@ import {
   type FindingRecord,
   type ModelParticipation,
   type Store,
-} from "../src/review/store.ts";
-import { makeDbPath, seedRun as seedRunRow } from "./support/git-fixture.ts";
+} from "../src/review/store/index.ts";
+import { makeTestDatabase, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 const WIDE: [string, string] = ["2000-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z"];
 
@@ -425,8 +425,8 @@ const CASES: Case[] = [
 
 for (const c of CASES) {
   test(`口径:${c.name}`, async () => {
-    const db = makeDbPath();
-    const store = openStore(db.path);
+    const db = await makeTestDatabase();
+    const store = openStore(db.url);
     try {
       await c.seed(store);
       const [from, to] = c.window ?? WIDE;
@@ -436,7 +436,7 @@ for (const c of CASES) {
       }
     } finally {
       await store.close();
-      db.cleanup();
+      await db.cleanup();
     }
   });
 }
@@ -481,16 +481,16 @@ async function seedWithModel(store: Store, model: string, at: string): Promise<v
 }
 
 test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一条", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   try {
     // 升级前的一轮写裸 id,升级后的一轮写模型标识。provider 从库里恢复不出来,
     // 按当前模型组合反查会把历史错归到别家去,所以一律不回填(issue #73 的取舍)。
-    const seed = openStore(db.path);
+    const seed = openStore(db.url);
     await seedWithModel(seed, "old-model", T1);
     await seedWithModel(seed, "acme:old-model", T2);
     await seed.close();
 
-    const reopened = openStore(db.path);
+    const reopened = openStore(db.url);
     assert.deepEqual(await models(reopened), {
       finding: ["acme:old-model", "old-model"],
       outcome: ["acme:old-model", "old-model"],
@@ -499,6 +499,6 @@ test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一�
     assert.equal((await reopened.dispositionStats(...WIDE))[0]?.unknownOpen, 2, "两条各自独立");
     await reopened.close();
   } finally {
-    db.cleanup();
+    await db.cleanup();
   }
 });

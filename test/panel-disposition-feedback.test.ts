@@ -7,12 +7,11 @@
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, withTestDb } from "./support/git-fixture.ts";
 import { scriptedReviewer, scriptedRuleAgent } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
@@ -103,7 +102,7 @@ async function harnessWithFindings(ruleAgent: RuleAgent): Promise<PanelHarness> 
     201,
   );
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -118,7 +117,7 @@ async function setGlobalAuxiliaryModel(
   h: PanelHarness,
   spec: { provider: string; model: string; thinkingLevel?: string },
 ): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(spec) }), true);
   } finally {
@@ -147,31 +146,28 @@ async function intents(h: PanelHarness): Promise<RevisionIntent[]> {
 }
 
 /** 这个仓库留下的知识轨迹事件,按落库顺序。没有列表端点,直接读库。 */
-function ruleTraceKinds(h: PanelHarness): string[] {
-  const db = new DatabaseSync(h.db.path, { readOnly: true });
-  try {
-    return db
-      .prepare("SELECT kind FROM rule_trace WHERE repo_id = ? ORDER BY task_id, seq")
-      .all(GITEA_REPO.id)
-      .map((row) => String(row["kind"]));
-  } finally {
-    db.close();
-  }
+async function ruleTraceKinds(h: PanelHarness): Promise<string[]> {
+  return await withTestDb(h.db.url, async (sql) =>
+    (
+      await sql(
+        "SELECT kind FROM rule_trace WHERE repo_id = $1 ORDER BY task_id, seq",
+        GITEA_REPO.id,
+      )
+    ).map((row) => String(row["kind"])),
+  );
 }
 
 /** 这个仓库知识轨迹上每一条丢弃事件的 payload,按落库顺序。 */
-function ruleTraceDrops(h: PanelHarness): unknown[] {
-  const db = new DatabaseSync(h.db.path, { readOnly: true });
-  try {
-    return db
-      .prepare(
-        "SELECT payload FROM rule_trace WHERE repo_id = ? AND kind = 'rule_proposal_dropped' ORDER BY task_id, seq",
+async function ruleTraceDrops(h: PanelHarness): Promise<unknown[]> {
+  return await withTestDb(h.db.url, async (sql) =>
+    (
+      await sql(
+        `SELECT payload FROM rule_trace
+          WHERE repo_id = $1 AND kind = 'rule_proposal_dropped' ORDER BY task_id, seq`,
+        GITEA_REPO.id,
       )
-      .all(GITEA_REPO.id)
-      .map((row) => JSON.parse(String(row["payload"])) as unknown);
-  } finally {
-    db.close();
-  }
+    ).map((row) => JSON.parse(String(row["payload"])) as unknown),
+  );
 }
 
 async function dispose(h: PanelHarness, findingId: number, note?: string): Promise<Response> {
@@ -184,15 +180,15 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
   const h = await harnessWithFindings(agent);
 
   // 现集里先有一条:反哺提的是对照它的变更,agent 因此要看得到它。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   let ruleId: number;
   try {
     assert.notEqual(
-      seedReviewRule(h.db.path, GITEA_REPO.id, {
+      (await seedReviewRule(h.db.url, GITEA_REPO.id, {
         type: "rule",
         scope: "",
         statement: "入参要在边界上校验",
-      }),
+      })),
       undefined,
     );
     ruleId = (await store.getRuleSet(GITEA_REPO.id))!.rules[0]!.id;
@@ -289,7 +285,7 @@ test("描述性备注蒸馏为事实提案,采纳后进知识集并注入下一�
     (await h.api("POST", `/repos/${GITEA_REPO.id}/rule-proposals/${queued[0]!.id}/accept`)).status,
     200,
   );
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.deepEqual(
       (await store.getRuleSet(GITEA_REPO.id))!.rules.map((entry) => [entry.type, entry.origin]),
@@ -352,7 +348,7 @@ test("反哺用这个仓库生效的辅助模型,探索记录里的模型不再�
 
   // 探索记录里的模型只作历史(issue #304):最近一次探索用的是另一家,两处配置都没设的
   // 反哺仍走解析的退路——这个仓库生效组合的第一个(ADR 0029)。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(
       await store.startRuleExploration(GITEA_REPO.id, {
@@ -389,7 +385,7 @@ test("选不出辅助模型时:跳过解读留一行原因,零提案", async () 
   const h = await harnessWithFindings(agent);
   const findings = await inlineFindings(h);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     // 清成没配走夹具入口:面板写链在配过非空之后不再收空组合(spec #300),而「全局组合
     // 为空」是这条用例要的局面。
@@ -407,7 +403,7 @@ test("选不出辅助模型时:跳过解读留一行原因,零提案", async () 
   assert.deepEqual(await proposals(h), []);
   // 轨迹从任务开始就起(issue #214):选不出模型也是反哺之内的失败,人来这条轨迹就是要
   // 看它卡在哪一步,而不是一片空白。
-  assert.deepEqual(ruleTraceKinds(h), ["rule_agent_started", "rule_agent_failed"]);
+  assert.deepEqual(await ruleTraceKinds(h), ["rule_agent_started", "rule_agent_failed"]);
   // 选不出模型不再静默:意图行照样落一条,失败带原因,人在修订意图 tab 看得到(issue #296、#317)。
   const [intent] = await intents(h);
   assert.equal(intent!.state, "failed");
@@ -532,7 +528,7 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
   }
 
   // 并入后的提案在下一次重探索中留下:它的附注不全是基点探索(issue #281)。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     await store.finishRuleExplorationAsProposals(
       GITEA_REPO.id,
@@ -623,7 +619,7 @@ test("并入缺陈述:那一条丢掉,轨迹里留原因", async () => {
   assert.equal(queued[0]!.sources.length, 1);
   // 轨迹里说得出丢掉的是一次并入,以及为什么:那道按型收窄只会静默丢掉空陈述。
   assert.deepEqual(
-    ruleTraceKinds(h).filter((kind) => kind === "rule_proposal_dropped"),
+    (await ruleTraceKinds(h)).filter((kind) => kind === "rule_proposal_dropped"),
     ["rule_proposal_dropped"],
   );
 });
@@ -648,7 +644,7 @@ test("反哺产出超过 100 字的陈述:新增那条不入队,并入那条不�
     (await proposals(h)).map((entry) => entry.statement),
     ["长".repeat(100)],
   );
-  assert.deepEqual(ruleTraceDrops(h), [{ reason: "陈述超过 100 字" }]);
+  assert.deepEqual(await ruleTraceDrops(h), [{ reason: "陈述超过 100 字" }]);
 
   // 并入给出的新陈述超长同样丢掉:它会覆盖队列里那条的陈述,超长的一句盖上去等于绕开
   // 这道闸。原提案的陈述与附注因此一行不动。
@@ -661,7 +657,7 @@ test("反哺产出超过 100 字的陈述:新增那条不入队,并入那条不�
   assert.equal(queued.length, 1);
   assert.equal(queued[0]!.statement, "长".repeat(100));
   assert.equal(queued[0]!.sources.length, 1);
-  assert.deepEqual(ruleTraceDrops(h), [
+  assert.deepEqual(await ruleTraceDrops(h), [
     { reason: "陈述超过 100 字" },
     { proposalId: queuedId, reason: "陈述超过 100 字" },
   ]);
@@ -733,7 +729,7 @@ test("重试失败的处置反哺:仍停在那条 Finding 报出时的 head,附�
   assert.equal(failed!.state, "failed");
 
   // 同一条 Finding 上另有一条在跑:finding 那一档不查互斥,与处置时同一个例外(issue #316)。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.notEqual(
       await store.startRuleIntent(GITEA_REPO.id, {

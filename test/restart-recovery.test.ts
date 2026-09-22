@@ -10,7 +10,6 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -18,11 +17,11 @@ import type { ReviewRunReviewerPin } from "../src/config.ts";
 import type { Forge, PullRequestRef, Reaction } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore, runFailureText } from "../src/review/store.ts";
+import { openStore, runFailureText } from "../src/review/store/index.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { query } from "./support/batch-run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
-import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
 import { startPanelHarness } from "./support/panel-harness.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
@@ -52,11 +51,11 @@ function pin(model: string): ReviewRunReviewerPin {
 
 /** 落一条停在运行中的 Review Run,返回它的 id。 */
 async function startRunning(
-  dbPath: string,
+  databaseUrl: string,
   pullNumber: number,
   models: readonly string[] = ["a", "b"],
 ): Promise<number> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     return await store.startRun({
       owner: "acme",
@@ -107,13 +106,14 @@ function recordingForge(options: { throws?: boolean } = {}): {
 }
 
 /** 起一次服务。返回值不用监听端口:被测的是构造时那段启动逻辑。 */
-async function boot(dbPath: string, forge: Forge): Promise<void> {
+async function boot(databaseUrl: string, dataDir: string, forge: Forge): Promise<void> {
   const cache = makeCacheDir();
   cleanups.push(cache.cleanup);
   await createWebhookServer({
     forges: { gitea: forge },
     cacheDir: cache.dir,
-    dbPath,
+    databaseUrl,
+    dataDir,
     baseUrl: "https://reviewer.example.test",
     panelDist: "web/dist",
     buildReviewers: () => [],
@@ -122,19 +122,19 @@ async function boot(dbPath: string, forge: Forge): Promise<void> {
 }
 
 test("续跑不成立时把停在运行中的轮次改判失败,并撤掉 PR 上残留的 👀", { timeout: WAIT_MS }, async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const runId = await startRunning(db.path, 7);
+  const runId = await startRunning(db.url, 7);
   const gitea = recordingForge();
 
-  await boot(db.path, gitea.forge);
+  await boot(db.url, db.dataDir, gitea.forge);
   await gitea.removedAtLeast(1);
 
   assert.deepEqual(gitea.removed, [
     { ref: { owner: "acme", repo: "widgets", number: 7 }, reaction: "eyes" },
   ]);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [run] = await store.listRuns({ limit: 10, id: runId });
     assert.equal(run?.failed, true);
@@ -154,17 +154,17 @@ test("续跑不成立时把停在运行中的轮次改判失败,并撤掉 PR 上
 });
 
 test("撤反应抛错:服务照常起来,改判照样落库", { timeout: WAIT_MS }, async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const runId = await startRunning(db.path, 8);
+  const runId = await startRunning(db.url, 8);
   const gitea = recordingForge({ throws: true });
 
-  await boot(db.path, gitea.forge);
+  await boot(db.url, db.dataDir, gitea.forge);
   await gitea.removedAtLeast(1);
   // 抛错那一次的 catch 也要跑完,再看库。
   await delay(0);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [run] = await store.listRuns({ limit: 10, id: runId });
     assert.equal(run?.failed, true);
@@ -175,11 +175,11 @@ test("撤反应抛错:服务照常起来,改判照样落库", { timeout: WAIT_MS
 });
 
 test("已结束与已失败的轮次重启后一行不动,也不去碰 Forge", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const doneId = await startRunning(db.path, 9, ["a"]);
-  const failedId = await startRunning(db.path, 10, ["a"]);
-  const seed = openStore(db.path);
+  const doneId = await startRunning(db.url, 9, ["a"]);
+  const failedId = await startRunning(db.url, 10, ["a"]);
+  const seed = openStore(db.url);
   try {
     await seed.finishRun(doneId, {
       finishedAt: "2026-09-03T23:30:00.000Z",
@@ -210,11 +210,11 @@ test("已结束与已失败的轮次重启后一行不动,也不去碰 Forge", a
   }
   const gitea = recordingForge();
 
-  await boot(db.path, gitea.forge);
+  await boot(db.url, db.dataDir, gitea.forge);
   await delay(0);
 
   assert.deepEqual(gitea.removed, []);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [done] = await store.listRuns({ limit: 10, id: doneId });
     assert.equal(done?.finishedAt, "2026-09-03T23:30:00.000Z");
@@ -236,8 +236,8 @@ test("改判后的轮次在面板上是失败带原因,轨迹流连上即结束"
   // 停不停轮询由这两个字段决定,断言它们即可;轨迹流则要真的连一次——挂着不结束的
   // 流在浏览器那边就是「还在跑」。
   const h = await startPanelHarness();
-  const runId = await startRunning(h.db.path, 7);
-  const store = openStore(h.db.path);
+  const runId = await startRunning(h.db.url, 7);
+  const store = openStore(h.db.url);
   try {
     await store.failInterruptedRuns(INTERRUPTED, AT);
   } finally {
@@ -276,16 +276,16 @@ test("改判后的轮次在面板上是失败带原因,轨迹流连上即结束"
 test("改判写轮次级失败原因并记 run_failed 事件,零 pin 的轮次也读得到原因", { timeout: WAIT_MS }, async () => {
   // ADR 0026:原因落在 `review_run` 自己的那一列上,不再只借 Reviewer 的 outcome 行——
   // 一个 pin 都没有的轮次此前改判后原因不落任何行。
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const pinned = await startRunning(db.path, 11);
-  const bare = await startRunning(db.path, 12, []);
+  const pinned = await startRunning(db.url, 11);
+  const bare = await startRunning(db.url, 12, []);
   const gitea = recordingForge();
 
-  await boot(db.path, gitea.forge);
+  await boot(db.url, db.dataDir, gitea.forge);
   await gitea.removedAtLeast(2);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     for (const runId of [pinned, bare]) {
       const [run] = await store.listRuns({ limit: 10, id: runId });
@@ -315,10 +315,10 @@ test("改判时通篇空白的原因:轮次那一列与逐模型失败行是同�
   // issue #436:同一句轮次级原因落两处(`review_run.failure` 与借来的 `reviewer_outcome`
   // 行),兜底只在其中一处时两边会说不一样的话。两条真实调用都带固定前缀,空白原因
   // 只在库这一层构造得出来。
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const runId = await startRunning(db.path, 13);
-  const store = openStore(db.path);
+  const runId = await startRunning(db.url, 13);
+  const store = openStore(db.url);
   try {
     await store.failInterruptedRuns(" \n\t ", AT);
     const expected = runFailureText(" \n\t ");
@@ -336,9 +336,9 @@ test("改判时通篇空白的原因:轮次那一列与逐模型失败行是同�
 
 test("改判后列表、详情与阶段时间线都读得到轮次级失败原因", async () => {
   const h = await startPanelHarness();
-  const pinned = await startRunning(h.db.path, 7);
-  const bare = await startRunning(h.db.path, 8, []);
-  const store = openStore(h.db.path);
+  const pinned = await startRunning(h.db.url, 7);
+  const bare = await startRunning(h.db.url, 8, []);
+  const store = openStore(h.db.url);
   try {
     await store.failInterruptedRuns(INTERRUPTED, AT);
   } finally {
@@ -425,8 +425,8 @@ async function interruptedRun(options: {
   limits: BatchLimits;
   throwOnCall: number;
 }): Promise<{
-  db: { path: string };
-  memory: ReturnType<typeof memoryForge>;
+  db: { url: string; dataDir: string };
+  memory: Awaited<ReturnType<typeof memoryForge>>;
   runId: number;
 }> {
   const files = Object.keys(options.added);
@@ -441,10 +441,10 @@ async function interruptedRun(options: {
   }
   const repo = makeRepo({ base, head });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({
       repoId: 4242,
@@ -479,7 +479,7 @@ async function interruptedRun(options: {
           forge: memory.forge,
           reviewers: [resumeReviewer({ throwOnCall: options.throwOnCall })],
           cacheDir: cache.dir,
-          dbPath: db.path,
+          databaseUrl: db.url,
           // 失败原因逐 Reviewer 各记一份,给了指定才有那几行(issue #247);轮次级那一份
           // 不靠它(issue #256)。
           reviewerPins: [pin("a")],
@@ -490,7 +490,7 @@ async function interruptedRun(options: {
     /进程被重启了/,
   );
 
-  const seeded = openStore(db.path);
+  const seeded = openStore(db.url);
   try {
     const [run] = await seeded.listRuns({ limit: 10 });
     assert.equal(run?.finishedAt, null);
@@ -501,7 +501,7 @@ async function interruptedRun(options: {
 }
 
 /** 三个文件各一批,停在第三批。 */
-async function interruptedAtThirdBatch(): Promise<ReturnType<typeof interruptedRun>> {
+async function interruptedAtThirdBatch(): Promise<Awaited<ReturnType<typeof interruptedRun>>> {
   return await interruptedRun({
     added: Object.fromEntries(RESUME_FILES.map((path) => [path, 1])),
     limits: { maxFilesPerBatch: 1 },
@@ -519,7 +519,8 @@ test("重启后只补缺的那一批,这一轮沿用原编号正常结束", { ti
     await createWebhookServer({
       forges: { gitea: memory.forge },
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
+      dataDir: db.dataDir,
       baseUrl: "https://reviewer.example.test",
       panelDist: "web/dist",
       buildReviewers: () => [reviewer],
@@ -536,7 +537,7 @@ test("重启后只补缺的那一批,这一轮沿用原编号正常结束", { ti
   // 只有第三批被重跑,前两批的结果直接取自库里。
   assert.deepEqual(reviewer.files, [["src/c.ts"]]);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [run] = await store.listRuns({ limit: 10, id: runId });
     assert.equal(run?.failed, false);
@@ -564,7 +565,8 @@ test("工作副本准备失败:改判失败、原因可见,下一次启动不再
     await createWebhookServer({
       forges: { gitea: memory.forge },
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
+      dataDir: db.dataDir,
       baseUrl: "https://reviewer.example.test",
       panelDist: "web/dist",
       buildReviewers: () => [resumeReviewer()],
@@ -580,7 +582,7 @@ test("工作副本准备失败:改判失败、原因可见,下一次启动不再
   assert.equal(resumed.length, 1);
   assert.equal(resumed[0]?.runId, runId);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [run] = await store.listRuns({ limit: 10, id: runId });
     assert.equal(run?.failed, true);
@@ -598,7 +600,8 @@ test("工作副本准备失败:改判失败、原因可见,下一次启动不再
   await createWebhookServer({
     forges: { gitea: memory.forge },
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
+    dataDir: db.dataDir,
     baseUrl: "https://reviewer.example.test",
     panelDist: "web/dist",
     buildReviewers: () => [resumeReviewer()],
@@ -611,8 +614,8 @@ test("工作副本准备失败:改判失败、原因可见,下一次启动不再
 
 /** 起一次服务并等启动续跑那一轮落定,返回回调收到的结果。 */
 function bootAndSettle(
-  db: { path: string },
-  memory: ReturnType<typeof memoryForge>,
+  db: { url: string; dataDir: string },
+  memory: Awaited<ReturnType<typeof memoryForge>>,
   reviewer: Reviewer,
 ): Promise<{ runId: number; failure?: string }> {
   const cache = makeCacheDir();
@@ -621,7 +624,8 @@ function bootAndSettle(
     await createWebhookServer({
       forges: { gitea: memory.forge },
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
+      dataDir: db.dataDir,
       baseUrl: "https://reviewer.example.test",
       panelDist: "web/dist",
       buildReviewers: () => [reviewer],
@@ -657,13 +661,13 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
     ["src/e.ts", "src/f.ts"],
   ];
   assert.deepEqual(
-    query(db.path, "SELECT batch_plan_json FROM review_run").map((row) =>
+    (await query(db.url, "SELECT batch_plan_json FROM review_run")).map((row) =>
       JSON.parse(String(row["batch_plan_json"])),
     ),
     [plan],
   );
   // 停机期间改了分批上限。
-  const admin = openStore(db.path);
+  const admin = openStore(db.url);
   try {
     assert.equal(
       await putGlobalSettings(admin, { maxChangedLinesPerBatch: 100, maxFilesPerBatch: 3 }),
@@ -679,7 +683,7 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
   const reason = `${INTERRUPTED};续跑不成立:第 2 批的分组与冻结计划不符`;
   assert.deepEqual(settled, { runId, failure: "续跑不成立:第 2 批的分组与冻结计划不符" });
   assert.deepEqual(reviewer.files, []);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [run] = await store.listRuns({ limit: 10, id: runId });
     assert.equal(run?.failed, true);
@@ -697,23 +701,18 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
   }
   // 改变后的分组没有混进原轮次:冻结的计划原样保留,中间态随改判清掉。
   assert.deepEqual(
-    query(db.path, "SELECT batch_plan_json FROM review_run").map((row) =>
+    (await query(db.url, "SELECT batch_plan_json FROM review_run")).map((row) =>
       JSON.parse(String(row["batch_plan_json"])),
     ),
     [plan],
   );
-  assert.equal(query(db.path, "SELECT run_id FROM review_run_batch_outcome").length, 0);
+  assert.equal((await query(db.url, "SELECT run_id FROM review_run_batch_outcome")).length, 0);
   assert.equal(memory.createdReviews.length, 0);
 });
 
 test("升级前没有批次计划的中断轮次:启动改判并写原因,不调 Reviewer", { timeout: WAIT_MS }, async () => {
   const { db, memory, runId } = await interruptedAtThirdBatch();
-  const legacy = new DatabaseSync(db.path);
-  try {
-    legacy.prepare("UPDATE review_run SET batch_plan_json = NULL WHERE id = ?").run(runId);
-  } finally {
-    legacy.close();
-  }
+  await query(db.url, "UPDATE review_run SET batch_plan_json = NULL WHERE id = $1", runId);
 
   const reviewer = resumeReviewer();
   const settled = await bootAndSettle(db, memory, reviewer);
@@ -721,7 +720,7 @@ test("升级前没有批次计划的中断轮次:启动改判并写原因,不调
   const failure = `续跑不成立:第 ${runId} 轮没有开跑时的批次计划`;
   assert.deepEqual(settled, { runId, failure });
   assert.deepEqual(reviewer.files, []);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [run] = await store.listRuns({ limit: 10, id: runId });
     assert.equal(run?.failed, true);

@@ -48,11 +48,11 @@ function readCalc(worktree: Worktree): string {
 }
 
 test("并发的两次准备各拿到自己那个 commit 的文件,互不干扰", async () => {
-  const { repo, cache } = setup();
+  const { repo, cache } = (await setup());
 
   const [older, newer] = await Promise.all([
-    prepare(cache.dir, repo.dir, repo.mergeBaseSha),
-    prepare(cache.dir, repo.dir, repo.headSha),
+    (await prepare(cache.dir, repo.dir, repo.mergeBaseSha)),
+    (await prepare(cache.dir, repo.dir, repo.headSha)),
   ]);
 
   assert.notEqual(older.path, newer.path, "两次准备落在同一个目录上");
@@ -70,7 +70,7 @@ test("并发的两次准备各拿到自己那个 commit 的文件,互不干扰",
 });
 
 test("释放之后缓存 clone 还在,下一次准备照样派生得出来", async () => {
-  const { repo, cache } = setup();
+  const { repo, cache } = (await setup());
 
   const first = await prepare(cache.dir, repo.dir, repo.headSha);
   await first.release();
@@ -83,7 +83,7 @@ test("释放之后缓存 clone 还在,下一次准备照样派生得出来", asy
 });
 
 test("一次性工作树上写的轮次 ref,别的工作树与缓存 clone 都读得到", async () => {
-  const { repo, cache } = setup();
+  const { repo, cache } = (await setup());
   const clone = repoCachePath(cache.dir, REF);
 
   const first = await prepare(cache.dir, repo.dir, repo.headSha);
@@ -102,7 +102,7 @@ test("一次性工作树上写的轮次 ref,别的工作树与缓存 clone 都�
 });
 
 test("进程被杀留下的一次性工作树,由下一次准备清掉", async () => {
-  const { repo, cache } = setup();
+  const { repo, cache } = (await setup());
   const clone = repoCachePath(cache.dir, REF);
 
   const first = await prepare(cache.dir, repo.dir, repo.headSha);
@@ -128,7 +128,7 @@ test("进程被杀留下的一次性工作树,由下一次准备清掉", async (
 });
 
 test("这个仓库上还有工作树在用时不清扫,并发那一次的登记因此保得住", async () => {
-  const { repo, cache } = setup();
+  const { repo, cache } = (await setup());
   const clone = repoCachePath(cache.dir, REF);
 
   const live = await prepare(cache.dir, repo.dir, repo.headSha);
@@ -153,7 +153,7 @@ test("这个仓库上还有工作树在用时不清扫,并发那一次的登记�
 });
 
 test("移除仓库时缓存 clone 与派生出去的工作树一起删掉", async () => {
-  const { repo, cache } = setup();
+  const { repo, cache } = (await setup());
 
   const worktree = await prepare(cache.dir, repo.dir, repo.headSha);
   const checkouts = dirname(worktree.path);

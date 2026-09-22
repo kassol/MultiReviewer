@@ -9,11 +9,10 @@ import { test } from "node:test";
 
 import { GITEA_REPO, HARNESS_PR as PR, startReadyPanelHarness } from "./support/panel-harness.ts";
 
-const startHarness = (): ReturnType<typeof startReadyPanelHarness> =>
-  startReadyPanelHarness();
+const startHarness = (): ReturnType<typeof startReadyPanelHarness> => startReadyPanelHarness();
 
 /** 当前第一条 hook 的签名材料快照,hook 被删后用来证明旧凭据已失效。 */
-function snapshotHook(h: Awaited<ReturnType<typeof startHarness>>): {
+function snapshotHook(h: Awaited<Awaited<ReturnType<typeof startHarness>>>): {
   url: string;
   secret: string;
 } {

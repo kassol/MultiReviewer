@@ -11,7 +11,7 @@ import type {
   SessionKnowledgeQuery,
   SessionProductKnowledge,
 } from "../review/finding.ts";
-import type { RepoFinding, RepoFindingQuery } from "../review/store.ts";
+import type { RepoFinding, RepoFindingQuery } from "../review/store/index.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import type { AgentSessionImageRef } from "./session-images.ts";
 import type { SessionSubagentRun } from "./session-subagent.ts";

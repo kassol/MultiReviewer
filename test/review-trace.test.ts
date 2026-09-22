@@ -9,7 +9,7 @@ import { test } from "node:test";
 
 import type { ReviewerEvent } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
@@ -28,12 +28,12 @@ const cleanups = testCleanups();
 
 const EVENT = { owner: "acme", repo: "widgets", number: 1 };
 
-function setup() {
-  return setupRepo(cleanups, {
+async function setup() {
+  return (await setupRepo(cleanups, {
     tree: { base: { "src/m.js": BASE }, head: { "src/m.js": HEAD } },
     pullNumber: EVENT.number,
     changedFiles: [{ path: "src/m.js", status: "modified" }],
-  });
+  }));
 }
 
 const AT_LINE_2 = {
@@ -46,14 +46,14 @@ const AT_LINE_2 = {
 };
 
 /** 这一轮落库的全部轨迹事件。 */
-async function trace(dbPath: string): Promise<{
+async function trace(databaseUrl: string): Promise<{
   seq: number;
   scope: string;
   reviewer?: string;
   kind: string;
   payload: Record<string, unknown>;
 }[]> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     return (await store.listTrace(runId)).map((event) => ({
@@ -89,16 +89,16 @@ const REJECTED: ReviewerEvent = {
 };
 
 test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型标识", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID, READ, REJECTED] })],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const reviewerEvents = (await trace(db.path)).filter((e) => e.scope === "reviewer");
+  const reviewerEvents = (await trace(db.url)).filter((e) => e.scope === "reviewer");
   assert.deepEqual(
     reviewerEvents.map((e) => e.kind),
     // 倒数第二条是这一批的收尾(issue #408),末一条才是整个模型的收尾。
@@ -131,22 +131,22 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
 
   // 序号在一轮之内自增且不重复,断线续传按它续。
   assert.deepEqual(
-    (await trace(db.path)).map((e) => e.seq),
-    (await trace(db.path)).map((_, index) => index + 1),
+    (await trace(db.url)).map((e) => e.seq),
+    (await trace(db.url)).map((_, index) => index + 1),
   );
 });
 
 test("轮次级编排事件按顺序落库:工作副本、批次起止、评论已发、轮次结束", async () => {
-  const { repo, cache, db, forge } = setup();
+  const { repo, cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const runEvents = (await trace(db.path)).filter((e) => e.scope === "run");
+  const runEvents = (await trace(db.url)).filter((e) => e.scope === "run");
   assert.deepEqual(
     runEvents.map((e) => e.kind),
     ["worktree_ready", "batch_started", "batch_finished", "review_posted", "run_finished"],
@@ -160,7 +160,7 @@ test("轮次级编排事件按顺序落库:工作副本、批次起止、评论�
 });
 
 test("锚不进 diff hunk 的 Finding 被丢弃,轨迹留下一条被拒记录", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -172,10 +172,10 @@ test("锚不进 diff hunk 的 Finding 被丢弃,轨迹留下一条被拒记录",
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const discarded = (await trace(db.path)).filter((e) => e.kind === "finding_discarded");
+  const discarded = (await trace(db.url)).filter((e) => e.kind === "finding_discarded");
   assert.equal(discarded.length, 1);
   assert.equal(discarded[0]!.scope, "run", "丢弃是编排层的事,挂在轮次上");
   assert.deepEqual(discarded[0]!.payload, {
@@ -195,7 +195,7 @@ test("锚不进 diff hunk 的 Finding 被丢弃,轨迹留下一条被拒记录",
 });
 
 test("两个模型报同一行:一条合并事件,成员齐全,判据是同一行", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -204,10 +204,10 @@ test("两个模型报同一行:一条合并事件,成员齐全,判据是同一�
       scriptedReviewer("model-b", [{ ...AT_LINE_2, title: "减法结果偏移" }]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const merges = (await trace(db.path)).filter((e) => e.kind === "finding_merged");
+  const merges = (await trace(db.url)).filter((e) => e.kind === "finding_merged");
   assert.equal(merges.length, 1);
   assert.equal(merges[0]!.scope, "run", "合并是编排层的事,挂在轮次上");
   assert.deepEqual(merges[0]!.payload, {
@@ -222,7 +222,7 @@ test("两个模型报同一行:一条合并事件,成员齐全,判据是同一�
 });
 
 test("行号相近而内容相似的两条:合并事件的判据带行距与相似度", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -232,10 +232,10 @@ test("行号相近而内容相似的两条:合并事件的判据带行距与相�
       scriptedReviewer("model-b", [{ ...AT_LINE_2, line: 4, title: "sub 多减了一次" }]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const merges = (await trace(db.path)).filter((e) => e.kind === "finding_merged");
+  const merges = (await trace(db.url)).filter((e) => e.kind === "finding_merged");
   assert.equal(merges.length, 1);
   const criteria = merges[0]!.payload["criteria"] as Record<string, unknown>;
   assert.equal(criteria["kind"], "distance");
@@ -248,7 +248,7 @@ test("行号相近而内容相似的两条:合并事件的判据带行距与相�
 });
 
 test("相邻但讲的不是一回事:两条各自成组,一条合并事件都不发", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   const result = await runReview(EVENT, {
     forge: forge.forge,
@@ -259,19 +259,19 @@ test("相邻但讲的不是一回事:两条各自成组,一条合并事件都不
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   assert.equal(result.findings.length, 2, "内容不相似的相邻两条不该合并");
   assert.deepEqual(
-    (await trace(db.path)).filter((e) => e.kind === "finding_merged"),
+    (await trace(db.url)).filter((e) => e.kind === "finding_merged"),
     [],
     "没有合并就不该有合并事件",
   );
 });
 
 test("Reviewer 失败:末尾一条失败事件带原因,它之前发出的事件仍然保留", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -280,10 +280,10 @@ test("Reviewer 失败:末尾一条失败事件带原因,它之前发出的事件
       scriptedReviewer("model-b", [AT_LINE_2]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const failed = (await trace(db.path)).filter((e) => e.reviewer === "model-a");
+  const failed = (await trace(db.url)).filter((e) => e.reviewer === "model-a");
   assert.deepEqual(
     failed.map((e) => e.kind),
     // 中间那条是这一批的收尾(issue #408),失败与正常同一档;轮次级的失败原因仍补在末尾。
@@ -293,25 +293,25 @@ test("Reviewer 失败:末尾一条失败事件带原因,它之前发出的事件
   assert.deepEqual(failed[2]!.payload, { failure: "模型返回 401", exitCode: null });
   // 跑成功的那个走的是另一档,两者不混。
   assert.equal(
-    (await trace(db.path)).findLast((e) => e.reviewer === "model-b")!.kind,
+    (await trace(db.url)).findLast((e) => e.reviewer === "model-b")!.kind,
     "reviewer_finished",
   );
 });
 
 test("两轮各记各的轨迹,序号各自从 1 起", async () => {
-  const { repo, cache, db, forge } = setup();
+  const { repo, cache, db, forge } = (await setup());
   const deps = {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID] })],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   await runReview(EVENT, deps);
   forge.pullRequest.headSha = repo.headSha;
   await runReview(EVENT, deps);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const runs = await store.listRuns({ limit: 10 });
     assert.equal(runs.length, 2);
@@ -326,17 +326,52 @@ test("两轮各记各的轨迹,序号各自从 1 起", async () => {
   }
 });
 
+test("两个连接并发往同一轮次追加事件:序号不撞,一条不丢", async () => {
+  const { cache, db, forge } = (await setup());
+
+  await runReview(EVENT, {
+    forge: forge.forge,
+    reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID] })],
+    cacheDir: cache.dir,
+    databaseUrl: db.url,
+  });
+
+  // 两份 store 各开各的连接(池里一条事务占一条连接),同时往同一轮次追加:序号是
+  // `MAX + 1`,不在事务里先锁轮次那一行的话两条会算出同一个号,主键当场撞上(ADR 0036)。
+  const writers = [openStore(db.url), openStore(db.url)];
+  try {
+    const runId = (await writers[0]!.listRuns({ limit: 1 }))[0]!.id;
+    const before = (await writers[0]!.listTrace(runId)).length;
+    const appended = await Promise.all(
+      Array.from({ length: 12 }, (_value, index) =>
+        writers[index % writers.length]!.appendTrace(runId, {
+          scope: "run",
+          kind: "batch_started",
+          payload: { index },
+        }),
+      ),
+    );
+
+    const seqs = appended.map((event) => event.seq).sort((a, b) => a - b);
+    assert.equal(new Set(seqs).size, seqs.length, "并发追加不该拿到同一个序号");
+    assert.deepEqual(seqs, Array.from({ length: 12 }, (_value, i) => before + 1 + i));
+    assert.equal((await writers[0]!.listTrace(runId)).length, before + 12);
+  } finally {
+    for (const writer of writers) await writer.close();
+  }
+});
+
 test("afterSeq 只回它之后的那些事件", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID, READ] })],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     const all = await store.listTrace(runId);
@@ -374,18 +409,18 @@ const EVIDENCE: ReviewerEvent = {
 };
 
 test("取证子会话的事件随那次调用一起落库,实时与回看是同一条路径(issue #227)", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID, EVIDENCE] })],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   });
 
   // 实时广播与历史回看读的是同一批行(`createTraceRecorder` 把落库与广播合成一个动作),
   // 因此库里读回来嵌套一格不少,即两条路径都拿得到它。
-  const calls = (await trace(db.path)).filter((e) => e.kind === "tool_call");
+  const calls = (await trace(db.url)).filter((e) => e.kind === "tool_call");
   assert.equal(calls.length, 1);
   const payload = calls[0]!.payload;
   assert.equal(calls[0]!.reviewer, "model-a", "嵌套事件与它所属的 Reviewer 关联");

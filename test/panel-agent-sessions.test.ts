@@ -1,16 +1,15 @@
 /**
  * Agent 会话实体与它的面板接口(issue #332)。
  *
- * 缝与产品那一票相同:面板 API 走真实 HTTP,会话行落临时 SQLite。压的是票的验收:
+ * 缝与产品那一票相同:面板 API 走真实 HTTP,会话行落一次性 PostgreSQL 库。压的是票的验收:
  * `agent:chat` 独立一格、用途必填且只收需求拆分与开放对话、没有这一格建 / 删被挡、非创建者读 404、
  * 系统管理员读得到全部但发消息被拒,以及删会话与删产品级联的条数。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { effectivePanelPermissions, PANEL_PERMISSIONS } from "../src/panel/permissions.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   scopedUser,
@@ -18,6 +17,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 
 const PASSWORD = "agent-session-test-password";
 const AT = "2026-09-12T00:00:00.000Z";
@@ -373,63 +373,21 @@ test("建会话选基点:外仓库、解析不出的 sha 与形状不对都回�
   assert.deepEqual(await sessions(h, cookie, productId), []);
 });
 
-test("升级前的旧库:开库补上会话那一列,既有会话读作没记过开在哪个 commit", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const productId = await productWithRepo(h, "报销系统");
-  const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
-  const created = await createSession(h, owner, productId);
-  const read = async (): Promise<AgentSessionBaseline[]> => {
-    const response = await as(h, owner, "GET", `/agent-sessions/${created.id}`);
-    const text = await response.text();
-    assert.equal(response.status, 200, text);
-    return (JSON.parse(text) as { session: AgentSession }).session.baselines;
-  };
-  const record = async (baselines: AgentSessionBaseline[]): Promise<void> => {
-    const store = openStore(h.db.path);
-    try {
-      await store.setAgentSessionBaselines(created.id, baselines);
-    } finally {
-      await store.close();
-    }
-  };
-  const opened: AgentSessionBaseline = {
-    owner: GITEA_REPO.owner,
-    repo: GITEA_REPO.repo,
-    sha: h.repo.headSha,
-    branch: "feature",
-    kind: "branch",
-  };
-  await record([opened]);
-  assert.deepEqual(await read(), [opened]);
-
-  // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——理由与 `product_repo`
-  // 那一处相同(建表语句里有中文注释,丢最后一列要重写它)。
-  const db = new DatabaseSync(h.db.path);
-  db.exec("ALTER TABLE agent_session RENAME COLUMN baselines TO before_upgrade_baselines");
-  db.close();
-
-  // 下一次开库补列:会话行一条不少,开在哪个 commit 读作没记过,面板因此什么都不显示。
-  assert.deepEqual(await read(), []);
-  assert.deepEqual((await sessions(h, owner, productId)).map((row) => row.id), [created.id]);
-  // 补回来的这一列照样写得进去:下一条消息备好工作树就记上。
-  await record([opened]);
-  assert.deepEqual(await read(), [opened]);
-});
-
 test("来源种类之前记下的基点:行里没有 kind,读回来一律是分支", async () => {
   const h = await startReadyPanelHarness({ registerRepo: true });
   const productId = await productWithRepo(h, "报销系统");
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const created = await createSession(h, owner, productId);
   // 直接播种这一票之前那种形状的行:只有 owner / repo / sha / branch。不回填,读时补上。
-  const db = new DatabaseSync(h.db.path);
-  db.prepare("UPDATE agent_session SET baselines = ? WHERE id = ?").run(
-    JSON.stringify([
-      { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
-    ]),
-    created.id,
-  );
-  db.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql(
+      "UPDATE agent_session SET baselines = $1 WHERE id = $2",
+      JSON.stringify([
+        { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
+      ]),
+      created.id,
+    );
+  });
 
   const response = await as(h, owner, "GET", `/agent-sessions/${created.id}`);
   const text = await response.text();
@@ -446,7 +404,7 @@ test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还�
   const session = await createSession(h, owner, productId);
 
   // 五条记录,正文各不相同:哪一页回了哪几条认得出来。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   for (let index = 1; index <= 5; index += 1) {
     await store.appendAgentSessionEntry(session.id, {
       type: "message",
@@ -492,7 +450,7 @@ test("面板标题与最后动静:读时从记录派生,不落库", async () => 
   const withMessage = await createSession(h, owner, productId);
   const firstAt = "2026-09-12T00:10:00.000Z";
   const secondAt = "2026-09-12T00:20:00.000Z";
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     // 第一条用户消息带一张图,文字块排在图片块后面:标题不能假定文字在下标 0。正文里的
     // 连续空白与首尾空白折成一个空格。

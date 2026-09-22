@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { PRODUCT_TICKET_LABELS } from "../src/review/store.ts";
+import { PRODUCT_TICKET_LABELS } from "../src/review/store/index.ts";
 import { piBuiltinProviderTargets } from "../src/reviewer/catalog.ts";
 import { MODEL_API_KEY_ENV, reviewerEnv } from "../src/reviewer/env.ts";
 import { resolveBuiltinModelTarget, type RuntimeModel } from "../src/reviewer/model-service-runtime.ts";

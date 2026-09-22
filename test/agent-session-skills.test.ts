@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { PRODUCT_TICKET_LABELS } from "../src/review/store.ts";
+import { PRODUCT_TICKET_LABELS } from "../src/review/store/index.ts";
 import { purposeSystemPrompt } from "../src/reviewer/session-purposes.ts";
 import {
   installSessionSkills,

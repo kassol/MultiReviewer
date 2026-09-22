@@ -16,7 +16,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 
 import type { Disposition } from "../review/finding.ts";
-import type { RepoFinding } from "../review/store.ts";
+import type { RepoFinding } from "../review/store/index.ts";
 import type { SessionWorkerMessage } from "./session-protocol.ts";
 import { toolText } from "./worker-tools.ts";
 

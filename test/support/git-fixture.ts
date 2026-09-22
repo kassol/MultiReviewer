@@ -1,17 +1,23 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after } from "node:test";
 
+import pg from "pg";
+
 import {
+  closeStorePool,
+  migrateStore,
   openStore,
   type FindingRecord,
   type OutcomeRecord,
   type RunMeta,
   type Store,
   type VerdictRecord,
-} from "../../src/review/store.ts";
+} from "../../src/review/store/index.ts";
+import { requireTestDatabaseUrl } from "./require-database.ts";
 
 /**
  * 本测试文件共用的清理队列。每个测试文件是一个独立进程,所以这份模块级的队列就是
@@ -46,7 +52,7 @@ export async function runCleanups(
 after(() => runCleanups(fileCleanups));
 
 /**
- * 删一个临时目录。**要重试**:后台任务(工作副本准备的 `git clone`、SQLite 的 `-wal`)
+ * 删一个临时目录。**要重试**:后台任务(工作副本准备的 `git clone`)
  * 可能正往里写,`rmSync` 走到一半目录又多出文件就抛 ENOTEMPTY。
  */
 function removeTempDir(dir: string): void {
@@ -352,13 +358,88 @@ export function makeCacheDir(): { dir: string; cleanup(): void } {
   return { dir, cleanup: () => removeTempDir(dir) };
 }
 
-/** 在临时目录里指一个数据库文件的位置。文件由第一次打开时创建。 */
-export function makeDbPath(): { path: string; cleanup(): void } {
-  const dir = mkdtempSync(join(tmpdir(), "multireviewer-db-"));
-  return {
-    path: join(dir, "multireviewer.db"),
-    cleanup: () => removeTempDir(dir),
+// 一个测试文件会建好几个库、好几个池,几路并发跑起来就会把 PostgreSQL 的 `max_connections`
+// 占满。每个测试库上同时在跑的查询本来也只有几条,把池收到 3 条连接。
+process.env["MULTIREVIEWER_DB_POOL_MAX"] ??= "3";
+
+/**
+ * 给这一次测试建一个真的 PostgreSQL 库(ADR 0036):在 `MULTIREVIEWER_TEST_DATABASE_URL`
+ * 指的实例上 `CREATE DATABASE`、跑一遍迁移,收尾时关掉连接池再 `DROP DATABASE`。
+ *
+ * 一个库一次调用,不共用:测试之间的数据隔离靠库本身,而不是靠每个用例自己清表。
+ * `dataDir` 是会话图片附件的落点(issue #336),库不再是文件之后它另占一个临时目录。
+ */
+export async function makeTestDatabase(): Promise<{
+  url: string;
+  dataDir: string;
+  cleanup(): Promise<void>;
+}> {
+  const admin = requireTestDatabaseUrl();
+  const name = `mr_test_${randomUUID().replaceAll("-", "")}`;
+  await onAdminConnection(admin, async (client) => {
+    await client.query(`CREATE DATABASE "${name}"`);
+  });
+  const url = new URL(admin);
+  url.pathname = `/${name}`;
+  const databaseUrl = url.href;
+  // 先关连接池:还连着的库 DROP 不掉。
+  const dropDatabase = async (): Promise<void> => {
+    await closeStorePool(databaseUrl);
+    await onAdminConnection(admin, async (client) => {
+      await client.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    });
   };
+  let dataDir: string;
+  try {
+    await migrateStore(databaseUrl);
+    dataDir = mkdtempSync(join(tmpdir(), "multireviewer-data-"));
+  } catch (error) {
+    // 库已经建出来了,而 `cleanup` 还没交到调用方手上:这里自己收掉,不然迁移一失败
+    // 就在实例上留一个没人删得掉的库,跑几轮之后实例里全是这种库。
+    await dropDatabase();
+    throw error;
+  }
+  return {
+    url: databaseUrl,
+    dataDir,
+    cleanup: async () => {
+      await dropDatabase();
+      removeTempDir(dataDir);
+    },
+  };
+}
+
+/** 一条直连测试库的 SQL 通道。参数用 `$1`、`$2`(PostgreSQL 的占位符),返回行数组。 */
+export type TestSql = (text: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
+
+/**
+ * 绕过 Store 直接读写测试库:造一份「升级前落下的」数据、或者核对某一列真的写进去了。
+ * 用完即关,不进连接池——连着的库 DROP 不掉。
+ */
+export async function withTestDb<T>(
+  databaseUrl: string,
+  run: (sql: TestSql) => Promise<T>,
+): Promise<T> {
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    return await run(async (text, ...params) => (await client.query(text, params)).rows);
+  } finally {
+    await client.end();
+  }
+}
+
+async function onAdminConnection(
+  admin: string,
+  run: (client: pg.Client) => Promise<void>,
+): Promise<void> {
+  const client = new pg.Client({ connectionString: admin });
+  await client.connect();
+  try {
+    await run(client);
+  } finally {
+    await client.end();
+  }
 }
 
 /**
@@ -368,8 +449,8 @@ export function makeDbPath(): { path: string; cleanup(): void } {
  * 走产品自己的知识确认(issue #200:空知识集是合法状态,空草案确认得了),不直写版本表
  * ——绕过产品路径播种的状态,产品路径变了测试也发现不了。仓库不在注册表里时什么都不写。
  */
-export async function confirmEmptyRuleSet(dbPath: string, repoId: number): Promise<void> {
-  const store = openStore(dbPath);
+export async function confirmEmptyRuleSet(databaseUrl: string, repoId: number): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     await store.confirmRuleDraft(repoId);
   } finally {

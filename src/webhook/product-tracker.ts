@@ -16,7 +16,7 @@ import {
   type ProductTicketRecord,
   type ProductTrackerState,
   type Store,
-} from "../review/store.ts";
+} from "../review/store/index.ts";
 import type { TrackerRequest, TrackerTarget } from "../reviewer/session-protocol.ts";
 
 /** 票正文与 spec 正文的上限。一份 spec 是几屏 Markdown,一张票短得多,两边同一个宽松的数。 */

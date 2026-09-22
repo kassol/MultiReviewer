@@ -2,24 +2,23 @@
  * 产品 tracker 的那一段面板接口(CONTEXT.md 产品 tracker、spec、票、认领,ADR 0035,
  * issue #361、#363)。
  *
- * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,spec 与票落临时 SQLite。压的是
- * 两票的验收:产品页读到 spec 连它的票(标签、状态、认领人、阻塞者)、一条 spec 打得开全文、
- * 导出是一份票按依赖顺序排的 Markdown、看不到这个产品的人什么都读不到、升级前的旧库开起来
- * 新表在且 tracker 为空;人做得了认领与取消认领、改标签(只有五个)、开关 spec 与票、评论,
+ * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,spec 与票落这个测试文件自己那个
+ * 临时 PostgreSQL 库。压的是两票的验收:产品页读到 spec 连它的票(标签、状态、认领人、
+ * 阻塞者)、一条 spec 打得开全文、导出是一份票按依赖顺序排的 Markdown、看不到这个产品的人
+ * 什么都读不到;人做得了认领与取消认领、改标签(只有五个)、开关 spec 与票、评论,
  * 正文与标题改不动。取消认领与抢认领同一道闸:只有认领人自己与系统管理员放得下那一格。
  *
  * 会话经工具写 tracker 那条路在 `agent-session-subprocess.test.ts`:这里只把行落进库,压的是
  * 读侧与人的动作。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import {
   openStore,
   PRODUCT_TICKET_LABELS,
   type ProductTicketLabel,
-} from "../src/review/store.ts";
+} from "../src/review/store/index.ts";
 import {
   GITEA_REPO,
   PANEL_ADMIN_USERNAME,
@@ -49,7 +48,7 @@ async function product(h: PanelHarness): Promise<Product> {
   const text = await response.text();
   assert.equal(response.status, 201, text);
   const created = (JSON.parse(text) as { product: Product }).product;
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await store.attachProductRepo(created.id, GITEA_REPO.id, AT), "attached");
   } finally {
@@ -69,7 +68,7 @@ async function seedSpec(
   tickets: readonly { title: string; body: string; label?: ProductTicketLabel }[] = [],
   blocks: readonly [number, number][] = [],
 ): Promise<{ specId: number; ticketIds: number[] }> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const written = await store.createProductSpec({
       productId,
@@ -127,7 +126,7 @@ test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者�
     // 第二张票等第一张。
     [[1, 0]],
   );
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
   } finally {
@@ -168,7 +167,7 @@ test("一条 spec 打得开全文:正文、票的正文与评论都在", async (
     { title: "报销单可以撤回", body: "## Problem Statement\n\n提交之后改不了。" },
     [{ title: "撤回接口", body: "PATCH /expenses/{id}\n\n验收:重复撤回回 409。" }],
   );
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     await store.addProductTicketComment({
       ticketId: ticketIds[0]!,
@@ -261,38 +260,6 @@ test("读随产品可见性:看不到这个产品的人一格都读不到", asyn
     assert.equal(response.status, 404, path);
     assert.deepEqual(await response.json(), { error: "没有这个产品" });
   }
-});
-
-test("升级前的旧库:开库建起 tracker 那几张表,产品开起来 tracker 为空", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const created = await product(h);
-  await seedSpec(h, created.id, { title: "报销单可以撤回", body: "提交之后改不了。" }, [
-    { title: "撤回接口", body: "PATCH /expenses/{id}" },
-  ]);
-
-  // 把库退回升级之前的样子:那时这四张表都不存在。
-  const db = new DatabaseSync(h.db.path);
-  for (const table of [
-    "product_ticket_block",
-    "product_ticket_comment",
-    "product_ticket",
-    "product_spec",
-  ]) {
-    db.exec(`DROP TABLE ${table}`);
-  }
-  db.close();
-
-  // 下一次开库把它们建回来:tracker 空着,产品其它功能一格不动。
-  const after = await detail(h, created.id);
-  assert.deepEqual(after.tracker.specs, []);
-  const listed = await h.api("GET", "/products");
-  assert.equal(((await listed.json()) as { products: unknown[] }).products.length, 1);
-
-  // 空表照样写得进去:新建的那张表与建库时的那一张同构。
-  const again = await seedSpec(h, created.id, { title: "报销单可以撤回", body: "再写一次" });
-  assert.deepEqual((await detail(h, created.id)).tracker.specs.map((one) => one.id), [
-    again.specId,
-  ]);
 });
 
 /** 当前 tracker 里那一张票(按票号找)。人的动作落没落下去看它。 */

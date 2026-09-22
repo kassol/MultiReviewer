@@ -9,8 +9,8 @@ import { test } from "node:test";
 
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
-import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { openStore } from "../src/review/store/index.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { query } from "./support/batch-run.ts";
 import {
   memoryForge,
@@ -51,8 +51,8 @@ import {
 async function judgeSecondRound(
   reviewers: readonly Reviewer[],
   head: string = SAME_LINE_CHANGE,
-): Promise<{ db: { path: string }; forge: MemoryForge }> {
-  const { repo, db, forge, deps } = setup();
+): Promise<{ db: { url: string }; forge: MemoryForge }> {
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -73,14 +73,14 @@ test("两个 Reviewer 都判已修:Forge 收到 resolve,库里记「已修复」
     [forge.publishedComments[0]!.id],
     "复核全判已修却没有写回 Forge",
   );
-  assert.deepEqual(latestDispositions(db.path), ["fixed"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["fixed"]);
   // 处置人留空,处置时刻照记:这一档不是人做的,时刻同时是「已被处置过」的标记。
-  const [mark] = dispositionMarks(db.path);
+  const [mark] = (await dispositionMarks(db.url));
   assert.equal(mark!.by, null);
   assert.notEqual(mark!.at, null);
 
   // 面板的处置进度把人工与自动分开数:这一条落在自动那一列。
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const first = (await store.listRuns({ limit: 10 })).at(-1)!;
   await store.close();
   assert.deepEqual(
@@ -115,10 +115,10 @@ const TWIN_HEAD = TWIN_BASE.replace("amount * rate;", "amount * rate * 2;");
 /** 第二轮的 head:改文件开头,第 6、7 行那扇窗口原样不动。 */
 const TWIN_NEXT = TWIN_HEAD.replace("export const rate = 1;", "export const rate = 3;");
 
-function twinSetup() {
+async function twinSetup() {
   const repo = makeRepo({ base: { "src/fee.js": TWIN_BASE }, head: { "src/fee.js": TWIN_HEAD } });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   testCleanups().push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -142,7 +142,7 @@ function twinSetup() {
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   return { repo, db, forge, deps };
@@ -150,17 +150,17 @@ function twinSetup() {
 
 /** 跑第一轮、把两条评论按未处置喂回 Forge,并推进 head。返回第二轮开跑前的现场。 */
 async function twinFirstRound(): Promise<{
-  db: { path: string };
+  db: { url: string };
   forge: MemoryForge;
-  deps: ReturnType<typeof twinSetup>["deps"];
+  deps: Awaited<ReturnType<typeof twinSetup>>["deps"];
   rows: Record<string, unknown>[];
 }> {
-  const { repo, db, forge, deps } = twinSetup();
+  const { repo, db, forge, deps } = (await twinSetup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
 
-  const rows = query(db.path, "SELECT id, line, fingerprint, comment_id FROM finding ORDER BY id");
+  const rows = (await query(db.url, "SELECT id, line, fingerprint, comment_id FROM finding ORDER BY id"));
   assert.equal(rows.length, 2, "两条 Finding 该各落一行");
   assert.equal(rows[0]!["fingerprint"], rows[1]!["fingerprint"], "夹具没造出同指纹的两条");
   assert.notEqual(rows[0]!["comment_id"], rows[1]!["comment_id"], "两条该各带一条评论");
@@ -179,7 +179,7 @@ test("同一条 Identity 上的两条 Finding 各带一条评论:判已修时两
     rows.map((row) => String(row["comment_id"])).sort(),
     "只 resolve 了折叠出来的代表条,另一条评论留在了 Forge 上",
   );
-  assert.deepEqual(latestDispositions(db.path), ["fixed", "fixed"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["fixed", "fixed"]);
 });
 
 test("同一条 Identity 里一条写 Forge 失败:只有写成的那一行记已修复,另一行保持未处置", async () => {
@@ -194,7 +194,7 @@ test("同一条 Identity 里一条写 Forge 失败:只有写成的那一行记�
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
   assert.deepEqual(forge.resolvedIds, [String(rows[1]!["comment_id"])]);
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "fixed"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved", "fixed"]);
 });
 
 test("一个判已修、一个判仍在:仍在优先,不自动处置", async () => {
@@ -204,7 +204,7 @@ test("一个判已修、一个判仍在:仍在优先,不自动处置", async () 
   ]);
 
   assert.deepEqual(forge.resolvedIds, []);
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
 });
 
 test("一个判已修、一个判无法判断:不自动处置", async () => {
@@ -214,7 +214,7 @@ test("一个判已修、一个判无法判断:不自动处置", async () => {
   ]);
 
   assert.deepEqual(forge.resolvedIds, []);
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
 });
 
 test("一个判已修、一个漏复核:沉默不是证据,不自动处置", async () => {
@@ -224,7 +224,7 @@ test("一个判已修、一个漏复核:沉默不是证据,不自动处置", asy
   ]);
 
   assert.deepEqual(forge.resolvedIds, []);
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
 });
 
 test("指纹未变、复核判已修:照样自动处置", async () => {
@@ -239,14 +239,14 @@ test("指纹未变、复核判已修:照样自动处置", async () => {
     [forge.publishedComments[0]!.id],
     "指纹不变的修法没能自动处置",
   );
-  assert.deepEqual(latestDispositions(db.path), ["fixed"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["fixed"]);
 });
 
 test("指纹已变、复核判仍在:不自动处置", async () => {
   const { db, forge } = await judgeSecondRound([verdictReviewer("model-a", "present")]);
 
   assert.deepEqual(forge.resolvedIds, [], "代码改了就被当成修好了");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
 });
 
 test("指纹已变但一条复核结论都没有:不自动处置", async () => {
@@ -254,11 +254,11 @@ test("指纹已变但一条复核结论都没有:不自动处置", async () => {
   const { db, forge } = await judgeSecondRound(SILENT);
 
   assert.deepEqual(forge.resolvedIds, [], "指纹消失又被单独当成了证据");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
 });
 
 test("人已经在 Forge 上处置过的:复核判已修也不动", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, true));
@@ -267,37 +267,37 @@ test("人已经在 Forge 上处置过的:复核判已修也不动", async () => 
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
   assert.deepEqual(forge.resolvedIds, []);
-  assert.deepEqual(latestDispositions(db.path), ["resolved"], "人工处置被自动处置盖掉了");
+  assert.deepEqual((await latestDispositions(db.url)), ["resolved"], "人工处置被自动处置盖掉了");
 });
 
 test("回填不把「已修复」降级成人工处置", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
-  assert.deepEqual(latestDispositions(db.path), ["fixed"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["fixed"]);
 
   // 自动处置写回 Forge 之后,那条评论在 Forge 上就是 resolved,下一轮照样读回来。
   for (const comment of forge.existingComments) comment.resolved = true;
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
   await runReview(EVENT, { ...deps, reviewers: SILENT });
 
-  assert.deepEqual(latestDispositions(db.path), ["fixed"], "回填把自动处置读成了人工处置");
+  assert.deepEqual((await latestDispositions(db.url)), ["fixed"], "回填把自动处置读成了人工处置");
 });
 
 test("人把「已修复」改回未处置之后,下一轮判已修也不动", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
-  assert.deepEqual(latestDispositions(db.path), ["fixed"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["fixed"]);
 
   // 人在面板上撤回了这次自动处置:从此这一行是人工处置的地盘。
-  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
+  await disposeInPanel(db.url, forge.publishedComments[0]!.id, "unresolved");
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
@@ -306,11 +306,11 @@ test("人把「已修复」改回未处置之后,下一轮判已修也不动", a
     [forge.publishedComments[0]!.id],
     "人撤回之后又被自动处置了一次",
   );
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
 });
 
 test("全部 Reviewer 都失败的那一轮不裁决:它根本没跑,复核结论不算数", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -327,15 +327,15 @@ test("全部 Reviewer 都失败的那一轮不裁决:它根本没跑,复核结�
   });
 
   assert.deepEqual(forge.resolvedIds, []);
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
 });
 
 test("跨轮折叠继承处置备注与署名:面板处置活过下一轮", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   // 人在面板上处置了它,并留了一句备注。
-  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
+  await disposeInPanel(db.url, forge.publishedComments[0]!.id, "resolved", "确认无影响");
   forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
@@ -344,7 +344,7 @@ test("跨轮折叠继承处置备注与署名:面板处置活过下一轮", asyn
   assert.deepEqual(forge.createdReviews[1]!.comments, [], "这一轮该折叠到历史评论上");
   // 面板读的是本轮那一行:处置的载体是评论,同一条评论名下的历史行与本轮新行说的
   // 是同一次处置,备注与署名不该只活在上一轮那一行上。
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const latest = (await store.listRuns({ limit: 10 }))[0]!;
   await store.close();
   const carried = latest.findings[0]!;
@@ -356,11 +356,11 @@ test("跨轮折叠继承处置备注与署名:面板处置活过下一轮", asyn
 });
 
 test("人撤回处置之后再折叠一轮:复核判已修也不自动处置", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   // 人在面板上把它标回未处置:从此这一行是人工处置的地盘(ADR 0016)。
-  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "unresolved");
+  await disposeInPanel(db.url, forge.publishedComments[0]!.id, "unresolved");
   forge.existingComments.push(...asPublished(forge, false));
 
   // 第二轮代码没变,同一条 Finding 又被报出,折叠到那条历史评论上。
@@ -375,7 +375,7 @@ test("人撤回处置之后再折叠一轮:复核判已修也不自动处置", a
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
   assert.deepEqual(forge.resolvedIds, [], "人撤回处置之后又被自动处置了一次");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved", "unresolved"]);
 });
 
 /**
@@ -392,8 +392,8 @@ function continuing(): Reviewer[] {
 }
 
 /** 落库的「延续自」链接,按落库顺序。 */
-function continuedFrom(dbPath: string): unknown[] {
-  return query(dbPath, "SELECT continued_from FROM finding ORDER BY id").map(
+async function continuedFrom(databaseUrl: string): Promise<unknown[]> {
+  return (await query(databaseUrl, "SELECT continued_from FROM finding ORDER BY id")).map(
     (row) => row["continued_from"],
   );
 }
@@ -403,12 +403,12 @@ function continuedFrom(dbPath: string): unknown[] {
  * 代码改写掉(指纹必变),模型判仍在并在同一个文件报出新位置的那一条。
  */
 async function continueSecondRound(): Promise<{
-  repo: ReturnType<typeof makeRepo>;
-  db: { path: string };
+  repo: Awaited<ReturnType<typeof makeRepo>>;
+  db: { url: string };
   forge: MemoryForge;
   deps: Parameters<typeof runReview>[1];
 }> {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -424,7 +424,7 @@ test("复核判仍在、代码已改写:新位置那条承接同一条,旧评论
 
   // 旧评论收到 resolve,旧行记「已延续」——它只是位置的交接,不是处置。
   assert.deepEqual(forge.resolvedIds, [old.id], "旧评论没有被 resolve");
-  assert.deepEqual(latestDispositions(db.path), ["continued", "unknown"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["continued", "unknown"]);
 
   // 本轮在新位置发了一条新评论,正文里注明延续自旧评论并带它的链接。
   const second = forge.createdReviews[1]!;
@@ -433,24 +433,24 @@ test("复核判仍在、代码已改写:新位置那条承接同一条,旧评论
   assert.ok(second.comments[0]!.body.includes(old.htmlUrl), "正文里没有旧评论的链接");
 
   // 新行记下旧评论的链接:面板的 diff 卡片据此显示「延续自」。
-  assert.deepEqual(continuedFrom(db.path), [null, old.htmlUrl]);
+  assert.deepEqual((await continuedFrom(db.url)), [null, old.htmlUrl]);
 });
 
 test("延续把旧行的备注、处置人与处置时刻带到新行上", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   const old = forge.publishedComments[0]!;
   // 人处置过又撤回:备注与署名留在旧行上,延续要把它们带到新位置去。延续是位置的交接
   // 不是处置,「已修复」自动处置那道「人碰过就不再碰」的闸门不适用于它(issue #163 US 36)。
-  await disposeInPanel(db.path, old.id, "resolved", "确认无影响");
-  await disposeInPanel(db.path, old.id, "unresolved");
+  await disposeInPanel(db.url, old.id, "resolved", "确认无影响");
+  await disposeInPanel(db.url, old.id, "unresolved");
   forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": SAME_LINE_CHANGE });
 
   await runReview(EVENT, { ...deps, reviewers: continuing() });
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const latest = (await store.listRuns({ limit: 10 }))[0]!;
   await store.close();
   const carried = latest.findings[0]!;
@@ -461,7 +461,7 @@ test("延续把旧行的备注、处置人与处置时刻带到新行上", async
 });
 
 test("复核判仍在、代码已改写但本轮没在新位置报出:旧行不动", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -471,12 +471,12 @@ test("复核判仍在、代码已改写但本轮没在新位置报出:旧行不�
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "present")] });
 
   assert.deepEqual(forge.resolvedIds, [], "没人承接却把旧评论 resolve 了");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
-  assert.deepEqual(continuedFrom(db.path), [null]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
+  assert.deepEqual((await continuedFrom(db.url)), [null]);
 });
 
 test("本轮那条讲的不是同一回事:不承接,旧行不动", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -495,14 +495,14 @@ test("本轮那条讲的不是同一回事:不承接,旧行不动", async () => 
   });
 
   assert.deepEqual(forge.resolvedIds, [], "内容对不上却把旧评论 resolve 了");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unknown"]);
-  assert.deepEqual(continuedFrom(db.path), [null, null]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved", "unknown"]);
+  assert.deepEqual((await continuedFrom(db.url)), [null, null]);
   // 本轮那条按新 Finding 正常提出,正文里没有那句「延续自」。
   assert.doesNotMatch(forge.createdReviews[1]!.comments[0]!.body, /延续自/);
 });
 
 test("承接的新位置落在 diff 之外:那条先被丢弃,不承接,旧行不动", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -520,8 +520,8 @@ test("承接的新位置落在 diff 之外:那条先被丢弃,不承接,旧行�
   });
 
   assert.deepEqual(forge.resolvedIds, [], "diff 之外的那条却把旧评论 resolve 了");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
-  assert.deepEqual(continuedFrom(db.path), [null]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
+  assert.deepEqual((await continuedFrom(db.url)), [null]);
   // 一条结论都没剩下,这一轮无话可说,连 review 都不发。
   assert.equal(forge.createdReviews.length, 1);
 });
@@ -535,7 +535,7 @@ test("承接的新位置落在 diff 之外:那条先被丢弃,不承接,旧行�
 const NEW_LINE = 5;
 
 test("复核判仍在并给出新位置:模型一条都没重报也照样承接", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   const old = forge.publishedComments[0]!;
@@ -548,7 +548,7 @@ test("复核判仍在并给出新位置:模型一条都没重报也照样承接"
   });
 
   assert.deepEqual(forge.resolvedIds, [old.id], "旧评论没有被 resolve");
-  assert.deepEqual(latestDispositions(db.path), ["continued", "unknown"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["continued", "unknown"]);
 
   const second = forge.createdReviews[1]!;
   assert.equal(second.comments.length, 1, "该在复核给出的新位置上发一条");
@@ -557,14 +557,14 @@ test("复核判仍在并给出新位置:模型一条都没重报也照样承接"
   // 合成的那条抄历史条目的正文与严重度,归属给出这个位置的那个模型。
   assert.match(second.comments[0]!.body, /sub 多减了 1/);
   assert.match(second.comments[0]!.body, /model-a/);
-  assert.deepEqual(continuedFrom(db.path), [null, old.htmlUrl]);
-  const synthesized = query(db.path, "SELECT severity, category FROM finding ORDER BY id")[1]!;
+  assert.deepEqual((await continuedFrom(db.url)), [null, old.htmlUrl]);
+  const synthesized = (await query(db.url, "SELECT severity, category FROM finding ORDER BY id"))[1]!;
   assert.equal(synthesized["severity"], "P0");
   assert.equal(synthesized["category"], "bug");
 });
 
 test("复核给的新位置落在 diff 之外:不承接,旧行不动", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -578,12 +578,12 @@ test("复核给的新位置落在 diff 之外:不承接,旧行不动", async () 
   });
 
   assert.deepEqual(forge.resolvedIds, [], "diff 之外的位置却把旧评论 resolve 了");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
-  assert.deepEqual(continuedFrom(db.path), [null]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
+  assert.deepEqual((await continuedFrom(db.url)), [null]);
 });
 
 test("模型同时重报了同内容的一条:以重报那条为准,不再合成", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   const old = forge.publishedComments[0]!;
@@ -610,11 +610,11 @@ test("模型同时重报了同内容的一条:以重报那条为准,不再合成
   assert.match(second.comments[0]!.body, /减法仍然多减了 1/);
   assert.match(second.comments[0]!.body, /延续自/);
   assert.deepEqual(forge.resolvedIds, [old.id]);
-  assert.deepEqual(continuedFrom(db.path), [null, old.htmlUrl]);
+  assert.deepEqual((await continuedFrom(db.url)), [null, old.htmlUrl]);
 });
 
 test("旧位置的代码没改动:复核给的新位置一并忽略,不产生延续", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -627,8 +627,8 @@ test("旧位置的代码没改动:复核给的新位置一并忽略,不产生延
   });
 
   assert.deepEqual(forge.resolvedIds, [], "代码没改动却把旧评论 resolve 了");
-  assert.deepEqual(latestDispositions(db.path), ["unresolved"]);
-  assert.deepEqual(continuedFrom(db.path), [null]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved"]);
+  assert.deepEqual((await continuedFrom(db.url)), [null]);
   assert.equal(forge.createdReviews.length, 1, "没有该发的东西却又发了一轮 review");
 });
 
@@ -653,7 +653,7 @@ const UNRELATED_FINDINGS = [
 ];
 
 test("合成的那条与本轮多条新报并存:「延续自」只落在承接它的那条评论上", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   // 第一轮报两条,两条都在 diff 内,各发一条行级评论。
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": HEAD_TWO_SPOTS });
@@ -690,7 +690,7 @@ test("合成的那条与本轮多条新报并存:「延续自」只落在承接�
   // 每条评论的锚点与它自己那一行的落库指纹一致:合成的那条追加在后面,不该让别人的
   // 指纹挪位。
   const stored = new Map(
-    query(db.path, "SELECT line, fingerprint FROM finding ORDER BY id")
+    (await query(db.url, "SELECT line, fingerprint FROM finding ORDER BY id"))
       .slice(2)
       .map((row) => [Number(row["line"]), row["fingerprint"]]),
   );
@@ -704,7 +704,7 @@ test("合成的那条与本轮多条新报并存:「延续自」只落在承接�
 
   // 跨轮匹配同样不受影响:mul 那条照旧折叠进正文,两条新报与合成的那条都是本轮新报。
   assert.match(second.body, /尚未处置/);
-  assert.deepEqual(latestDispositions(db.path), [
+  assert.deepEqual((await latestDispositions(db.url)), [
     "continued",
     // 第一轮 mul 那条有行级评论承载,回填按 Forge 上的未 resolve 状态写回。
     "unresolved",
@@ -713,13 +713,13 @@ test("合成的那条与本轮多条新报并存:「延续自」只落在承接�
     "unresolved",
     "unknown",
   ]);
-  assert.deepEqual(continuedFrom(db.path), [null, null, null, null, null, old.htmlUrl]);
+  assert.deepEqual((await continuedFrom(db.url)), [null, null, null, null, null, old.htmlUrl]);
 });
 
 test("已延续不进处置计数:旧那一轮的进度里不再有它", async () => {
   const { db } = await continueSecondRound();
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const [second, first] = await store.listRuns({ limit: 10 });
   await store.close();
   // 旧那一轮的那条已经交接走,它既不算处置掉,也不该继续挂在待处置里。
@@ -741,7 +741,7 @@ test("回填不把「已延续」读回处置:下一轮照样是已延续", asyn
   });
   await runReview(EVENT, { ...deps, reviewers: SILENT });
 
-  assert.equal(latestDispositions(db.path)[0], "continued", "回填把已延续读成了处置");
+  assert.equal((await latestDispositions(db.url))[0], "continued", "回填把已延续读成了处置");
 });
 
 test("已延续的那条不再注入下一轮:同一个问题只在新位置上复核一次", async () => {
@@ -757,6 +757,6 @@ test("已延续的那条不再注入下一轮:同一个问题只在新位置上�
   // 注入的只有新位置那条:旧行已经交接,再给一遍就是让模型复核同一个问题两次。
   const injected = third.calls[0]!.history;
   assert.equal(injected.length, 1);
-  assert.equal(injected[0]!.id, Number(query(db.path, "SELECT id FROM finding ORDER BY id")[1]!["id"]));
+  assert.equal(injected[0]!.id, Number((await query(db.url, "SELECT id FROM finding ORDER BY id"))[1]!["id"]));
 });
 

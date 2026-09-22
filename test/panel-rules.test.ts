@@ -1,7 +1,7 @@
 /**
  * 知识集落库与面板可见(issue #202),直接废止一条条目(issue #203、#299)。
  *
- * 两条缝:SQLite 临时库验存量迁移、知识集版本推进与快照回溯,面板 API 走真实 HTTP 验
+ * 两条缝:临时库验知识集版本推进与快照回溯,面板 API 走真实 HTTP 验
  * 读取、`knowledge:write` 拦截与仓库分配收窄。基点探索走 `panel-rule-exploration.test.ts`,
  * 这里的基点探索出处规则行由用例直接落进临时库;裁决那条写入链路是后续票的事。
  *
@@ -9,11 +9,10 @@
  * 只剩修订意图(`panel-revision-intents.test.ts`)与这里的直接废止,四条旧路径回 404。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
-import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { openStore } from "../src/review/store/index.ts";
+import { makeTestDatabase, testCleanups, withTestDb } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   hashTestPassword,
@@ -60,8 +59,8 @@ type RuleSetResponse = {
  * **`layer` 写的是存量层标签的值**:层标签已经退役,新写的行一律空串,但库列还在、存量行
  * 也还带着当初填的那个标签。这里照旧写一个非空值,读出来的条目因此证明旧行照常读得出。
  */
-function seedRule(
-  dbPath: string,
+async function seedRule(
+  databaseUrl: string,
   rule: {
     repoId: number;
     scope: string;
@@ -69,27 +68,30 @@ function seedRule(
     origin?: string;
     retiredVersion?: number;
   },
-): void {
-  const db = new DatabaseSync(dbPath);
+): Promise<void> {
   const retired = rule.retiredVersion ?? null;
-  db.prepare(
-    "INSERT OR IGNORE INTO rule_set_version (repo_id, version, created_at) VALUES (?, 1, ?)",
-  ).run(rule.repoId, "2026-08-28T00:00:00.000Z");
-  db.prepare(
-    `INSERT INTO review_rule
-       (repo_id, scope, statement, layer, state, origin, effective_version, retired_version, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-  ).run(
-    rule.repoId,
-    rule.scope,
-    rule.statement,
-    "架构",
-    retired === null ? "active" : "retired",
-    rule.origin ?? "baseline-exploration",
-    retired,
-    "2026-08-28T00:00:00.000Z",
-  );
-  db.close();
+  await withTestDb(databaseUrl, async (sql) => {
+    await sql(
+      `INSERT INTO rule_set_version (repo_id, version, created_at) VALUES ($1, 1, $2)
+       ON CONFLICT DO NOTHING`,
+      rule.repoId,
+      "2026-08-28T00:00:00.000Z",
+    );
+    await sql(
+      `INSERT INTO review_rule
+         (repo_id, scope, statement, layer, state, origin, effective_version, retired_version,
+          created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8)`,
+      rule.repoId,
+      rule.scope,
+      rule.statement,
+      "架构",
+      retired === null ? "active" : "retired",
+      rule.origin ?? "baseline-exploration",
+      retired,
+      "2026-08-28T00:00:00.000Z",
+    );
+  });
 }
 
 /**
@@ -101,9 +103,9 @@ async function seedActiveRule(
   repoId: number,
   entry: { type: "rule" | "fact"; scope: string; statement: string },
 ): Promise<number> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
-    assert.notEqual(seedReviewRule(h.db.path, repoId, entry), undefined);
+    assert.notEqual((await seedReviewRule(h.db.url, repoId, entry)), undefined);
     return (await store.getRuleSet(repoId))!.rules.at(-1)!.id;
   } finally {
     await store.close();
@@ -115,7 +117,7 @@ async function scopedUser(
   username: string,
   repoIds: readonly number[],
 ): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     await store.createPanelUser({
       username,
@@ -164,7 +166,7 @@ async function ruleWriterCookie(
   repoIds: readonly number[],
 ): Promise<string> {
   const cookie = await scopedUser(h, username, repoIds);
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const role = await store.createPanelRole({
       name: `role-${username}`,
@@ -186,9 +188,9 @@ async function ruleWriterCookie(
 }
 
 test("新注册的仓库知识集未确认,移除仓库连规则一起摘掉", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     assert.equal(
       await store.registerRepo({ repoId: 88, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
@@ -207,29 +209,29 @@ test("新注册的仓库知识集未确认,移除仓库连规则一起摘掉", a
 });
 
 test("知识集只给当前生效的规则,废止的那条不在集内", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   assert.equal(
     await store.registerRepo({ repoId: 90, owner: "acme", repo: "layered", generation: 1, key: "k" }),
     true,
   );
   await store.close();
 
-  seedRule(db.path, { repoId: 90, scope: "", statement: "公开函数要有类型标注" });
-  seedRule(db.path, {
+  await seedRule(db.url, { repoId: 90, scope: "", statement: "公开函数要有类型标注" });
+  await seedRule(db.url, {
     repoId: 90,
     scope: "src/api/**",
     statement: "入参要在边界上校验",
   });
-  seedRule(db.path, {
+  await seedRule(db.url, {
     repoId: 90,
     scope: "",
     statement: "已经不作数的老规则",
     retiredVersion: 2,
   });
 
-  const reopened = openStore(db.path);
+  const reopened = openStore(db.url);
   try {
     const ruleSet = await reopened.getRuleSet(90);
     assert.equal(ruleSet?.version, 1);
@@ -266,7 +268,7 @@ test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 nu
     intents: [],
   });
 
-  seedRule(h.db.path, {
+  await seedRule(h.db.url, {
     repoId: alpha,
     scope: "src/api/**",
     statement: "入参要在边界上校验",
@@ -316,9 +318,9 @@ test("分配外的仓库与没注册的 id 读知识集同形 404", async () => 
 });
 
 test("直接废止推进一版,历史版本的快照仍取到废止前那一组", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     assert.equal(
       await store.registerRepo({ repoId: 91, owner: "acme", repo: "edited", generation: 1, key: "k" }),
@@ -326,7 +328,7 @@ test("直接废止推进一版,历史版本的快照仍取到废止前那一组"
     );
     // 注册不落版本(issue #206),第一条条目落库就是这个仓库的第一版。
     assert.equal(
-      seedReviewRule(db.path, 91, { type: "rule", scope: "", statement: "公开函数要有类型标注" }),
+      (await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "公开函数要有类型标注" })),
       1,
     );
     const added = (await store.getRuleSet(91))!;
@@ -349,20 +351,20 @@ test("直接废止推进一版,历史版本的快照仍取到废止前那一组"
   }
 
   // 快照回溯:知识集版本 V 的那一组按 effective_version <= V 且未在 V 之前废止取。
-  const raw = new DatabaseSync(db.path);
-  const snapshot = (version: number): string[] =>
-    raw
-      .prepare(
-        `SELECT statement FROM review_rule
-          WHERE repo_id = 91 AND effective_version <= ?
-            AND (retired_version IS NULL OR retired_version > ?)
-          ORDER BY id`,
-      )
-      .all(version, version)
-      .map((row) => String(row["statement"]));
-  assert.deepEqual(snapshot(1), ["公开函数要有类型标注"]);
-  assert.deepEqual(snapshot(2), []);
-  raw.close();
+  await withTestDb(db.url, async (sql) => {
+    const snapshot = async (version: number): Promise<string[]> =>
+      (
+        await sql(
+          `SELECT statement FROM review_rule
+            WHERE repo_id = 91 AND effective_version <= $1
+              AND (retired_version IS NULL OR retired_version > $1)
+            ORDER BY id`,
+          version,
+        )
+      ).map((row) => String(row["statement"]));
+    assert.deepEqual(await snapshot(1), ["公开函数要有类型标注"]);
+    assert.deepEqual(await snapshot(2), []);
+  });
 });
 
 test("面板直接废止一条条目:knowledge:write 放行,版本推进,废止的仍读得到", async () => {
@@ -429,16 +431,16 @@ test("没有 knowledge:write 的人废止不动条目,分配外的仓库同形 4
 });
 
 test("Review Run 的启动快照冻结知识集版本与当时那组规则,之后的变更不追上来", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     assert.equal(
       await store.registerRepo({ repoId: 91, owner: "acme", repo: "frozen", generation: 1, key: "k" }),
       true,
     );
     assert.equal(
-      seedReviewRule(db.path, 91, { type: "rule", scope: "src/**", statement: "src 下不写 any" }),
+      (await seedReviewRule(db.url, 91, { type: "rule", scope: "src/**", statement: "src 下不写 any" })),
       1,
     );
 
@@ -450,7 +452,7 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
     );
 
     // 已开跑的那一轮拿着上面这份快照跑完,知识集在它跑的过程中变了也不跟。
-    assert.equal(seedReviewRule(db.path, 91, { type: "rule", scope: "", statement: "新规则" }), 2);
+    assert.equal((await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "新规则" })), 2);
     assert.equal(snapshot.ruleSetVersion, 1);
     assert.equal(snapshot.rules.length, 1);
 
@@ -463,28 +465,28 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
 });
 
 test("启动快照按 type 把两型分开,同一个知识集版本一起冻结", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     assert.equal(
       await store.registerRepo({ repoId: 92, owner: "acme", repo: "typed", generation: 1, key: "k" }),
       true,
     );
     assert.equal(
-      seedReviewRule(db.path, 92, {
+      (await seedReviewRule(db.url, 92, {
         type: "rule",
         scope: "src/**",
         statement: "src 下不写 any",
-      }),
+      })),
       1,
     );
     assert.equal(
-      seedReviewRule(db.path, 92, {
+      (await seedReviewRule(db.url, 92, {
         type: "fact",
         scope: "",
         statement: "全局拦截器覆盖全部路由",
-      }),
+      })),
       2,
     );
 

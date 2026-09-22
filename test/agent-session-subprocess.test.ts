@@ -18,7 +18,7 @@ import { rmSync } from "node:fs";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { MISSING_IMAGE_TEXT } from "../src/reviewer/session-images.ts";
 import { disposeAgentSessions } from "../src/webhook/agent-session.ts";
 import { GITEA_REPO, type PanelHarness } from "./support/panel-harness.ts";
@@ -64,7 +64,7 @@ test("发一条消息:知识目录与消息文本进了模型请求,回复与工
     assert.equal(accepted.status, 202, acceptedText);
 
     // 一个回合 = 用户消息 + 助手消息(带工具调用)+ 工具结果 + 助手消息。
-    await messagesAtLeast(h.db.path, sessionId, 4);
+    await messagesAtLeast(h.db.url, sessionId, 4);
     await idle(h, cookie, sessionId);
 
     // 模型请求里有系统提示的知识目录那一行、会话根的仓库目录,以及人发的那句话。
@@ -187,11 +187,11 @@ test("子进程跑完一个回合留着:第二条消息在同一个会话里接�
   const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
 
     assert.equal((await send(h, cookie, sessionId, "c2", "再补一句")).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 4);
+    await messagesAtLeast(h.db.url, sessionId, 4);
     await idle(h, cookie, sessionId);
 
     // 第二次请求带着第一轮的上下文:同一个 Pi 会话,历史没丢。
@@ -231,7 +231,7 @@ test("带图的消息:base64 进了模型请求,记录里只剩文件引用", as
     const { image } = JSON.parse(uploadText) as { image: { imageId: string } };
 
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE, undefined, [image.imageId])).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
 
     // 模型请求里那条用户消息带着这张图的 base64,正文仍是人发的那句话。
@@ -278,7 +278,7 @@ test("回收之后重建:记录里的图片引用读回 base64 再喂给模型",
   try {
     const imageId = await uploadImage(h, cookie, sessionId);
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE, undefined, [imageId])).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
     // 回收:登记表摘掉,下一条消息从记录重建(issue #335)。
     await disposeAgentSessions();
@@ -359,12 +359,12 @@ test("图片文件丢了再重建:那一块是占位文本,历史照样续得上
   try {
     const imageId = await uploadImage(h, cookie, sessionId);
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE, undefined, [imageId])).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
     await disposeAgentSessions();
 
     // 人手动删掉那个文件:库里的引用还在,文件没了。
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     const image = (await store.getAgentSessionImage(sessionId, imageId))!;
     await store.close();
     rmSync(image.path);

@@ -10,10 +10,10 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   deflateImageBlocks,
   inflateImageRefs,
@@ -135,7 +135,7 @@ async function imageInput(h: PanelHarness, cookie: string, sessionId: number): P
 
 /** 这个会话的图片目录。落点就是库文件所在目录下的 `agent-sessions/<会话 id>`。 */
 function imageDir(h: PanelHarness, sessionId: number): string {
-  return join(dirname(h.db.path), "agent-sessions", String(sessionId));
+  return join(h.db.dataDir, "agent-sessions", String(sessionId));
 }
 
 test("传一张图:文件落 data 目录,库里只有路径与 mimeType,取图走同一道门", async () => {
@@ -150,7 +150,7 @@ test("传一张图:文件落 data 目录,库里只有路径与 mimeType,取图�
   assert.deepEqual(pngSize(readFileSync(path)), { width: 40, height: 30 });
 
   // 库里只有路径与 mimeType:base64 一个字节都不进库。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const row = await store.getAgentSessionImage(sessionId, image.imageId);
     assert.deepEqual(
@@ -225,7 +225,7 @@ test("目录能力不含 image 时上传被拒、读会话回 imageInput=false,�
 
   // 审查策略里把辅助模型换成看得了图的那一处(ADR 0029),下一次读会话就跟上。
   await seedAvailableModelService(h, VISION.provider, [VISION.model], { input: ["text", "image"] });
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(
       await putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(VISION) }),
@@ -282,7 +282,7 @@ test("删会话与删产品都连图片文件一起删", async () => {
   assert.equal((await as(h, cookie, "DELETE", `/agent-sessions/${sessionId}`)).status, 204);
   assert.equal(existsSync(imageDir(h, sessionId)), false);
   // 库里的行跟着会话走。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await store.getAgentSessionImage(sessionId, "any"), undefined);
   } finally {

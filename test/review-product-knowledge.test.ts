@@ -6,12 +6,11 @@
  * 这里只钉编排层——仓库归在产品下才有目录与查询回调,不在产品下时请求形状一格不变。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
-import { testCleanups } from "./support/git-fixture.ts";
+import { openStore } from "../src/review/store/index.ts";
+import { testCleanups, withTestDb } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -31,11 +30,11 @@ const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 const REPO_ID = 101;
 
 async function setup() {
-  const { cache, db, forge } = setupRepo(cleanups, {
+  const { cache, db, forge } = (await setupRepo(cleanups, {
     tree: { base: { "src/calc.ts": BASE_CALC }, head: { "src/calc.ts": HEAD_CALC } },
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
-  });
-  const store = openStore(db.path);
+  }));
+  const store = openStore(db.url);
   try {
     await store.registerRepo({
       repoId: REPO_ID,
@@ -51,13 +50,13 @@ async function setup() {
     cache,
     db,
     forge,
-    deps: { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path, repoId: REPO_ID },
+    deps: { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url, repoId: REPO_ID },
   };
 }
 
 /** 建一个产品、把这个仓库归进去,并写下一份四条的产品知识。回产品 id。 */
-async function seedProduct(dbPath: string): Promise<number> {
-  const store = openStore(dbPath);
+async function seedProduct(databaseUrl: string): Promise<number> {
+  const store = openStore(databaseUrl);
   const at = "2026-09-17T00:00:00.000Z";
   try {
     const product = await store.createProduct({ name: "报销系统", createdAt: at });
@@ -103,7 +102,7 @@ const FINDING = {
 
 test("仓库归在产品下:每批提示带目录,query_knowledge 按名字回整条", async () => {
   const { db, deps } = await setup();
-  await seedProduct(db.path);
+  await seedProduct(db.url);
 
   const reviewer = scriptedReviewer("stub-model", [FINDING], {
     reads: [{ names: ["报销单", "金额用整数分表示"] }, { relationships: true }],
@@ -138,13 +137,13 @@ test("仓库归在产品下:每批提示带目录,query_knowledge 按名字回�
 
 test("产品写下的条目当轮就读得到:目录在开跑时算,正文按名字现取", async () => {
   const { db, deps } = await setup();
-  const productId = await seedProduct(db.path);
+  const productId = await seedProduct(db.url);
 
   // Reviewer 跑着的时候又写下一条决策(写下即生效,ADR 0035)。
   const reviewer = scriptedReviewer("stub-model", [FINDING], {
     reads: [{ names: ["审批只留一级"] }],
   });
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.writeProductKnowledge({
       productId,
@@ -184,7 +183,7 @@ test("仓库不在任何产品下:目录与查询回调都不交下去", async (
 
 test("产品建了但一条都没写下:与不在产品下同一条路径", async () => {
   const { db, deps } = await setup();
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const product = await store.createProduct({ name: "空产品", createdAt: "2026-09-17T00:00:00.000Z" });
     await store.attachProductRepo(product.id, REPO_ID, "2026-09-17T00:00:00.000Z");
@@ -200,7 +199,7 @@ test("产品建了但一条都没写下:与不在产品下同一条路径", asyn
 
 test("一次 query_knowledge 调用进这一轮的审查轨迹", async () => {
   const { db, deps } = await setup();
-  await seedProduct(db.path);
+  await seedProduct(db.url);
 
   // 子进程把每次工具调用按 `tool_call` 转发上来(issue #171);知识查询与别的工具同一条路。
   const reviewer = scriptedReviewer("stub-model", [FINDING], {
@@ -219,9 +218,13 @@ test("一次 query_knowledge 调用进这一轮的审查轨迹", async () => {
   });
   await runReview(EVENT, { ...deps, reviewers: [reviewer] });
 
-  const rows = new DatabaseSync(db.path, { readOnly: true })
-    .prepare("SELECT payload FROM review_trace WHERE scope = 'reviewer' AND kind = 'tool_call'")
-    .all() as unknown as { payload: string }[];
+  const rows = await withTestDb(
+    db.url,
+    async (sql) =>
+      (await sql(
+        "SELECT payload FROM review_trace WHERE scope = 'reviewer' AND kind = 'tool_call'",
+      )) as { payload: string }[],
+  );
   const tools = rows.map((row) => (JSON.parse(row.payload) as { tool: string }).tool);
   assert.deepEqual(tools, ["query_knowledge"]);
 });

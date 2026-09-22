@@ -17,7 +17,7 @@ import type {
   ReviewerEvent,
   RuleProposalChange,
 } from "../review/finding.ts";
-import type { RuleProposalOrigin } from "../review/store.ts";
+import type { RuleProposalOrigin } from "../review/store/index.ts";
 import type { RuntimeModel } from "./model-service-runtime.ts";
 import { runWorkerChild } from "./subprocess.ts";
 

@@ -5,7 +5,6 @@
  * 合并与发评论。中断期间有人处置了历史也不影响续跑批次拿到的历史——那是开跑时落的快照。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewRunReviewerPin } from "../src/config.ts";
@@ -26,7 +25,7 @@ const cleanups = testCleanups();
 
 /** 一批一个文件、一次只跑一批:批次序号与文件一一对应,断言因此读得懂。 */
 function deps(
-  fixture: ReturnType<typeof setup>,
+  fixture: Awaited<ReturnType<typeof setup>>,
   reviewers: readonly Reviewer[],
   extra: { resumeRunId?: number; reviewerPins?: readonly ReviewRunReviewerPin[] } = {},
 ) {
@@ -34,27 +33,50 @@ function deps(
     forge: fixture.forge.forge,
     reviewers,
     cacheDir: fixture.cache.dir,
-    dbPath: fixture.db.path,
+    databaseUrl: fixture.db.url,
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
     ...extra,
   };
 }
 
+/** 把已落库的那几批的起止时刻改写成指定的样子,造出「崩溃发生在很久以前」的现场。 */
+async function rewriteBatchTimes(
+  databaseUrl: string,
+  runId: number,
+  at: (batchIndex: number) => { startedAt: number; durationMs: number },
+): Promise<void> {
+  const stored = await query(
+    databaseUrl,
+    "SELECT batch_index, outcome_json FROM review_run_batch_outcome",
+  );
+  for (const row of stored) {
+    const index = Number(row["batch_index"]);
+    const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
+    await query(
+      databaseUrl,
+      "UPDATE review_run_batch_outcome SET outcome_json = $1 WHERE run_id = $2 AND batch_index = $3",
+      JSON.stringify({ ...timed, ...at(index) }),
+      runId,
+      index,
+    );
+  }
+}
+
 test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断时一致", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
 
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
 
   // 前两批的结果已经落库,这一轮停在没有结束时间的状态。
-  const [run] = query(fixture.db.path, "SELECT id, finished_at, batch_count FROM review_run");
+  const [run] = (await query(fixture.db.url, "SELECT id, finished_at, batch_count FROM review_run"));
   assert.equal(run?.["finished_at"], null);
   assert.equal(run?.["batch_count"], 3);
-  const stored = query(
-    fixture.db.path,
+  const stored = (await query(
+    fixture.db.url,
     "SELECT batch_index, model FROM review_run_batch_outcome ORDER BY batch_index",
-  );
+  ));
   assert.deepEqual(
     stored.map((row) => [row["batch_index"], row["model"]]),
     [
@@ -63,8 +85,8 @@ test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断
     ],
   );
   // 中间态不进任何分母:收尾还没跑,逐模型结果与 Finding 一行都没有。
-  assert.equal(query(fixture.db.path, "SELECT id FROM reviewer_outcome").length, 0);
-  assert.equal(query(fixture.db.path, "SELECT id FROM finding").length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT id FROM reviewer_outcome")).length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT id FROM finding")).length, 0);
 
   const runId = Number(run?.["id"]);
   const resumed = batchReviewer("model-a");
@@ -77,10 +99,10 @@ test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断
   );
 
   // 沿用原轮次的编号,收尾正常结束。
-  const [after] = query(
-    fixture.db.path,
-    "SELECT id, failed, finished_at, total_tokens FROM review_run",
-  );
+  const [after] = (await query(
+    fixture.db.url,
+    "SELECT id, failed::int AS failed, finished_at, total_tokens FROM review_run",
+  ));
   assert.equal(Number(after?.["id"]), runId);
   assert.equal(after?.["failed"], 0);
   assert.notEqual(after?.["finished_at"], null);
@@ -98,18 +120,18 @@ test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断
     FILES,
   );
   // 收尾之后中间态清空:这张表只服务还没收尾的那一轮。
-  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch_outcome").length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT run_id FROM review_run_batch_outcome")).length, 0);
 
   // 批次里程碑接着原轮次追加,序号连续。
-  const milestones = query(
-    fixture.db.path,
+  const milestones = (await query(
+    fixture.db.url,
     `SELECT payload FROM review_trace WHERE kind = 'batch_finished' ORDER BY seq`,
-  ).map((row) => (JSON.parse(String(row["payload"])) as { index: number }).index);
+  )).map((row) => (JSON.parse(String(row["payload"])) as { index: number }).index);
   assert.deepEqual(milestones, [1, 2, 3]);
 });
 
 test("不中断跑完的一轮与续跑完成的一轮,Finding、用量与评论逐字相同", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const straight = batchReviewer("model-a");
 
   const result = await runReview(EVENT, deps(fixture, [straight]));
@@ -118,7 +140,7 @@ test("不中断跑完的一轮与续跑完成的一轮,Finding、用量与评论
     result.findings.map((finding) => finding.file),
     FILES,
   );
-  const [run] = query(fixture.db.path, "SELECT failed, total_tokens FROM review_run");
+  const [run] = (await query(fixture.db.url, "SELECT failed::int AS failed, total_tokens FROM review_run"));
   assert.equal(run?.["failed"], 0);
   assert.equal(run?.["total_tokens"], USAGE.totalTokens * 3);
   assert.equal(fixture.forge.createdReviews.length, 1);
@@ -129,14 +151,14 @@ test("不中断跑完的一轮与续跑完成的一轮,Finding、用量与评论
 });
 
 test("续跑收尾落库的归属带着各批报出的影响与建议(issue #266)", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const said = { impact: "首个新增行会被跳过。", suggestion: "从第 0 行开始遍历。" };
 
   await assert.rejects(
     () => runReview(EVENT, deps(fixture, [batchReviewer("model-a", { throwOnCall: 3, said })])),
     /进程被重启了/,
   );
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run"));
   await runReview(
     EVENT,
     deps(fixture, [batchReviewer("model-a", { said })], { resumeRunId: Number(run?.["id"]) }),
@@ -144,42 +166,37 @@ test("续跑收尾落库的归属带着各批报出的影响与建议(issue #266
 
   // 三批的归属都带着两段:前两批是重启前落的中间态,第三批是续跑报的。
   assert.deepEqual(
-    query(
-      fixture.db.path,
+    (await query(
+      fixture.db.url,
       "SELECT model, impact, suggestion FROM finding_attribution ORDER BY finding_id",
-    ).map((row) => [row["model"], row["impact"], row["suggestion"]]),
+    )).map((row) => [row["model"], row["impact"], row["suggestion"]]),
     FILES.map(() => ["model-a", said.impact, said.suggestion]),
   );
 });
 
 test("中断期间处置了一条历史,续跑批次收到的仍是开跑时的快照", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
 
   // 第一轮不分批,在 src/c.ts 上留下一条历史 Finding。
   await runReview(EVENT, {
     forge: fixture.forge.forge,
     reviewers: [batchReviewer("model-a")],
     cacheDir: fixture.cache.dir,
-    dbPath: fixture.db.path,
+    databaseUrl: fixture.db.url,
   });
-  const [history] = query(fixture.db.path, "SELECT id FROM finding WHERE file = 'src/c.ts'");
+  const [history] = (await query(fixture.db.url, "SELECT id FROM finding WHERE file = 'src/c.ts'"));
   const historyId = Number(history?.["id"]);
 
   // 第二轮切三批,停在第三批——历史所在的那一批(issue #235 的按文件路由)还没跑。
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
-  const [interrupted] = query(
-    fixture.db.path,
+  const [interrupted] = (await query(
+    fixture.db.url,
     "SELECT id FROM review_run WHERE finished_at IS NULL",
-  );
+  ));
 
   // 有人在重启期间把这条历史处置掉了。库里当前的历史因此变了,快照不变。
-  const db = new DatabaseSync(fixture.db.path);
-  try {
-    db.prepare("UPDATE finding SET disposition = 'resolved' WHERE id = ?").run(historyId);
-  } finally {
-    db.close();
-  }
+  await query(fixture.db.url, "UPDATE finding SET disposition = 'resolved' WHERE id = $1", historyId);
 
   const resumed = batchReviewer("model-a");
   await runReview(
@@ -197,10 +214,10 @@ test("中断期间处置了一条历史,续跑批次收到的仍是开跑时的�
 });
 
 test("head 变了就不续跑:抛续跑不成立,原因说得出变成了哪个 head", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
 
   // 作者在重启期间又推了一版:审的已经不是这一轮那段代码了。
   fixture.forge.pullRequest.headSha = fixture.repo.pushToHead({ "src/a.ts": `${STUB}const z = 2;\n` });
@@ -214,18 +231,16 @@ test("head 变了就不续跑:抛续跑不成立,原因说得出变成了哪个 
 });
 
 test("最低报告等级改了就不续跑:一轮里报出的口径不能一半旧一半新", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
 
   // 重启期间有人把审查策略的最低报告等级从全报改成了 P1。
-  const db = new DatabaseSync(fixture.db.path);
-  try {
-    db.prepare("INSERT INTO global_setting (key, value) VALUES ('min_report_severity', 'P1')").run();
-  } finally {
-    db.close();
-  }
+  await query(
+    fixture.db.url,
+    "INSERT INTO global_setting (key, value) VALUES ('min_report_severity', 'P1')",
+  );
 
   const resumed = batchReviewer("model-a");
   await assert.rejects(
@@ -236,10 +251,10 @@ test("最低报告等级改了就不续跑:一轮里报出的口径不能一半�
 });
 
 test("模型组合换了就不续跑:已落库的批次与这一轮的 Reviewer 对不上", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
 
   const other = batchReviewer("model-b");
   await assert.rejects(
@@ -254,7 +269,7 @@ test("模型组合换了就不续跑:已落库的批次与这一轮的 Reviewer 
  * 换只有开跑时钉下的 pin 说得出(issue #248 的评审复核)。
  */
 test("零批次落库时模型组合换了同样不续跑:核对开跑时钉下的 Reviewer", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const pins: ReviewRunReviewerPin[] = [
     {
       identity: "model-a",
@@ -272,9 +287,9 @@ test("零批次落库时模型组合换了同样不续跑:核对开跑时钉下�
     () => runReview(EVENT, deps(fixture, [crashed], { reviewerPins: pins })),
     /进程被重启了/,
   );
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
   // 一个批次都没落库:逐批核对无从下手。
-  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch_outcome").length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT run_id FROM review_run_batch_outcome")).length, 0);
 
   const other = batchReviewer("model-b");
   await assert.rejects(
@@ -289,22 +304,22 @@ test("零批次落库时模型组合换了同样不续跑:核对开跑时钉下�
  * 续跑时已完成与未完成的批次都要与它相符。
  */
 test("开跑时冻结全部批次的分组;零批次完成的轮次续跑跑全部三批并正常收尾", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 1 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
 
   // 一个批次都没落库,计划却已经在:它在任何批次完成之前就写下了。
-  const [run] = query(
-    fixture.db.path,
+  const [run] = (await query(
+    fixture.db.url,
     "SELECT id, batch_count, batch_plan_json FROM review_run WHERE finished_at IS NULL",
-  );
+  ));
   assert.equal(run?.["batch_count"], 3);
   assert.deepEqual(JSON.parse(String(run?.["batch_plan_json"])), [
     ["src/a.ts"],
     ["src/b.ts"],
     ["src/c.ts"],
   ]);
-  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch_outcome").length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT run_id FROM review_run_batch_outcome")).length, 0);
 
   const runId = Number(run?.["id"]);
   const resumed = batchReviewer("model-a");
@@ -315,10 +330,10 @@ test("开跑时冻结全部批次的分组;零批次完成的轮次续跑跑全�
     resumed.calls.map((call) => call.range.files),
     [["src/a.ts"], ["src/b.ts"], ["src/c.ts"]],
   );
-  const [after] = query(
-    fixture.db.path,
-    "SELECT id, failed, finished_at, total_tokens, batch_plan_json FROM review_run",
-  );
+  const [after] = (await query(
+    fixture.db.url,
+    "SELECT id, failed::int AS failed, finished_at, total_tokens, batch_plan_json FROM review_run",
+  ));
   assert.equal(Number(after?.["id"]), runId);
   assert.equal(after?.["failed"], 0);
   assert.notEqual(after?.["finished_at"], null);
@@ -327,23 +342,18 @@ test("开跑时冻结全部批次的分组;零批次完成的轮次续跑跑全�
   assert.notEqual(after?.["batch_plan_json"], null);
   assert.equal(result.failed, false);
   assert.equal(fixture.forge.createdReviews.length, 1);
-  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch_outcome").length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT run_id FROM review_run_batch_outcome")).length, 0);
 });
 
 test("升级前没有批次计划的轮次不续跑:抛续跑不成立,不调用 Reviewer", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
   const runId = Number(run?.["id"]);
 
   // 升级前落的行:有历史快照(issue #248)却没有批次计划。
-  const db = new DatabaseSync(fixture.db.path);
-  try {
-    db.prepare("UPDATE review_run SET batch_plan_json = NULL WHERE id = ?").run(runId);
-  } finally {
-    db.close();
-  }
+  await query(fixture.db.url, "UPDATE review_run SET batch_plan_json = NULL WHERE id = $1", runId);
 
   const resumed = batchReviewer("model-a");
   await assert.rejects(
@@ -354,11 +364,11 @@ test("升级前没有批次计划的轮次不续跑:抛续跑不成立,不调用
 });
 
 /** 这一轮落库的全部 `reviewer_batch_finished`,按模型与批次序号排(issue #410)。 */
-function batchFinished(dbPath: string): [string, number][] {
-  return query(
-    dbPath,
+async function batchFinished(databaseUrl: string): Promise<[string, number][]> {
+  return (await query(
+    databaseUrl,
     "SELECT reviewer, payload FROM review_trace WHERE kind = 'reviewer_batch_finished'",
-  )
+  ))
     .map((row): [string, number] => [
       String(row["reviewer"]),
       (JSON.parse(String(row["payload"])) as { batch: number }).batch,
@@ -371,7 +381,7 @@ function batchFinished(dbPath: string): [string, number][] {
  * 拿到手的那一刻就落库,后面那个还没跑完时进程停下,续跑只补后面那个。
  */
 test("批内一个 Reviewer 跑完、另一个没跑完:续跑只调没跑完的那个(issue #410)", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const done = batchReviewer("model-a");
   const crashed = batchReviewer("model-b", { throwOnCall: 1, yieldBeforeThrow: true });
 
@@ -379,13 +389,13 @@ test("批内一个 Reviewer 跑完、另一个没跑完:续跑只调没跑完的
 
   // 第一批里只有 model-a 的那一份落了库:整批还没跑完,它的结果照样保住。
   assert.deepEqual(
-    query(
-      fixture.db.path,
+    (await query(
+      fixture.db.url,
       "SELECT batch_index, model FROM review_run_batch_outcome ORDER BY batch_index, model",
-    ).map((row) => [row["batch_index"], row["model"]]),
+    )).map((row) => [row["batch_index"], row["model"]]),
     [[0, "model-a"]],
   );
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
   const runId = Number(run?.["id"]);
 
   const resumedA = batchReviewer("model-a");
@@ -406,10 +416,10 @@ test("批内一个 Reviewer 跑完、另一个没跑完:续跑只调没跑完的
   );
 
   // 结论与不中断时一致:沿用原编号、六份用量一份不少、一轮只发一次 review。
-  const [after] = query(
-    fixture.db.path,
-    "SELECT id, failed, finished_at, total_tokens FROM review_run",
-  );
+  const [after] = (await query(
+    fixture.db.url,
+    "SELECT id, failed::int AS failed, finished_at, total_tokens FROM review_run",
+  ));
   assert.equal(Number(after?.["id"]), runId);
   assert.equal(after?.["failed"], 0);
   assert.notEqual(after?.["finished_at"], null);
@@ -420,10 +430,10 @@ test("批内一个 Reviewer 跑完、另一个没跑完:续跑只调没跑完的
     FILES,
   );
   assert.equal(fixture.forge.createdReviews.length, 1);
-  assert.equal(query(fixture.db.path, "SELECT run_id FROM review_run_batch_outcome").length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT run_id FROM review_run_batch_outcome")).length, 0);
 
   // 每个(模型,批)上恰好一条收尾事件:落库的那一批续跑时不再发第二条。
-  assert.deepEqual(batchFinished(fixture.db.path), [
+  assert.deepEqual((await batchFinished(fixture.db.url)), [
     ["model-a", 1],
     ["model-a", 2],
     ["model-a", 3],
@@ -434,18 +444,18 @@ test("批内一个 Reviewer 跑完、另一个没跑完:续跑只调没跑完的
 });
 
 test("批内某个 Reviewer 失败的结果同样当场落库,续跑不重跑它(issue #410)", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const failing = batchReviewer("model-a", { failOnCall: 1 });
   const crashed = batchReviewer("model-b", { throwOnCall: 1, yieldBeforeThrow: true });
 
   await assert.rejects(() => runReview(EVENT, deps(fixture, [failing, crashed])), /进程被重启了/);
   assert.deepEqual(
-    query(fixture.db.path, "SELECT batch_index, model FROM review_run_batch_outcome").map(
+    (await query(fixture.db.url, "SELECT batch_index, model FROM review_run_batch_outcome")).map(
       (row) => [row["batch_index"], row["model"]],
     ),
     [[0, "model-a"]],
   );
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
 
   const resumedA = batchReviewer("model-a");
   const resumedB = batchReviewer("model-b");
@@ -457,21 +467,21 @@ test("批内某个 Reviewer 失败的结果同样当场落库,续跑不重跑它
     [["src/b.ts"], ["src/c.ts"]],
   );
   // 收尾按那一批的失败记账:model-a 只报出后两批的两条,第一批的失败记在覆盖不全上。
-  const [outcome] = query(
-    fixture.db.path,
+  const [outcome] = (await query(
+    fixture.db.url,
     "SELECT finding_count, failure FROM reviewer_outcome WHERE model = 'model-a'",
-  );
+  ));
   assert.equal(outcome?.["finding_count"], 2);
   assert.equal(outcome?.["failure"], null);
 });
 
 test("部分落库的批次续跑时,轮次级批次事件标明是续跑并写出这次跑了谁(issue #416)", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const done = batchReviewer("model-a");
   const crashed = batchReviewer("model-b", { throwOnCall: 1, yieldBeforeThrow: true });
 
   await assert.rejects(() => runReview(EVENT, deps(fixture, [done, crashed])), /进程被重启了/);
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
   const runId = Number(run?.["id"]);
 
   await runReview(
@@ -479,11 +489,11 @@ test("部分落库的批次续跑时,轮次级批次事件标明是续跑并写�
     deps(fixture, [batchReviewer("model-a"), batchReviewer("model-b")], { resumeRunId: runId }),
   );
 
-  const events = query(
-    fixture.db.path,
+  const events = (await query(
+    fixture.db.url,
     `SELECT kind, payload FROM review_trace
      WHERE kind IN ('batch_started', 'batch_finished') ORDER BY seq`,
-  ).map((row) => {
+  )).map((row) => {
     const payload = JSON.parse(String(row["payload"])) as Record<string, unknown>;
     return [
       String(row["kind"]),
@@ -508,39 +518,23 @@ test("部分落库的批次续跑时,轮次级批次事件标明是续跑并写�
 });
 
 test("续跑轮次的单模型耗时不含两次进程之间的空档(issue #415)", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
   const runId = Number(run?.["id"]);
 
   // 把已落库的那两批改写成一小时前的两段。它们各跑 1000 毫秒、错开 500 毫秒,并集因此是
   // 1500 毫秒;中间那一小时是停机,没有任何一批盖着它。
   const crashedAt = Date.now() - 3_600_000;
-  const db = new DatabaseSync(fixture.db.path);
-  try {
-    const stored = db
-      .prepare("SELECT batch_index, outcome_json FROM review_run_batch_outcome")
-      .all() as unknown as Record<string, unknown>[];
-    const update = db.prepare(
-      "UPDATE review_run_batch_outcome SET outcome_json = ? WHERE run_id = ? AND batch_index = ?",
-    );
-    for (const row of stored) {
-      const index = Number(row["batch_index"]);
-      const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
-      update.run(
-        JSON.stringify({ ...timed, startedAt: crashedAt + index * 500, durationMs: 1_000 }),
-        runId,
-        index,
-      );
-    }
-  } finally {
-    db.close();
-  }
+  await rewriteBatchTimes(fixture.db.url, runId, (index) => ({
+    startedAt: crashedAt + index * 500,
+    durationMs: 1_000,
+  }));
 
   await runReview(EVENT, deps(fixture, [batchReviewer("model-a")], { resumeRunId: runId }));
 
-  const [outcome] = query(fixture.db.path, "SELECT duration_ms FROM reviewer_outcome");
+  const [outcome] = (await query(fixture.db.url, "SELECT duration_ms FROM reviewer_outcome"));
   const durationMs = Number(outcome?.["duration_ms"]);
   // 崩溃前跑掉的那 1500 毫秒保住(重叠的 500 毫秒只算一次),停机那一小时不计。
   assert.ok(durationMs >= 1_500, `耗时 ${durationMs} 毫秒,少于崩溃前已经跑掉的 1500 毫秒`);
@@ -548,46 +542,27 @@ test("续跑轮次的单模型耗时不含两次进程之间的空档(issue #415
 });
 
 test("续跑轮次的轮次级耗时含崩溃前各批的并集,不含停机(issue #422)", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const crashed = batchReviewer("model-a", { throwOnCall: 3 });
   await assert.rejects(() => runReview(EVENT, deps(fixture, [crashed])), /进程被重启了/);
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
   const runId = Number(run?.["id"]);
 
   // 已落库的那两批改写成隔着一小时的两段,各跑 1000 毫秒:并集因此是 2000 毫秒。两段分得
   // 这么开,就是连续续跑两次时「已落库批次来自前两个进程」的样子——同一条规则覆盖。
-  const db = new DatabaseSync(fixture.db.path);
-  try {
-    const stored = db
-      .prepare("SELECT batch_index, outcome_json FROM review_run_batch_outcome")
-      .all() as unknown as Record<string, unknown>[];
-    const update = db.prepare(
-      "UPDATE review_run_batch_outcome SET outcome_json = ? WHERE run_id = ? AND batch_index = ?",
-    );
-    for (const row of stored) {
-      const index = Number(row["batch_index"]);
-      const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
-      update.run(
-        JSON.stringify({
-          ...timed,
-          startedAt: Date.now() - (index === 0 ? 7_200_000 : 3_600_000),
-          durationMs: 1_000,
-        }),
-        runId,
-        index,
-      );
-    }
-  } finally {
-    db.close();
-  }
+  await rewriteBatchTimes(fixture.db.url, runId, (index) => ({
+    startedAt: Date.now() - (index === 0 ? 7_200_000 : 3_600_000),
+    durationMs: 1_000,
+  }));
 
   await runReview(EVENT, deps(fixture, [batchReviewer("model-a")], { resumeRunId: runId }));
 
-  const [row] = query(
-    fixture.db.path,
+  const [row] = (await query(
+    fixture.db.url,
     `SELECT r.duration_ms AS run, MAX(o.duration_ms) AS model
-       FROM review_run r JOIN reviewer_outcome o ON o.run_id = r.id WHERE r.id = ${runId}`,
-  );
+       FROM review_run r JOIN reviewer_outcome o ON o.run_id = r.id WHERE r.id = ${runId}
+      GROUP BY r.id, r.duration_ms`,
+  ));
   const runMs = Number(row?.["run"]);
   const modelMs = Number(row?.["model"]);
   assert.ok(runMs >= 2_000, `轮次耗时 ${runMs} 毫秒,少于崩溃前已经跑掉的 2000 毫秒`);

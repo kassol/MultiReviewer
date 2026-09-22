@@ -8,16 +8,16 @@ import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewerUsage } from "../src/review/finding.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   agentSessionStatus,
   disposeAgentSessions,
   killChild,
 } from "../src/webhook/agent-session.ts";
+import { withTestDb } from "./support/git-fixture.ts";
 import { HARNESS_SPEC } from "./support/panel-harness.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 import { type StubTurn } from "./support/model-stub.ts";
@@ -93,10 +93,10 @@ test("辅助模型变了:落一条系统消息、用新模型重建,上下文照
   });
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
     // 子进程还活着:这一刻把生效的辅助模型换成同一个服务上的另一个模型。
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     assert.equal(
       await putGlobalSettings(store, {
         auxiliaryModelJson: JSON.stringify({ provider: HARNESS_SPEC.provider, model: second }),
@@ -106,7 +106,7 @@ test("辅助模型变了:落一条系统消息、用新模型重建,上下文照
     await store.close();
 
     assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 4);
+    await messagesAtLeast(h.db.url, sessionId, 4);
     await idle(h, cookie, sessionId);
 
     // 换模型那条系统消息在记录里,两头的模型都写明。
@@ -138,20 +138,21 @@ test("记录缺了中间一条:重建按截断续得下去,会话上报得出前
   const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
     // 回收:登记表摘掉,下一条消息从记录重建。
     await disposeAgentSessions();
 
     // 人为删掉中间那一条(人说的那句),模拟记录缺损。
-    const db = new DatabaseSync(h.db.path);
     const landed = await records(h, cookie, sessionId);
     const userRow = landed.find((record) => record.entry.message?.role === "user")!;
-    db.prepare("DELETE FROM agent_session_entry WHERE session_id = ? AND seq = ?").run(
-      sessionId,
-      userRow.seq,
-    );
-    db.close();
+    await withTestDb(h.db.url, async (sql) => {
+      await sql(
+        "DELETE FROM agent_session_entry WHERE session_id = $1 AND seq = $2",
+        sessionId,
+        userRow.seq,
+      );
+    });
 
     // 剩下四条:末条顺 parentId 上行一步就指空,它之前的三条因此不在上下文里。
     assert.equal(await droppedFromContext(h, cookie, sessionId), 3);
@@ -295,7 +296,7 @@ test("更新基点回收活着的子进程:下一条消息重建,系统提示带
   const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
-    await messagesAtLeast(h.db.path, sessionId, 2);
+    await messagesAtLeast(h.db.url, sessionId, 2);
     await idle(h, cookie, sessionId);
     const before = await records(h, cookie, sessionId);
     const moved = h.repo.commitToBranch("main", { "src/answer.ts": "export const answer = 3;\n" });

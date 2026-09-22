@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { runReview } from "../src/review/run.ts";
-import { openStore, type StageScope, type StageSummary } from "../src/review/store.ts";
+import { openStore, type StageScope, type StageSummary } from "../src/review/store/index.ts";
 import { query } from "./support/batch-run.ts";
 import {
   asPublished,
@@ -23,13 +23,13 @@ import {
   setup,
   SILENT,
 } from "./support/cross-run.ts";
-import { makeDbPath, seedRun, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, seedRun, testCleanups } from "./support/git-fixture.ts";
 import { verdictReviewer } from "./support/memory-forge.ts";
 
 const SCOPE: StageScope = { owner: EVENT.owner, repo: EVENT.repo, pullNumber: EVENT.number };
 
-async function summaryOf(dbPath: string): Promise<StageSummary> {
-  const store = openStore(dbPath);
+async function summaryOf(databaseUrl: string): Promise<StageSummary> {
+  const store = openStore(databaseUrl);
   try {
     return await store.stageSummary(SCOPE);
   } finally {
@@ -38,8 +38,8 @@ async function summaryOf(dbPath: string): Promise<StageSummary> {
 }
 
 /** 落库的两列重定位结果,按行 id 升序。 */
-function placedRows(dbPath: string): { line: unknown; runId: unknown }[] {
-  return query(dbPath, "SELECT placed_line, placed_run_id FROM finding ORDER BY id").map((row) => ({
+async function placedRows(databaseUrl: string): Promise<{ line: unknown; runId: unknown }[]> {
+  return (await query(databaseUrl, "SELECT placed_line, placed_run_id FROM finding ORDER BY id")).map((row) => ({
     line: row["placed_line"],
     runId: row["placed_run_id"],
   }));
@@ -78,8 +78,8 @@ function findingRow(line: number, fingerprint: string, commentId: string) {
 }
 
 /** 两轮各落一行、同属一条 Identity 的阶段。返回两轮的 id。 */
-async function seedTwoRounds(dbPath: string): Promise<{ first: number; second: number }> {
-  const store = openStore(dbPath);
+async function seedTwoRounds(databaseUrl: string): Promise<{ first: number; second: number }> {
+  const store = openStore(databaseUrl);
   try {
     const first = await seedRun(
       store,
@@ -98,17 +98,17 @@ async function seedTwoRounds(dbPath: string): Promise<{ first: number; second: n
 }
 
 test("重定位候选只有每条 Identity 的最新一行,已处置的照样在里面", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   testCleanups().push(db.cleanup);
-  const { second } = await seedTwoRounds(db.path);
+  const { second } = await seedTwoRounds(db.url);
   // 已处置的既进不了复核也进不了延续,不在这里挪位置就永远停在报出它的那一轮上。
-  await disposeInPanel(db.path, "c-1", "resolved");
+  await disposeInPanel(db.url, "c-1", "resolved");
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const candidates = await store.relocationCandidates(SCOPE);
   await store.close();
 
-  const rows = query(db.path, "SELECT id, run_id FROM finding ORDER BY id");
+  const rows = (await query(db.url, "SELECT id, run_id FROM finding ORDER BY id"));
   assert.equal(rows.length, 2);
   assert.deepEqual(candidates, [
     {
@@ -122,42 +122,42 @@ test("重定位候选只有每条 Identity 的最新一行,已处置的照样在
 });
 
 test("重定位只写 placed_line / placed_run_id,报出位置、归属与评论载体一格不动", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   testCleanups().push(db.cleanup);
-  const { first, second } = await seedTwoRounds(db.path);
-  const before = query(
-    db.path,
+  const { first, second } = await seedTwoRounds(db.url);
+  const before = (await query(
+    db.url,
     "SELECT id, run_id, line, comment_id FROM finding ORDER BY id",
-  );
-  const attributionsBefore = query(
-    db.path,
+  ));
+  const attributionsBefore = (await query(
+    db.url,
     "SELECT finding_id, model, description FROM finding_attribution ORDER BY finding_id",
-  );
+  ));
   const latestId = Number(before[1]!["id"]);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   await store.recordFindingRelocations(second, [{ findingId: latestId, line: 16 }]);
   await store.close();
 
   // 报出位置、所属轮次与评论载体逐字不动:归属、首次报出与指纹窗口都按那一份算。
   assert.deepEqual(
-    query(db.path, "SELECT id, run_id, line, comment_id FROM finding ORDER BY id"),
+    (await query(db.url, "SELECT id, run_id, line, comment_id FROM finding ORDER BY id")),
     before,
   );
   assert.deepEqual(
-    query(
-      db.path,
+    (await query(
+      db.url,
       "SELECT finding_id, model, description FROM finding_attribution ORDER BY finding_id",
-    ),
+    )),
     attributionsBefore,
   );
   // 两列只落在最新那一行上,旧行不动。
-  assert.deepEqual(placedRows(db.path), [
+  assert.deepEqual((await placedRows(db.url)), [
     { line: null, runId: null },
     { line: 16, runId: second },
   ]);
 
-  const summary = await summaryOf(db.path);
+  const summary = await summaryOf(db.url);
   assert.equal(summary.findings.length, 1);
   const [finding] = summary.findings;
   assert.equal(finding!.line, 16);
@@ -179,14 +179,14 @@ const PADDED = `${Array.from({ length: 10 }, (_, i) => `export const pad${i} = $
 const SHIFTED_LINE = 16;
 
 test("只复核那一轮:代码只是下移时位置跟到本轮,不落新行、不改处置", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": PADDED });
   await runReview(EVENT, { ...deps, reviewers: SILENT, mode: "verdict-only" });
 
-  const summary = await summaryOf(db.path);
+  const summary = await summaryOf(db.url);
   const [first, second] = summary.timeline;
   assert.notEqual(second, undefined, "第二轮没有开出来");
   assert.equal(summary.findings.length, 1);
@@ -201,10 +201,11 @@ test("只复核那一轮:代码只是下移时位置跟到本轮,不落新行、
   assert.equal(finding!.disposition, "unresolved");
 
   // 重定位不建行:这一轮一条 Finding 都没报出。
-  assert.equal(query(db.path, "SELECT id FROM finding").length, 1);
+  assert.equal((await query(db.url, "SELECT id FROM finding")).length, 1);
   // 本轮各 Reviewer 一条结论都没给,按漏复核落库(ADR 0016),处置因此一格未动。
   assert.deepEqual(
-    query(db.path, "SELECT verdict, missing FROM finding_verdict").map((row) => ({
+    // 布尔列取成 0/1 再断言:断言说的是「这条是不是漏给的」,与列的存储类型无关。
+    (await query(db.url, "SELECT verdict, missing::int AS missing FROM finding_verdict")).map((row) => ({
       verdict: row["verdict"],
       missing: row["missing"],
     })),
@@ -214,17 +215,17 @@ test("只复核那一轮:代码只是下移时位置跟到本轮,不落新行、
 });
 
 test("已处置的那条同样跟着本轮走", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, true));
-  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved");
+  await disposeInPanel(db.url, forge.publishedComments[0]!.id, "resolved");
   // 已处置之后这个阶段没有未处置历史,只复核那一轮开不起来(CONTEXT.md 只复核),
   // 这一档因此跑完整审查:两种模式都做重定位。
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": PADDED });
   await runReview(EVENT, { ...deps, reviewers: SILENT });
 
-  const summary = await summaryOf(db.path);
+  const summary = await summaryOf(db.url);
   const [finding] = summary.findings;
   assert.equal(finding!.line, SHIFTED_LINE);
   assert.equal(finding!.reportedLine, 6);
@@ -232,11 +233,11 @@ test("已处置的那条同样跟着本轮走", async () => {
   // 报出的仍是第一轮:第二轮只做了重定位与自动处置,没有新报。
   assert.equal(finding!.lastRunId, summary.timeline[0]!.runId);
   assert.equal(finding!.disposition, "resolved");
-  assert.equal(query(db.path, "SELECT id FROM finding").length, 1);
+  assert.equal((await query(db.url, "SELECT id FROM finding")).length, 1);
 });
 
 test("那处代码被改写、复核又判无法判断时,位置与所属轮次都不动", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -247,11 +248,11 @@ test("那处代码被改写、复核又判无法判断时,位置与所属轮次�
     mode: "verdict-only",
   });
 
-  const summary = await summaryOf(db.path);
+  const summary = await summaryOf(db.url);
   const [finding] = summary.findings;
   assert.equal(finding!.line, 6);
   assert.equal(finding!.placedRunId, summary.timeline[0]!.runId);
   // 没重定位过,位置所属轮次退回报出那一轮,两格同值。
   assert.equal(finding!.lastRunId, summary.timeline[0]!.runId);
-  assert.deepEqual(placedRows(db.path), [{ line: null, runId: null }]);
+  assert.deepEqual((await placedRows(db.url)), [{ line: null, runId: null }]);
 });

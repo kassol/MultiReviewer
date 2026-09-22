@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { PanelPermission } from "../src/panel/permissions.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { PANEL_ROUTES } from "../src/webhook/server.ts";
 import {
   GITEA_REPO,
@@ -194,7 +194,7 @@ async function addPermissionUser(
   username: string,
   permissions: readonly PanelPermission[],
 ): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const role = await store.createPanelRole({
     name: `role-${username}`,
     permissions,
@@ -218,7 +218,7 @@ async function userCookie(serverUrl: string, username: string): Promise<string> 
 
 test("角色权限每请求现读:改角色后不用重登立即生效", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const none = await store.createPanelRole({ name: "无权限", permissions: [], createdAt: new Date().toISOString() });
   const reader = await store.createPanelRole({ name: "模型读", permissions: ["model:read"], createdAt: new Date().toISOString() });
   await store.createPanelUser({
@@ -236,7 +236,7 @@ test("角色权限每请求现读:改角色后不用重登立即生效", async (
   const request = (): Promise<Response> =>
     fetch(`${h.serverUrl}/api/settings`, { headers: { cookie } });
   assert.equal((await request()).status, 403);
-  const update = openStore(h.db.path);
+  const update = openStore(h.db.url);
   assert.equal(
     await update.updatePanelUser("reader", { displayName: null, roleId: reader.id, isSystemAdmin: false }),
     "updated",
@@ -323,7 +323,7 @@ test("新增的 knowledge:write 不落到已有角色上,持有它的人也只�
 
 test("普通用户不能调用系统管理员端点", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.createPanelUser({
     username: "ordinary",
     displayName: null,
@@ -367,7 +367,7 @@ test("无人引用的角色连权限关系一起删除", async () => {
 
 test("无角色的普通用户登录即可读仓库、评审记录与处置率", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.createPanelUser({
     username: "plain",
     displayName: null,
@@ -510,7 +510,7 @@ test("人动产品 tracker 要 agent:chat 加这个产品里的仓库分配,缺�
   const created = await h.api("POST", "/products", { name: "报销系统" });
   assert.equal(created.status, 201);
   const productId = ((await created.json()) as { product: { id: number } }).product.id;
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const specId = (await store.createProductSpec({
     productId,
     title: "报销单可以撤回",

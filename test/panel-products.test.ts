@@ -1,15 +1,14 @@
 /**
  * 产品实体与它的面板接口(issue #331)。
  *
- * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,产品与归属行落临时 SQLite。
- * 压的是票的四条验收:门禁、一仓多属被拒与仓库移除后自动摘出、按仓库分配的可见性,
- * 以及删产品回应的级联条数形状。
+ * 三条缝照旧:面板 API 走真实 HTTP,仓库注册打到假 Gitea,产品与归属行落这个测试文件自己
+ * 那个临时 PostgreSQL 库。压的是票的四条验收:门禁、一仓多属被拒与仓库移除后自动摘出、
+ * 按仓库分配的可见性,以及删产品回应的级联条数形状。
  *
  * 仓库职责(CONTEXT.md 仓库职责,issue #341)压在同一个归属端点上:带职责归入、重新归属
- * 改职责、空白存成没有、超过上限回 400,另一条压升级前的旧库补列。
+ * 改职责、空白存成没有、超过上限回 400。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import {
@@ -252,26 +251,4 @@ test("仓库职责:归属时带得上,同一个端点改得动,空白存成没�
   // 不是字符串同样 400,不悄悄当成没有。
   assert.equal((await attach({ role: 7 })).status, 400);
   assert.equal(await role(), "后端 API");
-});
-
-test("升级前的旧库:开库补上仓库职责那一列,旧的归属行读得回来", async () => {
-  const h = await startReadyPanelHarness({ registerRepo: true });
-  const expense = await createProduct(h, "报销系统");
-  const attach = (body?: unknown): Promise<Response> =>
-    h.api("PUT", `/products/${expense.id}/repos/${GITEA_REPO.id}`, body);
-  assert.equal((await attach({ role: "后端 API" })).status, 204);
-
-  // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——SQLite 丢一张表的最后
-  // 一列时要重写建表语句,而 `product_repo` 的建表语句里有中文注释(与 `range_review` 那
-  // 一处同一个理由)。改名之后 `pragma_table_info` 同样查不到这个名字。
-  const db = new DatabaseSync(h.db.path);
-  db.exec("ALTER TABLE product_repo RENAME COLUMN role TO before_upgrade_role");
-  db.close();
-
-  // 下一次开库补列:归属行一条不少,职责是「没有」。
-  assert.deepEqual((await product(h, expense.id)).repos, [
-    { repoId: GITEA_REPO.id, owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, role: null },
-  ]);
-  assert.equal((await attach({ role: "后端 API" })).status, 204);
-  assert.equal((await product(h, expense.id)).repos[0]!.role, "后端 API");
 });

@@ -39,7 +39,7 @@ async function push(cacheDir: string, cloneUrl: string, sha: string): Promise<vo
 }
 
 test("推分支:远端上的分支指向目标 commit", async () => {
-  const { repo, remote, cache } = setup();
+  const { repo, remote, cache } = (await setup());
 
   await push(cache.dir, remote.dir, repo.headSha);
 
@@ -47,7 +47,7 @@ test("推分支:远端上的分支指向目标 commit", async () => {
 });
 
 test("推分支允许非快进:比较项 rebase 到不是后代的 commit 上照样推得动", async () => {
-  const { repo, remote, cache } = setup();
+  const { repo, remote, cache } = (await setup());
 
   await push(cache.dir, remote.dir, repo.headSha);
   // 退回 base:新的比较项不是上一个比较项的后代,快进推不动它。
@@ -57,7 +57,7 @@ test("推分支允许非快进:比较项 rebase 到不是后代的 commit 上照
 });
 
 test("内存 Forge 记下建分支、删分支、建 PR 与关 PR 四类调用", async () => {
-  const { repo } = setup();
+  const { repo } = (await setup());
   const forge = memoryForge({
     pullRequest: {
       number: 7,

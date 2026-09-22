@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE,
   SYSTEM_MESSAGE_ENTRY,
@@ -142,7 +142,7 @@ test("需求拆分:一轮提问、从答案写术语、写 spec 与两张票并�
     );
     await idle(h, cookie, sessionId);
 
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     try {
       // 答案落成一条术语,写下即生效。
       assert.deepEqual(
@@ -201,11 +201,11 @@ async function productKnowledge(h: PanelHarness, productId: number): Promise<Kno
 
 /** 落一条产品知识,不经子进程。压提示与改写的那几例用它播种。 */
 async function seedKnowledge(
-  dbPath: string,
+  databaseUrl: string,
   productId: number,
   record: { kind: "term" | "relationship" | "decision"; name?: string; body: string },
 ): Promise<number> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     return (await store.writeProductKnowledge({
       productId,
@@ -309,11 +309,11 @@ test("产品梳理:提示带整份产品知识与替代说明,子代理、一轮
   try {
     // 先落一条仓库关系与一条术语:梳理的提示带的是整条正文,不是目录里的一个名字。
     assert.equal(
-      await seedKnowledge(h.db.path, productId, { kind: "relationship", body: ACTIVE_STATEMENT }),
+      await seedKnowledge(h.db.url, productId, { kind: "relationship", body: ACTIVE_STATEMENT }),
       1,
     );
     assert.equal(
-      await seedKnowledge(h.db.path, productId, {
+      await seedKnowledge(h.db.url, productId, {
         kind: "term",
         name: "结算",
         body: "把一张已审批的单据划给财务付款的那一步",
@@ -606,7 +606,7 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
   const { h, cookie, sessionId, productId, close } = await startSessionHarness(turns);
   try {
     // 别的产品的 spec 与票:跨产品的边要打回的正是指向它的那一条。
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     let foreignProductId: number;
     try {
       foreignProductId = (await store.createProduct({ name: "结算系统", createdAt: AT })).id;
@@ -635,7 +635,7 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     await idle(h, cookie, sessionId);
 
-    const after = openStore(h.db.path);
+    const after = openStore(h.db.url);
     try {
       // spec 与票都落在这个产品下,标题两头的空白去掉了。
       const specs = await after.listProductSpecs(productId);
@@ -788,7 +788,7 @@ test("开放对话:grill 得到提问轮次,收成 spec 写进 tracker,写文件
 
     assert.equal((await send(h, cookie, sessionId, "c2", "收成 spec")).status, 202);
     await idle(h, cookie, sessionId);
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     try {
       assert.deepEqual(
         (await store.listProductSpecs(productId)).map((spec) => [spec.id, spec.title, spec.sessionId]),
@@ -1008,7 +1008,7 @@ test("提问轮次:一轮题落成新种类条目、回合就地收尾转空闲,
       0,
     );
     // 条目接在这次工具调用后面:主进程直接落库会让它成旁支,重建时被算成「不在上下文」。
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     try {
       assert.equal(agentSessionContextGap(await store.agentSessionEntryLinks(sessionId)), 0);
     } finally {
@@ -1073,7 +1073,7 @@ test("不合规的一轮走正常返回打回:不落条目,回合照旧跑下去
   try {
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     // 一个回合 = 用户消息 + 3 ×(助手消息 + 工具结果)+ 收尾的助手消息。
-    await messagesAtLeast(h.db.path, sessionId, 8);
+    await messagesAtLeast(h.db.url, sessionId, 8);
     await idle(h, cookie, sessionId);
 
     const rows = await records(h, cookie, sessionId);

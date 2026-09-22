@@ -18,11 +18,11 @@ import { test } from "node:test";
 
 import type { ReviewerEvent, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { EVIDENCE_AGENT, SUBAGENT_TOOL } from "../src/reviewer/evidence.ts";
 import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
 import { createPiReviewer } from "../src/reviewer/pi-reviewer.ts";
-import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
 import { startModelStub, type StubTurn, type StubUsage } from "./support/model-stub.ts";
 
@@ -234,7 +234,7 @@ test("经 runReview 落库后,用量进所属 Reviewer 那一行与本轮总量"
     head: { "src.ts": "export const a = 2;\n" },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
   const forge = memoryForge({
     pullRequest: {
@@ -253,7 +253,7 @@ test("经 runReview 落库后,用量进所属 Reviewer 那一行与本轮总量"
     const reviewer = createPiReviewer({ runtimeModel: runtimeModel(stub.baseUrl), apiKey: "stub-key" });
     const result = await runReview(
       { owner: "acme", repo: "widgets", number: 7 },
-      { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+      { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
     );
     assert.equal(result.failed, false);
     assert.equal(result.outcomes[0]!.failure, undefined, `Reviewer 失败: ${result.outcomes[0]!.failure}`);
@@ -264,7 +264,7 @@ test("经 runReview 落库后,用量进所属 Reviewer 那一行与本轮总量"
 
   // 面板轮次详情读的就是这份投影(`GET /api/runs/{id}`):Reviewer 那一行与本轮总量
   // 都是 84,只有一个 Reviewer、没有合并 agent 时两者相等。
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [run] = await store.listRuns({ limit: 1 });
     assert.ok(run);

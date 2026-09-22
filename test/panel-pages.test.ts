@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { createWebhookServer } from "../src/webhook/server.ts";
-import { makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 
 const INDEX_HTML = `<!doctype html>
 <html><head><title>MultiReviewer</title></head><body><div id="root"></div></body></html>
@@ -24,7 +24,7 @@ const cleanups = testCleanups();
 
 async function startPages(options: { withDist?: boolean } = {}) {
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(cache.cleanup, db.cleanup);
 
   const dist = mkdtempSync(join(tmpdir(), "multireviewer-dist-"));
@@ -41,7 +41,8 @@ async function startPages(options: { withDist?: boolean } = {}) {
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
+    dataDir: db.dataDir,
     bootstrapSecret: "pages-bootstrap",
     baseUrl: "https://reviewer.example.test",
     panelDist: options.withDist === false ? join(dist, "missing") : dist,

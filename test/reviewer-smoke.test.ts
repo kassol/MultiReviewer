@@ -75,7 +75,7 @@ test("真实 provider 完成一次模型发现与一次最小推理", { skip }, 
   assert.equal(inference.ok, true, inference.ok ? undefined : inference.failure.message);
 });
 
-async function smokeReviewer(): Promise<ReturnType<typeof createPiReviewer>> {
+async function smokeReviewer(): Promise<Awaited<ReturnType<typeof createPiReviewer>>> {
   const target = await smokeTarget();
   assert.ok(target, `Pi 内置 provider 不存在或没有运行目标: ${provider}`);
   return createPiReviewer({

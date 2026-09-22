@@ -5,7 +5,7 @@
  * 发布明确失败不 resolve、不记延续,轮次记失败原因;发布成功而 resolve 失败仍记延续、
  * 带「交接未完成」并由下一轮重试;发布结果不确定按发布失败处理,禁止自动重发。
  *
- * 打在 `runReview` 入口上:内存 Forge 注入失败,真实 git 与 SQLite 落在临时目录,
+ * 打在 `runReview` 入口上:内存 Forge 注入失败,真实 git 落在临时目录、库是一次性的 PostgreSQL 库,
  * 观察评论写入、持久化状态与重启选择结果。
  */
 import assert from "node:assert/strict";
@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { PublishUncertainError } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { openStore } from "../src/review/store.ts";
+import { openStore } from "../src/review/store/index.ts";
 import type { TraceEvent } from "../src/review/trace.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { query, setup as setupRepo } from "./support/batch-run.ts";
@@ -49,17 +49,17 @@ const FINDING = {
 
 const cleanups = testCleanups();
 
-function setup() {
-  const { repo, cache, db, forge } = setupRepo(cleanups, {
+async function setup() {
+  const { repo, cache, db, forge } = (await setupRepo(cleanups, {
     tree: { base: { "src/calc.js": BASE }, head: { "src/calc.js": HEAD } },
     changedFiles: [{ path: "src/calc.js", status: "modified" }],
-  });
+  }));
 
   const deps = {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   return { repo, db, forge, deps };
@@ -73,23 +73,24 @@ function continuing(): Reviewer[] {
 }
 
 
-function findingRows(dbPath: string): {
+async function findingRows(databaseUrl: string): Promise<{
   disposition: string;
   continuedFrom: unknown;
   handoffPending: unknown;
-}[] {
-  return query(
-    dbPath,
-    "SELECT disposition, continued_from, handoff_pending FROM finding ORDER BY id",
-  ).map((row) => ({
+}[]> {
+  return (await query(
+    databaseUrl,
+    // 布尔列取成 0/1 再断言:断言说的是「标记在不在」,与列的存储类型无关。
+    "SELECT disposition, continued_from, handoff_pending::int AS handoff_pending FROM finding ORDER BY id",
+  )).map((row) => ({
     disposition: String(row["disposition"]),
     continuedFrom: row["continued_from"],
     handoffPending: row["handoff_pending"],
   }));
 }
 
-function runRows(dbPath: string): { failed: number; failure: unknown; finishedAt: unknown }[] {
-  return query(dbPath, "SELECT failed, failure, finished_at FROM review_run ORDER BY id").map(
+async function runRows(databaseUrl: string): Promise<{ failed: number; failure: unknown; finishedAt: unknown }[]> {
+  return (await query(databaseUrl, "SELECT failed, failure, finished_at FROM review_run ORDER BY id")).map(
     (row) => ({
       failed: Number(row["failed"]),
       failure: row["failure"],
@@ -98,8 +99,8 @@ function runRows(dbPath: string): { failed: number; failure: unknown; finishedAt
   );
 }
 
-async function traceKinds(dbPath: string, runId: number): Promise<TraceEvent[]> {
-  const store = openStore(dbPath);
+async function traceKinds(databaseUrl: string, runId: number): Promise<TraceEvent[]> {
+  const store = openStore(databaseUrl);
   try {
     return (await store.listTrace(runId)).filter((event) => event.scope === "run");
   } finally {
@@ -107,8 +108,8 @@ async function traceKinds(dbPath: string, runId: number): Promise<TraceEvent[]> 
   }
 }
 
-async function interruptedRunIds(dbPath: string): Promise<number[]> {
-  const store = openStore(dbPath);
+async function interruptedRunIds(databaseUrl: string): Promise<number[]> {
+  const store = openStore(databaseUrl);
   try {
     return (await store.interruptedRuns()).map((run) => run.runId);
   } finally {
@@ -120,8 +121,8 @@ async function interruptedRunIds(dbPath: string): Promise<number[]> {
  * 第一轮报出一条并把它当成 Forge 上未处置的既有评论,第二轮把那处代码改写掉(指纹
  * 必变),模型判仍在并在同一个文件报出新位置的那一条——延续在第二轮触发。
  */
-async function firstRound(): Promise<ReturnType<typeof setup>> {
-  const fixture = setup();
+async function firstRound(): Promise<Awaited<ReturnType<typeof setup>>> {
+  const fixture = (await setup());
   await runReview(EVENT, fixture.deps);
   fixture.forge.existingComments.push(
     ...fixture.forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
@@ -133,26 +134,26 @@ async function firstRound(): Promise<ReturnType<typeof setup>> {
 }
 
 /** 发布失败的三档共用的断言:不 resolve、不记延续,轮次记原因而不算 Reviewer 失败。 */
-async function assertPublishFailed(fixture: ReturnType<typeof setup>, reason: RegExp): Promise<void> {
+async function assertPublishFailed(fixture: Awaited<ReturnType<typeof setup>>, reason: RegExp): Promise<void> {
   const { db, forge } = fixture;
   assert.deepEqual(forge.resolvedIds, [], "发布没成却把旧评论 resolve 了");
   // 旧行留在未处置,本轮那条照常落库,谁都没记延续。
-  assert.deepEqual(findingRows(db.path), [
+  assert.deepEqual((await findingRows(db.url)), [
     { disposition: "unresolved", continuedFrom: null, handoffPending: null },
     { disposition: "unknown", continuedFrom: null, handoffPending: null },
   ]);
-  const [, second] = runRows(db.path);
+  const [, second] = (await runRows(db.url));
   assert.ok(second !== undefined);
   assert.equal(second.failed, 0, "发布失败不是 Reviewer 失败,failed 不该置位");
   assert.notEqual(second.finishedAt, null, "本轮的结果已落库,结束时间该有");
   assert.match(String(second.failure), reason);
   assert.match(String(second.failure), /发布 review 失败/);
   // 轨迹里只有失败,没有「已发布」与正常收尾;PR 上也不点 👍。
-  const kinds = (await traceKinds(db.path, 2)).map((event) => event.kind);
+  const kinds = (await traceKinds(db.url, 2)).map((event) => event.kind);
   assert.ok(kinds.includes("run_failed"), `轨迹缺 run_failed:${kinds.join(",")}`);
   assert.ok(!kinds.includes("review_posted"), "发布失败却记了 review_posted");
   assert.ok(!kinds.includes("run_finished"), "发布失败却记了正常收尾");
-  const failedEvent = (await traceKinds(db.path, 2)).find((event) => event.kind === "run_failed");
+  const failedEvent = (await traceKinds(db.url, 2)).find((event) => event.kind === "run_failed");
   assert.equal(
     (failedEvent?.payload as { reason?: string }).reason,
     String(second.failure),
@@ -161,7 +162,7 @@ async function assertPublishFailed(fixture: ReturnType<typeof setup>, reason: Re
   assert.ok(!forge.reactionLog.includes("add:+1"), "发布失败却点了 👍");
   assert.ok(forge.reactionLog.includes("remove:eyes"), "👀 该撤掉");
   // 轮次已有结束时间,启动续跑不会再选中它:这一轮不自动重发。
-  assert.deepEqual(await interruptedRunIds(db.path), []);
+  assert.deepEqual(await interruptedRunIds(db.url), []);
 }
 
 test("发布明确失败:不 resolve 旧评论、不记延续,轮次记发布失败原因", async () => {
@@ -221,17 +222,17 @@ test("发布成功而 resolve 旧评论失败:仍记延续并标「交接未完�
   assert.equal(second.comments.length, 1);
   assert.match(second.comments[0]!.body, /延续自/);
   assert.ok(second.comments[0]!.body.includes(old.htmlUrl));
-  assert.deepEqual(findingRows(db.path), [
+  assert.deepEqual((await findingRows(db.url)), [
     { disposition: "continued", continuedFrom: null, handoffPending: 1 },
     { disposition: "unknown", continuedFrom: old.htmlUrl, handoffPending: null },
   ]);
   // 本轮是正常收尾:发布成了,resolve 没成只是交接的收尾动作没做完。
-  const [, run] = runRows(db.path);
+  const [, run] = (await runRows(db.url));
   assert.equal(run!.failure, null);
-  const kinds = (await traceKinds(db.path, 2)).map((event) => event.kind);
+  const kinds = (await traceKinds(db.url, 2)).map((event) => event.kind);
   assert.ok(kinds.includes("review_posted"));
   assert.ok(kinds.includes("run_finished"));
-  const continued = (await traceKinds(db.path, 2)).find((event) => event.kind === "finding_continued");
+  const continued = (await traceKinds(db.url, 2)).find((event) => event.kind === "finding_continued");
   assert.equal(
     (continued?.payload as { handoff?: string }).handoff,
     "pending",
@@ -240,7 +241,7 @@ test("发布成功而 resolve 旧评论失败:仍记延续并标「交接未完�
 
   // 面板:旧行不在阶段汇总里,承接它的那条标「交接未完成」;轮次投影上旧行自己带着
   // 标记,新行没有。
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
   const [firstRun, secondRun] = (await store.listRuns({ limit: 2 })).sort((a, b) => a.id - b.id);
   await store.close();
@@ -270,10 +271,10 @@ test("交接未完成的旧评论由下一轮 Review Run 收尾时重试 resolve
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "present")] });
 
   assert.deepEqual(forge.resolvedIds, [old.id], "下一轮该把待关闭的旧评论 resolve 掉");
-  const rows = findingRows(db.path);
+  const rows = (await findingRows(db.url));
   assert.equal(rows[0]!.disposition, "continued");
   assert.equal(rows[0]!.handoffPending, null, "交接完成后标记该清掉");
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
   await store.close();
   assert.equal(summary.findings[0]!.handoffPending, false);
@@ -296,7 +297,7 @@ test("回填读到交接未完成的旧评论已被 resolve:标记清掉,不再�
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "present")] });
 
   assert.deepEqual(forge.resolvedIds, [], "回填已经确认关闭,不该再去 resolve");
-  const rows = findingRows(db.path);
+  const rows = (await findingRows(db.url));
   assert.equal(rows[0]!.disposition, "continued", "「已延续」的处置值不被回填覆盖");
   assert.equal(rows[0]!.handoffPending, null);
 });
@@ -314,11 +315,11 @@ test("新评论标识没读回的那一条不算确认:不 resolve 旧评论、�
   await runReview(EVENT, { ...deps, reviewers: continuing() });
 
   assert.deepEqual(forge.resolvedIds, []);
-  assert.deepEqual(findingRows(db.path), [
+  assert.deepEqual((await findingRows(db.url)), [
     { disposition: "unresolved", continuedFrom: null, handoffPending: null },
     { disposition: "unknown", continuedFrom: null, handoffPending: null },
   ]);
-  const [, run] = runRows(db.path);
+  const [, run] = (await runRows(db.url));
   assert.equal(run!.failure, null);
 });
 
@@ -341,10 +342,10 @@ test("正常发布:新评论确认后才 resolve 旧评论,延续不带待办标
   await runReview(EVENT, { ...deps, reviewers: continuing() });
 
   assert.deepEqual(order, ["publish", `resolve:${old.id}`]);
-  assert.deepEqual(findingRows(db.path), [
+  assert.deepEqual((await findingRows(db.url)), [
     { disposition: "continued", continuedFrom: null, handoffPending: null },
     { disposition: "unknown", continuedFrom: old.htmlUrl, handoffPending: null },
   ]);
-  const continued = (await traceKinds(db.path, 2)).find((event) => event.kind === "finding_continued");
+  const continued = (await traceKinds(db.url, 2)).find((event) => event.kind === "finding_continued");
   assert.equal((continued?.payload as { handoff?: string }).handoff, "complete");
 });
