@@ -264,7 +264,7 @@ test("升级前的旧库:开库补上仓库职责那一列,旧的归属行读得
   // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——SQLite 丢一张表的最后
   // 一列时要重写建表语句,而 `product_repo` 的建表语句里有中文注释(与 `range_review` 那
   // 一处同一个理由)。改名之后 `pragma_table_info` 同样查不到这个名字。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   db.exec("ALTER TABLE product_repo RENAME COLUMN role TO before_upgrade_role");
   db.close();
 

@@ -15,8 +15,7 @@ import {
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
 
-const startHarness = (): ReturnType<typeof startReadyPanelHarness> =>
-  startReadyPanelHarness();
+const startHarness = (): ReturnType<typeof startReadyPanelHarness> => startReadyPanelHarness();
 
 type SearchResult = {
   repoId: number;
@@ -34,7 +33,7 @@ type SearchBody = {
 };
 
 const search = async (
-  h: Awaited<ReturnType<typeof startPanelHarness>>,
+  h: Awaited<Awaited<ReturnType<typeof startPanelHarness>>>,
   q: string,
 ): Promise<SearchBody> => {
   const response = await h.api("GET", `/repos/search?q=${encodeURIComponent(q)}`);

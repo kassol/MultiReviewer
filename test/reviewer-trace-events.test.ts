@@ -21,7 +21,7 @@ function collector(
   nested: (toolName: string, result: unknown) => readonly ReviewerEvent[] = () => [],
 ): {
   events: ReviewerEvent[];
-  observe: ReturnType<typeof reviewerEventStream>;
+  observe: Awaited<ReturnType<typeof reviewerEventStream>>;
   tick(ms: number): void;
 } {
   const events: ReviewerEvent[] = [];

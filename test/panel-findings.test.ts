@@ -50,8 +50,8 @@ const reportingReviewers: NonNullable<
  * 一条升级前留下的历史行:只进过 review 正文,没有评论 id,因此没有可处置的载体。
  * 锚定收敛之后这样的行不再新增,库里存量还在,处置端点仍要挡住它。
  */
-async function seedBodyFinding(dbPath: string): Promise<number> {
-  const store = openStore(dbPath);
+async function seedBodyFinding(databaseUrl: string): Promise<number> {
+  const store = openStore(databaseUrl);
   try {
     const runId = await store.startRun({
       owner: HARNESS_PR.owner,
@@ -111,7 +111,7 @@ async function harnessWithRun(): Promise<PanelHarness> {
     201,
   );
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -201,7 +201,7 @@ test("面板 unresolve:Forge 收到 unresolve,处置回未处置,备注保留", 
 
 test("没有行级评论承载的历史 Finding:处置被拒,Forge 一个调用都不发", async () => {
   const h = await harnessWithRun();
-  await seedBodyFinding(h.db.path);
+  await seedBodyFinding(h.db.url);
   const fallback = (await runs(h))
     .flatMap((run) => run.findings)
     .find((finding) => finding.commentId === null)!;
@@ -219,7 +219,7 @@ test("没有 finding:dispose 的用户处置被拒,新权限格不落到已有�
   const h = await harnessWithRun();
   const target = (await runs(h))[0]!.findings.find((finding) => finding.commentId !== null)!;
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   // 升级前就存在的角色:它拿到的是当时的全部评审权限,不含新增的 finding:dispose。
   const legacy = await store.createPanelRole({
     name: "老的评审角色",

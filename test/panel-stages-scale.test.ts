@@ -49,7 +49,7 @@ type StageDetail = {
   groups: { sha: string; runs: { runId: number; headSha: string }[] }[];
 };
 
-type Store = ReturnType<typeof openStore>;
+type Store = Awaited<ReturnType<typeof openStore>>;
 
 /** 播种用的时刻:一分钟一格,序号越大越新。 */
 function at(minute: number): string {
@@ -137,8 +137,8 @@ async function seedFinishedRun(
  * 垫底的那几千个阶段:一个 pull request 一轮,还没跑完。它们只负责让库变大,内容断言
  * 落在后面那批完整的阶段上。
  */
-async function seedFillerStages(dbPath: string, progress: Progress, count: number): Promise<void> {
-  const store = openStore(dbPath);
+async function seedFillerStages(databaseUrl: string, progress: Progress, count: number): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     for (let index = 0; index < count; index += 1) {
       const pullNumber = 100_000 + index;
@@ -165,8 +165,8 @@ async function seedFillerStages(dbPath: string, progress: Progress, count: numbe
  * 最新的那一批阶段,两种来源交错——归并、筛选与排序是同一条查询做的,交错才看得出两
  * 条链路真的合到了一起。每个阶段两轮同一个 head,第二轮带一条待处置的 Finding。
  */
-async function seedRichStages(dbPath: string, progress: Progress): Promise<void> {
-  const store = openStore(dbPath);
+async function seedRichStages(databaseUrl: string, progress: Progress): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     for (let index = 0; index < RICH_STAGES; index += 1) {
       // 每五个里的第五个是范围审查。
@@ -224,8 +224,8 @@ async function seedRichStages(dbPath: string, progress: Progress): Promise<void>
 }
 
 /** 另一个仓库的几个阶段,最先播因此时刻最旧,只在仓库过滤那一档露面。 */
-async function seedOtherRepoStages(dbPath: string, progress: Progress): Promise<void> {
-  const store = openStore(dbPath);
+async function seedOtherRepoStages(databaseUrl: string, progress: Progress): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     for (let index = 0; index < OTHER_STAGES; index += 1) {
       const pullNumber = index + 1;
@@ -272,10 +272,10 @@ async function fastest(request: () => Promise<unknown>): Promise<number> {
 test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶段总数走", async () => {
   const large = await startPanelHarness();
   const largeProgress: Progress = { minute: 0, stageIds: [] };
-  await seedOtherRepoStages(large.db.path, largeProgress);
+  await seedOtherRepoStages(large.db.url, largeProgress);
   const oldestFillerStageId = `pr:${OWNER}/${REPO}/100000`;
-  await seedFillerStages(large.db.path, largeProgress, FILLER_STAGES);
-  await seedRichStages(large.db.path, largeProgress);
+  await seedFillerStages(large.db.url, largeProgress, FILLER_STAGES);
+  await seedRichStages(large.db.url, largeProgress);
   const richStageIds = largeProgress.stageIds.slice(-RICH_STAGES);
   const newestStageId = richStageIds[RICH_STAGES - 1]!;
   const oldestRichStageId = richStageIds[0]!;
@@ -345,7 +345,7 @@ test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶
   // 小库:只有那三十个完整的阶段,请求的活儿与大库第一页一模一样。
   const small = await startPanelHarness();
   const smallProgress: Progress = { minute: 0, stageIds: [] };
-  await seedRichStages(small.db.path, smallProgress);
+  await seedRichStages(small.db.url, smallProgress);
   const smallFirst = await page(small, "");
   assert.deepEqual(
     smallFirst.stages.map((stage) => stage.counts),
@@ -357,8 +357,8 @@ test("几千个阶段:列表一页与详情一次的内容照旧,耗时不随阶
    * ——单次只有零点几毫秒,两倍会被计时噪声撞上;三倍仍拦得住「先把全库阶段归并出来
    * 再从里面找一行」,那一档下大库要慢四倍以上。
    */
-  const smallDetailMs = await fastest(() => detail(small, oldestRichStageId));
-  const largeDetailMs = await fastest(() => detail(large, oldestRichStageId));
+  const smallDetailMs = await fastest(async () => await detail(small, oldestRichStageId));
+  const largeDetailMs = await fastest(async () => await detail(large, oldestRichStageId));
   assert.ok(
     largeDetailMs < smallDetailMs * 3,
     `阶段详情:小库 ${smallDetailMs.toFixed(1)}ms,大库 ${largeDetailMs.toFixed(1)}ms`,

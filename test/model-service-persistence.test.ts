@@ -8,7 +8,7 @@ import {
   openStore,
   type ModelServiceVersionCommit,
 } from "../src/review/store/index.ts";
-import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
 const cleanups = testCleanups();
@@ -56,9 +56,9 @@ function availableService(
 
 
 test("自动目录快照往返稀疏可信字段", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
 
   assert.equal(
     await store.commitModelServiceVersion(null, {
@@ -128,7 +128,7 @@ test("自动目录快照往返稀疏可信字段", async () => {
   );
 
   await store.close();
-  const reopened = openStore(db.path);
+  const reopened = openStore(db.url);
   assert.deepEqual((await reopened.getModelService("corp-gateway"))!.automaticModels, [
     {
       identity: "corp-gateway:free-model",
@@ -167,7 +167,7 @@ test("自动目录快照往返稀疏可信字段", async () => {
     },
   ]);
   await reopened.close();
-  const sqlite = new DatabaseSync(db.path, { readOnly: true });
+  const sqlite = new DatabaseSync(db.url, { readOnly: true });
   const idOnly = sqlite.prepare(
     `SELECT name, api, base_url, input_json, reasoning, context_window, max_tokens
        FROM model_directory_model WHERE provider = ? AND model = ?`,
@@ -189,9 +189,9 @@ test("自动目录快照往返稀疏可信字段", async () => {
 });
 
 test("模型服务当前版本把目标、凭据证据、目录与补录作为一个原子快照保存", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
 
   const committed = await store.commitModelServiceVersion(null, {
     provider: "corp-gateway",
@@ -296,9 +296,9 @@ test("模型服务当前版本把目标、凭据证据、目录与补录作为�
 });
 
 test("旧版本候选不写入，匹配版本时整份快照推进并替换目录来源", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const first = {
     provider: "openrouter",
     type: "builtin" as const,
@@ -405,9 +405,9 @@ test("旧版本候选不写入，匹配版本时整份快照推进并替换目�
 });
 
 test("模型引用按完整身份列出全局、显式覆盖与跟随全局位置", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   assert.equal(await store.commitModelServiceVersion(null, availableService("alpha", ["global", "shared"])), 1);
   assert.equal(await store.commitModelServiceVersion(null, availableService("beta", ["override"])), 1);
   await putGlobalSettings(store, {
@@ -487,9 +487,9 @@ test("模型引用按完整身份列出全局、显式覆盖与跟随全局位�
 });
 
 test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源补录", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const provider = "aux-only";
   const baseUrl = `https://${provider}.example.test/v1`;
   // `solo` 只有补录这一个来源:摘掉它,这个模型就没了来源。
@@ -548,9 +548,9 @@ test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源�
 });
 
 test("冲突自定义 provider 改名原子迁移服务、全局组合与全部仓库覆盖，历史记录不动", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const conflicted = {
     ...availableService("openai", ["global-model", "repo-model"]),
     disabledReason: "name-conflict" as const,
@@ -578,7 +578,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   }), true);
   await store.close();
 
-  const sqlite = new DatabaseSync(db.path);
+  const sqlite = new DatabaseSync(db.url);
   const run = sqlite.prepare(
     `INSERT INTO review_run
        (owner, repo, pull_number, head_sha, started_at, changed_files, changed_lines, batch_count, failed)
@@ -607,7 +607,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   };
   sqlite.close();
 
-  const reopened = openStore(db.path);
+  const reopened = openStore(db.url);
   const result = await reopened.renameConflictingCustomModelService(
     "openai",
     "corp-openai",
@@ -636,7 +636,7 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   ]);
   await reopened.close();
 
-  const history = new DatabaseSync(db.path, { readOnly: true });
+  const history = new DatabaseSync(db.url, { readOnly: true });
   assert.deepEqual({
     runs: history.prepare("SELECT * FROM review_run").all(),
     outcomes: history.prepare("SELECT * FROM reviewer_outcome").all(),
@@ -647,14 +647,14 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
 });
 
 test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   assert.equal(await store.commitModelServiceVersion(null, {
     ...availableService("openai", ["kept"]),
     disabledReason: "name-conflict",
   }), 1);
-  const sqlite = new DatabaseSync(db.path);
+  const sqlite = new DatabaseSync(db.url);
   sqlite.prepare(
     "INSERT INTO global_setting (key, value) VALUES ('reviewers', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run(JSON.stringify([{ provider: "openai", model: "missing" }]));
@@ -694,9 +694,9 @@ test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", asyn
 });
 
 test("Review Run 启动快照只读生效组合引用的服务密文,后续读取才看见新版本", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
 
   await store.registerRepo({
     repoId: 7,
@@ -770,10 +770,10 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
 });
 
 test("两个 Store handle 交错时组合写与服务来源删除互相原子阻断", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const first = openStore(db.path);
-  const second = openStore(db.path);
+  const first = openStore(db.url);
+  const second = openStore(db.url);
   try {
     assert.equal(
       await first.commitModelServiceVersion(null, availableService("race", ["kept", "removed"])),
@@ -846,9 +846,9 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
 });
 
 test("Review Run 审计只持久化服务版本与运行模型,不落凭据、密文或主密钥", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const plan: ReviewerRuntimePlan = {
     spec: { provider: "corp", model: "pinned-model", thinkingLevel: "high" },
     modelServiceVersion: 9,
@@ -888,7 +888,7 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
     reviewerPins: [reviewerPin(plan)],
   });
 
-  const sqlite = new DatabaseSync(db.path, { readOnly: true });
+  const sqlite = new DatabaseSync(db.url, { readOnly: true });
   const persisted = sqlite.prepare("SELECT * FROM review_run_reviewer_pin").get()!;
   sqlite.close();
   const serialized = JSON.stringify(persisted);

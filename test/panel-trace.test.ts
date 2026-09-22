@@ -38,10 +38,10 @@ function sse(
 
 /** 一条跑完的历史轮次,带几条轨迹事件。 */
 async function seedFinishedRun(
-  dbPath: string,
+  databaseUrl: string,
   events: readonly { kind: TraceKind; text: string }[],
 ): Promise<number> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     const runId = await store.startRun({
       owner: HARNESS_PR.owner,
@@ -78,7 +78,7 @@ async function seedFinishedRun(
 
 test("已结束的轮次:`/trace` 按 seq 升序回全部事件", async () => {
   const h = await startPanelHarness();
-  const runId = await seedFinishedRun(h.db.path, [
+  const runId = await seedFinishedRun(h.db.url, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
   ]);
@@ -103,7 +103,7 @@ test("已结束的轮次:`/trace` 按 seq 升序回全部事件", async () => {
 
 test("升级前跑过的轮次:`/trace` 回空列表而不是报错", async () => {
   const h = await startPanelHarness();
-  const runId = await seedFinishedRun(h.db.path, []);
+  const runId = await seedFinishedRun(h.db.url, []);
 
   const body = (await (await h.api("GET", `/runs/${runId}/trace`)).json()) as {
     events: TraceEvent[];
@@ -121,11 +121,11 @@ test("不存在的轮次:`/trace` 与 `/trace/stream` 都回 404", async () => {
 
 test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分到仓库就读得到两个端点", async () => {
   const h = await startPanelHarness();
-  const runId = await seedFinishedRun(h.db.path, [{ kind: "assistant_message", text: "第一句" }]);
+  const runId = await seedFinishedRun(h.db.url, [{ kind: "assistant_message", text: "第一句" }]);
   await seedHistoricalRepo(h);
 
   const password = "trace-permission-password";
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.createPanelUser({
     username: "no-permission",
     displayName: null,
@@ -156,7 +156,7 @@ test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分
 
 test("已结束的轮次:stream 回放完直接发 end 并关闭", async () => {
   const h = await startPanelHarness();
-  const runId = await seedFinishedRun(h.db.path, [
+  const runId = await seedFinishedRun(h.db.url, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
   ]);
@@ -178,7 +178,7 @@ test("已结束的轮次:stream 回放完直接发 end 并关闭", async () => {
 
 test("带 Last-Event-ID:只收到它之后的事件", async () => {
   const h = await startPanelHarness();
-  const runId = await seedFinishedRun(h.db.path, [
+  const runId = await seedFinishedRun(h.db.url, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
     { kind: "assistant_message", text: "第三句" },
@@ -194,7 +194,7 @@ test("带 Last-Event-ID:只收到它之后的事件", async () => {
 
 test("带 ?after=:与 Last-Event-ID 同义,两者都在时取大的那个", async () => {
   const h = await startPanelHarness();
-  const runId = await seedFinishedRun(h.db.path, [
+  const runId = await seedFinishedRun(h.db.url, [
     { kind: "assistant_message", text: "第一句" },
     { kind: "assistant_message", text: "第二句" },
     { kind: "assistant_message", text: "第三句" },
@@ -265,11 +265,11 @@ test("进行中的轮次:先回放已有事件,再收到新写入的那条,结�
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await paused.started;
 
-  const runId = await openStoreRunId(h.db.path);
+  const runId = await openStoreRunId(h.db.url);
   const response = await sse(h, runId);
   const reader = frameReader(response);
 
@@ -304,10 +304,10 @@ test("瞬时帧:到在线订阅者、帧里没有 id,重连续传只回放落库
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await paused.started;
-  const runId = await openStoreRunId(h.db.path);
+  const runId = await openStoreRunId(h.db.url);
 
   const reader = frameReader(await sse(h, runId));
   // 回放:开跑到现在的编排事件,最后那条的 seq 就是这个订阅者的续传位置。
@@ -331,7 +331,7 @@ test("瞬时帧:到在线订阅者、帧里没有 id,重连续传只回放落库
   assert.equal(stored.id, String(storedEvent.seq));
 
   // 不落库:表里只有那条落库事件。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const kinds = (await store.listTrace(runId, lastSeq)).map((event) => event.kind);
   await store.close();
   assert.deepEqual(kinds, ["assistant_message"]);
@@ -358,10 +358,10 @@ test("进行中的轮次:没有可回放的事件时响应头也立刻发出,静
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await paused.started;
-  const runId = await openStoreRunId(h.db.path);
+  const runId = await openStoreRunId(h.db.url);
 
   // 面板打开时先取 `/trace` 补全,再拿最后那个 seq 接流——此时没有一帧可回放。
   const known = (await (await h.api("GET", `/runs/${runId}/trace`)).json()) as {
@@ -399,8 +399,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 }
 
 /** 这个库里唯一那一轮的 id。 */
-async function openStoreRunId(dbPath: string): Promise<number> {
-  const store = openStore(dbPath);
+async function openStoreRunId(databaseUrl: string): Promise<number> {
+  const store = openStore(databaseUrl);
   try {
     const runs = await store.listRuns({ limit: 1 });
     assert.equal(runs.length, 1, "库里应当正好有一轮 Review Run");

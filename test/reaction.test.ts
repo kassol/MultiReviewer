@@ -10,7 +10,7 @@ import { test } from "node:test";
 import type { Forge } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
-import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
@@ -19,10 +19,10 @@ const HEAD = "export const answer = 2;\n";
 
 const cleanups = testCleanups();
 
-function harness() {
+async function harness() {
   const repo = makeRepo({ base: { "src/a.ts": BASE }, head: { "src/a.ts": HEAD } });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -37,7 +37,7 @@ function harness() {
     changedFiles: [{ path: "src/a.ts", status: "modified" }],
   });
 
-  return { repo, forge, deps: { cacheDir: cache.dir, dbPath: db.path } };
+  return { repo, forge, deps: { cacheDir: cache.dir, databaseUrl: db.url } };
 }
 
 const FINDING = {
@@ -49,7 +49,7 @@ const FINDING = {
 };
 
 test("发现问题时:开跑挂眼睛,收尾撤掉,不留赞", async () => {
-  const h = harness();
+  const h = (await harness());
 
   await runReview(EVENT, {
     forge: h.forge.forge,
@@ -64,7 +64,7 @@ test("发现问题时:开跑挂眼睛,收尾撤掉,不留赞", async () => {
 });
 
 test("零 Finding 时:眼睛换成赞,这是 PR 上唯一的痕迹", async () => {
-  const h = harness();
+  const h = (await harness());
 
   await runReview(EVENT, {
     forge: h.forge.forge,
@@ -84,7 +84,7 @@ test("零 Finding 时:眼睛换成赞,这是 PR 上唯一的痕迹", async () =>
 });
 
 test("审查中途抛异常时眼睛照样撤掉,不会永远挂着", async () => {
-  const h = harness();
+  const h = (await harness());
   // Reviewer 自己抛出来(不是回一个失败结果)即审查中途的异常。发布失败不再是异常
   // (ADR 0025):它在轮次上记原因、照常收尾,眼睛由正常路径撤掉。
   const throwing: Reviewer = {
@@ -104,7 +104,7 @@ test("审查中途抛异常时眼睛照样撤掉,不会永远挂着", async () =
 });
 
 test("发布 review 失败:眼睛撤掉、不点赞,轮次照常结束", async () => {
-  const h = harness();
+  const h = (await harness());
   const failing: Forge = {
     ...h.forge.forge,
     createReview: async () => {
@@ -124,7 +124,7 @@ test("发布 review 失败:眼睛撤掉、不点赞,轮次照常结束", async (
 });
 
 test("reaction 发不出去时审查照常跑完", async () => {
-  const h = harness();
+  const h = (await harness());
   // 令牌缺 write:issue 时就是这个样子。
   const noReactions: Forge = {
     ...h.forge.forge,

@@ -17,7 +17,7 @@ import type { PanelPermission } from "../src/panel/permissions.ts";
 import type { KnowledgeEntry } from "../src/review/finding.ts";
 import { openStore, type ReviewRuleInput } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   scopedUser as scopedUserRow,
@@ -175,10 +175,10 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
  * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
  */
 async function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     for (const entry of entries) {
-      assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, entry), undefined);
+      assert.notEqual((await seedReviewRule(h.db.url, GITEA_REPO.id, entry)), undefined);
     }
   } finally {
     await store.close();
@@ -186,9 +186,9 @@ async function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleIn
 }
 
 test("探索状态机:运行中不重入,失败留原因可重试,完成落草案", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     assert.equal(
       await store.registerRepo({ repoId: 70, owner: "acme", repo: "explored", generation: 1, key: "k" }),
@@ -237,9 +237,9 @@ test("探索状态机:运行中不重入,失败留原因可重试,完成落草�
 });
 
 test("重探索覆盖未确认的旧草案,意图补进来的那条一并被覆盖", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 71, owner: "acme", repo: "redone", generation: 1, key: "k" });
     await store.startRuleExploration(71, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
@@ -261,9 +261,9 @@ test("重探索覆盖未确认的旧草案,意图补进来的那条一并被覆�
 });
 
 test("知识确认整组生效:草案成为生效规则、推进一版、草案清空", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 72, owner: "acme", repo: "confirmed", generation: 1, key: "k" });
     // 仓库不在注册表里时确认不动任何东西。
@@ -298,9 +298,9 @@ test("知识确认整组生效:草案成为生效规则、推进一版、草案�
 });
 
 test("草案条目逐条删除,移除仓库把探索与草案一并摘掉", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 73, owner: "acme", repo: "pruned", generation: 1, key: "k" });
     await store.startRuleExploration(73, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
@@ -319,9 +319,9 @@ test("草案条目逐条删除,移除仓库把探索与草案一并摘掉", asyn
 });
 
 test("重启时把停在运行中的探索改判失败,面板因此给得出重试入口", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 74, owner: "acme", repo: "restarted", generation: 1, key: "k" });
     await store.startRuleExploration(74, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
@@ -636,9 +636,9 @@ test("发起只收基点:带模型字段一律 400,列可选模型的端点已�
 });
 
 test("知识集未确认的仓库确认得了空知识集:生成第一版,草案一条都不需要", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 73, owner: "acme", repo: "empty", generation: 1, key: "k" });
     assert.equal((await store.getRuleSet(73))!.version, null);
@@ -658,9 +658,9 @@ test("知识集未确认的仓库确认得了空知识集:生成第一版,草案
 });
 
 test("探索记下这一次选的思考档位,没选即留空", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 75, owner: "acme", repo: "leveled", generation: 1, key: "k" });
     await store.startRuleExploration(75, { baselineSha: "abc1234", model: "test:m", startedAt: AT });
@@ -718,7 +718,7 @@ test("生效的辅助模型跑不了时发起回 409,那句话指向审查策略
   await setGlobalAuxiliaryModel(h, { provider: "think", model: "deep" });
   // 让这一处跑不起来:凭据降级成待重验。**不走删凭据那条路**——辅助模型如今计入模型引用,
   // 删凭据会被引用保护挡下(它正是被这一处引用着)。
-  const downgrade = new DatabaseSync(h.db.path);
+  const downgrade = new DatabaseSync(h.db.url);
   downgrade.prepare(
     `UPDATE model_service_credential
         SET state = 'pending-reverification', verified_at = NULL,
@@ -736,9 +736,9 @@ test("生效的辅助模型跑不了时发起回 409,那句话指向审查策略
 });
 
 test("批量确认只落勾选的那几条,没勾的随草案一并丢弃,一次推一版", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 76, owner: "acme", repo: "picked", generation: 1, key: "k" });
     await store.startRuleExploration(76, { baselineSha: "abc1234", model: "test:m", startedAt: AT });

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { hashPassword, verifyPassword } from "../src/panel/password.ts";
 import { openStore } from "../src/review/store/index.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
-import { makeCacheDir, makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 
 const USERNAME = "admin";
 const PASSWORD = "test-password";
@@ -14,10 +14,10 @@ const cleanups = testCleanups();
 
 async function startPanel(options: { empty?: boolean; now?: () => number } = {}) {
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(cache.cleanup, db.cleanup);
   if (!options.empty) {
-    const store = openStore(db.path);
+    const store = openStore(db.url);
     await store.createPanelUser({
       username: USERNAME,
       displayName: "Admin",
@@ -33,7 +33,8 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
+    dataDir: db.dataDir,
     bootstrapSecret: "bootstrap-test",
     baseUrl: "https://reviewer.example.test",
     panelDist: `${cache.dir}/no-dist`,
@@ -49,7 +50,7 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
   });
   const request = (path: string, init: RequestInit = {}): Promise<Response> =>
     fetch(`${baseUrl}/api${path}`, init);
-  return { baseUrl, dbPath: db.path, request };
+  return { baseUrl, databaseUrl: db.url, request };
 }
 
 test("哈希的代价参数:省略即生产推荐值,给了下限也验得通", async () => {
@@ -67,7 +68,7 @@ function cookie(response: Response): string {
   return response.headers.getSetCookie()[0]!.split(";", 1)[0]!;
 }
 
-async function login(h: Awaited<ReturnType<typeof startPanel>>, password = PASSWORD) {
+function login(h: Awaited<Awaited<ReturnType<typeof startPanel>>>, password = PASSWORD) {
   return h.request("/session", {
     method: "POST",
     headers: { "content-type": "application/json" },

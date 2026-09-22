@@ -18,7 +18,7 @@ import {
   type RuleProposalSourceInput,
 } from "../src/review/store/index.ts";
 import type { ConsolidationProposal, RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer, scriptedRuleAgent } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
@@ -131,10 +131,10 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
  * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
  */
 async function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     for (const entry of entries) {
-      assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, entry), undefined);
+      assert.notEqual((await seedReviewRule(h.db.url, GITEA_REPO.id, entry)), undefined);
     }
   } finally {
     await store.close();
@@ -195,7 +195,7 @@ async function consolidatingHarnessWithFindings(
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -205,8 +205,8 @@ async function consolidatingHarnessWithFindings(
 }
 
 /** 往队列里排几条提案。返回它们的标识,按排入顺序。 */
-async function seedProposals(dbPath: string, inputs: readonly RuleProposalInput[]): Promise<number[]> {
-  const store = openStore(dbPath);
+async function seedProposals(databaseUrl: string, inputs: readonly RuleProposalInput[]): Promise<number[]> {
+  const store = openStore(databaseUrl);
   try {
     const ids: number[] = [];
     for (const input of inputs) ids.push((await store.addRuleProposal(GITEA_REPO.id, input))!);
@@ -222,9 +222,9 @@ async function launch(h: PanelHarness, cookie: string): Promise<Response> {
 }
 
 test("合并落地:保留 id 最小的一行,其余删除、附注全部并入、陈述覆盖", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 90, owner: "acme", repo: "tidied", generation: 1, key: "k" });
     const first = (await store.addRuleProposal(90, proposal({
@@ -255,12 +255,12 @@ test("合并落地:保留 id 最小的一行,其余删除、附注全部并入�
 });
 
 test("合并的守门:少于两条、空陈述、已裁决的一条、以及不是同一件事的几条一律不合", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 91, owner: "acme", repo: "guarded", generation: 1, key: "k" });
-    const rule = seedReviewRule(db.path, 91, { type: "rule", scope: "", statement: "已经生效的一条" })!;
+    const rule = (await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "已经生效的一条" }))!;
     const add = (await store.addRuleProposal(91, proposal({ statement: "新增一条" })))!;
     const other = (await store.addRuleProposal(91, proposal({ statement: "新增另一条" })))!;
     const retire = (await store.addRuleProposal(91, proposal({
@@ -289,13 +289,13 @@ test("合并的守门:少于两条、空陈述、已裁决的一条、以及不�
 });
 
 test("改写为修改型:指向那条生效条目;目标不生效、不同型、不是新增型的一律丢弃", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 92, owner: "acme", repo: "retargeted", generation: 1, key: "k" });
-    const rule = seedReviewRule(db.path, 92, { type: "rule", scope: "", statement: "已经生效的规则" })!;
-    const fact = seedReviewRule(db.path, 92, { type: "fact", scope: "", statement: "已经生效的事实" })!;
+    const rule = (await seedReviewRule(db.url, 92, { type: "rule", scope: "", statement: "已经生效的规则" }))!;
+    const fact = (await seedReviewRule(db.url, 92, { type: "fact", scope: "", statement: "已经生效的事实" }))!;
     const add = (await store.addRuleProposal(92, proposal({ statement: "现集已经有的那条" })))!;
     const factAdd = (await store.addRuleProposal(92, proposal({ type: "fact", statement: "另一条事实" })))!;
 
@@ -321,9 +321,9 @@ test("改写为修改型:指向那条生效条目;目标不生效、不同型、
 });
 
 test("整理与探索共用同仓库同时只跑一个,重启改判失败,移除仓库把整理一并摘掉", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 93, owner: "acme", repo: "exclusive", generation: 1, key: "k" });
     assert.equal(await store.getRuleConsolidation(93), null);
@@ -383,7 +383,7 @@ test("面板发起知识整理:agent 拿到现集与待裁决队列,合并与改
     ],
   }));
   const { h, cookie } = await consolidatingHarness(agent);
-  ids = await seedProposals(h.db.path, [
+  ids = await seedProposals(h.db.url, [
     proposal({ statement: "第一条", sources: [source({ note: "第一条备注" })] }),
     proposal({ statement: "第二条", sources: [source({ note: "第二条备注" })] }),
     proposal({ statement: "与现集重复的那条" }),
@@ -461,7 +461,7 @@ test("整理期间的裁决照常:那一次合并跳过,别的动作照落,轨�
   const { h, cookie } = await consolidatingHarness(agent);
   harness = h;
   cookieForReject = cookie;
-  ids = await seedProposals(h.db.path, [
+  ids = await seedProposals(h.db.url, [
     proposal({ statement: "第一条" }),
     proposal({ statement: "整理期间被驳回的那条" }),
     proposal({ statement: "与现集重复的那条" }),
@@ -529,7 +529,7 @@ test("整理期间的处置照常反哺:反哺产出照旧入队,整理的直改
   };
   const { h, cookie } = await consolidatingHarnessWithFindings(agent);
   harness = h;
-  ids = await seedProposals(h.db.path, [
+  ids = await seedProposals(h.db.url, [
     proposal({ statement: "第一条", sources: [source({ origin: "baseline-exploration" })] }),
     proposal({ statement: "第二条", sources: [source({ origin: "baseline-exploration" })] }),
   ]);
@@ -628,7 +628,7 @@ test("整理用生效的辅助模型;它跑不了时发起回 409,指向审查�
   // 这一处模型跑不起来之后再发起:整次不做,那句话说得出去哪里改。
   // 让这一处跑不起来:凭据降级成待重验。**不走删凭据那条路**——辅助模型如今计入模型引用,
   // 删凭据会被引用保护挡下(它正是被这一处引用着)。
-  const downgrade = new DatabaseSync(h.db.path);
+  const downgrade = new DatabaseSync(h.db.url);
   downgrade.prepare(
     `UPDATE model_service_credential
         SET state = 'pending-reverification', verified_at = NULL,
@@ -784,7 +784,7 @@ test("整理产出超过 100 字的陈述:合并直改跳过、提案丢弃,两�
   }));
   const { h, cookie } = await consolidatingHarness(agent);
   const rule = (await ruleSet(h, cookie)).rules[0]!.id;
-  ids = await seedProposals(h.db.path, [
+  ids = await seedProposals(h.db.url, [
     proposal({ statement: "第一条" }),
     proposal({ statement: "第二条" }),
   ]);

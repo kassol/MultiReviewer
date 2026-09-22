@@ -26,19 +26,19 @@ const USAGE: ReviewerUsage = {
 };
 
 /** 三个文件各成一批:一批的结果因此就是一个文件的结果,断言不必猜谁和谁同批。 */
-function deps(fixture: ReturnType<typeof setupRepo>) {
+function deps(fixture: Awaited<ReturnType<typeof setupRepo>>) {
   return {
     forge: fixture.forge.forge,
     cacheDir: fixture.cache.dir,
-    dbPath: fixture.db.path,
+    databaseUrl: fixture.db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   };
 }
 
 /** 这一轮落库的全部 `reviewer_batch_finished`,按批次序号排。 */
-async function batchFinished(dbPath: string): Promise<{ reviewer: string; payload: Record<string, unknown> }[]> {
-  const store = openStore(dbPath);
+async function batchFinished(databaseUrl: string): Promise<{ reviewer: string; payload: Record<string, unknown> }[]> {
+  const store = openStore(databaseUrl);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     return (await store
@@ -111,14 +111,14 @@ function perBatchReviewer(model: string): Reviewer {
 }
 
 test("每个 Reviewer × 批次一条收尾事件:给全结论、漏给结论与失败三档各带自己的字段", async () => {
-  const fixture = setupRepo(cleanups);
+  const fixture = (await setupRepo(cleanups));
   const common = deps(fixture);
 
   // 头一轮三个文件各留一条历史,第二轮每一批因此恰好要复核一条。
   await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
   await runReview(EVENT, { ...common, reviewers: [perBatchReviewer("model-a")] });
 
-  const events = await batchFinished(fixture.db.path);
+  const events = await batchFinished(fixture.db.url);
   assert.equal(events.length, 3, "三批各一条,失败的那一批同样有");
   assert.ok(
     events.every((event) => event.reviewer === "model-a"),
@@ -177,13 +177,13 @@ test("每个 Reviewer × 批次一条收尾事件:给全结论、漏给结论与
 });
 
 test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得上", async () => {
-  const fixture = setupRepo(cleanups);
+  const fixture = (await setupRepo(cleanups));
   const common = deps(fixture);
 
   await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
   await runReview(EVENT, { ...common, reviewers: [perBatchReviewer("model-a")] });
 
-  const store = openStore(fixture.db.path);
+  const store = openStore(fixture.db.url);
   const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
   const batchEnds = (await store
     .listTrace(runId))
@@ -208,18 +208,18 @@ test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得
   const failedExpected = batchEnds
     .filter((payload) => payload["failed"] === true)
     .reduce((sum, payload) => sum + (payload["verdictsExpected"] as number), 0);
-  const [row] = query(
-    fixture.db.path,
+  const [row] = (await query(
+    fixture.db.url,
     `SELECT SUM(missing_reason = 'no-verdict') AS missed,
             SUM(missing_reason = 'batch-failed') AS batchFailed
        FROM finding_verdict WHERE run_id = ${runId}`,
-  );
+  ));
   assert.equal(row!["missed"], skipped);
   assert.equal(row!["batchFailed"], failedExpected);
 });
 
 test("只复核那一轮的批次同样落这条事件,报出条数恒为 0", async () => {
-  const fixture = setupRepo(cleanups);
+  const fixture = (await setupRepo(cleanups));
   const common = deps(fixture);
 
   await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
@@ -230,7 +230,7 @@ test("只复核那一轮的批次同样落这条事件,报出条数恒为 0", as
     reviewers: [verdictReviewer("model-b", "present")],
   });
 
-  const events = await batchFinished(fixture.db.path);
+  const events = await batchFinished(fixture.db.url);
   assert.deepEqual(
     events.map((event) => ({
       batch: event.payload["batch"],

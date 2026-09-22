@@ -38,7 +38,7 @@ type RangeReview = {
 async function startedHarness(): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return harness;
 }
 
@@ -101,7 +101,7 @@ test("每日增量:开启、改分支、关闭各自读回正确", async () => {
 test("检查时刻与检查模式:缺省取 00:00 与只复核,带上即读回,改任一项刷新开启时刻", async () => {
   let clock = Date.parse("2026-09-11T01:00:00.000Z");
   const h = await startReadyPanelHarness({ registerRepo: true, now: () => clock });
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   const rangeReview = await startRangeReview(h);
   const path = `/range-reviews/${rangeReview.id}/daily-increment`;
 
@@ -170,7 +170,7 @@ test("开启每日增量不推进:轮次数与容器 PR 的 head 分支都不动
 
   assert.equal(h.settled.length, 1);
   assert.equal(h.repo.branchSha(rangeReview.headBranch), headBefore);
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
   await store.close();
   assert.equal(runs.length, 1);
@@ -218,7 +218,7 @@ test("没有 review:advance 的用户设不了每日增量", async () => {
   const h = await startedHarness();
   const rangeReview = await startRangeReview(h);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const role = await store.createPanelRole({
     name: "只读评审角色",
     permissions: ["review:rerun"],

@@ -19,8 +19,8 @@ const cleanups = testCleanups();
 const EVENT = { owner: "acme", repo: "widgets", number: 7 };
 const PANEL = "https://panel.invalid";
 
-function setup() {
-  return setupRepo(cleanups);
+async function setup() {
+  return (await setupRepo(cleanups));
 }
 
 /** 一条 Finding 的模板:落在文件的第一处新增行(第 4 行)或紧随的第 5 行。 */
@@ -34,19 +34,19 @@ const AT = (file: string, line: number, title: string) => ({
 });
 
 /** 落库的同根因组与成员:组、根因说明,成员按组内次序给它所在的文件与轮次。 */
-function rootCauseRows(dbPath: string): {
+async function rootCauseRows(databaseUrl: string): Promise<{
   group: number;
   reason: string;
   members: { file: string; runId: number }[];
-}[] {
-  const rows = query(
-    dbPath,
+}[]> {
+  const rows = (await query(
+    databaseUrl,
     `SELECT g.id AS gid, g.reason AS reason, f.file AS file, f.run_id AS run_id
        FROM root_cause_group g
        JOIN root_cause_group_member m ON m.group_id = g.id
        JOIN finding f ON f.id = m.finding_id
       ORDER BY g.id, m.position`,
-  );
+  ));
   const groups: { group: number; reason: string; members: { file: string; runId: number }[] }[] = [];
   for (const row of rows) {
     const gid = Number(row["gid"]);
@@ -61,8 +61,8 @@ function rootCauseRows(dbPath: string): {
 }
 
 /** 这一轮落库的全部轨迹事件。 */
-async function trace(dbPath: string): Promise<{ kind: string; payload: Record<string, unknown> }[]> {
-  const store = openStore(dbPath);
+async function trace(databaseUrl: string): Promise<{ kind: string; payload: Record<string, unknown> }[]> {
+  const store = openStore(databaseUrl);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     return (await store
@@ -74,7 +74,7 @@ async function trace(dbPath: string): Promise<{ kind: string; payload: Record<st
 }
 
 test("三处同根因归成一组:组与成员落库,三条评论各带同根因一行,组外那条不带", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
   // 四条各成一个合并组:前三条是同一个写坏的 helper 在三个文件里的调用,第四条无关。
   const merge = scriptedMergeAgent(
     [
@@ -97,13 +97,13 @@ test("三处同根因归成一组:组与成员落库,三条评论各带同根因
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     panelBaseUrl: PANEL,
     mergeAgent: merge,
   });
 
   assert.equal(result.findings.length, 4, "同根因组不改变分组方案");
-  assert.deepEqual(rootCauseRows(db.path), [
+  assert.deepEqual((await rootCauseRows(db.url)), [
     {
       group: 1,
       reason: "helper 少判了一次边界,三处调用都受影响",
@@ -125,7 +125,7 @@ test("三处同根因归成一组:组与成员落库,三条评论各带同根因
 });
 
 test("坏提议逐组丢弃:轨迹各记一条,分组方案与组外评论照常", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
   const merge = scriptedMergeAgent(
     [
       { members: [0], reason: "a" },
@@ -153,15 +153,15 @@ test("坏提议逐组丢弃:轨迹各记一条,分组方案与组外评论照常
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     panelBaseUrl: PANEL,
     mergeAgent: merge,
   });
 
   assert.equal(result.findings.length, 3, "坏提议不作废分组方案");
-  assert.equal((await trace(db.path)).filter((event) => event.kind === "merge_fallback").length, 0);
+  assert.equal((await trace(db.url)).filter((event) => event.kind === "merge_fallback").length, 0);
   assert.deepEqual(
-    (await trace(db.path))
+    (await trace(db.url))
       .filter((event) => event.kind === "root_cause_group_rejected")
       .map((event) => [event.payload["groups"], event.payload["reason"]]),
     [
@@ -174,7 +174,7 @@ test("坏提议逐组丢弃:轨迹各记一条,分组方案与组外评论照常
   );
 
   // 过了验收的那一组照常落库,第三条不在任何组里,正文不多那一行。
-  assert.deepEqual(rootCauseRows(db.path), [
+  assert.deepEqual((await rootCauseRows(db.url)), [
     {
       group: 1,
       reason: "这一组是好的",
@@ -189,14 +189,14 @@ test("坏提议逐组丢弃:轨迹各记一条,分组方案与组外评论照常
 });
 
 test("成员一律记本轮那一行:折叠的记本轮落的行,延续的记承接后的新行", async () => {
-  const ctx = setup();
+  const ctx = (await setup());
   await runReview(EVENT, {
     forge: ctx.forge.forge,
     reviewers: [
       scriptedReviewer("model-a", [AT(FILES[0]!, 4, "a 处的老问题"), AT(FILES[1]!, 4, "b 处的老问题")]),
     ],
     cacheDir: ctx.cache.dir,
-    dbPath: ctx.db.path,
+    databaseUrl: ctx.db.url,
     panelBaseUrl: PANEL,
   });
   ctx.forge.existingComments.push(
@@ -221,14 +221,14 @@ test("成员一律记本轮那一行:折叠的记本轮落的行,延续的记承
       scriptedReviewer("model-a", [AT(FILES[0]!, 4, "a 处的同一个问题"), AT(FILES[1]!, 4, "b 处的同一个问题")]),
     ],
     cacheDir: ctx.cache.dir,
-    dbPath: ctx.db.path,
+    databaseUrl: ctx.db.url,
     panelBaseUrl: PANEL,
     mergeAgent: merge,
   });
 
   // 两条收口各走一档:a 折叠到旧评论(本轮不发新评论),b 承接旧 Identity 并记「延续自」。
   assert.deepEqual(
-    query(ctx.db.path, "SELECT file, run_id, continued_from FROM finding ORDER BY id").map(
+    (await query(ctx.db.url, "SELECT file, run_id, continued_from FROM finding ORDER BY id")).map(
       (row) => [row["file"], row["run_id"], row["continued_from"] === null ? null : "延续自"],
     ),
     [
@@ -242,7 +242,7 @@ test("成员一律记本轮那一行:折叠的记本轮落的行,延续的记承
     FILES[1]!,
   ]);
 
-  assert.deepEqual(rootCauseRows(ctx.db.path), [
+  assert.deepEqual((await rootCauseRows(ctx.db.url)), [
     {
       group: 1,
       reason: "两处都出自那个写坏的 helper",
@@ -258,18 +258,18 @@ test("成员一律记本轮那一行:折叠的记本轮落的行,延续的记承
 });
 
 test("合并 agent 缺席的那一轮没有组,评论也不多那一行", async () => {
-  const { cache, db, forge } = setup();
+  const { cache, db, forge } = (await setup());
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [
       scriptedReviewer("model-a", [AT(FILES[0]!, 4, "第一处"), AT(FILES[1]!, 4, "第二处")]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     panelBaseUrl: PANEL,
   });
 
-  assert.deepEqual(rootCauseRows(db.path), []);
+  assert.deepEqual((await rootCauseRows(db.url)), []);
   for (const comment of forge.createdReviews[0]!.comments) {
     assert.ok(!comment.body.includes("同根因"));
   }

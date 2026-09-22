@@ -282,9 +282,9 @@ export function scriptedReviewer(
  * Reviewer 读到的是哪一版代码,只能在它手里还拿着那份副本的时候读。
  */
 export function readingReviewer(
-  base: ReturnType<typeof scriptedReviewer>,
+  base: Awaited<ReturnType<typeof scriptedReviewer>>,
   file: string,
-): ReturnType<typeof scriptedReviewer> & { seen: string[] } {
+): Awaited<ReturnType<typeof scriptedReviewer>> & { seen: string[] } {
   const seen: string[] = [];
   return {
     ...base,
@@ -308,7 +308,7 @@ export function verdictReviewer(
   findings: readonly ScriptedFinding[] = [],
   line?: number,
   extra?: Parameters<typeof scriptedReviewer>[2],
-): ReturnType<typeof scriptedReviewer> {
+): Awaited<ReturnType<typeof scriptedReviewer>> {
   const scripted = scriptedReviewer(model, findings, extra);
   return {
     model,

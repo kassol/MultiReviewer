@@ -20,7 +20,7 @@ import {
   type RuleProposalSourceInput,
 } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   scopedUser as scopedUserRow,
@@ -91,8 +91,8 @@ function source(
 }
 
 /** 库里现存的出处附注行数。取代与级联要看得出「附注跟着提案走」。 */
-function proposalSourceRows(dbPath: string): number {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+function proposalSourceRows(databaseUrl: string): number {
+  const db = new DatabaseSync(databaseUrl, { readOnly: true });
   try {
     return Number(db.prepare("SELECT COUNT(*) AS rows FROM rule_proposal_source").get()!["rows"]);
   } finally {
@@ -101,8 +101,8 @@ function proposalSourceRows(dbPath: string): number {
 }
 
 /** 每条知识条目的生效版本与废止版本。合并要看得出「一起废止于新版、新行生效于同一版」。 */
-function ruleVersions(dbPath: string): (number | null)[][] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+function ruleVersions(databaseUrl: string): (number | null)[][] {
+  const db = new DatabaseSync(databaseUrl, { readOnly: true });
   try {
     return db
       .prepare("SELECT id, effective_version, retired_version FROM review_rule ORDER BY id")
@@ -154,10 +154,10 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
  * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
  */
 async function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     for (const entry of entries) {
-      assert.notEqual(seedReviewRule(h.db.path, GITEA_REPO.id, entry), undefined);
+      assert.notEqual((await seedReviewRule(h.db.url, GITEA_REPO.id, entry)), undefined);
     }
   } finally {
     await store.close();
@@ -193,9 +193,9 @@ async function confirmedHarness(items: RuleAgentItem[]): Promise<{
 }
 
 test("提案状态机:待裁决只裁一次,驳回不动知识集", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 80, owner: "acme", repo: "queued", generation: 1, key: "k" });
     assert.deepEqual(await store.getRuleProposals(80), []);
@@ -226,13 +226,13 @@ test("提案状态机:待裁决只裁一次,驳回不动知识集", async () => 
 });
 
 test("三种变更类型各自的落库形态:新增进集、修改留下旧那版、废止只废止", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 81, owner: "acme", repo: "decided", generation: 1, key: "k" });
-    seedReviewRule(db.path, 81, { type: "rule", scope: "", statement: "会被改的那条" });
-    assert.equal(seedReviewRule(db.path, 81, { type: "rule", scope: "", statement: "会被废止的那条" }), 2);
+    (await seedReviewRule(db.url, 81, { type: "rule", scope: "", statement: "会被改的那条" }));
+    assert.equal((await seedReviewRule(db.url, 81, { type: "rule", scope: "", statement: "会被废止的那条" })), 2);
     const [target, doomed] = (await store.getRuleSet(81))!.rules;
 
     const added = (await store.addRuleProposal(81, proposal({ statement: "探索提的新规则", scope: "src/**" })))!;
@@ -282,12 +282,12 @@ test("三种变更类型各自的落库形态:新增进集、修改留下旧那�
 });
 
 test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库摘掉整条队列", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 83, owner: "acme", repo: "stale", generation: 1, key: "k" });
-    seedReviewRule(db.path, 83, { type: "rule", scope: "", statement: "先有的那条" });
+    (await seedReviewRule(db.url, 83, { type: "rule", scope: "", statement: "先有的那条" }));
     const rule = (await store.getRuleSet(83))!.rules[0]!;
     const id = (await store.addRuleProposal(
       83,
@@ -309,13 +309,13 @@ test("目标规则已经不生效时采纳不了,一版都不推进;移除仓库
 });
 
 test("合并型采纳:目标全部废止于新版、合成的那条生效于新版,出处记提案自己的", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 84, owner: "acme", repo: "merged", generation: 1, key: "k" });
     for (const statement of ["重复的甲", "重复的乙", "不相干的那条"]) {
-      seedReviewRule(db.path, 84, { type: "rule", scope: "", statement });
+      (await seedReviewRule(db.url, 84, { type: "rule", scope: "", statement }));
     }
     const [first, second, other] = (await store.getRuleSet(84))!.rules;
     const id = (await store.addRuleProposal(
@@ -344,7 +344,7 @@ test("合并型采纳:目标全部废止于新版、合成的那条生效于新�
       [first!.id, second!.id].sort(),
     );
     // 两条目标废止于新版,合成的那一条生效于同一版:合并在版本轴上是一格。
-    assert.deepEqual(ruleVersions(db.path), [
+    assert.deepEqual(ruleVersions(db.url), [
       [first!.id, 1, 4],
       [second!.id, 2, 4],
       [other!.id, 3, null],
@@ -356,13 +356,13 @@ test("合并型采纳:目标全部废止于新版、合成的那条生效于新�
 });
 
 test("合并型:任一目标已不生效即采纳不了,驳回照常", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 85, owner: "acme", repo: "merge-stale", generation: 1, key: "k" });
     for (const statement of ["甲", "乙", "丙", "丁"]) {
-      seedReviewRule(db.path, 85, { type: "rule", scope: "", statement });
+      (await seedReviewRule(db.url, 85, { type: "rule", scope: "", statement }));
     }
     const [a, b, c, d] = (await store.getRuleSet(85))!.rules;
     const stale = (await store.addRuleProposal(
@@ -686,9 +686,9 @@ test("已确认的空知识集重探索:产出仍进提案队列,不回到草案
 });
 
 test("重探索只取代附注全部为基点探索的待裁决提案:带反哺与整理附注的、已裁决的留下", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 89, owner: "acme", repo: "overwritten", generation: 1, key: "k" });
     const staleId = (await store.addRuleProposal(89, proposal({ statement: "上一轮探索提的" })))!;
@@ -749,19 +749,19 @@ test("重探索只取代附注全部为基点探索的待裁决提案:带反哺�
       rows.find((row) => row.id === mixedId)!.sources.map((entry) => entry.note),
       [null, "又一条处置备注"],
     );
-    assert.equal(proposalSourceRows(db.path), 6);
+    assert.equal(proposalSourceRows(db.url), 6);
   } finally {
     await store.close();
   }
 });
 
 test("批量采纳一次只推进一个知识集版本;有一条落不下去就整组不做", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 84, owner: "acme", repo: "bulk", generation: 1, key: "k" });
-    seedReviewRule(db.path, 84, { type: "rule", scope: "", statement: "会被改的那条" });
+    (await seedReviewRule(db.url, 84, { type: "rule", scope: "", statement: "会被改的那条" }));
     const target = (await store.getRuleSet(84))!.rules[0]!;
 
     const ids = [
@@ -812,12 +812,12 @@ test("批量采纳一次只推进一个知识集版本;有一条落不下去就�
 });
 
 test("批量采纳里目标条目已经不生效:整组不做,一版都不推进", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 85, owner: "acme", repo: "stale-bulk", generation: 1, key: "k" });
-    seedReviewRule(db.path, 85, { type: "rule", scope: "", statement: "先有的那条" });
+    (await seedReviewRule(db.url, 85, { type: "rule", scope: "", statement: "先有的那条" }));
     const rule = (await store.getRuleSet(85))!.rules[0]!;
     const ids = [
       (await store.addRuleProposal(85, proposal({ statement: "本来能落的那条" })))!,
@@ -840,9 +840,9 @@ test("批量采纳里目标条目已经不生效:整组不做,一版都不推进
 });
 
 test("批量驳回一组:全改状态,知识集一版都不推进", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 86, owner: "acme", repo: "bulk-reject", generation: 1, key: "k" });
     const ids = [
@@ -925,12 +925,12 @@ test("面板批量采纳与批量驳回:一次一版,坏 body 一律 400", async
 });
 
 test("批量采纳里两条指向同一个目标:整组不做,不让一条规则裂成两条", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 87, owner: "acme", repo: "same-target", generation: 1, key: "k" });
-    seedReviewRule(db.path, 87, { type: "rule", scope: "", statement: "本来那条" });
+    (await seedReviewRule(db.url, 87, { type: "rule", scope: "", statement: "本来那条" }));
     const rule = (await store.getRuleSet(87))!.rules[0]!;
     // 同一次探索报两条 `rule_id` 相同的变更,或两次反哺各排一条,队列里就会并存。
     const twoModify = [
@@ -970,12 +970,12 @@ test("批量采纳里两条指向同一个目标:整组不做,不让一条规则
 });
 
 test("modify 提案翻不了型:采纳一条把规则改成事实的提案落不下去", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     await store.registerRepo({ repoId: 88, owner: "acme", repo: "type-flip", generation: 1, key: "k" });
-    seedReviewRule(db.path, 88, { type: "rule", scope: "", statement: "边界要校验" });
+    (await seedReviewRule(db.url, 88, { type: "rule", scope: "", statement: "边界要校验" }));
     const rule = (await store.getRuleSet(88))!.rules[0]!;
 
     // agent 提的 modify 自带 type=fact:采纳会把一条生效规则悄悄变成项目事实,从此

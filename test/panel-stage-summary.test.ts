@@ -130,8 +130,8 @@ async function findingId(store: Store, runId: number, fingerprint: string): Prom
  * - `fp-c` 第一轮报出,第二轮复核判仍在而代码已改写,交接给新位置的 `fp-c2`。
  * - `fp-d` 第二轮才新报出,第三轮折叠。
  */
-async function seedStage(dbPath: string): Promise<{ rangeReviewId: number; runs: number[] }> {
-  const store = openStore(dbPath);
+async function seedStage(databaseUrl: string): Promise<{ rangeReviewId: number; runs: number[] }> {
+  const store = openStore(databaseUrl);
   try {
     // 注册表里要有这个仓库:普通用户的可见范围由「分配的 repo id」经注册表认出来。
     await store.registerRepo({
@@ -236,7 +236,7 @@ async function summaryOf(h: PanelHarness, query: string): Promise<SummaryBody> {
 
 test("阶段汇总:同一条只出现一次、状态取最新一轮,已延续不在待处置,计数与列表一致", async () => {
   const h = await startPanelHarness();
-  const { rangeReviewId, runs } = await seedStage(h.db.path);
+  const { rangeReviewId, runs } = await seedStage(h.db.url);
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
 
@@ -283,7 +283,7 @@ test("阶段汇总:同一条只出现一次、状态取最新一轮,已延续不
  */
 test("阶段汇总:位置跟到重定位的那一轮,没重定位的停在报出它的那一轮", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.registerRepo({
     repoId: GITEA_REPO.id,
     owner: HARNESS_PR.owner,
@@ -350,7 +350,7 @@ test("阶段汇总:位置跟到重定位的那一轮,没重定位的停在报出
 
 test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issue #266)", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   let rangeReviewId: number;
   let legacyId: number;
   try {
@@ -392,7 +392,7 @@ test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issu
     await store.close();
   }
   // 升级前落的归属行两列是 NULL:当时没存,与模型没给的空串分开。
-  const sqlite = new DatabaseSync(h.db.path);
+  const sqlite = new DatabaseSync(h.db.url);
   sqlite
     .prepare("UPDATE finding_attribution SET impact = NULL, suggestion = NULL WHERE finding_id = ?")
     .run(legacyId);
@@ -417,7 +417,7 @@ test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issu
 
 test("阶段汇总带代表段的影响与建议,升级前落的行按规则现算(issue #278)", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   let rangeReviewId: number;
   let legacyId: number;
   /** 一条 Finding 的两条归属:一条说得长、一条说得短,代表段该取长的那条。 */
@@ -518,7 +518,7 @@ test("阶段汇总带代表段的影响与建议,升级前落的行按规则现�
     await store.close();
   }
   // 升级前落的行:两列是 NULL,前两段还是按旧规则(严重度最高那条)存下来的那份。
-  const sqlite = new DatabaseSync(h.db.path);
+  const sqlite = new DatabaseSync(h.db.url);
   sqlite
     .prepare("UPDATE finding SET impact = NULL, suggestion = NULL WHERE id = ?")
     .run(legacyId);
@@ -541,7 +541,7 @@ test("阶段汇总带代表段的影响与建议,升级前落的行按规则现�
 
 test("阶段汇总带出延续承接来的历史说法,head 按来源轮次补(issue #267)", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   let rangeReviewId: number;
   let originRunId: number;
   try {
@@ -615,7 +615,7 @@ test("阶段汇总带出延续承接来的历史说法,head 按来源轮次补(i
 
 test("阶段汇总的时间线:每轮的新报出 / 折叠 / 已修复 / 已延续 / 漏复核", async () => {
   const h = await startPanelHarness();
-  const { rangeReviewId, runs } = await seedStage(h.db.path);
+  const { rangeReviewId, runs } = await seedStage(h.db.url);
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
   assert.deepEqual(
@@ -647,8 +647,8 @@ test("阶段汇总的时间线:每轮的新报出 / 折叠 / 已修复 / 已延�
 
 test("阶段汇总按 pull request 取范围:容器 PR 的轮次不混进 PR 链路", async () => {
   const h = await startPanelHarness();
-  await seedStage(h.db.path);
-  const store = openStore(h.db.path);
+  await seedStage(h.db.url);
+  const store = openStore(h.db.url);
   try {
     await seedRun(
       store,
@@ -679,7 +679,7 @@ test("阶段汇总按 pull request 取范围:容器 PR 的轮次不混进 PR 链
 
 test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     await seedRun(
       store,
@@ -732,8 +732,8 @@ test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async
 type StoredLineAuthor = { sha: unknown; name: unknown; email: unknown; at: unknown };
 
 /** 库里落着的行作者四列,按落库顺序。补录写没写回只能从库里看。 */
-function storedLineAuthors(dbPath: string): StoredLineAuthor[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+function storedLineAuthors(databaseUrl: string): StoredLineAuthor[] {
+  const db = new DatabaseSync(databaseUrl, { readOnly: true });
   try {
     const rows = db
       .prepare(
@@ -774,7 +774,7 @@ test("阶段汇总给升级前的 Finding 补录行作者并写回,之后不再�
   );
   const cached = cloneRepoCache(h);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     // 行作者四列全空:这条是升级前落的。
     await seedRun(
@@ -802,7 +802,7 @@ test("阶段汇总给升级前的 Finding 补录行作者并写回,之后不再�
   assert.match(lineAuthor!.authoredAt, /^\d{4}-\d{2}-\d{2}T/);
 
   // 库里已经写回,不只是这一次响应算出来的。
-  assert.deepEqual(storedLineAuthors(h.db.path), [
+  assert.deepEqual(storedLineAuthors(h.db.url), [
     {
       sha: headSha,
       name: "Alice Lin",
@@ -821,7 +821,7 @@ test("阶段汇总补录不了行作者时照常 200,那几条留空等下次读
   const h = await startPanelHarness();
   cloneRepoCache(h);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     // 这一轮的 head 在缓存副本里不可达:评审失败提前退出、没跑过钉住那一步的旧轮次。
     await seedRun(
@@ -841,7 +841,7 @@ test("阶段汇总补录不了行作者时照常 200,那几条留空等下次读
 
   const body = await summaryOf(h, PR_QUERY);
   assert.equal(body.findings[0]!.lineAuthor, null);
-  assert.deepEqual(storedLineAuthors(h.db.path), [
+  assert.deepEqual(storedLineAuthors(h.db.url), [
     { sha: null, name: null, email: null, at: null },
   ]);
 });
@@ -859,7 +859,7 @@ test("阶段汇总的入参:两条链路只能选一条,范围审查不存在时
 
 test("阶段汇总登录即可读:未登录 401,一格权限都没有的人分到仓库就读得到", async () => {
   const h = await startPanelHarness();
-  const { rangeReviewId } = await seedStage(h.db.path);
+  const { rangeReviewId } = await seedStage(h.db.url);
   const path = `/api/stage-summary?rangeReviewId=${rangeReviewId}`;
 
   assert.equal((await fetch(`${h.serverUrl}${path}`)).status, 401);
@@ -874,7 +874,7 @@ async function userCookie(
   username: string,
   permissions: readonly PanelPermission[],
 ): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const role = await store.createPanelRole({
       name: `role-${username}`,

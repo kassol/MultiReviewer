@@ -27,7 +27,7 @@ import type { StageDetail as StageDetailBody } from "../src/contracts/stages.ts"
 
 /** 播种一轮 Review Run:一条 Finding 一个指纹,阶段汇总按「文件 + 指纹」折叠。 */
 async function seedRun(
-  dbPath: string,
+  databaseUrl: string,
   meta: {
     owner: string;
     repo: string;
@@ -39,7 +39,7 @@ async function seedRun(
   },
   findings: { fingerprint: string; disposition?: "unknown" | "resolved" | "fixed" }[] = [],
 ): Promise<number> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   const runId = await seedRunRow(
     store,
     {
@@ -99,7 +99,7 @@ async function detail(h: PanelHarness, stageId: string): Promise<StageDetailBody
 test("阶段详情:pull request 阶段按 head commit 分组,最近一次推进在最前", async () => {
   const h = await startPanelHarness();
   const first = await seedRun(
-    h.db.path,
+    h.db.url,
     {
       owner: "acme",
       repo: "widgets",
@@ -112,7 +112,7 @@ test("阶段详情:pull request 阶段按 head commit 分组,最近一次推进�
   );
   // 同一个 head 上再跑一轮:同一组里两轮,fp-1 这一条折叠到已有的那条上。
   const second = await seedRun(
-    h.db.path,
+    h.db.url,
     {
       owner: "acme",
       repo: "widgets",
@@ -125,7 +125,7 @@ test("阶段详情:pull request 阶段按 head commit 分组,最近一次推进�
   );
   // 作者推了新代码:新的 head 单独一组。
   const third = await seedRun(
-    h.db.path,
+    h.db.url,
     {
       owner: "acme",
       repo: "widgets",
@@ -177,7 +177,7 @@ test("阶段详情:pull request 阶段按 head commit 分组,最近一次推进�
 
 test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻,没跑过的比较项也在", async () => {
   const h = await startPanelHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const rangeReviewId = await store.createRangeReview({
     repoId: GITEA_REPO.id,
     owner: "acme",
@@ -197,7 +197,7 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
   await store.close();
   // 容器 PR 的 head 就是当前比较项:两个比较项各跑过一轮。
   const first = await seedRun(
-    h.db.path,
+    h.db.url,
     {
       owner: "acme",
       repo: "widgets",
@@ -209,7 +209,7 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
     [{ fingerprint: "fp-1" }],
   );
   const second = await seedRun(
-    h.db.path,
+    h.db.url,
     {
       owner: "acme",
       repo: "widgets",
@@ -221,7 +221,7 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
     [{ fingerprint: "fp-2" }],
   );
   // 又推进一次,这一次的轮次还没跑起来。
-  const advanced = openStore(h.db.path);
+  const advanced = openStore(h.db.url);
   await advanced.advanceRangeReview({
     id: rangeReviewId,
     comparisonSha: "cmp-three",
@@ -257,7 +257,7 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
 
 test("阶段详情:标识认不出或阶段不存在都是 404", async () => {
   const h = await startPanelHarness();
-  await seedRun(h.db.path, {
+  await seedRun(h.db.url, {
     owner: "acme",
     repo: "widgets",
     pullNumber: 7,
@@ -274,7 +274,7 @@ test("阶段详情:标识认不出或阶段不存在都是 404", async () => {
 
 test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读得到", async () => {
   const h = await startPanelHarness();
-  await seedRun(h.db.path, {
+  await seedRun(h.db.url, {
     owner: "acme",
     repo: "widgets",
     pullNumber: 7,
@@ -286,7 +286,7 @@ test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读�
 
   await seedHistoricalRepo(h);
   const password = "stage-detail-test-password";
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.createPanelUser({
     username: "plain-user",
     displayName: null,

@@ -65,7 +65,7 @@ async function seedSurveySession(
   productId: number,
   createdBy: string,
 ): Promise<AgentSessionRecord> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     return await store.createAgentSession({
       productId,
@@ -80,7 +80,7 @@ async function seedSurveySession(
 
 /** 把这一场梳理记成谈完了,与完成工具落的是同一格。 */
 async function completeSession(h: PanelHarness, sessionId: number): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     await store.completeAgentSession(sessionId, AT);
   } finally {
@@ -253,11 +253,11 @@ test("升级前的梳理会话:开库补列即记成谈完了,下一场开得起
   // 把 `agent_session` 退回升级之前的样子:那一列还不存在,表里已经有一场旧形态的梳理
   // ——创建者是系统,人发不了消息、也就调不到 `complete_survey`。
   const OLD_ID = 1;
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   db.exec("DROP TABLE agent_session");
   db.exec(`CREATE TABLE agent_session (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id INTEGER NOT NULL REFERENCES product(id),
+    product_id INTEGER NOT NULL REFERENCES (await product(id)),
     created_by TEXT NOT NULL,
     purpose TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -276,7 +276,7 @@ test("升级前的梳理会话:开库补列即记成谈完了,下一场开得起
   db.close();
 
   // 下一次开库把列补回来并回填:这一场从此算谈完了。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal((await store.getAgentSession(OLD_ID))?.completedAt, AT);
   } finally {

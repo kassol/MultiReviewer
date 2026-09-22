@@ -17,7 +17,7 @@ import { scopesOverlap } from "../src/review/run.ts";
 import { openStore } from "../src/review/store/index.ts";
 import { FINDING_QUERY_LIMIT } from "../src/reviewer/session-finding-tool.ts";
 import { disposeAgentSessions, sessionKnowledge } from "../src/webhook/agent-session.ts";
-import { makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import {
   GITEA_REPO,
   HARNESS_SPEC,
@@ -67,11 +67,11 @@ function query(args: Args): StubTurn {
  * 分配到的那些(spec #329),这几个因此不会被 clone。
  */
 async function attachRepo(
-  dbPath: string,
+  databaseUrl: string,
   productId: number,
   repo: { id: number; owner: string; repo: string },
 ): Promise<number> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     assert.equal(
       await store.registerRepo({
@@ -92,11 +92,11 @@ async function attachRepo(
 
 /** 落一条产品知识(CONTEXT.md 产品知识,issue #360)。 */
 async function seedProductKnowledge(
-  dbPath: string,
+  databaseUrl: string,
   productId: number,
   record: { kind: "term" | "relationship" | "decision"; name?: string; body: string },
 ): Promise<number> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     return (await store.writeProductKnowledge({
       productId,
@@ -125,7 +125,7 @@ async function startSessionHarness(turns: readonly StubTurn[]): Promise<{
   cookie: string;
   sessionId: number;
   productId: number;
-  requests: Awaited<ReturnType<typeof startModelStub>>["requests"];
+  requests: Awaited<Awaited<ReturnType<typeof startModelStub>>>["requests"];
   close: () => Promise<void>;
 }> {
   const stub = await startModelStub(turns);
@@ -202,38 +202,38 @@ async function toolResults(
 
 test("知识查询按名字读整条产品知识,路径 glob 只收窄仓库条目,会话根外的仓库问不到", async () => {
   const turns: StubTurn[] = [
-    query({ repos: [REPO], names: ["订单", "签名统一在一处"], relationships: true }),
-    query({ repos: [REPO], pathGlob: "src/finance/**" }),
-    query({ names: ["没写过的词"] }),
-    query({ repos: ["acme/elsewhere"] }),
+    (await query({ repos: [REPO], names: ["订单", "签名统一在一处"], relationships: true })),
+    (await query({ repos: [REPO], pathGlob: "src/finance/**" })),
+    (await query({ names: ["没写过的词"] })),
+    (await query({ repos: ["acme/elsewhere"] })),
     { text: "看完了,按这些约定改", usage: { input: 10, output: 2 } },
   ];
   const { h, cookie, sessionId, productId, requests, close } = await startSessionHarness(turns);
   try {
-    seedReviewRule(h.db.path, GITEA_REPO.id, {
+    (await seedReviewRule(h.db.url, GITEA_REPO.id, {
       type: "rule",
       scope: "src/finance/**",
       statement: FINANCE_RULE,
-    });
-    seedReviewRule(h.db.path, GITEA_REPO.id, {
+    }));
+    (await seedReviewRule(h.db.url, GITEA_REPO.id, {
       type: "fact",
       scope: "",
       statement: WHOLE_REPO_FACT,
-    });
-    seedReviewRule(h.db.path, GITEA_REPO.id, {
+    }));
+    (await seedReviewRule(h.db.url, GITEA_REPO.id, {
       type: "rule",
       scope: "web/**",
       statement: WEB_RULE,
-    });
+    }));
     // 产品里另一个仓库:会话根挂不到它(创建者只分配了一个),它的规则一条都不该回来。
-    const orders = await attachRepo(h.db.path, productId, { id: 5001, owner: "acme", repo: "orders" });
-    seedReviewRule(h.db.path, orders, { type: "rule", scope: "", statement: OTHER_REPO_RULE });
-    await seedProductKnowledge(h.db.path, productId, { kind: "term", name: "订单", body: PRODUCT_TERM });
-    await seedProductKnowledge(h.db.path, productId, {
+    const orders = await attachRepo(h.db.url, productId, { id: 5001, owner: "acme", repo: "orders" });
+    (await seedReviewRule(h.db.url, orders, { type: "rule", scope: "", statement: OTHER_REPO_RULE }));
+    await seedProductKnowledge(h.db.url, productId, { kind: "term", name: "订单", body: PRODUCT_TERM });
+    await seedProductKnowledge(h.db.url, productId, {
       kind: "relationship",
       body: PRODUCT_RELATIONSHIP,
     });
-    await seedProductKnowledge(h.db.path, productId, {
+    await seedProductKnowledge(h.db.url, productId, {
       kind: "decision",
       name: "签名统一在一处",
       body: PRODUCT_DECISION,
@@ -298,10 +298,10 @@ test("知识查询按名字读整条产品知识,路径 glob 只收窄仓库条�
 const cleanups = testCleanups();
 
 /** 四个仓库、一个产品的一套库。回产品 id 与四个 repo id。 */
-async function storeWithProduct(): Promise<{ dbPath: string; productId: number; repoIds: number[] }> {
-  const db = makeDbPath();
+async function storeWithProduct(): Promise<{ databaseUrl: string; productId: number; repoIds: number[] }> {
+  const db = await makeTestDatabase();
   cleanups.push(() => db.cleanup());
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   let productId = 0;
   const repoIds: number[] = [];
   try {
@@ -324,12 +324,12 @@ async function storeWithProduct(): Promise<{ dbPath: string; productId: number; 
   } finally {
     await store.close();
   }
-  return { dbPath: db.path, productId, repoIds };
+  return { databaseUrl: db.url, productId, repoIds };
 }
 
 /** 这个产品的仓库归属行,`sessionKnowledge` 按它把名字换成 id。 */
-async function productRepos(dbPath: string, productId: number) {
-  const store = openStore(dbPath);
+async function productRepos(databaseUrl: string, productId: number) {
+  const store = openStore(databaseUrl);
   try {
     return (await store.getProduct(productId))!.repos;
   } finally {
@@ -338,24 +338,24 @@ async function productRepos(dbPath: string, productId: number) {
 }
 
 test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库关系取,glob 不碰产品条目", async () => {
-  const { dbPath, productId, repoIds } = await storeWithProduct();
+  const { databaseUrl, productId, repoIds } = await storeWithProduct();
   const [widgets, orders] = repoIds as [number, number, number, number];
-  await seedProductKnowledge(dbPath, productId, { kind: "term", name: "订单", body: PRODUCT_TERM });
-  await seedProductKnowledge(dbPath, productId, { kind: "relationship", body: PRODUCT_RELATIONSHIP });
-  await seedProductKnowledge(dbPath, productId, {
+  await seedProductKnowledge(databaseUrl, productId, { kind: "term", name: "订单", body: PRODUCT_TERM });
+  await seedProductKnowledge(databaseUrl, productId, { kind: "relationship", body: PRODUCT_RELATIONSHIP });
+  await seedProductKnowledge(databaseUrl, productId, {
     kind: "decision",
     name: "签名统一在一处",
     body: PRODUCT_DECISION,
   });
-  seedReviewRule(dbPath, widgets, {
+  (await seedReviewRule(databaseUrl, widgets, {
     type: "rule",
     scope: "src/finance/**",
     statement: FINANCE_RULE,
-  });
-  seedReviewRule(dbPath, orders, { type: "rule", scope: "", statement: OTHER_REPO_RULE });
-  const repos = await productRepos(dbPath, productId);
+  }));
+  (await seedReviewRule(databaseUrl, orders, { type: "rule", scope: "", statement: OTHER_REPO_RULE }));
+  const repos = await productRepos(databaseUrl, productId);
 
-  const both = await sessionKnowledge(dbPath, productId, repos, {
+  const both = await sessionKnowledge(databaseUrl, productId, repos, {
     repos: ["acme/widgets", "acme/orders"],
     names: ["订单"],
     relationships: true,
@@ -374,7 +374,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   );
 
   // 只问一个仓库、不问产品层:产品条目一条不回,只有它自己的规则。
-  const one = await sessionKnowledge(dbPath, productId, repos, { repos: ["acme/widgets"] });
+  const one = await sessionKnowledge(databaseUrl, productId, repos, { repos: ["acme/widgets"] });
   assert.deepEqual(one.product, []);
   assert.deepEqual(
     one.repo.map((entry) => entry.statement),
@@ -382,7 +382,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   );
 
   // 只问名字、不问仓库:产品层回整条,仓库层空着。
-  const named = await sessionKnowledge(dbPath, productId, repos, { names: ["签名统一在一处"] });
+  const named = await sessionKnowledge(databaseUrl, productId, repos, { names: ["签名统一在一处"] });
   assert.deepEqual(
     named.product.map((entry) => [entry.kind, entry.body]),
     [["decision", PRODUCT_DECISION]],
@@ -390,7 +390,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   assert.deepEqual(named.repo, []);
 
   // 路径 glob:重叠不上的仓库条目被收掉,产品条目不受它影响。
-  const narrowed = await sessionKnowledge(dbPath, productId, repos, {
+  const narrowed = await sessionKnowledge(databaseUrl, productId, repos, {
     repos: ["acme/widgets", "acme/orders"],
     pathGlob: "src/finance/rate.ts",
     relationships: true,
@@ -404,7 +404,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
     narrowed.repo.map((entry) => entry.statement),
     [FINANCE_RULE, OTHER_REPO_RULE],
   );
-  const elsewhere = await sessionKnowledge(dbPath, productId, repos, {
+  const elsewhere = await sessionKnowledge(databaseUrl, productId, repos, {
     repos: ["acme/widgets"],
     pathGlob: "web/**",
   });
@@ -412,19 +412,19 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
 });
 
 test("仓库层封顶在历史 Finding 查询那一个常量,产品层按名字取不封顶", async () => {
-  const { dbPath, productId, repoIds } = await storeWithProduct();
+  const { databaseUrl, productId, repoIds } = await storeWithProduct();
   const [widgets] = repoIds as [number, number, number, number];
   const names: string[] = [];
   for (let index = 0; index < FINDING_QUERY_LIMIT + 10; index += 1) {
-    seedReviewRule(dbPath, widgets, { type: "rule", scope: "", statement: `第 ${index} 条规则` });
+    (await seedReviewRule(databaseUrl, widgets, { type: "rule", scope: "", statement: `第 ${index} 条规则` }));
     names.push(`术语 ${index}`);
-    await seedProductKnowledge(dbPath, productId, {
+    await seedProductKnowledge(databaseUrl, productId, {
       kind: "term",
       name: `术语 ${index}`,
       body: `第 ${index} 条定义`,
     });
   }
-  const entries = await sessionKnowledge(dbPath, productId, await productRepos(dbPath, productId), {
+  const entries = await sessionKnowledge(databaseUrl, productId, await productRepos(databaseUrl, productId), {
     repos: ["acme/widgets"],
     names,
   });

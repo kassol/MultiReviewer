@@ -49,8 +49,8 @@ export const FINDING = {
 
 export const ANCHOR = /<!-- multireviewer:([0-9a-f]{64}) -->/;
 
-export function setup() {
-  const { repo, cache, db, forge } = setupRepo(testCleanups(), {
+export async function setup() {
+  const { repo, cache, db, forge } = await setupRepo(testCleanups(), {
     tree: { base: { "src/calc.js": BASE }, head: { "src/calc.js": HEAD } },
     changedFiles: [{ path: "src/calc.js", status: "modified" }],
   });
@@ -59,7 +59,7 @@ export function setup() {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   return { repo, db, forge, deps };
@@ -79,20 +79,21 @@ export function asPublished(forge: MemoryForge, resolved: boolean): ExistingRevi
 }
 
 /** 落库的处置人与处置时刻,按落库顺序。 */
-export function dispositionMarks(dbPath: string): { by: unknown; at: unknown }[] {
-  return query(dbPath, "SELECT disposed_by, disposed_at FROM finding ORDER BY id").map(
-    (row) => ({ by: row["disposed_by"], at: row["disposed_at"] }),
-  );
+export async function dispositionMarks(
+  databaseUrl: string,
+): Promise<{ by: unknown; at: unknown }[]> {
+  const rows = await query(databaseUrl, "SELECT disposed_by, disposed_at FROM finding ORDER BY id");
+  return rows.map((row) => ({ by: row["disposed_by"], at: row["disposed_at"] }));
 }
 
 /** 人在面板上处置一条 Finding:落库这一步与面板 API 走同一段代码。 */
 export async function disposeInPanel(
-  dbPath: string,
+  databaseUrl: string,
   commentId: string,
   disposition: "resolved" | "unresolved",
   note?: string,
 ): Promise<void> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     await store.recordDisposition({
       owner: EVENT.owner,
@@ -109,10 +110,9 @@ export async function disposeInPanel(
 }
 
 /** 本轮落库的 disposition。第二次 Review Run 的记录 id 更大。 */
-export function latestDispositions(dbPath: string): string[] {
-  return query(dbPath, "SELECT disposition FROM finding ORDER BY id").map(
-    (row) => String(row["disposition"]),
-  );
+export async function latestDispositions(databaseUrl: string): Promise<string[]> {
+  const rows = await query(databaseUrl, "SELECT disposition FROM finding ORDER BY id");
+  return rows.map((row) => String(row["disposition"]));
 }
 
 /** 本轮什么都不报、也不给复核结论的 Reviewer。 */

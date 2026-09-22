@@ -63,7 +63,7 @@ async function seedRun(
   /** 这一轮的模式与收尾结果:只复核与失败那两档不提组,取「最新一轮」时要跳过它们。 */
   run: { mode?: "verdict-only"; failed?: boolean } = {},
 ): Promise<{ runId: number; findingIds: number[]; groupIds: number[] }> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const runId = await store.startRun({
       owner: HARNESS_PR.owner,
@@ -115,7 +115,7 @@ async function seedRun(
       verdicts: [],
       ...(rootCauses.length === 0 ? {} : { rootCauses }),
     });
-    const findingIds = new DatabaseSync(h.db.path, { readOnly: true });
+    const findingIds = new DatabaseSync(h.db.url, { readOnly: true });
     try {
       const rows = findingIds
         .prepare("SELECT id FROM finding WHERE run_id = ? ORDER BY group_index")
@@ -280,7 +280,7 @@ test("成员映完只剩一条:整组不出现,剩下那条按未入组列出", 
     [{ reason: REASON, members: [0, 1] }],
   );
   // a 那条整条交接掉而没有承接者:它映不到当前列表里的任何一行,组只剩 b 一个成员。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   try {
     db.prepare("UPDATE finding SET disposition = 'continued' WHERE id = ?").run(
       seeded.findingIds[0]!,

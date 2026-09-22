@@ -69,12 +69,12 @@ async function records(h: PanelHarness, cookie: string, sessionId: number): Prom
 
 /** 往 tracker 里落一条 spec 与一张票,记在这一场会话名下。写入那一侧由子进程用例把关。 */
 async function seedTracker(
-  dbPath: string,
+  databaseUrl: string,
   productId: number,
   sessionId: number | null,
   title: string,
 ): Promise<{ specId: number; ticketId: number }> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     const spec = await store.createProductSpec({
       productId,
@@ -107,9 +107,9 @@ test("读会话回得出它写的 spec 与票:别的会话写的、没有会话�
   // 一条都还没写:两份列表都是空的,不是 404——右栏据此整块不渲染。
   assert.deepEqual(await wrote(h, cookie, sessionId), { specs: [], tickets: [] });
 
-  const mine = await seedTracker(h.db.path, productId, sessionId, "报销单可以撤回");
-  await seedTracker(h.db.path, productId, otherId, "别的会话写的");
-  await seedTracker(h.db.path, productId, null, "没有会话写的");
+  const mine = await seedTracker(h.db.url, productId, sessionId, "报销单可以撤回");
+  await seedTracker(h.db.url, productId, otherId, "别的会话写的");
+  await seedTracker(h.db.url, productId, null, "没有会话写的");
 
   assert.deepEqual(await wrote(h, cookie, sessionId), {
     specs: [{ id: mine.specId, title: "报销单可以撤回" }],
@@ -144,7 +144,7 @@ test("升级前的旧库:产出与定稿两张表丢掉,旧的需求拆分会话
   const sessionId = await createSession(h, cookie, productId);
 
   // 把库退回升级之前的样子:两张旧表带着行,会话记录里也有那时落下的两条条目。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   db.exec(`CREATE TABLE agent_session_output (
     session_id INTEGER NOT NULL,
     kind TEXT NOT NULL,
@@ -182,7 +182,7 @@ test("升级前的旧库:产出与定稿两张表丢掉,旧的需求拆分会话
     cacheWriteTokens: 0,
     totalTokens: 0,
   };
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     // 旧会话那两条条目:一条产出卡片标记,一条定稿那句话。
     await store.appendAgentSessionEntry(sessionId, {
@@ -224,7 +224,7 @@ test("升级前的旧库:产出与定稿两张表丢掉,旧的需求拆分会话
   assert.equal(landed[1]!.entry.content, "需求拆分 v1 已定稿。");
 
   // 两张旧表真的没了,不是留着不读。
-  const check = new DatabaseSync(h.db.path);
+  const check = new DatabaseSync(h.db.url);
   try {
     for (const table of ["agent_session_output", "agent_session_output_finalization"]) {
       assert.equal(

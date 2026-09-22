@@ -88,7 +88,7 @@ test("注册立刻返回,工作副本在后台备好,状态从准备中走到就
 test("副本已就绪之后,一次审查与一次分支列表都不再 clone", async () => {
   const h = await startReadyPanelHarness();
   assert.equal((await h.api("POST", "/repos", { owner: PR.owner, repo: PR.repo })).status, 201);
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   await h.worktreesPreparedAtLeast(1);
   assert.equal((await worktreeOf(h)).state, "ready");
 

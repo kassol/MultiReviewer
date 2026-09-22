@@ -53,7 +53,7 @@ async function seedStage(
   ref: { owner: string; repo: string; pullNumber: number },
   findings: readonly SeedFinding[],
 ): Promise<void> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const runId = await store.startRun({
       owner: ref.owner,
@@ -176,7 +176,7 @@ async function scopedCookie(
   permissions: readonly PanelPermission[],
   repoIds?: readonly number[],
 ): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const role = await store.createPanelRole({
       name: `角色-${username}`,

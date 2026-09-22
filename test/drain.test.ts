@@ -22,7 +22,7 @@ import { HARNESS_PR, startPanelHarness } from "./support/panel-harness.ts";
 const cleanups = testCleanups();
 
 test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨迹记下中止在第几批", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const drain = createDrain();
   // 第一批跑到一半时收到信号。取号线跑完这一批就不该再取第二批。
   const reviewer = batchReviewer("model-a", {
@@ -35,7 +35,7 @@ test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨�
     forge: fixture.forge.forge,
     reviewers: [reviewer],
     cacheDir: fixture.cache.dir,
-    dbPath: fixture.db.path,
+    databaseUrl: fixture.db.url,
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
     drain,
@@ -44,40 +44,40 @@ test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨�
   assert.equal(result.aborted, true);
   // 第一批的结果已经落库,后两批一次都没跑。
   assert.deepEqual(
-    query(fixture.db.path, "SELECT batch_index FROM review_run_batch_outcome ORDER BY batch_index").map(
+    (await query(fixture.db.url, "SELECT batch_index FROM review_run_batch_outcome ORDER BY batch_index")).map(
       (row) => row["batch_index"],
     ),
     [0],
   );
   // 不收尾:没有结束时间,下一次启动因此认得出它、续得上(issue #248)。
-  const [run] = query(fixture.db.path, "SELECT finished_at, batch_count FROM review_run");
+  const [run] = (await query(fixture.db.url, "SELECT finished_at, batch_count FROM review_run"));
   assert.equal(run?.["finished_at"], null);
   assert.equal(run?.["batch_count"], 3);
   // 不合并、不发评论,也不进任何事后统计的分母。
   assert.equal(fixture.forge.createdReviews.length, 0);
-  assert.equal(query(fixture.db.path, "SELECT id FROM reviewer_outcome").length, 0);
-  assert.equal(query(fixture.db.path, "SELECT id FROM finding").length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT id FROM reviewer_outcome")).length, 0);
+  assert.equal((await query(fixture.db.url, "SELECT id FROM finding")).length, 0);
 
   // 轨迹上看得出本轮停在第几批。
-  const [aborted] = query(
-    fixture.db.path,
+  const [aborted] = (await query(
+    fixture.db.url,
     "SELECT payload FROM review_trace WHERE kind = 'run_aborted'",
-  );
+  ));
   assert.deepEqual(JSON.parse(String(aborted?.["payload"])), { batch: 2, total: 3 });
   assert.equal(
-    query(fixture.db.path, "SELECT seq FROM review_trace WHERE kind = 'run_finished'").length,
+    (await query(fixture.db.url, "SELECT seq FROM review_trace WHERE kind = 'run_finished'")).length,
     0,
   );
 });
 
 test("排空中止的那一轮,下一次启动续跑得回来", async () => {
-  const fixture = setup(cleanups);
+  const fixture = (await setup(cleanups));
   const drain = createDrain();
   const deps = {
     forge: fixture.forge.forge,
     reviewers: [batchReviewer("model-a")],
     cacheDir: fixture.cache.dir,
-    dbPath: fixture.db.path,
+    databaseUrl: fixture.db.url,
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
   };
@@ -86,7 +86,7 @@ test("排空中止的那一轮,下一次启动续跑得回来", async () => {
     reviewers: [batchReviewer("model-a", { onBatch: (call) => { if (call === 1) drain.begin(); } })],
     drain,
   });
-  const [run] = query(fixture.db.path, "SELECT id FROM review_run WHERE finished_at IS NULL");
+  const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
 
   const resumed = await runReview(EVENT, { ...deps, resumeRunId: Number(run?.["id"]) });
 

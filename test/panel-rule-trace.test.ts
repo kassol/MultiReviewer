@@ -10,7 +10,7 @@ import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
 import type { RuleAgent, RuleAgentItem } from "../src/reviewer/rule-agent.ts";
-import { confirmEmptyRuleSet, makeDbPath, testCleanups } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 import {
   GITEA_REPO,
@@ -68,9 +68,9 @@ async function traceEvents(h: PanelHarness, taskId: number): Promise<TraceEventR
 }
 
 test("知识轨迹的任务分号、续读与级联", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     assert.equal(
       await store.registerRepo({ repoId: 90, owner: "acme", repo: "traced", generation: 1, key: "k" }),
@@ -207,7 +207,7 @@ test("一次处置反哺留下一条轨迹,提案回溯得到它", async () => {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
 
@@ -246,7 +246,7 @@ test("知识轨迹的可见性与知识集读侧一致:分配外 404,别的仓�
     (await h.api("POST", "/repos", { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo })).status,
     201,
   );
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   let taskId: number;
   try {
     taskId = await store.startRuleTrace(GITEA_REPO.id, "baseline-exploration", { model: "test:m" });

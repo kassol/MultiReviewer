@@ -49,7 +49,7 @@ async function product(h: PanelHarness): Promise<Product> {
   const text = await response.text();
   assert.equal(response.status, 201, text);
   const created = (JSON.parse(text) as { product: Product }).product;
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await store.attachProductRepo(created.id, GITEA_REPO.id, AT), "attached");
   } finally {
@@ -69,7 +69,7 @@ async function seedSpec(
   tickets: readonly { title: string; body: string; label?: ProductTicketLabel }[] = [],
   blocks: readonly [number, number][] = [],
 ): Promise<{ specId: number; ticketIds: number[] }> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const written = await store.createProductSpec({
       productId,
@@ -127,7 +127,7 @@ test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者�
     // 第二张票等第一张。
     [[1, 0]],
   );
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
   } finally {
@@ -168,7 +168,7 @@ test("一条 spec 打得开全文:正文、票的正文与评论都在", async (
     { title: "报销单可以撤回", body: "## Problem Statement\n\n提交之后改不了。" },
     [{ title: "撤回接口", body: "PATCH /expenses/{id}\n\n验收:重复撤回回 409。" }],
   );
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     await store.addProductTicketComment({
       ticketId: ticketIds[0]!,
@@ -271,7 +271,7 @@ test("升级前的旧库:开库建起 tracker 那几张表,产品开起来 track
   ]);
 
   // 把库退回升级之前的样子:那时这四张表都不存在。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   for (const table of [
     "product_ticket_block",
     "product_ticket_comment",

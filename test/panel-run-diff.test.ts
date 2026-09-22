@@ -40,7 +40,7 @@ async function harnessWithRun(): Promise<PanelHarness> {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
@@ -99,7 +99,7 @@ test("diff API:head 已不在本地副本里时 409 说明原因,不是 500", as
   const h = await harnessWithRun();
 
   // 一轮指向已经不存在的 commit:分支删了或者仓库被强推过之后就是这个样子。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runId = await store.startRun({
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
@@ -128,7 +128,7 @@ test("diff API:范围审查的一轮按阶段基准取范围", async () => {
     (await h.api("POST", "/repos", { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   assert.equal(
     (
       await h.api("POST", "/range-reviews", {
@@ -163,7 +163,7 @@ test("diff API:一格权限都没有的用户,只要仓库分给了他就读得�
   const h = await harnessWithRun();
   const runId = await latestRunId(h);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.createPanelUser({
     username: "diff-reader",
     displayName: null,
@@ -238,7 +238,7 @@ test("diff API:同一轮的并发文件请求共用一次准备,不按请求数�
   const headSha = h.repo.pushToHead(
     Object.fromEntries(paths.map((path, index) => [path, `export const v = ${index};\n`])),
   );
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runId = await store.startRun({
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,

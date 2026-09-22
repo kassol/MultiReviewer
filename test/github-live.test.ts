@@ -80,7 +80,7 @@ test("GitHub 实现对真实 pull request 完成整条发布与处置链路", { 
     forge,
     reviewers: [reviewer],
     cacheDir,
-    dbPath: join(cacheDir, "multireviewer.db"),
+    databaseUrl: join(cacheDir, "multireviewer.db"),
   });
   assert.equal(result.inlineCount, 1);
 

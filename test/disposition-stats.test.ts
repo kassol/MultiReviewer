@@ -13,7 +13,7 @@ import {
   type ModelParticipation,
   type Store,
 } from "../src/review/store/index.ts";
-import { makeDbPath, seedRun as seedRunRow } from "./support/git-fixture.ts";
+import { makeTestDatabase, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 const WIDE: [string, string] = ["2000-01-01T00:00:00.000Z", "2999-01-01T00:00:00.000Z"];
 
@@ -425,8 +425,8 @@ const CASES: Case[] = [
 
 for (const c of CASES) {
   test(`口径:${c.name}`, async () => {
-    const db = makeDbPath();
-    const store = openStore(db.path);
+    const db = await makeTestDatabase();
+    const store = openStore(db.url);
     try {
       await c.seed(store);
       const [from, to] = c.window ?? WIDE;
@@ -481,16 +481,16 @@ async function seedWithModel(store: Store, model: string, at: string): Promise<v
 }
 
 test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一条", async () => {
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   try {
     // 升级前的一轮写裸 id,升级后的一轮写模型标识。provider 从库里恢复不出来,
     // 按当前模型组合反查会把历史错归到别家去,所以一律不回填(issue #73 的取舍)。
-    const seed = openStore(db.path);
+    const seed = openStore(db.url);
     await seedWithModel(seed, "old-model", T1);
     await seedWithModel(seed, "acme:old-model", T2);
     await seed.close();
 
-    const reopened = openStore(db.path);
+    const reopened = openStore(db.url);
     assert.deepEqual(await models(reopened), {
       finding: ["acme:old-model", "old-model"],
       outcome: ["acme:old-model", "old-model"],

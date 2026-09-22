@@ -39,9 +39,9 @@ async function boot(
 ): Promise<Boot> {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-boot-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-  const dbPath = join(dir, "multireviewer.db");
+  const databaseUrl = join(dir, "multireviewer.db");
   const cacheDir = join(dir, "worktrees");
-  const seed = openStore(dbPath);
+  const seed = openStore(databaseUrl);
   await putGlobalSettings(seed, {
     reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
     maxChangedLinesPerBatch: null,
@@ -53,7 +53,7 @@ async function boot(
     if (value !== undefined && !CLEARED.includes(name)) env[name] = value;
   }
   Object.assign(env, {
-    MULTIREVIEWER_DB: dbPath,
+    MULTIREVIEWER_DB: databaseUrl,
     MULTIREVIEWER_CACHE_DIR: cacheDir,
     MULTIREVIEWER_ADMIN_TOKEN: "boot-test-admin-token",
     // 明文 http 但 localhost:基地址校验要放行本机调试。

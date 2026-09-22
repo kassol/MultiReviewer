@@ -26,7 +26,7 @@ import {
 } from "./support/cross-run.ts";
 
 test("代码未变且上一轮已处置:本轮不发行级评论,折叠段里标注曾被处置", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, true));
@@ -45,33 +45,33 @@ test("代码未变且上一轮已处置:本轮不发行级评论,折叠段里标
   assert.doesNotMatch(second.body, /model-a/);
 
   // 第一轮的历史行也被回填成 resolved(ADR 0006):读回的 resolve 状态不再用完即弃。
-  assert.deepEqual(latestDispositions(db.path), ["resolved", "resolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["resolved", "resolved"]);
 });
 
 test("回填以 Forge 最新状态为准:resolve 后又 unresolve,覆盖回 unresolved", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
   await runReview(EVENT, deps);
-  assert.deepEqual(latestDispositions(db.path), ["resolved", "resolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["resolved", "resolved"]);
 
   // 人又 unresolve 了:下一轮把这个 PR 名下匹配的每一行都覆盖回 unresolved。
   for (const comment of forge.existingComments) comment.resolved = false;
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": DISTANT_CHANGE });
   await runReview(EVENT, deps);
 
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved", "unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved", "unresolved", "unresolved"]);
   // 折叠的行沿用它历史上的载体:有行级评论承载,来源类型是 inline,进统计。
-  const placements = query(db.path, "SELECT placement FROM finding ORDER BY id").map((row) =>
+  const placements = (await query(db.url, "SELECT placement FROM finding ORDER BY id")).map((row) =>
     String(row["placement"]),
   );
   assert.deepEqual(placements, ["inline", "inline", "inline"]);
 });
 
 test("锚不进 hunk 的那条被丢弃,落库的每条来源类型都是 inline", async () => {
-  const { db, forge, deps } = setup();
+  const { db, forge, deps } = (await setup());
 
   await runReview(EVENT, {
     ...deps,
@@ -86,7 +86,7 @@ test("锚不进 hunk 的那条被丢弃,落库的每条来源类型都是 inline
 
   assert.equal(forge.createdReviews[0]!.comments.length, 1);
   assert.doesNotMatch(forge.createdReviews[0]!.body, /mul 的收尾没有校验/);
-  const rows = query(db.path, "SELECT line, placement FROM finding ORDER BY id");
+  const rows = (await query(db.url, "SELECT line, placement FROM finding ORDER BY id"));
   assert.deepEqual(
     rows.map((row) => ({ line: Number(row["line"]), placement: String(row["placement"]) })),
     [{ line: FINDING.line, placement: "inline" }],
@@ -94,7 +94,7 @@ test("锚不进 hunk 的那条被丢弃,落库的每条来源类型都是 inline
 });
 
 test("折叠的 Finding 计入首行总数:口径是本轮结论,不是本轮新增", async () => {
-  const { repo, forge, deps } = setup();
+  const { repo, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -108,7 +108,7 @@ test("折叠的 Finding 计入首行总数:口径是本轮结论,不是本轮新
 });
 
 test("跨轮折叠不分模型:上一轮 model-a 报的,本轮 model-b 报同一处也折叠", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   assert.equal(forge.createdReviews[0]!.comments.length, 1);
@@ -126,21 +126,21 @@ test("跨轮折叠不分模型:上一轮 model-a 报的,本轮 model-b 报同一
   assert.match(second.body, /尚未处置/);
 
   // 本轮那一行记的是上一轮那条评论:处置的载体没有因为换了模型而分家。
-  const rows = query(db.path, "SELECT comment_id FROM finding ORDER BY id");
+  const rows = (await query(db.url, "SELECT comment_id FROM finding ORDER BY id"));
   assert.deepEqual(
     rows.map((row) => row["comment_id"]),
     [forge.publishedComments[0]!.id, forge.publishedComments[0]!.id],
   );
   // 两轮各一条 Finding,各自记住报出它的那个模型。
-  const attributions = query(
-    db.path,
+  const attributions = (await query(
+    db.url,
     "SELECT model FROM finding_attribution ORDER BY finding_id",
-  );
+  ));
   assert.deepEqual(attributions.map((row) => row["model"]), ["model-a", "model-b"]);
 });
 
 test("上一轮已处置但代码已改动:本轮按新 Finding 正常提出", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, true));
@@ -156,11 +156,11 @@ test("上一轮已处置但代码已改动:本轮按新 Finding 正常提出", a
   assert.doesNotMatch(second.body, /<details>/);
   // 代码改了,指纹变了:本轮是新的一条(unknown,新的处置机会);第一轮的历史行凭
   // 旧指纹仍与旧评论对得上,回填成 resolved(ADR 0006)。
-  assert.deepEqual(latestDispositions(db.path), ["resolved", "unknown"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["resolved", "unknown"]);
 });
 
 test("代码未变且上一轮未处置:折叠并标注尚未处置", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -175,11 +175,11 @@ test("代码未变且上一轮未处置:折叠并标注尚未处置", async () =
   assert.match(second.body, /sub 多减了 1/);
 
   // 历史行同样被回填:未处置也是一个明确的读回状态,覆盖掉首轮的 unknown。
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved", "unresolved"]);
 });
 
 test("模型换了代表行(相差 3 行以内)时仍匹配为同一处,不重发", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -195,11 +195,11 @@ test("模型换了代表行(相差 3 行以内)时仍匹配为同一处,不重�
   const second = forge.createdReviews[1]!;
   assert.deepEqual(second.comments, [], "换了代表行的同一个 Finding 又被发成了行级评论");
   assert.match(second.body, /尚未处置/);
-  assert.deepEqual(latestDispositions(db.path), ["unresolved", "unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unresolved", "unresolved"]);
 });
 
 test("偏移命中折叠的那条落库沿用历史行的指纹:轨迹折叠数与阶段汇总一致", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   // 喂回 Forge 给的那几个评论 id(`asPublished`):Finding Identity 的键是承载它的那条
@@ -214,13 +214,13 @@ test("偏移命中折叠的那条落库沿用历史行的指纹:轨迹折叠数�
     reviewers: [scriptedReviewer("model-a", [{ ...FINDING, line: 3 }])],
   });
 
-  const fingerprints = query(db.path, "SELECT fingerprint FROM finding ORDER BY id").map(
+  const fingerprints = (await query(db.url, "SELECT fingerprint FROM finding ORDER BY id")).map(
     (row) => row["fingerprint"],
   );
   assert.equal(fingerprints.length, 2);
   assert.equal(fingerprints[1], fingerprints[0], "折叠命中的行落了与历史行不同的指纹");
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     const folded = (await store.listTrace(runId)).filter((event) => event.kind === "finding_folded");
@@ -236,7 +236,7 @@ test("偏移命中折叠的那条落库沿用历史行的指纹:轨迹折叠数�
 });
 
 test("行号相差超过 3 行时不匹配,按新 Finding 提出", async () => {
-  const { repo, forge, deps } = setup();
+  const { repo, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -253,7 +253,7 @@ test("行号相差超过 3 行时不匹配,按新 Finding 提出", async () => {
 });
 
 test("人写的评论不带锚点,不参与匹配", async () => {
-  const { db, forge, deps } = setup();
+  const { db, forge, deps } = (await setup());
 
   forge.existingComments.push({
     id: "human-1",
@@ -268,17 +268,17 @@ test("人写的评论不带锚点,不参与匹配", async () => {
   const review = forge.createdReviews[0]!;
   assert.equal(review.comments.length, 1, "人写的评论把本轮 Finding 折叠掉了");
   assert.doesNotMatch(review.body, /<details>/);
-  assert.deepEqual(latestDispositions(db.path), ["unknown"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unknown"]);
 });
 
 test("发布的行级评论正文带指纹锚点,锚点与落库的指纹一致", async () => {
-  const { db, forge, deps } = setup();
+  const { db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
 
   const anchor = ANCHOR.exec(forge.createdReviews[0]!.comments[0]!.body);
   assert.ok(anchor !== null, "行级评论正文里没有指纹锚点");
-  assert.equal(anchor[1], query(db.path, "SELECT fingerprint FROM finding")[0]!["fingerprint"]);
+  assert.equal(anchor[1], (await query(db.url, "SELECT fingerprint FROM finding"))[0]!["fingerprint"]);
 });
 
 /**
@@ -295,18 +295,18 @@ function legacyBody(fingerprints: readonly string[]): string {
 }
 
 /** 这一轮落库的全部指纹,按落库顺序。 */
-function fingerprints(dbPath: string): string[] {
-  return query(dbPath, "SELECT fingerprint FROM finding ORDER BY id").map((row) =>
+async function fingerprints(databaseUrl: string): Promise<string[]> {
+  return (await query(databaseUrl, "SELECT fingerprint FROM finding ORDER BY id")).map((row) =>
     String(row["fingerprint"]),
   );
 }
 
 test("上一轮只活在 review 正文里的 Finding,本轮匹配成功后折叠,不再全文重发", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   // 上一轮的记录只在正文里:锚点带路径,没有行级评论可读 resolve 状态。
-  forge.existingReviewBodies.push(legacyBody(fingerprints(db.path)));
+  forge.existingReviewBodies.push(legacyBody((await fingerprints(db.url))));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, deps);
@@ -318,17 +318,17 @@ test("上一轮只活在 review 正文里的 Finding,本轮匹配成功后折叠
   assert.match(second.body, /src\/calc\.js:6/);
   assert.match(second.body, /sub 多减了 1/);
 
-  assert.deepEqual(latestDispositions(db.path), ["unknown", "unresolved"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unknown", "unresolved"]);
 });
 
 test("折叠过一轮之后仍不重发:第三轮认的是第一轮正文里的锚点", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   // 折叠段本身不埋锚点(`findingLine` 只写一行摘要),第二轮的正文里因此没有锚点。
   // 这条链靠的是 `listReviewBodies` 返回 PR 上全部历史 review 而非最新一条:第三轮
   // 认的是第一轮那条正文。改成只读最新一条,这个 Finding 会从第三轮起每轮重发。
   await runReview(EVENT, deps);
-  forge.existingReviewBodies.push(legacyBody(fingerprints(db.path)));
+  forge.existingReviewBodies.push(legacyBody((await fingerprints(db.url))));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, deps);
@@ -343,7 +343,7 @@ test("折叠过一轮之后仍不重发:第三轮认的是第一轮正文里的�
 });
 
 test("一条正文里的多个锚点全部参与匹配", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
   const reviewers = [
     scriptedReviewer("model-a", [
       { ...FINDING, line: 3, description: "add 的收尾没有校验" },
@@ -352,7 +352,7 @@ test("一条正文里的多个锚点全部参与匹配", async () => {
   ];
 
   await runReview(EVENT, { ...deps, reviewers });
-  forge.existingReviewBodies.push(legacyBody(fingerprints(db.path)));
+  forge.existingReviewBodies.push(legacyBody((await fingerprints(db.url))));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, { ...deps, reviewers });
@@ -363,7 +363,7 @@ test("一条正文里的多个锚点全部参与匹配", async () => {
 });
 
 test("人写的 review 正文不带锚点,不参与匹配", async () => {
-  const { db, forge, deps } = setup();
+  const { db, forge, deps } = (await setup());
   forge.existingReviewBodies.push("这个 PR 我看过了,sub 那段没问题");
 
   await runReview(EVENT, deps);
@@ -371,11 +371,11 @@ test("人写的 review 正文不带锚点,不参与匹配", async () => {
   const review = forge.createdReviews[0]!;
   assert.equal(review.comments.length, 1, "人写的 review 正文把本轮 Finding 折叠掉了");
   assert.doesNotMatch(review.body, /<details>/);
-  assert.deepEqual(latestDispositions(db.path), ["unknown"]);
+  assert.deepEqual((await latestDispositions(db.url)), ["unknown"]);
 });
 
 test("行级 Finding 记下 Forge 的评论 id 与链接,丢弃的那条根本不落库", async () => {
-  const { db, forge, deps } = setup();
+  const { db, forge, deps } = (await setup());
 
   await runReview(EVENT, {
     ...deps,
@@ -391,10 +391,10 @@ test("行级 Finding 记下 Forge 的评论 id 与链接,丢弃的那条根本�
   // 内存 Forge 按发布顺序给评论编号,链接跟着它走。
   assert.equal(forge.publishedComments.length, 1);
   const published = forge.publishedComments[0]!;
-  const rows = query(
-    db.path,
+  const rows = (await query(
+    db.url,
     "SELECT line, comment_id, comment_html_url FROM finding ORDER BY id",
-  ).map((row) => ({
+  )).map((row) => ({
     line: Number(row["line"]),
     commentId: row["comment_id"],
     commentHtmlUrl: row["comment_html_url"],
@@ -405,7 +405,7 @@ test("行级 Finding 记下 Forge 的评论 id 与链接,丢弃的那条根本�
 });
 
 test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -415,10 +415,10 @@ test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id",
 
   // 第二轮折叠,不发新评论,处置的载体仍是第一轮那条。
   assert.deepEqual(forge.createdReviews[1]!.comments, []);
-  const latest = query(
-    db.path,
+  const latest = (await query(
+    db.url,
     "SELECT comment_id, comment_html_url FROM finding ORDER BY id",
-  ).at(-1)!;
+  )).at(-1)!;
   const published = forge.publishedComments[0]!;
   assert.equal(latest["comment_id"], published.id);
   assert.equal(latest["comment_html_url"], published.htmlUrl);
@@ -430,11 +430,11 @@ test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id",
  */
 
 /** 本轮落库的复核结论,按落库顺序。 */
-function verdictRows(dbPath: string): Record<string, unknown>[] {
-  return query(
-    dbPath,
+async function verdictRows(databaseUrl: string): Promise<Record<string, unknown>[]> {
+  return (await query(
+    databaseUrl,
     "SELECT run_id, model, finding_id, verdict, missing FROM finding_verdict ORDER BY rowid",
-  );
+  ));
 }
 
 /** 第一轮报两处:第 6 行进行级评论(可处置),第 11 行落在 diff 外只进正文。 */
@@ -450,11 +450,11 @@ const TWO_FINDINGS = [
 ];
 
 test("下一轮把本阶段历史注入 Reviewer:未处置的带正文与备注,已处置的只占一行且不带操作人", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, { ...deps, reviewers: [scriptedReviewer("model-a", TWO_FINDINGS)] });
   // 人在面板上处置了行级那一条,并留了一句备注。备注要跟着注入,操作人不能跟着。
-  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved", "确认无影响");
+  await disposeInPanel(db.url, forge.publishedComments[0]!.id, "resolved", "确认无影响");
   forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
@@ -486,7 +486,7 @@ test("下一轮把本阶段历史注入 Reviewer:未处置的带正文与备注,
 });
 
 test("历史对所有 Reviewer 共享,每一批拿到的是同一份", async () => {
-  const { repo, forge, deps } = setup();
+  const { repo, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
@@ -500,7 +500,7 @@ test("历史对所有 Reviewer 共享,每一批拿到的是同一份", async () 
 });
 
 test("复核结论逐条落库,漏给的记为无法判断", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -515,7 +515,7 @@ test("复核结论逐条落库,漏给的记为无法判断", async () => {
     ],
   });
 
-  const rows = verdictRows(db.path);
+  const rows = (await verdictRows(db.url));
   assert.deepEqual(
     rows.map((row) => ({
       model: row["model"],
@@ -533,20 +533,20 @@ test("复核结论逐条落库,漏给的记为无法判断", async () => {
 });
 
 test("已处置的历史不要结论:漏复核只数未处置的那些", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
-  await disposeInPanel(db.path, forge.publishedComments[0]!.id, "resolved");
+  await disposeInPanel(db.url, forge.publishedComments[0]!.id, "resolved");
   forge.existingComments.push(...asPublished(forge, true));
   forge.pullRequest.headSha = repo.pushToHead({ "src/calc.js": UNRELATED_CHANGE });
 
   await runReview(EVENT, { ...deps, reviewers: [scriptedReviewer("model-b", [])] });
 
-  assert.deepEqual(verdictRows(db.path), []);
+  assert.deepEqual((await verdictRows(db.url)), []);
 });
 
 test("全部 Reviewer 都失败的那一轮不落复核结论:它根本没跑,不是漏复核", async () => {
-  const { repo, db, forge, deps } = setup();
+  const { repo, db, forge, deps } = (await setup());
 
   await runReview(EVENT, deps);
   forge.existingComments.push(...asPublished(forge, false));
@@ -557,11 +557,11 @@ test("全部 Reviewer 都失败的那一轮不落复核结论:它根本没跑,�
     reviewers: [scriptedReviewer("model-b", [], { failure: "模型服务不可用" })],
   });
 
-  assert.deepEqual(verdictRows(db.path), []);
+  assert.deepEqual((await verdictRows(db.url)), []);
 });
 
 test("范围审查与 PR 触发各注入自己阶段的历史", async () => {
-  const { deps } = setup();
+  const { deps } = (await setup());
 
   // 范围审查那一档:轮次归在 range_review_id 名下(ADR 0012)。
   await runReview(EVENT, { ...deps, rangeReviewId: 1 });

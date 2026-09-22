@@ -37,8 +37,8 @@ const WRITER = `
 
 test("另一个进程不停写库时,排队消息的放与取都不报 database is locked", async () => {
   const dir = mkdtempSync(join(tmpdir(), "multireviewer-pending-contention-"));
-  const dbPath = join(dir, "multireviewer.db");
-  const store = openStore(dbPath);
+  const databaseUrl = join(dir, "multireviewer.db");
+  const store = openStore(databaseUrl);
   const role = await store.createPanelRole({ name: "拆需求的人", permissions: ["agent:chat"], createdAt: AT });
   await store.createPanelUser({
     username: "member",
@@ -57,7 +57,7 @@ test("另一个进程不停写库时,排队消息的放与取都不报 database 
     createdAt: AT,
   });
 
-  const writer = spawn(process.execPath, ["-e", WRITER, dbPath], { stdio: "ignore" });
+  const writer = spawn(process.execPath, ["-e", WRITER, databaseUrl], { stdio: "ignore" });
   try {
     // 写进程连上库、开始写。
     await new Promise((resolve) => setTimeout(resolve, 300));

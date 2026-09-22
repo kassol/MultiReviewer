@@ -39,7 +39,7 @@ function tool(root: string, name: string) {
 
 /** 跑一次工具调用。只读工具不用 signal / onUpdate / 扩展上下文。 */
 function call(
-  definition: ReturnType<typeof tool>,
+  definition: Awaited<ReturnType<typeof tool>>,
   params: unknown,
 ): Promise<{ content: { type: string; text?: string }[] }> {
   return definition.execute(

@@ -5,8 +5,6 @@
  * 回来,夹具因此只有一份:三个文件的仓库、内存 Forge、一批报一条 Finding 的 Reviewer 桩,
  * 加一个只读的库查询。
  */
-import { DatabaseSync } from "node:sqlite";
-
 import type {
   Finding,
   HistoryFinding,
@@ -15,7 +13,7 @@ import type {
   ReviewerUsage,
 } from "../../src/review/finding.ts";
 import type { FileTree } from "./git-fixture.ts";
-import { makeCacheDir, makeDbPath, makeRepo } from "./git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, withTestDb } from "./git-fixture.ts";
 import { memoryForge } from "./memory-forge.ts";
 
 export const EVENT = { owner: "acme", repo: "widgets", number: 7 };
@@ -48,8 +46,8 @@ function trees(): { base: FileTree; head: FileTree } {
  * 省略 `tree` 即用本模块默认的三文件桩(`FILES`/`STUB`);`changedFiles` 省略即取
  * head 树里的每个路径,状态都是 modified。
  */
-export function setup(
-  cleanups: (() => void)[],
+export async function setup(
+  cleanups: (() => void | Promise<void>)[],
   options: {
     tree?: { base: FileTree; head: FileTree };
     pullNumber?: number;
@@ -59,7 +57,7 @@ export function setup(
   const { base, head } = options.tree ?? trees();
   const repo = makeRepo({ base, head });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
   const forge = memoryForge({
     pullRequest: {
@@ -77,13 +75,11 @@ export function setup(
   return { repo, cache, db, forge };
 }
 
-export function query(dbPath: string, sql: string): Record<string, unknown>[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
-  try {
-    return db.prepare(sql).all() as unknown as Record<string, unknown>[];
-  } finally {
-    db.close();
-  }
+export async function query(
+  databaseUrl: string,
+  sql: string,
+): Promise<Record<string, unknown>[]> {
+  return await withTestDb(databaseUrl, async (run) => await run(sql));
 }
 
 function findingAt(file: string, said?: { impact: string; suggestion: string }): Omit<Finding, "model"> {

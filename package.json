@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test 'test/**/*.test.ts'",
+    "test": "node test/support/require-database.ts && node --test 'test/**/*.test.ts'",
     "check": "pnpm typecheck && pnpm test && pnpm --filter @multireviewer/web test"
   },
   "devDependencies": {

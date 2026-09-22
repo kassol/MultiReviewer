@@ -29,13 +29,13 @@ async function registeredHarness(
 ): Promise<PanelHarness> {
   const harness = await startReadyPanelHarness({ ...options, registerRepo: true });
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return harness;
 }
 
 /** 库里每一轮的本轮指令,按开跑先后。 */
 async function directives(h: PanelHarness, rangeReviewId?: number): Promise<(string | null)[]> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     return (await store
       .listRuns({ limit: 30, ...(rangeReviewId === undefined ? {} : { rangeReviewId }) }))
@@ -214,7 +214,7 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const role = await store.createPanelRole({
     name: "只读角色",
     permissions: ["review:create"],
@@ -268,7 +268,7 @@ const reportingReviewers: NonNullable<
 
 /** 库里每一轮的模式与指令,按开跑先后。 */
 async function roundsOf(h: PanelHarness): Promise<{ mode: string; directive: string | null }[]> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     return (await store
       .listRuns({ limit: 30 }))
@@ -309,7 +309,7 @@ test("只复核不新增权限格:没有 review:rerun 的用户照样被拒", as
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const role = await store.createPanelRole({
     name: "只读角色",
     permissions: ["review:create"],
@@ -382,7 +382,7 @@ test("PR 重跑:未处置历史全落在回退文件上时先自动处置再 409
   );
   assert.deepEqual(h.memory.resolvedIds, [carried.id]);
 
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const history = await store.stageHistory({
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,

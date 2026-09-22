@@ -134,7 +134,7 @@ test("删除用户与移除仓库都不留分配行", async () => {
   assert.deepEqual(await assignedRepoIds(h, "reviewer"), [alpha]);
 
   assert.equal((await h.api("DELETE", "/users/reviewer")).status, 204);
-  const sqlite = new DatabaseSync(h.db.path, { readOnly: true });
+  const sqlite = new DatabaseSync(h.db.url, { readOnly: true });
   const remaining = Number(
     sqlite.prepare("SELECT COUNT(*) AS c FROM panel_user_repo").get()!["c"],
   );
@@ -157,7 +157,7 @@ async function seedRun(
   },
 ): Promise<number> {
   const model = meta.model ?? "model-a";
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const runId = await seedRunRow(
     store,
     {
@@ -215,7 +215,7 @@ async function seedRun(
 
 /** 播种一个范围审查:推进、审查完成与重跑三个动作的目标。容器 PR 不建,不碰 Forge。 */
 async function seedRangeReview(h: PanelHarness, repoId: number, owner: string, repo: string): Promise<number> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const id = await store.createRangeReview({
       repoId,
@@ -240,7 +240,7 @@ async function scopedUser(
   repoIds: readonly number[],
   permissions: readonly PanelPermission[],
 ): Promise<string> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     const role = await store.createPanelRole({
       name: `role-${username}`,
@@ -260,7 +260,7 @@ async function scopedUser(
   } finally {
     await store.close();
   }
-  return userCookie(h, username);
+  return (await userCookie(h, username));
 }
 
 /** 全部面板权限格。可见范围由分配决定,这些用例要的是「权限不挡路」。 */
@@ -439,7 +439,7 @@ test("系统管理员不受分配限制,三份列表都看得到两个仓库", a
 
 test("直达分配外的阶段页、汇总、轨迹与 diff 一律 404", async () => {
   const { h, cookie } = await twoRepoHarness();
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const mine = (await store.listRuns({ limit: 30, owner: "acme", repo: "alpha" }))[0]!.id;
   const theirs = (await store.listRuns({ limit: 30, owner: "acme", repo: "beta" }))[0]!.id;
   await store.close();
@@ -464,7 +464,7 @@ test("直达分配外的阶段页、汇总、轨迹与 diff 一律 404", async (
 
 test("分配外的处置、重跑、发起、推进、完成、配置与移除一律 404", async () => {
   const { h, alpha, beta, cookie } = await twoRepoHarness();
-  const sqlite = new DatabaseSync(h.db.path, { readOnly: true });
+  const sqlite = new DatabaseSync(h.db.url, { readOnly: true });
   const finding = Number(
     sqlite
       .prepare(
@@ -555,9 +555,9 @@ test("webhook 投递不经过仓库分配", async () => {
     (await post(h, cookie, "POST", "/repos", { owner: PR.owner, repo: PR.repo })).status,
     201,
   );
-  await confirmEmptyRuleSet(h.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(h.db.url, GITEA_REPO.id);
   // 谁都没分到这个仓库也照样投递:webhook 路径不经过过滤层。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.setPanelUserAssignment("maintainer", []);
   await store.close();
 

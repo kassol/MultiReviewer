@@ -12,7 +12,7 @@ import { startPanelHarness } from "./support/panel-harness.ts";
 test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
   const h = await startPanelHarness();
 
-  const seed = openStore(h.db.path);
+  const seed = openStore(h.db.url);
   const runId = await seed.startRun({
     owner: "acme",
     repo: "widgets",
@@ -196,7 +196,7 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
   });
 
   // 库体量与实际文件一致;行数与刚种进去的数据对得上。
-  assert.equal(body.database.fileBytes, statSync(h.db.path).size);
+  assert.equal(body.database.fileBytes, statSync(h.db.url).size);
   const rows = new Map(body.database.tables.map((table) => [table.name, table.rows]));
   assert.equal(rows.get("finding"), 2);
   assert.equal(rows.get("review_run"), 2);

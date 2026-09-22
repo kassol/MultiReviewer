@@ -19,7 +19,7 @@ import {
 import { runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store/index.ts";
 import type { FileTree } from "./support/git-fixture.ts";
-import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { query, setup as setupRepo } from "./support/batch-run.ts";
 import {
   memoryForge,
@@ -46,14 +46,14 @@ function trees(sizes: Record<string, number>): { base: FileTree; head: FileTree 
 
 const cleanups = testCleanups();
 
-function setup(sizes: Record<string, number>) {
+async function setup(sizes: Record<string, number>) {
   const { base, head } = trees(sizes);
   // 内存 Forge 直接返回这个数组,改它即改下一轮的变更文件清单。
   const changedFiles = Object.keys(sizes).map((path) => ({ path, status: "modified" as const }));
-  const { repo, cache, db, forge } = setupRepo(cleanups, {
+  const { repo, cache, db, forge } = (await setupRepo(cleanups, {
     tree: { base, head },
     changedFiles,
-  });
+  }));
 
   return { repo, cache, db, forge, head, changedFiles };
 }
@@ -108,24 +108,24 @@ function findingAt(file: string, description: string): Omit<Finding, "model"> {
 }
 
 test("规模在阈值内时不分批,Reviewer 只被调用一次", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 10, "src/b.ts": 10 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 10, "src/b.ts": 10 }));
   const reviewer = scriptedReviewer("model-a", []);
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
   assert.equal(reviewer.calls.length, 1);
   assert.deepEqual(reviewer.calls[0]!.range.files, ["src/a.ts", "src/b.ts"]);
-  assert.equal(query(db.path, "SELECT batch_count FROM review_run")[0]!["batch_count"], 1);
+  assert.equal((await query(db.url, "SELECT batch_count FROM review_run"))[0]!["batch_count"], 1);
 });
 
 test("规模超阈值时按文件分批,每个 Reviewer 每批各跑一次,批次互不相交且合起来是全部变更文件", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 }));
   const first = scriptedReviewer("model-a", []);
   const second = scriptedReviewer("model-b", []);
 
@@ -133,7 +133,7 @@ test("规模超阈值时按文件分批,每个 Reviewer 每批各跑一次,批�
     forge: forge.forge,
     reviewers: [first, second],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
@@ -148,7 +148,7 @@ test("规模超阈值时按文件分批,每个 Reviewer 每批各跑一次,批�
     assert.deepEqual([...all].sort(), ["src/a.ts", "src/b.ts", "src/c.ts"]);
   }
 
-  assert.equal(query(db.path, "SELECT batch_count FROM review_run")[0]!["batch_count"], 2);
+  assert.equal((await query(db.url, "SELECT batch_count FROM review_run"))[0]!["batch_count"], 2);
 });
 
 test("文件数与改动行数任一超上限即封箱:40 个各 1 行的文件加 1 个是两批", () => {
@@ -171,14 +171,14 @@ test("单个文件超改动行上限时仍自成一批,不受文件数上限影�
 });
 
 test("文件数上限经 ReviewRunDeps 传到分批,改动行远没到上限也照样切", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 10, "src/b.ts": 10, "src/c.ts": 10 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 10, "src/b.ts": 10, "src/c.ts": 10 }));
   const reviewer = scriptedReviewer("model-a", []);
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 2,
   });
@@ -187,18 +187,18 @@ test("文件数上限经 ReviewRunDeps 传到分批,改动行远没到上限也�
     reviewer.calls.map((c) => c.range.files),
     [["src/a.ts", "src/b.ts"], ["src/c.ts"]],
   );
-  assert.equal(query(db.path, "SELECT batch_count FROM review_run")[0]!["batch_count"], 2);
+  assert.equal((await query(db.url, "SELECT batch_count FROM review_run"))[0]!["batch_count"], 2);
 });
 
 test("单个文件的改动行数就超过阈值时它自成一批,不被拒审也不被截断", async () => {
-  const { cache, db, forge } = setup({ "src/big.ts": 300, "src/small.ts": 5 });
+  const { cache, db, forge } = (await setup({ "src/big.ts": 300, "src/small.ts": 5 }));
   const reviewer = scriptedReviewer("model-a", []);
 
   const result = await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
@@ -207,18 +207,18 @@ test("单个文件的改动行数就超过阈值时它自成一批,不被拒审�
     reviewer.calls.map((c) => c.range.files),
     [["src/big.ts"], ["src/small.ts"]],
   );
-  assert.equal(query(db.path, "SELECT batch_count FROM review_run")[0]!["batch_count"], 2);
+  assert.equal((await query(db.url, "SELECT batch_count FROM review_run"))[0]!["batch_count"], 2);
 });
 
 test("每一批拿到的都是同一个完整的 head commit 工作副本", async () => {
-  const { cache, db, forge, head } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const { cache, db, forge, head } = (await setup({ "src/a.ts": 60, "src/c.ts": 60 }));
   const reviewer = readingReviewer(scriptedReviewer("model-a", []), "src/c.ts");
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
@@ -232,7 +232,7 @@ test("每一批拿到的都是同一个完整的 head commit 工作副本", asyn
 });
 
 test("跨批次的 Finding 汇总后统一去重,只发一次 review", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/c.ts": 60 }));
 
   const result = await runReview(EVENT, {
     forge: forge.forge,
@@ -247,7 +247,7 @@ test("跨批次的 Finding 汇总后统一去重,只发一次 review", async () 
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
@@ -268,7 +268,7 @@ test("跨批次的 Finding 汇总后统一去重,只发一次 review", async () 
 });
 
 test("某模型部分批次失败时成功批次的 Finding 照常发布,正文标注覆盖不全并写出第几批失败", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/c.ts": 60 }));
 
   const result = await runReview(EVENT, {
     forge: forge.forge,
@@ -280,7 +280,7 @@ test("某模型部分批次失败时成功批次的 Finding 照常发布,正文�
       batchedReviewer("model-b", [{}, {}]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
@@ -308,14 +308,14 @@ test("某模型部分批次失败时成功批次的 Finding 照常发布,正文�
     { batchIndex: 2, failure: "context length exceeded" },
   ]);
 
-  const rows = query(db.path, "SELECT * FROM reviewer_outcome WHERE model = 'model-a'");
+  const rows = (await query(db.url, "SELECT * FROM reviewer_outcome WHERE model = 'model-a'"));
   assert.equal(rows.length, 1, "分批后每个模型仍应只落一行 outcome");
   assert.equal(rows[0]!["failure"], null);
   assert.equal(rows[0]!["finding_count"], 1);
 });
 
 test("某模型全部批次失败时按缺席处理,其 Finding 丢弃", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/c.ts": 60 }));
 
   const result = await runReview(EVENT, {
     forge: forge.forge,
@@ -328,7 +328,7 @@ test("某模型全部批次失败时按缺席处理,其 Finding 丢弃", async (
       batchedReviewer("model-b", [{}, { findings: [findingAt("src/c.ts", "c 的问题")] }]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
@@ -344,25 +344,25 @@ test("某模型全部批次失败时按缺席处理,其 Finding 丢弃", async (
   assert.match(review.body, /缺席/);
   assert.doesNotMatch(review.body, /失败批次里报出的 Finding/);
 
-  const rows = query(db.path, "SELECT * FROM reviewer_outcome WHERE model = 'model-a'");
+  const rows = (await query(db.url, "SELECT * FROM reviewer_outcome WHERE model = 'model-a'"));
   assert.equal(rows.length, 1);
   assert.match(String(rows[0]!["failure"]), /timeout/);
   assert.equal(rows[0]!["finding_count"], 0);
 });
 
 test("锚定打回次数跨批次累加,不是只留最后一批的数", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/c.ts": 60 }));
 
   const result = await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [batchedReviewer("model-a", [{ anchorRejections: 2 }, { anchorRejections: 3 }])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
   assert.equal(result.outcomes[0]!.anchorRejections, 5);
-  const rows = query(db.path, "SELECT anchor_rejections FROM reviewer_outcome");
+  const rows = (await query(db.url, "SELECT anchor_rejections FROM reviewer_outcome"));
   assert.equal(rows[0]!["anchor_rejections"], 5);
 });
 
@@ -398,17 +398,17 @@ test("跨批次的 token 用量按五列累加", () => {
 });
 
 test("Review Run 开始时记录预估规模:变更文件数、改动行数与批数", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 }));
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
-  const run = query(db.path, "SELECT * FROM review_run")[0]!;
+  const run = (await query(db.url, "SELECT * FROM review_run"))[0]!;
   assert.equal(run["changed_files"], 3);
   assert.equal(run["changed_lines"], 150);
   assert.equal(run["batch_count"], 2);
@@ -427,7 +427,7 @@ test("新增行以 `++ ` 起头时不被读成文件头,该文件的规模照常
     },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -450,7 +450,7 @@ test("新增行以 `++ ` 起头时不被读成文件头,该文件的规模照常
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
@@ -459,20 +459,20 @@ test("新增行以 `++ ` 起头时不被读成文件头,该文件的规模照常
     reviewer.calls.map((c) => c.range.files),
     [["docs/tricky.md"], ["docs/other.md"]],
   );
-  const run = query(db.path, "SELECT * FROM review_run")[0]!;
+  const run = (await query(db.url, "SELECT * FROM review_run"))[0]!;
   assert.equal(run["changed_lines"], 120);
   assert.equal(run["batch_count"], 2);
 });
 
 test("每批只注入 glob 命中该批文件的知识条目,全仓库条目每批都给,两型同一条口径", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/b.ts": 30, "src/c.ts": 60 }));
   const reviewer = scriptedReviewer("model-a", []);
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
     ruleSetVersion: 3,
     rules: [
@@ -537,14 +537,14 @@ const SIX_FILES = Object.fromEntries(
 ) as Record<string, number>;
 
 test("批次受限并行:同时在跑的批次数不超过并发上限", async () => {
-  const { cache, db, forge } = setup(SIX_FILES);
+  const { cache, db, forge } = (await setup(SIX_FILES));
   const reviewer = probingReviewer("model-a");
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 3,
@@ -555,14 +555,14 @@ test("批次受限并行:同时在跑的批次数不超过并发上限", async (
 });
 
 test("并发上限为 1 时逐批跑完再开下一批,与分批以来的行为一致", async () => {
-  const { cache, db, forge } = setup(SIX_FILES);
+  const { cache, db, forge } = (await setup(SIX_FILES));
   const reviewer = probingReviewer("model-a");
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
@@ -573,7 +573,7 @@ test("并发上限为 1 时逐批跑完再开下一批,与分批以来的行为�
 });
 
 test("各批完成顺序打乱时,汇总仍按批次序号定序", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
 
   // 第 1 批最后才回,第 3 批最先回:按完成顺序记的话失败会被记成第 3 批。
   const result = await runReview(EVENT, {
@@ -586,7 +586,7 @@ test("各批完成顺序打乱时,汇总仍按批次序号定序", async () => {
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 3,
@@ -628,25 +628,25 @@ test("单模型耗时是各批时间区间的并集:重叠只算一次,空档不
 });
 
 test("并行跑的三批落库的耗时是墙上时间,不是三批相加", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
 
   await runReview(EVENT, {
     forge: forge.forge,
     reviewers: [probingReviewer("model-a", 100)],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 3,
   });
 
   // 串行相加是 300 ms 起步,三批同时跑只用一批的时间。
-  const duration = Number(query(db.path, "SELECT duration_ms FROM reviewer_outcome")[0]!["duration_ms"]);
+  const duration = Number((await query(db.url, "SELECT duration_ms FROM reviewer_outcome"))[0]!["duration_ms"]);
   assert.ok(duration < 250, `耗时 ${duration} ms 看着像各批相加`);
 });
 
 test("Reviewer 作用域的轨迹事件带批次序号", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 5, "src/b.ts": 5 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 5, "src/b.ts": 5 }));
   const reviewer = scriptedReviewer("model-a", [], {
     events: [{ kind: "assistant_message", text: "正在读文件" }],
   });
@@ -655,15 +655,15 @@ test("Reviewer 作用域的轨迹事件带批次序号", async () => {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   });
 
-  const rows = query(
-    db.path,
+  const rows = (await query(
+    db.url,
     "SELECT payload FROM review_trace WHERE scope = 'reviewer' AND kind = 'assistant_message' ORDER BY seq",
-  );
+  ));
   assert.deepEqual(
     rows.map((row) => JSON.parse(String(row["payload"])) as { text: string; batch: number }),
     [
@@ -679,11 +679,11 @@ test("Reviewer 作用域的轨迹事件带批次序号", async () => {
  */
 
 /** 本轮落库的复核结论,按落库顺序。 */
-function verdictRows(dbPath: string): Record<string, unknown>[] {
-  return query(
-    dbPath,
+async function verdictRows(databaseUrl: string): Promise<Record<string, unknown>[]> {
+  return (await query(
+    databaseUrl,
     "SELECT model, finding_id, verdict, missing FROM finding_verdict ORDER BY rowid",
-  ).map((row) => ({
+  )).map((row) => ({
     model: row["model"],
     findingId: row["finding_id"],
     verdict: row["verdict"],
@@ -701,8 +701,8 @@ function batchesOf(reviewer: {
 }
 
 /** 人在面板上处置一条 Finding:落库这一步与面板 API 走同一段代码。 */
-async function disposeInPanel(dbPath: string, commentId: string): Promise<void> {
-  const store = openStore(dbPath);
+async function disposeInPanel(databaseUrl: string, commentId: string): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     await store.recordDisposition({
       owner: EVENT.owner,
@@ -718,18 +718,18 @@ async function disposeInPanel(dbPath: string, commentId: string): Promise<void> 
 }
 
 /** 三批各一个文件的一轮:分批用例的历史路由都按这一份跑。 */
-function routingDeps(setUp: ReturnType<typeof setup>) {
+function routingDeps(setUp: Awaited<ReturnType<typeof setup>>) {
   return {
     forge: setUp.forge.forge,
     cacheDir: setUp.cache.dir,
-    dbPath: setUp.db.path,
+    databaseUrl: setUp.db.url,
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   };
 }
 
 test("三批时历史按所在文件路由:每条只进它所在文件的那一批,已处置的同样", async () => {
-  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const fixture = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
   const { db, forge } = fixture;
   const deps = routingDeps(fixture);
 
@@ -744,7 +744,7 @@ test("三批时历史按所在文件路由:每条只进它所在文件的那一�
     ],
   });
   // 人处置了 c 那条:已处置的只作背景,路由与未处置的同一条规则。
-  await disposeInPanel(db.path, forge.publishedComments.find((c) => c.path === "src/c.ts")!.id);
+  await disposeInPanel(db.url, forge.publishedComments.find((c) => c.path === "src/c.ts")!.id);
 
   const second = scriptedReviewer("model-b", []);
   await runReview(EVENT, { ...deps, reviewers: [second] });
@@ -763,7 +763,7 @@ test("三批时历史按所在文件路由:每条只进它所在文件的那一�
 });
 
 test("所在批判已修、别的批没收到这条:落库一条 fixed,自动处置发生", async () => {
-  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const fixture = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
   const { db, forge } = fixture;
   const deps = routingDeps(fixture);
 
@@ -775,18 +775,18 @@ test("所在批判已修、别的批没收到这条:落库一条 fixed,自动处
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
   // 三批只落一条结论:另外两批压根没拿到这条历史,不构成「漏给结论」。
-  assert.deepEqual(verdictRows(db.path), [
+  assert.deepEqual((await verdictRows(db.url)), [
     { model: "model-a", findingId: 1, verdict: "fixed", missing: 0 },
   ]);
   assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
   assert.deepEqual(
-    query(db.path, "SELECT disposition FROM finding ORDER BY id").map((row) => row["disposition"]),
+    (await query(db.url, "SELECT disposition FROM finding ORDER BY id")).map((row) => row["disposition"]),
     ["fixed"],
   );
 });
 
 test("历史所在文件不在本轮任何批次:开跑就按「文件已回退」处置掉,不再要结论", async () => {
-  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const fixture = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
   const { db, forge, changedFiles } = fixture;
   const deps = routingDeps(fixture);
 
@@ -803,10 +803,10 @@ test("历史所在文件不在本轮任何批次:开跑就按「文件已回退�
   await runReview(EVENT, { ...deps, reviewers: [verdictReviewer("model-a", "fixed")] });
 
   // 开跑就处置掉了(issue #272):它不进这一轮的历史,谁都不必对它给结论。
-  assert.deepEqual(verdictRows(db.path), []);
+  assert.deepEqual((await verdictRows(db.url)), []);
   assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
   assert.deepEqual(
-    query(db.path, "SELECT disposition, disposition_note FROM finding").map((row) => [
+    (await query(db.url, "SELECT disposition, disposition_note FROM finding")).map((row) => [
       row["disposition"],
       row["disposition_note"],
     ]),
@@ -815,7 +815,7 @@ test("历史所在文件不在本轮任何批次:开跑就按「文件已回退�
 });
 
 test("只复核时批次只含有未处置历史的文件,每批的 Reviewer 都收到模式项", async () => {
-  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const fixture = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
   const deps = routingDeps(fixture);
 
   await runReview(EVENT, {
@@ -841,7 +841,7 @@ test("只复核时批次只含有未处置历史的文件,每批的 Reviewer 都
     ["verdict-only", "verdict-only"],
   );
   // 改动行数与文件数同一口径:只复核那一轮记的是过滤后那两个文件的行数,不是整段范围的。
-  const runsDb = new DatabaseSync(fixture.db.path);
+  const runsDb = new DatabaseSync(fixture.db.url);
   const runs = runsDb
     .prepare("SELECT changed_files, changed_lines FROM review_run ORDER BY id")
     .all() as { changed_files: number; changed_lines: number }[];
@@ -853,7 +853,7 @@ test("只复核时批次只含有未处置历史的文件,每批的 Reviewer 都
 });
 
 test("不给模式即完整审查:全部变更文件照旧分批,Reviewer 收到的输入不带模式项", async () => {
-  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const fixture = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
   const deps = routingDeps(fixture);
 
   await runReview(EVENT, {
@@ -875,7 +875,7 @@ test("不给模式即完整审查:全部变更文件照旧分批,Reviewer 收到
 });
 
 test("只复核时判已修的历史照常自动处置为「已修复」", async () => {
-  const fixture = setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 });
+  const fixture = (await setup({ "src/a.ts": 5, "src/b.ts": 5, "src/c.ts": 5 }));
   const { db, forge } = fixture;
   const deps = routingDeps(fixture);
 
@@ -892,14 +892,14 @@ test("只复核时判已修的历史照常自动处置为「已修复」", async
 
   assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
   assert.deepEqual(
-    query(db.path, "SELECT disposition FROM finding ORDER BY id").map((row) => row["disposition"]),
+    (await query(db.url, "SELECT disposition FROM finding ORDER BY id")).map((row) => row["disposition"]),
     ["fixed"],
   );
 });
 
 /** 这一轮落库的全部轨迹事件。 */
-async function runTrace(dbPath: string): Promise<{ scope: string; kind: string; payload: unknown }[]> {
-  const store = openStore(dbPath);
+async function runTrace(databaseUrl: string): Promise<{ scope: string; kind: string; payload: unknown }[]> {
+  const store = openStore(databaseUrl);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     return (await store.listTrace(runId)).map((event) => ({
@@ -913,7 +913,7 @@ async function runTrace(dbPath: string): Promise<{ scope: string; kind: string; 
 }
 
 test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一条带批次且与锚不进 diff 的丢弃可区分", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/c.ts": 60 }));
   const outOfBatchFinding = {
     ...findingAt("src/c.ts", "c 的收尾没有防护"),
     title: "c 的收尾没有防护",
@@ -929,20 +929,20 @@ test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
   assert.deepEqual(result.findings.map((finding) => finding.file), ["src/a.ts"]);
   assert.deepEqual(
-    query(db.path, "SELECT file FROM finding ORDER BY id").map((row) => row["file"]),
+    (await query(db.url, "SELECT file FROM finding ORDER BY id")).map((row) => row["file"]),
     ["src/a.ts"],
   );
   const review = forge.createdReviews[0]!;
   assert.deepEqual(review.comments.map((comment) => comment.path), ["src/a.ts"]);
   assert.doesNotMatch(review.body, /c 的收尾没有防护/);
 
-  const events = await runTrace(db.path);
+  const events = await runTrace(db.url);
   // 两种丢弃在轨迹里是不同类型:排查时要认得出是哪一道拦下的。
   assert.equal(events.filter((event) => event.kind === "finding_discarded").length, 0);
   const outOfBatch = events.filter((event) => event.kind === "finding_out_of_batch");
@@ -958,7 +958,7 @@ test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一
 });
 
 test("分批时报在本轮范围外的文件上:仍按锚不进 diff 丢弃,不记成批外", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 60, "src/c.ts": 60 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 60, "src/c.ts": 60 }));
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -975,11 +975,11 @@ test("分批时报在本轮范围外的文件上:仍按锚不进 diff 丢弃,不
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
-  const events = await runTrace(db.path);
+  const events = await runTrace(db.url);
   assert.equal(events.filter((event) => event.kind === "finding_out_of_batch").length, 0);
   const discarded = events.filter((event) => event.kind === "finding_discarded");
   assert.equal(discarded.length, 1);
@@ -992,7 +992,7 @@ test("分批时报在本轮范围外的文件上:仍按锚不进 diff 丢弃,不
 });
 
 test("单批审查不过批外这一道:范围外文件的报出仍按锚不进 diff 丢弃", async () => {
-  const { cache, db, forge } = setup({ "src/a.ts": 10 });
+  const { cache, db, forge } = (await setup({ "src/a.ts": 10 }));
 
   await runReview(EVENT, {
     forge: forge.forge,
@@ -1002,11 +1002,11 @@ test("单批审查不过批外这一道:范围外文件的报出仍按锚不进 
       ]),
     ],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
     maxChangedLinesPerBatch: 100,
   });
 
-  const kinds = (await runTrace(db.path)).map((event) => event.kind);
+  const kinds = (await runTrace(db.url)).map((event) => event.kind);
   assert.equal(kinds.filter((kind) => kind === "finding_discarded").length, 1);
   assert.equal(kinds.includes("finding_out_of_batch"), false);
 });

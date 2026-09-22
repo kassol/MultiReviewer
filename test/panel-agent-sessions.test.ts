@@ -385,7 +385,7 @@ test("升级前的旧库:开库补上会话那一列,既有会话读作没记过
     return (JSON.parse(text) as { session: AgentSession }).session.baselines;
   };
   const record = async (baselines: AgentSessionBaseline[]): Promise<void> => {
-    const store = openStore(h.db.path);
+    const store = openStore(h.db.url);
     try {
       await store.setAgentSessionBaselines(created.id, baselines);
     } finally {
@@ -404,7 +404,7 @@ test("升级前的旧库:开库补上会话那一列,既有会话读作没记过
 
   // 把库退回升级之前的样子:那时这一列还不存在。改名而不是 DROP——理由与 `product_repo`
   // 那一处相同(建表语句里有中文注释,丢最后一列要重写它)。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   db.exec("ALTER TABLE agent_session RENAME COLUMN baselines TO before_upgrade_baselines");
   db.close();
 
@@ -422,7 +422,7 @@ test("来源种类之前记下的基点:行里没有 kind,读回来一律是分�
   const owner = await scopedUser(h, "owner", PASSWORD, AT, [GITEA_REPO.id], ["agent:chat"]);
   const created = await createSession(h, owner, productId);
   // 直接播种这一票之前那种形状的行:只有 owner / repo / sha / branch。不回填,读时补上。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   db.prepare("UPDATE agent_session SET baselines = ? WHERE id = ?").run(
     JSON.stringify([
       { owner: GITEA_REPO.owner, repo: GITEA_REPO.repo, sha: h.repo.headSha, branch: "feature" },
@@ -446,7 +446,7 @@ test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还�
   const session = await createSession(h, owner, productId);
 
   // 五条记录,正文各不相同:哪一页回了哪几条认得出来。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   for (let index = 1; index <= 5; index += 1) {
     await store.appendAgentSessionEntry(session.id, {
       type: "message",
@@ -492,7 +492,7 @@ test("面板标题与最后动静:读时从记录派生,不落库", async () => 
   const withMessage = await createSession(h, owner, productId);
   const firstAt = "2026-09-12T00:10:00.000Z";
   const secondAt = "2026-09-12T00:20:00.000Z";
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     // 第一条用户消息带一张图,文字块排在图片块后面:标题不能假定文字在下标 0。正文里的
     // 连续空白与首尾空白折成一个空格。

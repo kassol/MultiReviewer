@@ -18,7 +18,7 @@ import {
   containerPullRequestTitle,
 } from "../src/review/range-review.ts";
 import { openStore } from "../src/review/store/index.ts";
-import { makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { setup as setupRepo } from "./support/batch-run.ts";
 import {
   memoryForge,
@@ -48,11 +48,11 @@ const HEAD_CALC = BASE_CALC.replace("return a - b;", "return a - b - 1;");
 
 const cleanups = testCleanups();
 
-function setup(findingLine: number) {
-  const { repo, cache, db, forge } = setupRepo(cleanups, {
+async function setup(findingLine: number) {
+  const { repo, cache, db, forge } = (await setupRepo(cleanups, {
     tree: { base: { "src/calc.ts": BASE_CALC }, head: { "src/calc.ts": HEAD_CALC } },
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
-  });
+  }));
 
   const reviewer = scriptedReviewer("stub-model", [
     {
@@ -68,11 +68,11 @@ function setup(findingLine: number) {
 }
 
 test("行号落在 diff 内的 Finding 发布为行级评论", async () => {
-  const { cache, db, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   assert.equal(forge.createdReviews.length, 1);
@@ -85,11 +85,11 @@ test("行号落在 diff 内的 Finding 发布为行级评论", async () => {
 });
 
 test("Reviewer 请求带上本轮 diff 的可评论行区间", async () => {
-  const { cache, db, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   // -U3 的 hunk 覆盖新文件的 3..9 行,锚定校验在 Reviewer 那侧就靠这一份。
@@ -97,18 +97,18 @@ test("Reviewer 请求带上本轮 diff 的可评论行区间", async () => {
 });
 
 test("锚不进 diff hunk 的 Finding 被丢弃,不进 review 正文也不落库", async () => {
-  const { cache, db, forge, reviewer } = setup(11);
+  const { cache, db, forge, reviewer } = (await setup(11));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   // 一条 Finding 都没剩下,也没有缺席的模型,这一轮无话可说,只留一个赞。
   assert.deepEqual(forge.createdReviews, []);
   assert.equal(forge.reactions.has("+1"), true);
   assert.deepEqual(
-    new DatabaseSync(db.path, { readOnly: true }).prepare("SELECT id FROM finding").all(),
+    new DatabaseSync(db.url, { readOnly: true }).prepare("SELECT id FROM finding").all(),
     [],
   );
 });
@@ -119,7 +119,7 @@ test("合并 agent 跑不成时,词法配对的延续照常发生", async () => 
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -138,7 +138,7 @@ test("合并 agent 跑不成时,词法配对的延续照常发生", async () => 
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [at(6, "P0", "sub 多减了 1")])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   await runReview(event, deps);
@@ -157,7 +157,7 @@ test("合并 agent 跑不成时,词法配对的延续照常发生", async () => 
     mergeAgent: async () => ({ groups: [], failure: "模型调用超时" }),
   });
 
-  const [first, second] = continuedFrom(db.path);
+  const [first, second] = continuedFrom(db.url);
   assert.equal(first, null);
   assert.notEqual(second, null, "回退档的词法延续没有发生");
   assert.deepEqual(forge.resolvedIds, ["comment-1"]);
@@ -165,7 +165,7 @@ test("合并 agent 跑不成时,词法配对的延续照常发生", async () => 
 
 
 test("评论按 等级/标题 加一份代表段的 问题/影响/建议,末尾一行归属(issue #278)", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   // 两个模型报同一处:正文只有描述最长那份,另一个模型的原文不进评论。
   const finding = {
     file: "src/calc.ts",
@@ -194,7 +194,7 @@ test("评论按 等级/标题 加一份代表段的 问题/影响/建议,末尾�
         scriptedReviewer("model-b", [other]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
@@ -210,7 +210,7 @@ test("评论按 等级/标题 加一份代表段的 问题/影响/建议,末尾�
 });
 
 test("代表段取描述最长的那条归属,归属仍逐条落库(issue #278)", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   const at6 = {
     file: "src/calc.ts",
     line: 6,
@@ -240,11 +240,11 @@ test("代表段取描述最长的那条归属,归属仍逐条落库(issue #278)"
       forge: forge.forge,
       reviewers: [scriptedReviewer("model-a", [short]), scriptedReviewer("model-b", [long])],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const [run] = await store.listRuns({ limit: 1 });
   await store.close();
   const recorded = run!.findings[0]!;
@@ -259,7 +259,7 @@ test("代表段取描述最长的那条归属,归属仍逐条落库(issue #278)"
 });
 
 test("同一个模型的多份归属只落一份代表段,归属一行仍只算一个模型(issue #278)", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   const at6 = { file: "src/calc.ts", line: 6, category: "bug" as const, severity: "P1" as const };
   // 同一个模型跨批次重复报出同一处的形状:同行硬证据并成一组,归属三条。
   const said = (description: string, suggestion: string) => ({
@@ -282,11 +282,11 @@ test("同一个模型的多份归属只落一份代表段,归属一行仍只算�
         ]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const [run] = await store.listRuns({ limit: 1 });
   await store.close();
   const recorded = run!.findings[0]!;
@@ -301,11 +301,11 @@ test("同一个模型的多份归属只落一份代表段,归属一行仍只算�
 });
 
 test("影响与建议为空时整段消失,不留空标签", async () => {
-  const { cache, db, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   const body = forge.createdReviews[0]!.comments[0]!.body;
@@ -314,7 +314,7 @@ test("影响与建议为空时整段消失,不留空标签", async () => {
 });
 
 test("新 Finding 的影响与建议按各模型归属落库,面板投影读得回(issue #266)", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   const finding = {
     file: "src/calc.ts",
     line: 6,
@@ -334,11 +334,11 @@ test("新 Finding 的影响与建议按各模型归属落库,面板投影读得�
       forge: forge.forge,
       reviewers: [scriptedReviewer("model-a", [finding]), scriptedReviewer("model-b", [other])],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const [run] = await store.listRuns({ limit: 1 });
   await store.close();
   assert.deepEqual(run!.findings[0]!.attributions, [
@@ -362,7 +362,7 @@ test("新 Finding 的影响与建议按各模型归属落库,面板投影读得�
 });
 
 test("同一模型在同一合并组里的多条归属,影响与建议各对各的(issue #266)", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   const at6 = { file: "src/calc.ts", line: 6, category: "bug" as const };
 
   await runReview(
@@ -391,11 +391,11 @@ test("同一模型在同一合并组里的多条归属,影响与建议各对各�
         ]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const [run] = await store.listRuns({ limit: 1 });
   await store.close();
   assert.equal(run!.findings.length, 1);
@@ -414,7 +414,7 @@ function at(line: number, severity: "P0" | "P1" | "P2", description: string) {
 }
 
 test("正文首行写明本轮 Finding 总数与分级计数", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -428,7 +428,7 @@ test("正文首行写明本轮 Finding 总数与分级计数", async () => {
         ]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
@@ -437,7 +437,7 @@ test("正文首行写明本轮 Finding 总数与分级计数", async () => {
 });
 
 test("某个等级本轮为零时,首行不列它", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -450,7 +450,7 @@ test("某个等级本轮为零时,首行不列它", async () => {
         ]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
@@ -459,7 +459,7 @@ test("某个等级本轮为零时,首行不列它", async () => {
 });
 
 test("零 Finding 但有模型缺席时,首行不写「0 条」", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -470,7 +470,7 @@ test("零 Finding 但有模型缺席时,首行不写「0 条」", async () => {
         scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
@@ -490,7 +490,7 @@ test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分�
     baseAdvance: { "docs/note.md": "base 分支在 PR 拉出之后又前进了\n" },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -508,7 +508,7 @@ test("Reviewer 拿到的 Review Range 以 merge-base 为基准,不是 base 分�
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   assert.notEqual(repo.baseSha, repo.mergeBaseSha);
@@ -525,7 +525,7 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -545,7 +545,7 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   await runReview(event, deps);
@@ -564,12 +564,12 @@ test("同一仓库的第二次 Review Run 复用缓存并增量 fetch 到新的 
 });
 
 test("工作副本 checkout 到 head commit,Reviewer 读到的是改动后的代码", async () => {
-  const { cache, db, forge, reviewer: scripted } = setup(6);
+  const { cache, db, forge, reviewer: scripted } = (await setup(6));
   const reviewer = readingReviewer(scripted, "src/calc.ts");
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   assert.deepEqual(reviewer.seen, [HEAD_CALC]);
@@ -587,7 +587,7 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
     },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -642,7 +642,7 @@ test("Review Run 在首批前固定一份运行计划,后续批次不跟随模�
 
   const running = runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, ...plan, cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, ...plan, cacheDir: cache.dir, databaseUrl: db.url },
   );
   await firstBatchEntered;
 
@@ -671,8 +671,8 @@ type LineAuthorRow = {
 };
 
 /** 落库的行作者四列,按落库顺序。 */
-function lineAuthors(dbPath: string): LineAuthorRow[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+function lineAuthors(databaseUrl: string): LineAuthorRow[] {
+  const db = new DatabaseSync(databaseUrl, { readOnly: true });
   try {
     return db
       .prepare(
@@ -688,8 +688,8 @@ function lineAuthors(dbPath: string): LineAuthorRow[] {
 }
 
 /** 落库的「延续自」链接,按落库顺序。 */
-function continuedFrom(dbPath: string): unknown[] {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+function continuedFrom(databaseUrl: string): unknown[] {
+  const db = new DatabaseSync(databaseUrl, { readOnly: true });
   try {
     return (
       db.prepare("SELECT continued_from FROM finding ORDER BY id").all() as unknown as Record<
@@ -708,7 +708,7 @@ test("落库的 Finding 记下本轮 head 上各自那一行的行作者", async
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   // 两个作者各改一行:第 2 行归 Alice,第 6 行归 Bob。
@@ -748,11 +748,11 @@ test("落库的 Finding 记下本轮 head 上各自那一行的行作者", async
         ]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const rows = [...lineAuthors(db.path)].sort((a, b) => a.line - b.line);
+  const rows = [...lineAuthors(db.url)].sort((a, b) => a.line - b.line);
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, email: row.email })),
     [
@@ -769,7 +769,7 @@ test("延续到新一轮的 Finding 按新 head 重算行作者,不沿用上一�
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -788,7 +788,7 @@ test("延续到新一轮的 Finding 按新 head 重算行作者,不沿用上一�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [at(6, "P0", "sub 多减了 1")])],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
   };
 
   await runReview(event, deps);
@@ -811,11 +811,11 @@ test("延续到新一轮的 Finding 按新 head 重算行作者,不沿用上一�
   });
 
   // 承接的那一行确实是延续过来的:它记下了旧评论的地址。
-  const [first, second] = continuedFrom(db.path);
+  const [first, second] = continuedFrom(db.url);
   assert.equal(first, null);
   assert.notEqual(second, null);
 
-  const rows = lineAuthors(db.path);
+  const rows = lineAuthors(db.url);
   assert.equal(rows.length, 2, "两轮各落一行");
   assert.equal(rows[0]!.name, "fixture", "第一轮那一行的行作者是当时改这一行的人");
   assert.deepEqual(
@@ -835,13 +835,13 @@ const DAN = { name: "Dan Qi", email: "dan@example.invalid" };
  *
  * `rewriteLower` 时丁再改写下面那一处,上下两处新增归两个人——等距时取哪一边看得出来。
  */
-function sandwichSetup(rewriteLower: boolean) {
+async function sandwichSetup(rewriteLower: boolean) {
   const repo = makeRepo({
     base: { "src/calc.ts": BASE_CALC },
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const carolCalc = HEAD_CALC.replace(
@@ -877,7 +877,7 @@ function sandwichSetup(rewriteLower: boolean) {
 }
 
 test("落在本轮新增行上的 Finding 行作者是那一行自己的作者,不带相邻改动标记", async () => {
-  const { cache, db, forge, carolSha } = sandwichSetup(false);
+  const { cache, db, forge, carolSha } = (await sandwichSetup(false));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -885,11 +885,11 @@ test("落在本轮新增行上的 Finding 行作者是那一行自己的作者,�
       forge: forge.forge,
       reviewers: [scriptedReviewer("stub-model", [at(2, "P1", "这句注释没说清楚")])],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const rows = lineAuthors(db.path);
+  const rows = lineAuthors(db.url);
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, adjacent: row.adjacent })),
     [{ line: 2, sha: carolSha, name: CAROL.name, adjacent: 0 }],
@@ -897,7 +897,7 @@ test("落在本轮新增行上的 Finding 行作者是那一行自己的作者,�
 });
 
 test("落在两处新增之间那一行的 Finding 取相邻新增行的作者,带相邻改动标记", async () => {
-  const { cache, db, forge, carolSha } = sandwichSetup(false);
+  const { cache, db, forge, carolSha } = (await sandwichSetup(false));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -905,11 +905,11 @@ test("落在两处新增之间那一行的 Finding 取相邻新增行的作者,�
       forge: forge.forge,
       reviewers: [scriptedReviewer("stub-model", [at(3, "P0", "add 的返回值没有校验")])],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const rows = lineAuthors(db.path);
+  const rows = lineAuthors(db.url);
   assert.deepEqual(
     rows.map((row) => ({
       line: row.line,
@@ -922,7 +922,7 @@ test("落在两处新增之间那一行的 Finding 取相邻新增行的作者,�
   );
 
   // 阶段汇总的行作者投影把标记一起带出去:卡片据此在行作者之后写「相邻改动」。
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const summary = await store.stageSummary({ owner: "acme", repo: "widgets", pullNumber: 7 });
   await store.close();
   assert.deepEqual(summary.findings[0]!.lineAuthor, {
@@ -935,7 +935,7 @@ test("落在两处新增之间那一行的 Finding 取相邻新增行的作者,�
 });
 
 test("落点上下等距各有一处新增时,行作者取上方那一处", async () => {
-  const { cache, db, forge, carolSha, danSha } = sandwichSetup(true);
+  const { cache, db, forge, carolSha, danSha } = (await sandwichSetup(true));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -943,11 +943,11 @@ test("落点上下等距各有一处新增时,行作者取上方那一处", asyn
       forge: forge.forge,
       reviewers: [scriptedReviewer("stub-model", [at(3, "P0", "add 的返回值没有校验")])],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const rows = lineAuthors(db.path);
+  const rows = lineAuthors(db.url);
   assert.notEqual(danSha, undefined, "下方那一处新增归丁");
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, adjacent: row.adjacent })),
@@ -997,13 +997,13 @@ const BOB_STEPS = HEAD_STEPS.replace(
 );
 
 /** 乙删完之后可再追一个提交,用来在同一个 hunk 里摆一处新增。 */
-function stepsSetup(after?: { content: string; author: { name: string; email: string } }) {
+async function stepsSetup(after?: { content: string; author: { name: string; email: string } }) {
   const repo = makeRepo({
     base: { "src/steps.ts": BASE_STEPS },
     head: { "src/steps.ts": HEAD_STEPS },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const bobSha = repo.commitToBranch(
@@ -1040,7 +1040,7 @@ function step(line: number, description: string) {
 }
 
 test("落在删除点旁上下文行的 Finding,行作者是删掉那几行的提交,带相邻改动标记", async () => {
-  const { cache, db, forge, bobSha } = stepsSetup();
+  const { cache, db, forge, bobSha } = (await stepsSetup());
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -1048,11 +1048,11 @@ test("落在删除点旁上下文行的 Finding,行作者是删掉那几行的�
       forge: forge.forge,
       reviewers: [scriptedReviewer("stub-model", [step(12, "这里少了被删掉的那一步")])],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const rows = lineAuthors(db.path);
+  const rows = lineAuthors(db.url);
   assert.deepEqual(
     rows.map((row) => ({
       line: row.line,
@@ -1071,7 +1071,7 @@ test("删除点在上、新增行在下时按距离取删除提交,等距同样�
     "export const step16 = 16;\n",
     "export const step15b = 15;\nexport const step16 = 16;\n",
   );
-  const { cache, db, forge, bobSha } = stepsSetup({ content: carolSteps, author: CAROL });
+  const { cache, db, forge, bobSha } = (await stepsSetup({ content: carolSteps, author: CAROL }));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -1086,11 +1086,11 @@ test("删除点在上、新增行在下时按距离取删除提交,等距同样�
         ]),
       ],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
     },
   );
 
-  const rows = [...lineAuthors(db.path)].sort((a, b) => a.line - b.line);
+  const rows = [...lineAuthors(db.url)].sort((a, b) => a.line - b.line);
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, adjacent: row.adjacent })),
     [
@@ -1140,7 +1140,7 @@ test("PR 触发的轮次把 pull request 标题、正文与 commit 列表交给 
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const headSha = repo.commitToBranch(
@@ -1165,7 +1165,7 @@ test("PR 触发的轮次把 pull request 标题、正文与 commit 列表交给 
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   const intent = reviewer.calls[0]!.intent;
@@ -1185,10 +1185,10 @@ test("范围审查的轮次带范围审查标题与同区间 commit 列表,不�
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   const rangeReviewId = await store.createRangeReview({
     repoId: 1,
     owner: "acme",
@@ -1221,7 +1221,7 @@ test("范围审查的轮次带范围审查标题与同区间 commit 列表,不�
       forge: forge.forge,
       reviewers: [reviewer],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
       rangeReviewId,
     },
   );
@@ -1239,7 +1239,7 @@ test("意图上下文过长时正文保头部、commit 列表按条数截断", a
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   // 连同夹具自带的那条 head commit,区间里共 INTENT_COMMIT_LIMIT + 2 条。
@@ -1269,7 +1269,7 @@ test("意图上下文过长时正文保头部、commit 列表按条数截断", a
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   const intent = reviewer.calls[0]!.intent!;
@@ -1311,7 +1311,7 @@ test("作用范围的 glob 语义:* 不跨目录,** 跨任意层且可为零层"
 });
 
 test("Review Run 记下开跑时冻结的知识集版本,Finding 记下模型自报的命中规则", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   const reviewer = scriptedReviewer("stub-model", [
     {
       file: "src/calc.ts",
@@ -1329,7 +1329,7 @@ test("Review Run 记下开跑时冻结的知识集版本,Finding 记下模型自
       forge: forge.forge,
       reviewers: [reviewer],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
       ruleSetVersion: 4,
       rules: [{ id: 9, scope: "", statement: "减法不许多减" }],
     },
@@ -1339,7 +1339,7 @@ test("Review Run 记下开跑时冻结的知识集版本,Finding 记下模型自
     { id: 9, scope: "", statement: "减法不许多减" },
   ]);
 
-  const db2 = new DatabaseSync(db.path, { readOnly: true });
+  const db2 = new DatabaseSync(db.url, { readOnly: true });
   try {
     assert.equal(
       db2.prepare("SELECT rule_set_version FROM review_run").get()!["rule_set_version"],
@@ -1352,17 +1352,17 @@ test("Review Run 记下开跑时冻结的知识集版本,Finding 记下模型自
 });
 
 test("空知识集时不注入规则,Review Run 不记知识集版本", async () => {
-  const { cache, db, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   assert.deepEqual(reviewer.calls[0]!.rules, []);
   assert.deepEqual(reviewer.calls[0]!.facts, []);
 
-  const db2 = new DatabaseSync(db.path, { readOnly: true });
+  const db2 = new DatabaseSync(db.url, { readOnly: true });
   try {
     assert.equal(
       db2.prepare("SELECT rule_set_version FROM review_run").get()!["rule_set_version"],
@@ -1375,7 +1375,7 @@ test("空知识集时不注入规则,Review Run 不记知识集版本", async ()
 });
 
 test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都是空", async () => {
-  const { cache, db, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = (await setup(6));
 
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
@@ -1383,14 +1383,14 @@ test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都
       forge: forge.forge,
       reviewers: [reviewer],
       cacheDir: cache.dir,
-      dbPath: db.path,
+      databaseUrl: db.url,
       directive: "这一轮只报 P0",
     },
   );
 
   assert.equal(reviewer.calls[0]!.directive, "这一轮只报 P0");
 
-  const withDirective = new DatabaseSync(db.path, { readOnly: true });
+  const withDirective = new DatabaseSync(db.url, { readOnly: true });
   try {
     assert.equal(
       withDirective.prepare("SELECT directive FROM review_run").get()!["directive"],
@@ -1404,12 +1404,12 @@ test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都
   const next = scriptedReviewer("stub-model", []);
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   assert.equal(next.calls[0]!.directive, undefined);
 
-  const plain = new DatabaseSync(db.path, { readOnly: true });
+  const plain = new DatabaseSync(db.url, { readOnly: true });
   try {
     assert.deepEqual(
       plain
@@ -1424,8 +1424,8 @@ test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都
 });
 
 /** 最新一轮的轮次级轨迹事件类型,按落库先后。 */
-async function runTraceKinds(dbPath: string): Promise<string[]> {
-  const store = openStore(dbPath);
+async function runTraceKinds(databaseUrl: string): Promise<string[]> {
+  const store = openStore(databaseUrl);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     return (await store
@@ -1438,9 +1438,9 @@ async function runTraceKinds(dbPath: string): Promise<string[]> {
 }
 
 test("只复核且零新报:不向 Forge 发 review,旧评论 resolve 照常,轨迹记下未发 review", async () => {
-  const { cache, db, forge, reviewer } = setup(6);
+  const { cache, db, forge, reviewer } = (await setup(6));
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
 
   await runReview(event, { ...deps, reviewers: [reviewer] });
   forge.existingComments.push(
@@ -1458,10 +1458,10 @@ test("只复核且零新报:不向 Forge 发 review,旧评论 resolve 照常,轨
   // 判已修的那条照常自动处置,旧评论照常 resolve。
   assert.deepEqual(forge.resolvedIds, [forge.publishedComments[0]!.id]);
   assert.ok(
-    (await runTraceKinds(db.path)).includes("review_skipped"),
+    (await runTraceKinds(db.url)).includes("review_skipped"),
     "只复核那一轮没有在轨迹里说清自己为什么没发 review",
   );
-  assert.ok(!(await runTraceKinds(db.path)).includes("review_posted"));
+  assert.ok(!(await runTraceKinds(db.url)).includes("review_posted"));
 });
 
 test("只复核时复核结论自带位置的延续照常发生", async () => {
@@ -1470,7 +1470,7 @@ test("只复核时复核结论自带位置的延续照常发生", async () => {
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const forge = memoryForge({
@@ -1485,7 +1485,7 @@ test("只复核时复核结论自带位置的延续照常发生", async () => {
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
   });
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
 
   await runReview(event, {
     ...deps,
@@ -1505,7 +1505,7 @@ test("只复核时复核结论自带位置的延续照常发生", async () => {
     mode: "verdict-only",
   });
 
-  const [first, second] = continuedFrom(db.path);
+  const [first, second] = continuedFrom(db.url);
   assert.equal(first, null);
   assert.notEqual(second, null, "只复核那一轮没有承接旧位置的那条 Finding");
 });
@@ -1521,7 +1521,7 @@ async function continuedStage(reviewers: readonly Reviewer[]) {
     head: { "src/calc.ts": HEAD_CALC },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
   const forge = memoryForge({
     pullRequest: {
@@ -1535,7 +1535,7 @@ async function continuedStage(reviewers: readonly Reviewer[]) {
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
   });
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
   await runReview(event, { ...deps, reviewers });
   let fedBack = 0;
   let step = 1;
@@ -1553,8 +1553,8 @@ async function continuedStage(reviewers: readonly Reviewer[]) {
 }
 
 /** 库里的每一轮,按轮次先后。 */
-async function runsInOrder(dbPath: string) {
-  const store = openStore(dbPath);
+async function runsInOrder(databaseUrl: string) {
+  const store = openStore(databaseUrl);
   try {
     return (await store.listRuns({ limit: 10 })).sort((a, b) => a.id - b.id);
   } finally {
@@ -1598,7 +1598,7 @@ test("合成延续完整沿用历史各归属的影响与建议并各记出处,�
     reviewers: [verdictReviewer("model-c", "present", [], 6)],
   });
 
-  const [first, second] = await runsInOrder(stage.db.path);
+  const [first, second] = await runsInOrder(stage.db.url);
   assert.equal(second!.findings.length, 1);
   const continued = second!.findings[0]!;
   // 本轮归属只有位置复核者,两段为空:它没有对着新代码给过修法。参与统计因此不变。
@@ -1679,7 +1679,7 @@ test("连续两轮延续仍指向最初那一轮的出处,正文不层层嵌套(
     reviewers: [verdictReviewer("model-c", "present", [], 6)],
   });
 
-  const [first, , third] = await runsInOrder(stage.db.path);
+  const [first, , third] = await runsInOrder(stage.db.url);
   const continued = third!.findings[0]!;
   assert.deepEqual(continued.attributions.map((said) => said.model), ["model-c"]);
   // 出处是最初说出它的那一轮;上一轮那个只给了位置的模型没有内容,不占一段。
@@ -1711,9 +1711,9 @@ test("本轮重报的那条用本轮自己的影响与建议,历史建议不覆�
   });
 
   // 词法配对承接了旧 Identity,内容却是本轮 model-b 自己说的:不带历史建议,不标沿用。
-  const [, continuedRow] = continuedFrom(stage.db.path);
+  const [, continuedRow] = continuedFrom(stage.db.url);
   assert.notEqual(continuedRow, null);
-  const [, second] = await runsInOrder(stage.db.path);
+  const [, second] = await runsInOrder(stage.db.url);
   assert.deepEqual(second!.findings[0]!.attributions, [
     {
       model: "model-b",
@@ -1733,7 +1733,7 @@ test("历史没存影响与建议时延续如实缺失,不凭空生成(issue #26
     scriptedReviewer("model-a", [{ ...SAID_A1, impact: "", suggestion: "" }]),
   ]);
   // 升级前落的归属:两列是 NULL。
-  const legacy = new DatabaseSync(stage.db.path);
+  const legacy = new DatabaseSync(stage.db.url);
   legacy.exec("UPDATE finding_attribution SET impact = NULL, suggestion = NULL");
   legacy.close();
   stage.rewrite();
@@ -1742,7 +1742,7 @@ test("历史没存影响与建议时延续如实缺失,不凭空生成(issue #26
     reviewers: [verdictReviewer("model-b", "present", [], 6)],
   });
 
-  const [first, second] = await runsInOrder(stage.db.path);
+  const [first, second] = await runsInOrder(stage.db.url);
   // 历史那段照实带着 null 过来,不写成空串:恢复操作要认得出它还缺着。
   assert.deepEqual(second!.findings[0]!.carried, [
     {
@@ -1761,7 +1761,7 @@ test("历史没存影响与建议时延续如实缺失,不凭空生成(issue #26
 });
 
 test("没有未处置历史时只复核不开跑,失败原因认得出来", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
 
   await assert.rejects(
     runReview(
@@ -1770,14 +1770,14 @@ test("没有未处置历史时只复核不开跑,失败原因认得出来", asyn
         forge: forge.forge,
         reviewers: [verdictReviewer("stub-model", "fixed")],
         cacheDir: cache.dir,
-        dbPath: db.path,
+        databaseUrl: db.url,
         mode: "verdict-only",
       },
     ),
     (error: Error) => error.message === VERDICT_ONLY_NO_HISTORY,
   );
 
-  const empty = new DatabaseSync(db.path, { readOnly: true });
+  const empty = new DatabaseSync(db.url, { readOnly: true });
   try {
     assert.equal(empty.prepare("SELECT count(*) AS n FROM review_run").get()!["n"], 0);
   } finally {
@@ -1802,13 +1802,13 @@ const HEAD_GONE = BASE_GONE.replace("return a;", "return a + 1;");
  * 造一个「上一轮在 src/gone.ts 上报过一条」的阶段(issue #272)。第二轮把那个文件
  * 回退或删掉,它就落在本轮可审文件集之外。
  */
-function absenceFixture(pullNumber: number) {
+async function absenceFixture(pullNumber: number) {
   const repo = makeRepo({
     base: { "src/calc.ts": BASE_CALC, "src/gone.ts": BASE_GONE },
     head: { "src/calc.ts": HEAD_CALC, "src/gone.ts": HEAD_GONE },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   // 同一个数组交给内存 Forge,第二轮改写它即改写本轮的变更文件清单。
@@ -1837,7 +1837,7 @@ function absenceFixture(pullNumber: number) {
 }
 
 /** 上一轮发出去的行级评论,按未处置预置回 Forge,第二轮的回填才读得到它们。 */
-function carryComments(forge: ReturnType<typeof memoryForge>): void {
+function carryComments(forge: Awaited<ReturnType<typeof memoryForge>>): void {
   forge.existingComments.push(
     ...forge.publishedComments.map((comment) => ({ ...comment, resolved: false })),
   );
@@ -1845,10 +1845,10 @@ function carryComments(forge: ReturnType<typeof memoryForge>): void {
 
 /** 某个文件上最新那一行 Finding 的落库 id、处置值与处置备注。 */
 function latestFinding(
-  dbPath: string,
+  databaseUrl: string,
   file: string,
 ): { id: number; disposition: string; note: string | null } {
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const db = new DatabaseSync(databaseUrl, { readOnly: true });
   try {
     const row = db
       .prepare(
@@ -1867,8 +1867,8 @@ function latestFinding(
 }
 
 /** 最近那一轮的轮次级轨迹,连 payload 一起。 */
-async function lastRunTrace(dbPath: string): Promise<{ kind: string; payload: unknown }[]> {
-  const store = openStore(dbPath);
+async function lastRunTrace(databaseUrl: string): Promise<{ kind: string; payload: unknown }[]> {
+  const store = openStore(databaseUrl);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     return (await store
@@ -1881,8 +1881,8 @@ async function lastRunTrace(dbPath: string): Promise<{ kind: string; payload: un
 }
 
 /** 把全局最低报告等级(issue #271)写成这一档;不写即缺行,读回默认 P2。 */
-async function setMinReportSeverity(dbPath: string, severity: "P0" | "P1" | "P2" | null): Promise<void> {
-  const store = openStore(dbPath);
+async function setMinReportSeverity(databaseUrl: string, severity: "P0" | "P1" | "P2" | null): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     assert.equal(await putGlobalSettings(store, { minReportSeverity: severity }), true);
   } finally {
@@ -1891,13 +1891,13 @@ async function setMinReportSeverity(dbPath: string, severity: "P0" | "P1" | "P2"
 }
 
 test("所在文件已回退到 base 的未处置历史,完整审查开跑即自动处置(issue #272)", async () => {
-  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(7);
+  const { repo, cache, db, forge, changedFiles, firstRound } = (await absenceFixture(7));
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.path, "src/gone.ts");
+  const history = latestFinding(db.url, "src/gone.ts");
   const carried = forge.publishedComments.find((comment) => comment.path === "src/gone.ts")!;
 
   // 第二轮把 src/gone.ts 改回 base 的内容:它因此根本不在 base..head 的 diff 里。
@@ -1907,45 +1907,45 @@ test("所在文件已回退到 base 的未处置历史,完整审查开跑即自�
   await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
 
   assert.deepEqual(forge.resolvedIds, [carried.id]);
-  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "fixed",
     note: "文件已回退,自动处置",
   });
-  const traced = (await lastRunTrace(db.path)).find((event) => event.kind === "history_auto_disposed");
+  const traced = (await lastRunTrace(db.url)).find((event) => event.kind === "history_auto_disposed");
   assert.deepEqual(traced?.payload, { deleted: [], reverted: [history.id] });
   // 还在可审文件集里的那条不受影响。
-  assert.equal(latestFinding(db.path, "src/calc.ts").disposition, "unresolved");
+  assert.equal(latestFinding(db.url, "src/calc.ts").disposition, "unresolved");
 });
 
 test("所在文件被这一轮删掉的未处置历史,备注写「文件已删除」(issue #272)", async () => {
-  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(7);
+  const { repo, cache, db, forge, changedFiles, firstRound } = (await absenceFixture(7));
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.path, "src/gone.ts");
+  const history = latestFinding(db.url, "src/gone.ts");
 
   forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": null });
   changedFiles[1] = { path: "src/gone.ts", status: "removed" };
 
   await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
 
-  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "fixed",
     note: "文件已删除,自动处置",
   });
-  const traced = (await lastRunTrace(db.path)).find((event) => event.kind === "history_auto_disposed");
+  const traced = (await lastRunTrace(db.url)).find((event) => event.kind === "history_auto_disposed");
   assert.deepEqual(traced?.payload, { deleted: [history.id], reverted: [] });
 });
 
 test("范围审查阶段的只复核轮次同律:回退文件上的历史开跑即自动处置(issue #272)", async () => {
-  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(101);
+  const { repo, cache, db, forge, changedFiles, firstRound } = (await absenceFixture(101));
   const event = { owner: "acme", repo: "widgets", number: 101 };
 
-  const seed = openStore(db.path);
+  const seed = openStore(db.url);
   const rangeReviewId = await seed.createRangeReview({
     repoId: 1,
     owner: "acme",
@@ -1957,11 +1957,11 @@ test("范围审查阶段的只复核轮次同律:回退文件上的历史开跑�
     createdAt: new Date().toISOString(),
   });
   await seed.close();
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path, rangeReviewId };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url, rangeReviewId };
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.path, "src/gone.ts");
+  const history = latestFinding(db.url, "src/gone.ts");
 
   forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": BASE_GONE });
   changedFiles.splice(1, 1);
@@ -1969,7 +1969,7 @@ test("范围审查阶段的只复核轮次同律:回退文件上的历史开跑�
   const second = verdictReviewer("stub-model", "present");
   await runReview(event, { ...deps, reviewers: [second], mode: "verdict-only" });
 
-  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "fixed",
     note: "文件已回退,自动处置",
@@ -1979,18 +1979,18 @@ test("范围审查阶段的只复核轮次同律:回退文件上的历史开跑�
     second.calls.flatMap((call) => call.history.map((entry) => entry.file)),
     ["src/calc.ts"],
   );
-  const traced = (await lastRunTrace(db.path)).find((event) => event.kind === "history_auto_disposed");
+  const traced = (await lastRunTrace(db.url)).find((event) => event.kind === "history_auto_disposed");
   assert.deepEqual(traced?.payload, { deleted: [], reverted: [history.id] });
 });
 
 test("回退处置写 Forge 失败时那一条保持未处置,这一轮照常跑完(issue #272)", async () => {
-  const { repo, cache, db, forge, changedFiles, firstRound } = absenceFixture(7);
+  const { repo, cache, db, forge, changedFiles, firstRound } = (await absenceFixture(7));
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.path, "src/gone.ts");
+  const history = latestFinding(db.url, "src/gone.ts");
 
   forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": BASE_GONE });
   changedFiles.splice(1, 1);
@@ -2000,19 +2000,19 @@ test("回退处置写 Forge 失败时那一条保持未处置,这一轮照常跑
 
   await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
 
-  assert.deepEqual(latestFinding(db.path, "src/gone.ts"), {
+  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "unresolved",
     note: null,
   });
-  const kinds = (await lastRunTrace(db.path)).map((event) => event.kind);
+  const kinds = (await lastRunTrace(db.url)).map((event) => event.kind);
   assert.ok(!kinds.includes("history_auto_disposed"));
   assert.ok(kinds.includes("run_finished"), "写 Forge 失败不该让这一轮跑不完");
 });
 
 /** 那一轮落库的最低报告等级。轮次列表不带它,直接读列。 */
-function runMinReportSeverity(dbPath: string): string[] {
-  const sqlite = new DatabaseSync(dbPath);
+function runMinReportSeverity(databaseUrl: string): string[] {
+  const sqlite = new DatabaseSync(databaseUrl);
   try {
     return sqlite
       .prepare("SELECT min_report_severity FROM review_run ORDER BY id")
@@ -2024,8 +2024,8 @@ function runMinReportSeverity(dbPath: string): string[] {
 }
 
 test("阈值 P1 时模型报的 P2 不发出也不落库,轨迹记下丢弃条数", async () => {
-  const { cache, db, forge } = setup(6);
-  await setMinReportSeverity(db.path, "P1");
+  const { cache, db, forge } = (await setup(6));
+  await setMinReportSeverity(db.url, "P1");
 
   // 四条各占一行:同一行的会被合并成一条评论,数不出挡掉了几条。
   const reviewer = scriptedReviewer("model-a", [
@@ -2036,7 +2036,7 @@ test("阈值 P1 时模型报的 P2 不发出也不落库,轨迹记下丢弃条�
   ]);
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   // 发出去的只有够阈值的那两条。
@@ -2044,7 +2044,7 @@ test("阈值 P1 时模型报的 P2 不发出也不落库,轨迹记下丢弃条�
   assert.equal(review.comments.length, 2);
   assert.equal(review.comments.some((comment) => /const/.test(comment.body)), false);
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     assert.deepEqual(
@@ -2064,17 +2064,17 @@ test("阈值 P1 时模型报的 P2 不发出也不落库,轨迹记下丢弃条�
 });
 
 test("阈值全报时一条都不丢,注入边界不带阈值,轨迹里没有过滤事件", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
 
   const reviewer = scriptedReviewer("model-a", [at(6, "P2", "这里可以改成 const")]);
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
 
   assert.equal(forge.createdReviews[0]!.comments.length, 1);
   assert.equal(reviewer.calls[0]!.minReportSeverity, undefined);
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
     assert.equal(
@@ -2084,23 +2084,23 @@ test("阈值全报时一条都不丢,注入边界不带阈值,轨迹里没有过
   } finally {
     await store.close();
   }
-  assert.deepEqual(runMinReportSeverity(db.path), ["P2"]);
+  assert.deepEqual(runMinReportSeverity(db.url), ["P2"]);
 });
 
 test("阈值随轮次落库,开跑后改设置不影响本轮", async () => {
-  const { cache, db, forge } = setup(6);
-  await setMinReportSeverity(db.path, "P1");
+  const { cache, db, forge } = (await setup(6));
+  await setMinReportSeverity(db.url, "P1");
 
   const reviewer = scriptedReviewer("model-a", [at(6, "P2", "这里可以改成 const")]);
   // 这一轮已经开跑并读过阈值;改设置只影响下一轮。
   const running = runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
   );
   await running;
-  await setMinReportSeverity(db.path, "P2");
+  await setMinReportSeverity(db.url, "P2");
 
-  assert.deepEqual(runMinReportSeverity(db.path), ["P1"]);
+  assert.deepEqual(runMinReportSeverity(db.url), ["P1"]);
   assert.equal(reviewer.calls[0]!.minReportSeverity, "P1");
   // 那一条 P2 按开跑时的 P1 挡掉,改回全报救不了已经跑完的这一轮。
   assert.equal(forge.publishedComments.length, 0);
@@ -2108,15 +2108,15 @@ test("阈值随轮次落库,开跑后改设置不影响本轮", async () => {
   const next = scriptedReviewer("model-b", [at(6, "P2", "这里可以改成 const")]);
   await runReview(
     { owner: "acme", repo: "widgets", number: 7 },
-    { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, dbPath: db.path },
+    { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, databaseUrl: db.url },
   );
-  assert.deepEqual(runMinReportSeverity(db.path), ["P1", "P2"]);
+  assert.deepEqual(runMinReportSeverity(db.url), ["P1", "P2"]);
   assert.equal(next.calls[0]!.minReportSeverity, undefined);
 });
 
 /** 把这个仓库注册进注册表,好挂仓库级的覆盖(issue #273)。 */
-async function registerRepoRow(dbPath: string, repoId: number): Promise<void> {
-  const store = openStore(dbPath);
+async function registerRepoRow(databaseUrl: string, repoId: number): Promise<void> {
+  const store = openStore(databaseUrl);
   try {
     assert.equal(
       await store.registerRepo({
@@ -2135,11 +2135,11 @@ async function registerRepoRow(dbPath: string, repoId: number): Promise<void> {
 
 /** 给这个仓库写一档最低报告等级覆盖(issue #273);null 即清掉,跟随全局。 */
 async function setRepoMinReportSeverity(
-  dbPath: string,
+  databaseUrl: string,
   repoId: number,
   severity: "P0" | "P1" | "P2" | null,
 ): Promise<void> {
-  const store = openStore(dbPath);
+  const store = openStore(databaseUrl);
   try {
     // 写入口只有整块那一个(issue #302):读当前版本,别的两项原样带过去。
     const repo = (await store.getRepo(repoId))!;
@@ -2158,13 +2158,13 @@ async function setRepoMinReportSeverity(
 }
 
 test("仓库覆盖优先于全局阈值,清掉覆盖就回到全局(issue #273)", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
-  await registerRepoRow(db.path, 101);
-  await registerRepoRow(db.path, 102);
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
+  await registerRepoRow(db.url, 101);
+  await registerRepoRow(db.url, 102);
   // 全局仍是默认的全报;只有 101 这个仓库自定义到 P1。
-  await setRepoMinReportSeverity(db.path, 101, "P1");
+  await setRepoMinReportSeverity(db.url, 101, "P1");
 
   const covered = scriptedReviewer("model-a", [at(6, "P2", "这里可以改成 const")]);
   await runReview(event, { ...deps, repoId: 101, reviewers: [covered] });
@@ -2180,19 +2180,19 @@ test("仓库覆盖优先于全局阈值,清掉覆盖就回到全局(issue #273)"
   assert.equal(other.calls[0]!.minReportSeverity, undefined);
 
   // 清掉覆盖,101 也回到全局的全报。
-  await setRepoMinReportSeverity(db.path, 101, null);
+  await setRepoMinReportSeverity(db.url, 101, null);
   const cleared = scriptedReviewer("model-c", [at(11, "P2", "命名再直白一点")]);
   await runReview(event, { ...deps, repoId: 101, reviewers: [cleared] });
 
   assert.equal(cleared.calls[0]!.minReportSeverity, undefined);
   // 三轮各自落下开跑时的生效阈值。
-  assert.deepEqual(runMinReportSeverity(db.path), ["P1", "P2", "P2"]);
+  assert.deepEqual(runMinReportSeverity(db.url), ["P1", "P2", "P2"]);
 });
 
 test("低于阈值的未处置历史照旧注入并要结论", async () => {
-  const { cache, db, forge } = setup(6);
+  const { cache, db, forge } = (await setup(6));
   const event = { owner: "acme", repo: "widgets", number: 7 };
-  const deps = { forge: forge.forge, cacheDir: cache.dir, dbPath: db.path };
+  const deps = { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url };
 
   // 第一轮全报,落下一条 P2 历史。
   await runReview(event, {
@@ -2204,7 +2204,7 @@ test("低于阈值的未处置历史照旧注入并要结论", async () => {
   );
 
   // 第二轮把阈值提到 P1:新报的 P2 发不出去,历史那条 P2 仍要注入、仍要结论。
-  await setMinReportSeverity(db.path, "P1");
+  await setMinReportSeverity(db.url, "P1");
   const second = verdictReviewer("model-a", "present", [at(6, "P2", "这里还是可以改成 const")]);
   await runReview(event, { ...deps, reviewers: [second] });
 
@@ -2212,7 +2212,7 @@ test("低于阈值的未处置历史照旧注入并要结论", async () => {
   assert.equal(injected.length, 1);
   assert.equal(injected[0]!.severity, "P2");
 
-  const store = openStore(db.path);
+  const store = openStore(db.url);
   try {
     const [, latest] = (await store.listRuns({ limit: 10 })).sort((a, b) => a.id - b.id);
     // 复核结论照常落库:阈值只管新报,不改变历史的口径。

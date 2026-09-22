@@ -94,7 +94,7 @@ async function startedHarness(
     201,
   );
   // 门禁分代(issue #206):这几条用例要的是审查行为,仓库放到「知识集已确认」那一侧。
-  await confirmEmptyRuleSet(harness.db.path, GITEA_REPO.id);
+  await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return harness;
 }
 
@@ -156,7 +156,7 @@ async function runsOf(
   h: PanelHarness,
   rangeReviewId: number,
 ): Promise<{ headSha: string; mode: string; triggerSource: string; triggeredBy: string | null }[]> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     return (await store
       .listRuns({ limit: 30, rangeReviewId }))
@@ -210,7 +210,7 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
   assert.deepEqual(recorded.historyEntries.at(-1), ["src/answer.ts:unknown"]);
 
   // 历次比较项那一行没有记录人:面板据此显示「定时检查」。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   const comparisons = await store.listRangeReviewComparisons(rangeReview.id);
   await store.close();
   assert.deepEqual(
@@ -370,7 +370,7 @@ test("这个范围审查有轮次在跑:跳过并记原因", async () => {
   await enableDailyIncrement(h, rangeReview.id, "feature");
 
   // 一轮停在没有结束时间的状态:人点的那一次,或等着续跑的那一轮。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   await store.startRun({
     owner: HARNESS_PR.owner,
     repo: HARNESS_PR.repo,
@@ -606,7 +606,7 @@ test("升级前的旧库:开库补上每日增量那几列,开关照常能开", 
   // 最后一列时要重写建表语句,而 `range_review` 的建表语句里有中文注释,重写会截断并
   // 报 `incomplete input`。改名之后 `pragma_table_info` 同样查不到这几个名字,补列那段
   // 走的是同一条路。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   for (const column of [
     "daily_increment_enabled",
     "daily_increment_branch",

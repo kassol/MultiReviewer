@@ -14,7 +14,7 @@ import {
   type Platform,
 } from "../src/webhook/server.ts";
 import { openStore } from "../src/review/store/index.ts";
-import { confirmEmptyRuleSet, makeCacheDir, makeDbPath, makeRepo, testCleanups } from "./support/git-fixture.ts";
+import { confirmEmptyRuleSet, makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
@@ -97,11 +97,11 @@ async function startHarness(options: HarnessOptions = {}) {
     head: { "src/answer.ts": HEAD_FILE },
   });
   const cache = makeCacheDir();
-  const db = makeDbPath();
+  const db = await makeTestDatabase();
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   // 种入注册表:准入凭仓库的 key,不再有全局 secret。
-  const seed = openStore(db.path);
+  const seed = openStore(db.url);
   await seed.registerRepo({
     repoId: REPO_ID,
     owner: PR.owner,
@@ -123,8 +123,8 @@ async function startHarness(options: HarnessOptions = {}) {
   });
   await seed.close();
   // 这两个仓库播种成升级前那一代:门禁分代(issue #206)只挡新注册且未确认知识集的仓库。
-  if (options.ruleSetUnconfirmed !== true) await confirmEmptyRuleSet(db.path, REPO_ID);
-  await confirmEmptyRuleSet(db.path, REPO_B_ID);
+  if (options.ruleSetUnconfirmed !== true) await confirmEmptyRuleSet(db.url, REPO_ID);
+  await confirmEmptyRuleSet(db.url, REPO_B_ID);
 
   const base = memoryForge({
     pullRequest: {
@@ -168,7 +168,8 @@ async function startHarness(options: HarnessOptions = {}) {
         ? plans.map((plan) => scriptedReviewer(plan.spec.model, []))
         : [options.reviewer],
     cacheDir: cache.dir,
-    dbPath: db.path,
+    databaseUrl: db.url,
+    dataDir: db.dataDir,
     bootstrapSecret: "webhook-bootstrap",
     baseUrl: "https://reviewer.example.test",
     panelDist: `${cache.dir}/no-dist`,
@@ -265,7 +266,7 @@ test("知识集还没确认的仓库:投递照常受理但不跑 Run,知识确�
   );
 
   // 知识确认:草案整组生效,这个仓库有了第一个知识集版本。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(
       (await store.appendRuleDraftItems(
@@ -685,7 +686,7 @@ test("closed 投递触发全量回填并落 PR 状态,不跑审查", async () =>
   assert.equal(h.dispatched.length, 1);
 
   const readState = (): unknown[] => {
-    const sqlite = new DatabaseSync(h.db.path);
+    const sqlite = new DatabaseSync(h.db.url);
     try {
       return (sqlite.prepare("SELECT pr_state FROM review_run").all() as {
         pr_state: unknown;
@@ -695,7 +696,7 @@ test("closed 投递触发全量回填并落 PR 状态,不跑审查", async () =>
     }
   };
 
-  const sqlite = new DatabaseSync(h.db.path);
+  const sqlite = new DatabaseSync(h.db.url);
   try {
     const dispositions = (
       sqlite.prepare("SELECT disposition FROM finding").all() as { disposition: string }[]
@@ -846,7 +847,7 @@ test("容器 PR 的事件按分支前缀丢弃,不触发审查也不进幂等表
   assert.equal((await container("synchronized")).status, 200);
   assert.deepEqual(h.dispatched, []);
 
-  const sqlite = new DatabaseSync(h.db.path);
+  const sqlite = new DatabaseSync(h.db.url);
   const rows = sqlite.prepare("SELECT COUNT(*) AS n FROM webhook_delivery").all();
   sqlite.close();
   assert.equal(Number(rows[0]!["n"]), 0);
@@ -869,7 +870,7 @@ test("服务正在排空:投递回 503、不开跑,幂等键也不被占走", as
   assert.ok(h.deliveries.some((line) => line.includes("排空")));
 
   // 排空期间那个 head commit 的幂等键没被占走:起回来之后它仍然审得了。
-  const sqlite = new DatabaseSync(h.db.path);
+  const sqlite = new DatabaseSync(h.db.url);
   const claimed = sqlite
     .prepare("SELECT head_sha FROM webhook_delivery")
     .all()

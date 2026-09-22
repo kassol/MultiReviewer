@@ -4493,6 +4493,14 @@ export function storePool(databaseUrl: string): PgPool {
   return pool;
 }
 
+/** 关掉一个连接池。测试收尾要它:还连着的库 DROP 不掉。 */
+export async function closeStorePool(databaseUrl: string): Promise<void> {
+  const pool = pools.get(databaseUrl);
+  if (pool === undefined) return;
+  pools.delete(databaseUrl);
+  await pool.end();
+}
+
 /** 关掉这个进程开过的全部连接池。不关的话事件循环上还挂着空闲连接,进程不退出。 */
 export async function closeStorePools(): Promise<void> {
   const open = [...pools.values()];

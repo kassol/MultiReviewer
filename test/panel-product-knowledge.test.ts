@@ -50,7 +50,7 @@ async function productWithTwoRepos(h: PanelHarness): Promise<Product> {
   assert.equal(response.status, 201, text);
   const { product } = JSON.parse(text) as { product: Product };
   // 归属行直接落库:走归入端点会自己开一场梳理(issue #347),而这几例压的是条目本身。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     for (const repoId of [GITEA_REPO.id, ALPHA]) {
       assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
@@ -93,7 +93,7 @@ async function write(
     supersedes?: number;
   },
 ): Promise<number | undefined> {
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     return (await store.writeProductKnowledge({
       productId,
@@ -173,7 +173,7 @@ test("库层的写与撤回:改写落在同一条上、取代记在旧那条上�
   const term = (await write(h, product.id, { kind: "term", name: "订单", body: "一次购买请求。" }))!;
 
   // 改写:id 不变,正文换一版。
-  assert.equal(await write(h, product.id, { kind: "term", id: term, name: "订单", body: "改过的定义。" }), term);
+  assert.equal((await write(h, product.id, { kind: "term", id: term, name: "订单", body: "改过的定义。" })), term);
   assert.deepEqual(
     (await detail(h, product.id)).knowledge.map((row) => [row.id, row.body]),
     [[term, "改过的定义。"]],
@@ -197,12 +197,12 @@ test("库层的写与撤回:改写落在同一条上、取代记在旧那条上�
   );
 
   // 同名的第二条写不进去:按名字读整条的那一路要求一个名字只有一条。
-  await assert.rejects(() => write(h, product.id, { kind: "term", name: "订单", body: "另一份定义。" }));
+  await assert.rejects(async () => await write(h, product.id, { kind: "term", name: "订单", body: "另一份定义。" }));
   // 改写与取代都只认这个产品下的条目:认不出的 id 一格不动。
-  assert.equal(await write(h, product.id, { kind: "term", id: 9999, name: "订单", body: "x" }), undefined);
+  assert.equal((await write(h, product.id, { kind: "term", id: 9999, name: "订单", body: "x" })), undefined);
 
   // 撤回:删行,第二遍不算成功;指着它的「被取代」跟着松开。
-  const store = openStore(h.db.path);
+  const store = openStore(h.db.url);
   try {
     assert.equal(await store.withdrawProductKnowledge(product.id, second), true);
     assert.equal(await store.withdrawProductKnowledge(product.id, second), false);
@@ -260,7 +260,7 @@ test("升级前的旧库:旧的一句话条目、提案与驳回记忆一并丢�
   await write(h, product.id, { kind: "term", name: "订单", body: "一次购买请求。" });
 
   // 把库退回升级之前的样子:新表还不存在,旧的两张表带着行。
-  const db = new DatabaseSync(h.db.path);
+  const db = new DatabaseSync(h.db.url);
   db.exec("DROP TABLE product_knowledge_entry");
   db.exec(`CREATE TABLE product_knowledge (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,7 +297,7 @@ test("升级前的旧库:旧的一句话条目、提案与驳回记忆一并丢�
   assert.equal(after.product.name, "报销系统");
 
   // 旧表真的没了,不是留着不读。
-  const check = new DatabaseSync(h.db.path);
+  const check = new DatabaseSync(h.db.url);
   try {
     for (const table of ["product_knowledge", "product_knowledge_rejection"]) {
       assert.equal(
