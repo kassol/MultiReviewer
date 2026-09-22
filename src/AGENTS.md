@@ -353,6 +353,7 @@ PostgreSQL 也认。
 
 ## 变更日志
 
+- 2026-09-22: 搬迁脚本 `scripts/migrate-sqlite-to-pg.ts` 连同 `test/migrate-sqlite-to-pg.test.ts` 与 `test/fixtures/legacy-sqlite.db` 随 00-test 切完删除(issue #458);要再搬一个 SQLite 实例用镜像 `:9894ffc`,见根 `AGENTS.md` 部署一节。
 - 2026-09-22: **写进 `jsonb` 的文本先换掉 NUL**(spec #445 第二段,00-test 彩排发现)。PostgreSQL 的 `text` 与 `jsonb` 都收不了 `\u0000`(22P05),线上一条审查轨迹的 Finding 片段里正好带一个,搬迁脚本在 `review_trace` 上整笔失败;Reviewer 读到二进制味的文件时线上也会在 `appendTrace` 撞上同一处。`schema/columns.ts` 的 `jsonText.toDriver` 与搬迁脚本的转型一律把它换成 U+FFFD(`withoutNul`),回归在 `review-trace` 用例。
 - 2026-09-22: **`store/` 两轴评审的修正**(spec #445 第二段)。`sql` 模板里的表名与列名改成引 schema 的列对象,`identityKey` 与 `STATS_IDENTITY_CTE` 从字符串变成由 `alias()` 拼出的 `SQL` 片段,`src/` 里 `sql.raw` 归零;躲不开写名字的三处(CTE 与子查询的输出列、`UPDATE … SET` 的目标列表、`excluded.<列>`)各写明原因,后者用新的 `columnName(列)` 从列对象取名。`runs.ts` 的 `repoPairs` 删掉,改引 `repoPairFilter`。**`mergeIntoRuleProposal` 的读-判-写进事务并 `SELECT … FOR UPDATE` 锁住那一行**:判完到写下之间被裁决掉的提案此前照样被改写,现在退回按新增处理(回归测试在 `panel-rule-proposals`)。时刻读法按实测收成一种说法写在 `store/pg.ts`——全局解析器对 `jsonb` 与 `int8` 到处生效,对时刻只在不经 Drizzle 的读上生效,Drizzle 那头的 ISO 来自列类型的 `fromDriver`;两份归一实现合成 `toIso` 一份。`TransactionMode` 连同 36 处调用点的第一个参数删掉。另记一条施工陷阱:`select({...})` 的 `sql` 字段在单表查询上会被 Drizzle 摘掉列的表限定,子查询里的列引用要先拼成常量再放进投影。
 - 2026-09-22: 文档随 issue #458 改口:审查策略那条的「同一 SQLite 读事务」改成「同一个读事务」,评审记录那条兜底次序键的比较从「SQLite 的 BINARY」改成「PostgreSQL 的排序规则」;测试文件头部「临时 SQLite」改成「一次性 PostgreSQL 库」,两处拿 `node:sqlite` 当项目事实的夹具文本换掉。

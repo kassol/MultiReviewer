@@ -77,9 +77,6 @@ COPY src ./src
 COPY vendor ./vendor
 # 迁移文件(ADR 0036):服务启动时在监听之前跑它们,镜像里必须有。
 COPY drizzle ./drizzle
-# 一次性搬迁脚本随这一版镜像走(issue #457 / #458):切换时在服务器上 `docker compose run` 它。
-# 线上切完即连脚本一起删,下一版镜像不再带。
-COPY scripts/migrate-sqlite-to-pg.ts ./scripts/migrate-sqlite-to-pg.ts
 COPY --from=webbuild /app/web/dist ./web/dist
 
 # 数据落这两处,compose 把宿主机目录绑上来。库本身不在这里:PostgreSQL 由部署方提供,
