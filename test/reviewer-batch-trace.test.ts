@@ -210,8 +210,9 @@ test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得
     .reduce((sum, payload) => sum + (payload["verdictsExpected"] as number), 0);
   const [row] = (await query(
     fixture.db.url,
-    `SELECT SUM(missing_reason = 'no-verdict') AS missed,
-            SUM(missing_reason = 'batch-failed') AS batchFailed
+    // PostgreSQL 的 SUM 不收布尔:计数改写成 COUNT + FILTER。
+    `SELECT COUNT(*) FILTER (WHERE missing_reason = 'no-verdict') AS missed,
+            COUNT(*) FILTER (WHERE missing_reason = 'batch-failed') AS "batchFailed"
        FROM finding_verdict WHERE run_id = ${runId}`,
   ));
   assert.equal(row!["missed"], skipped);

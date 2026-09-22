@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import {
@@ -19,7 +18,7 @@ import {
 } from "../src/review/range-review.ts";
 import { openStore } from "../src/review/store/index.ts";
 import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
-import { setup as setupRepo } from "./support/batch-run.ts";
+import { query, setup as setupRepo } from "./support/batch-run.ts";
 import {
   memoryForge,
   readingReviewer,
@@ -107,10 +106,7 @@ test("锚不进 diff hunk 的 Finding 被丢弃,不进 review 正文也不落库
   // 一条 Finding 都没剩下,也没有缺席的模型,这一轮无话可说,只留一个赞。
   assert.deepEqual(forge.createdReviews, []);
   assert.equal(forge.reactions.has("+1"), true);
-  assert.deepEqual(
-    new DatabaseSync(db.url, { readOnly: true }).prepare("SELECT id FROM finding").all(),
-    [],
-  );
+  assert.deepEqual((await query(db.url, "SELECT id FROM finding")), []);
 });
 
 test("合并 agent 跑不成时,词法配对的延续照常发生", async () => {
@@ -157,7 +153,7 @@ test("合并 agent 跑不成时,词法配对的延续照常发生", async () => 
     mergeAgent: async () => ({ groups: [], failure: "模型调用超时" }),
   });
 
-  const [first, second] = continuedFrom(db.url);
+  const [first, second] = await continuedFrom(db.url);
   assert.equal(first, null);
   assert.notEqual(second, null, "回退档的词法延续没有发生");
   assert.deepEqual(forge.resolvedIds, ["comment-1"]);
@@ -671,35 +667,22 @@ type LineAuthorRow = {
 };
 
 /** 落库的行作者四列,按落库顺序。 */
-function lineAuthors(databaseUrl: string): LineAuthorRow[] {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    return db
-      .prepare(
-        `SELECT line, line_author_sha AS sha, line_author_name AS name,
-                line_author_email AS email, line_author_at AS at,
-                line_author_adjacent AS adjacent
-           FROM finding ORDER BY id`,
-      )
-      .all() as unknown as LineAuthorRow[];
-  } finally {
-    db.close();
-  }
+async function lineAuthors(databaseUrl: string): Promise<LineAuthorRow[]> {
+  // 布尔列取成 0/1 再断言:断言说的是「是不是相邻改动」,与列的存储类型无关。
+  return (await query(
+    databaseUrl,
+    `SELECT line, line_author_sha AS sha, line_author_name AS name,
+            line_author_email AS email, line_author_at AS at,
+            line_author_adjacent::int AS adjacent
+       FROM finding ORDER BY id`,
+  )) as unknown as LineAuthorRow[];
 }
 
 /** 落库的「延续自」链接,按落库顺序。 */
-function continuedFrom(databaseUrl: string): unknown[] {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    return (
-      db.prepare("SELECT continued_from FROM finding ORDER BY id").all() as unknown as Record<
-        string,
-        unknown
-      >[]
-    ).map((row) => row["continued_from"]);
-  } finally {
-    db.close();
-  }
+async function continuedFrom(databaseUrl: string): Promise<unknown[]> {
+  return (await query(databaseUrl, "SELECT continued_from FROM finding ORDER BY id")).map(
+    (row) => row["continued_from"],
+  );
 }
 
 test("落库的 Finding 记下本轮 head 上各自那一行的行作者", async () => {
@@ -752,7 +735,7 @@ test("落库的 Finding 记下本轮 head 上各自那一行的行作者", async
     },
   );
 
-  const rows = [...lineAuthors(db.url)].sort((a, b) => a.line - b.line);
+  const rows = [...await lineAuthors(db.url)].sort((a, b) => a.line - b.line);
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, email: row.email })),
     [
@@ -811,11 +794,11 @@ test("延续到新一轮的 Finding 按新 head 重算行作者,不沿用上一�
   });
 
   // 承接的那一行确实是延续过来的:它记下了旧评论的地址。
-  const [first, second] = continuedFrom(db.url);
+  const [first, second] = await continuedFrom(db.url);
   assert.equal(first, null);
   assert.notEqual(second, null);
 
-  const rows = lineAuthors(db.url);
+  const rows = await lineAuthors(db.url);
   assert.equal(rows.length, 2, "两轮各落一行");
   assert.equal(rows[0]!.name, "fixture", "第一轮那一行的行作者是当时改这一行的人");
   assert.deepEqual(
@@ -889,7 +872,7 @@ test("落在本轮新增行上的 Finding 行作者是那一行自己的作者,�
     },
   );
 
-  const rows = lineAuthors(db.url);
+  const rows = await lineAuthors(db.url);
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, adjacent: row.adjacent })),
     [{ line: 2, sha: carolSha, name: CAROL.name, adjacent: 0 }],
@@ -909,7 +892,7 @@ test("落在两处新增之间那一行的 Finding 取相邻新增行的作者,�
     },
   );
 
-  const rows = lineAuthors(db.url);
+  const rows = await lineAuthors(db.url);
   assert.deepEqual(
     rows.map((row) => ({
       line: row.line,
@@ -947,7 +930,7 @@ test("落点上下等距各有一处新增时,行作者取上方那一处", asyn
     },
   );
 
-  const rows = lineAuthors(db.url);
+  const rows = await lineAuthors(db.url);
   assert.notEqual(danSha, undefined, "下方那一处新增归丁");
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, adjacent: row.adjacent })),
@@ -1052,7 +1035,7 @@ test("落在删除点旁上下文行的 Finding,行作者是删掉那几行的�
     },
   );
 
-  const rows = lineAuthors(db.url);
+  const rows = await lineAuthors(db.url);
   assert.deepEqual(
     rows.map((row) => ({
       line: row.line,
@@ -1090,7 +1073,7 @@ test("删除点在上、新增行在下时按距离取删除提交,等距同样�
     },
   );
 
-  const rows = [...lineAuthors(db.url)].sort((a, b) => a.line - b.line);
+  const rows = [...await lineAuthors(db.url)].sort((a, b) => a.line - b.line);
   assert.deepEqual(
     rows.map((row) => ({ line: row.line, sha: row.sha, name: row.name, adjacent: row.adjacent })),
     [
@@ -1339,16 +1322,10 @@ test("Review Run 记下开跑时冻结的知识集版本,Finding 记下模型自
     { id: 9, scope: "", statement: "减法不许多减" },
   ]);
 
-  const db2 = new DatabaseSync(db.url, { readOnly: true });
-  try {
-    assert.equal(
-      db2.prepare("SELECT rule_set_version FROM review_run").get()!["rule_set_version"],
-      4,
-    );
-    assert.equal(db2.prepare("SELECT rule_id FROM finding ORDER BY id").get()!["rule_id"], 9);
-  } finally {
-    db2.close();
-  }
+  const [run] = await query(db.url, "SELECT rule_set_version FROM review_run");
+  assert.equal(run!["rule_set_version"], 4);
+  const [hit] = await query(db.url, "SELECT rule_id FROM finding ORDER BY id");
+  assert.equal(hit!["rule_id"], 9);
 });
 
 test("空知识集时不注入规则,Review Run 不记知识集版本", async () => {
@@ -1362,16 +1339,10 @@ test("空知识集时不注入规则,Review Run 不记知识集版本", async ()
   assert.deepEqual(reviewer.calls[0]!.rules, []);
   assert.deepEqual(reviewer.calls[0]!.facts, []);
 
-  const db2 = new DatabaseSync(db.url, { readOnly: true });
-  try {
-    assert.equal(
-      db2.prepare("SELECT rule_set_version FROM review_run").get()!["rule_set_version"],
-      null,
-    );
-    assert.equal(db2.prepare("SELECT rule_id FROM finding ORDER BY id").get()!["rule_id"], null);
-  } finally {
-    db2.close();
-  }
+  const [run] = await query(db.url, "SELECT rule_set_version FROM review_run");
+  assert.equal(run!["rule_set_version"], null);
+  const [hit] = await query(db.url, "SELECT rule_id FROM finding ORDER BY id");
+  assert.equal(hit!["rule_id"], null);
 });
 
 test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都是空", async () => {
@@ -1390,15 +1361,8 @@ test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都
 
   assert.equal(reviewer.calls[0]!.directive, "这一轮只报 P0");
 
-  const withDirective = new DatabaseSync(db.url, { readOnly: true });
-  try {
-    assert.equal(
-      withDirective.prepare("SELECT directive FROM review_run").get()!["directive"],
-      "这一轮只报 P0",
-    );
-  } finally {
-    withDirective.close();
-  }
+  const [withDirective] = await query(db.url, "SELECT directive FROM review_run");
+  assert.equal(withDirective!["directive"], "这一轮只报 P0");
 
   // 下一轮不带:本轮指令只作用于发起它的那一轮(CONTEXT.md 本轮指令)。
   const next = scriptedReviewer("stub-model", []);
@@ -1409,18 +1373,12 @@ test("本轮指令随这一轮注入 Reviewer 并落库,不给指令时两处都
 
   assert.equal(next.calls[0]!.directive, undefined);
 
-  const plain = new DatabaseSync(db.url, { readOnly: true });
-  try {
-    assert.deepEqual(
-      plain
-        .prepare("SELECT directive FROM review_run ORDER BY id")
-        .all()
-        .map((row) => row["directive"]),
-      ["这一轮只报 P0", null],
-    );
-  } finally {
-    plain.close();
-  }
+  assert.deepEqual(
+    (await query(db.url, "SELECT directive FROM review_run ORDER BY id")).map(
+      (row) => row["directive"],
+    ),
+    ["这一轮只报 P0", null],
+  );
 });
 
 /** 最新一轮的轮次级轨迹事件类型,按落库先后。 */
@@ -1505,7 +1463,7 @@ test("只复核时复核结论自带位置的延续照常发生", async () => {
     mode: "verdict-only",
   });
 
-  const [first, second] = continuedFrom(db.url);
+  const [first, second] = await continuedFrom(db.url);
   assert.equal(first, null);
   assert.notEqual(second, null, "只复核那一轮没有承接旧位置的那条 Finding");
 });
@@ -1711,7 +1669,7 @@ test("本轮重报的那条用本轮自己的影响与建议,历史建议不覆�
   });
 
   // 词法配对承接了旧 Identity,内容却是本轮 model-b 自己说的:不带历史建议,不标沿用。
-  const [, continuedRow] = continuedFrom(stage.db.url);
+  const [, continuedRow] = await continuedFrom(stage.db.url);
   assert.notEqual(continuedRow, null);
   const [, second] = await runsInOrder(stage.db.url);
   assert.deepEqual(second!.findings[0]!.attributions, [
@@ -1733,9 +1691,7 @@ test("历史没存影响与建议时延续如实缺失,不凭空生成(issue #26
     scriptedReviewer("model-a", [{ ...SAID_A1, impact: "", suggestion: "" }]),
   ]);
   // 升级前落的归属:两列是 NULL。
-  const legacy = new DatabaseSync(stage.db.url);
-  legacy.exec("UPDATE finding_attribution SET impact = NULL, suggestion = NULL");
-  legacy.close();
+  await query(stage.db.url, "UPDATE finding_attribution SET impact = NULL, suggestion = NULL");
   stage.rewrite();
   await runReview(stage.event, {
     ...stage.deps,
@@ -1777,12 +1733,8 @@ test("没有未处置历史时只复核不开跑,失败原因认得出来", asyn
     (error: Error) => error.message === VERDICT_ONLY_NO_HISTORY,
   );
 
-  const empty = new DatabaseSync(db.url, { readOnly: true });
-  try {
-    assert.equal(empty.prepare("SELECT count(*) AS n FROM review_run").get()!["n"], 0);
-  } finally {
-    empty.close();
-  }
+  const [empty] = await query(db.url, "SELECT count(*) AS n FROM review_run");
+  assert.equal(empty!["n"], 0);
   assert.deepEqual(forge.createdReviews, []);
 });
 
@@ -1844,26 +1796,21 @@ function carryComments(forge: Awaited<ReturnType<typeof memoryForge>>): void {
 }
 
 /** 某个文件上最新那一行 Finding 的落库 id、处置值与处置备注。 */
-function latestFinding(
+async function latestFinding(
   databaseUrl: string,
   file: string,
-): { id: number; disposition: string; note: string | null } {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    const row = db
-      .prepare(
-        `SELECT id, disposition, disposition_note FROM finding
-          WHERE file = ? ORDER BY id DESC LIMIT 1`,
-      )
-      .get(file)!;
-    return {
-      id: Number(row["id"]),
-      disposition: String(row["disposition"]),
-      note: row["disposition_note"] === null ? null : String(row["disposition_note"]),
-    };
-  } finally {
-    db.close();
-  }
+): Promise<{ id: number; disposition: string; note: string | null }> {
+  const [row] = await query(
+    databaseUrl,
+    `SELECT id, disposition, disposition_note FROM finding
+      WHERE file = $1 ORDER BY id DESC LIMIT 1`,
+    file,
+  );
+  return {
+    id: Number(row!["id"]),
+    disposition: String(row!["disposition"]),
+    note: row!["disposition_note"] === null ? null : String(row!["disposition_note"]),
+  };
 }
 
 /** 最近那一轮的轮次级轨迹,连 payload 一起。 */
@@ -1897,7 +1844,7 @@ test("所在文件已回退到 base 的未处置历史,完整审查开跑即自�
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.url, "src/gone.ts");
+  const history = await latestFinding(db.url, "src/gone.ts");
   const carried = forge.publishedComments.find((comment) => comment.path === "src/gone.ts")!;
 
   // 第二轮把 src/gone.ts 改回 base 的内容:它因此根本不在 base..head 的 diff 里。
@@ -1907,7 +1854,7 @@ test("所在文件已回退到 base 的未处置历史,完整审查开跑即自�
   await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
 
   assert.deepEqual(forge.resolvedIds, [carried.id]);
-  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
+  assert.deepEqual(await latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "fixed",
     note: "文件已回退,自动处置",
@@ -1915,7 +1862,7 @@ test("所在文件已回退到 base 的未处置历史,完整审查开跑即自�
   const traced = (await lastRunTrace(db.url)).find((event) => event.kind === "history_auto_disposed");
   assert.deepEqual(traced?.payload, { deleted: [], reverted: [history.id] });
   // 还在可审文件集里的那条不受影响。
-  assert.equal(latestFinding(db.url, "src/calc.ts").disposition, "unresolved");
+  assert.equal((await latestFinding(db.url, "src/calc.ts")).disposition, "unresolved");
 });
 
 test("所在文件被这一轮删掉的未处置历史,备注写「文件已删除」(issue #272)", async () => {
@@ -1925,14 +1872,14 @@ test("所在文件被这一轮删掉的未处置历史,备注写「文件已删�
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.url, "src/gone.ts");
+  const history = await latestFinding(db.url, "src/gone.ts");
 
   forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": null });
   changedFiles[1] = { path: "src/gone.ts", status: "removed" };
 
   await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
 
-  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
+  assert.deepEqual(await latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "fixed",
     note: "文件已删除,自动处置",
@@ -1961,7 +1908,7 @@ test("范围审查阶段的只复核轮次同律:回退文件上的历史开跑�
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.url, "src/gone.ts");
+  const history = await latestFinding(db.url, "src/gone.ts");
 
   forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": BASE_GONE });
   changedFiles.splice(1, 1);
@@ -1969,7 +1916,7 @@ test("范围审查阶段的只复核轮次同律:回退文件上的历史开跑�
   const second = verdictReviewer("stub-model", "present");
   await runReview(event, { ...deps, reviewers: [second], mode: "verdict-only" });
 
-  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
+  assert.deepEqual(await latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "fixed",
     note: "文件已回退,自动处置",
@@ -1990,7 +1937,7 @@ test("回退处置写 Forge 失败时那一条保持未处置,这一轮照常跑
 
   await runReview(event, { ...deps, reviewers: [firstRound] });
   carryComments(forge);
-  const history = latestFinding(db.url, "src/gone.ts");
+  const history = await latestFinding(db.url, "src/gone.ts");
 
   forge.pullRequest.headSha = repo.pushToHead({ "src/gone.ts": BASE_GONE });
   changedFiles.splice(1, 1);
@@ -2000,7 +1947,7 @@ test("回退处置写 Forge 失败时那一条保持未处置,这一轮照常跑
 
   await runReview(event, { ...deps, reviewers: [scriptedReviewer("stub-model", [])] });
 
-  assert.deepEqual(latestFinding(db.url, "src/gone.ts"), {
+  assert.deepEqual(await latestFinding(db.url, "src/gone.ts"), {
     id: history.id,
     disposition: "unresolved",
     note: null,
@@ -2011,16 +1958,10 @@ test("回退处置写 Forge 失败时那一条保持未处置,这一轮照常跑
 });
 
 /** 那一轮落库的最低报告等级。轮次列表不带它,直接读列。 */
-function runMinReportSeverity(databaseUrl: string): string[] {
-  const sqlite = new DatabaseSync(databaseUrl);
-  try {
-    return sqlite
-      .prepare("SELECT min_report_severity FROM review_run ORDER BY id")
-      .all()
-      .map((row) => String(row["min_report_severity"]));
-  } finally {
-    sqlite.close();
-  }
+async function runMinReportSeverity(databaseUrl: string): Promise<string[]> {
+  return (await query(databaseUrl, "SELECT min_report_severity FROM review_run ORDER BY id")).map(
+    (row) => String(row["min_report_severity"]),
+  );
 }
 
 test("阈值 P1 时模型报的 P2 不发出也不落库,轨迹记下丢弃条数", async () => {
@@ -2084,7 +2025,7 @@ test("阈值全报时一条都不丢,注入边界不带阈值,轨迹里没有过
   } finally {
     await store.close();
   }
-  assert.deepEqual(runMinReportSeverity(db.url), ["P2"]);
+  assert.deepEqual(await runMinReportSeverity(db.url), ["P2"]);
 });
 
 test("阈值随轮次落库,开跑后改设置不影响本轮", async () => {
@@ -2100,7 +2041,7 @@ test("阈值随轮次落库,开跑后改设置不影响本轮", async () => {
   await running;
   await setMinReportSeverity(db.url, "P2");
 
-  assert.deepEqual(runMinReportSeverity(db.url), ["P1"]);
+  assert.deepEqual(await runMinReportSeverity(db.url), ["P1"]);
   assert.equal(reviewer.calls[0]!.minReportSeverity, "P1");
   // 那一条 P2 按开跑时的 P1 挡掉,改回全报救不了已经跑完的这一轮。
   assert.equal(forge.publishedComments.length, 0);
@@ -2110,7 +2051,7 @@ test("阈值随轮次落库,开跑后改设置不影响本轮", async () => {
     { owner: "acme", repo: "widgets", number: 7 },
     { forge: forge.forge, reviewers: [next], cacheDir: cache.dir, databaseUrl: db.url },
   );
-  assert.deepEqual(runMinReportSeverity(db.url), ["P1", "P2"]);
+  assert.deepEqual(await runMinReportSeverity(db.url), ["P1", "P2"]);
   assert.equal(next.calls[0]!.minReportSeverity, undefined);
 });
 
@@ -2186,7 +2127,7 @@ test("仓库覆盖优先于全局阈值,清掉覆盖就回到全局(issue #273)"
 
   assert.equal(cleared.calls[0]!.minReportSeverity, undefined);
   // 三轮各自落下开跑时的生效阈值。
-  assert.deepEqual(runMinReportSeverity(db.url), ["P1", "P2", "P2"]);
+  assert.deepEqual(await runMinReportSeverity(db.url), ["P1", "P2", "P2"]);
 });
 
 test("低于阈值的未处置历史照旧注入并要结论", async () => {

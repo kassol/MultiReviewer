@@ -5,7 +5,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DatabaseSync } from "node:sqlite";
 
 import { openStore } from "../src/review/store/index.ts";
 import type { ReviewerUsage, RunProjection } from "../src/contracts/runs.ts";
@@ -18,7 +17,11 @@ import {
   startPanelHarness,
   startReadyPanelHarness,
 } from "./support/panel-harness.ts";
-import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
+import {
+  confirmEmptyRuleSet,
+  seedRun as seedRunRow,
+  withTestDb,
+} from "./support/git-fixture.ts";
 
 /*
  * 时间流那一行的形状是契约(issue #433),从 `src/contracts/runs.ts` 引:这边手抄一份
@@ -463,9 +466,9 @@ test("轮次列表的代表段:升级前落的行按规则从归属现算(issue 
     ],
   );
   // 升级前落的行:后两段是 NULL,前两段还是按旧规则(严重度最高那条)存下来的那份。
-  const sqlite = new DatabaseSync(h.db.url);
-  sqlite.prepare("UPDATE finding SET impact = NULL, suggestion = NULL WHERE run_id = ?").run(runId);
-  sqlite.close();
+  await withTestDb(h.db.url, async (sql) => {
+    await sql("UPDATE finding SET impact = NULL, suggestion = NULL WHERE run_id = $1", runId);
+  });
 
   const body = (await (await h.api("GET", "/runs")).json()) as {
     runs: {

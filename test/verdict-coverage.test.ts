@@ -45,7 +45,7 @@ async function reasons(databaseUrl: string, runId: number): Promise<Record<strin
     databaseUrl,
     `SELECT missing_reason AS reason, COUNT(*) AS n
        FROM finding_verdict
-      WHERE run_id = ${runId} AND missing = 1
+      WHERE run_id = ${runId} AND missing
       GROUP BY missing_reason`,
   ));
   return Object.fromEntries(rows.map((row) => [String(row["reason"]), Number(row["n"])]));

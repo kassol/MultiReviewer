@@ -433,7 +433,8 @@ test("跨轮匹配到历史评论的 Finding,记的是那条历史评论的 id",
 async function verdictRows(databaseUrl: string): Promise<Record<string, unknown>[]> {
   return (await query(
     databaseUrl,
-    "SELECT run_id, model, finding_id, verdict, missing FROM finding_verdict ORDER BY rowid",
+    // 主键三列即落库顺序:PostgreSQL 没有 rowid,而这张表本来就一轮一模型一条历史一行。
+    "SELECT run_id, model, finding_id, verdict, missing FROM finding_verdict ORDER BY run_id, model, finding_id",
   ));
 }
 

@@ -10,7 +10,6 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -713,12 +712,7 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
 
 test("升级前没有批次计划的中断轮次:启动改判并写原因,不调 Reviewer", { timeout: WAIT_MS }, async () => {
   const { db, memory, runId } = await interruptedAtThirdBatch();
-  const legacy = new DatabaseSync(db.url);
-  try {
-    legacy.prepare("UPDATE review_run SET batch_plan_json = NULL WHERE id = ?").run(runId);
-  } finally {
-    legacy.close();
-  }
+  await query(db.url, "UPDATE review_run SET batch_plan_json = NULL WHERE id = $1", runId);
 
   const reviewer = resumeReviewer();
   const settled = await bootAndSettle(db, memory, reviewer);

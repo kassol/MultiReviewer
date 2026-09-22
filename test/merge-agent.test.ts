@@ -6,7 +6,6 @@
  * 归属与折叠,以及轨迹里的合并与回退事件。不测 prompt 文本,也不测内部调用序列。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { MergeAgentRequest } from "../src/review/dedupe.ts";
@@ -14,7 +13,7 @@ import type { Reviewer, ReviewVerdict } from "../src/review/finding.ts";
 import { MERGE_AGENT_TRACE_NAME, runReview } from "../src/review/run.ts";
 import { openStore } from "../src/review/store/index.ts";
 import { testCleanups } from "./support/git-fixture.ts";
-import { setup as setupRepo } from "./support/batch-run.ts";
+import { query, setup as setupRepo } from "./support/batch-run.ts";
 import {
   scriptedMergeAgent,
   scriptedReviewer,
@@ -615,26 +614,18 @@ function carryComments(ctx: Awaited<ReturnType<typeof setup>>): void {
 }
 
 /** 落库的每条 Finding:标题、处置状态、它挂着的那条评论,以及「延续自」的那条链接。 */
-function findingRows(
+async function findingRows(
   databaseUrl: string,
-): { title: unknown; disposition: string; commentId: unknown; continuedFrom: unknown }[] {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    return (
-      db
-        .prepare(
-          "SELECT title, disposition, comment_id, continued_from FROM finding ORDER BY id",
-        )
-        .all() as unknown as Record<string, unknown>[]
-    ).map((row) => ({
-      title: row["title"],
-      disposition: String(row["disposition"]),
-      commentId: row["comment_id"],
-      continuedFrom: row["continued_from"],
-    }));
-  } finally {
-    db.close();
-  }
+): Promise<{ title: unknown; disposition: string; commentId: unknown; continuedFrom: unknown }[]> {
+  return (await query(
+    databaseUrl,
+    "SELECT title, disposition, comment_id, continued_from FROM finding ORDER BY id",
+  )).map((row) => ({
+    title: row["title"],
+    disposition: String(row["disposition"]),
+    commentId: row["comment_id"],
+    continuedFrom: row["continued_from"],
+  }));
 }
 
 test("合并请求里的历史只含本轮有 Finding 的文件,未处置与已处置都在", async () => {
@@ -687,7 +678,7 @@ test("agent 把本轮一条与旧指纹仍在的历史分成一组:不发评论,
   assert.equal(result.findings.length, 1);
   assert.equal(result.inlineCount, 0, "折叠到旧评论的那条不再发新评论");
   assert.deepEqual(ctx.forge.createdReviews[1]!.comments, []);
-  assert.deepEqual(findingRows(ctx.db.url)[1], {
+  assert.deepEqual((await findingRows(ctx.db.url))[1], {
     title: "余额没有被校验",
     disposition: "unresolved",
     commentId: "comment-1",
@@ -726,7 +717,7 @@ test("命中已处置的历史:本轮那条沉默,落库折叠到已处置", asy
   });
 
   assert.deepEqual(ctx.forge.createdReviews[1]!.comments, [], "已处置过的那处不再打扰");
-  assert.deepEqual(findingRows(ctx.db.url)[1], {
+  assert.deepEqual((await findingRows(ctx.db.url))[1], {
     title: "余额没有被校验",
     disposition: "resolved",
     commentId: "comment-1",
@@ -812,7 +803,7 @@ test("带上历史之后回退档的结果仍与没有合并 agent 时逐字一�
     withAgent.forge.createdReviews[1]!.comments,
     withoutAgent.forge.createdReviews[1]!.comments,
   );
-  assert.deepEqual(findingRows(withAgent.db.url), findingRows(withoutAgent.db.url));
+  assert.deepEqual(await findingRows(withAgent.db.url), await findingRows(withoutAgent.db.url));
 });
 
 /**
@@ -841,7 +832,7 @@ test("命中的历史所指代码已改写:走延续,旧评论 resolve,新评论
   });
 
   assert.deepEqual(ctx.forge.resolvedIds, ["comment-1"], "旧评论要被 resolve 掉");
-  const rows = findingRows(ctx.db.url);
+  const rows = await findingRows(ctx.db.url);
   assert.equal(rows[0]!.disposition, "continued", "旧那一行记「已延续」");
   assert.equal(
     rows[1]!.continuedFrom,
@@ -877,7 +868,7 @@ test("命中的历史本轮已被全部 Reviewer 判已修:不延续,旧行留�
     mergeAgent: merge,
   });
 
-  const rows = findingRows(ctx.db.url);
+  const rows = await findingRows(ctx.db.url);
   assert.equal(rows[0]!.disposition, "fixed", "旧那一行保持「已修复」");
   assert.equal(rows[1]!.continuedFrom, null, "本轮那条是新 Finding,不承接已修的 Identity");
   assert.doesNotMatch(ctx.forge.createdReviews[1]!.comments[0]!.body, /延续自/);
@@ -906,7 +897,7 @@ test("同一条历史同时被 agent 命中与复核结论自带位置:以 agent
     mergeAgent: merge,
   });
 
-  const rows = findingRows(ctx.db.url);
+  const rows = await findingRows(ctx.db.url);
   assert.equal(rows.length, 2, "不该再合成一条:那条 Identity 已经被 agent 命中的那条承接了");
   assert.equal(rows[1]!.title, "取模的结果偏了", "承接的是本轮报出的那条,不是抄旧正文的合成条");
   assert.notEqual(rows[1]!.continuedFrom, null);
@@ -934,7 +925,7 @@ test("一组含两条历史:id 小的延续,另一条保持原状", async () => 
   });
 
   assert.deepEqual(ctx.forge.resolvedIds, ["comment-1"], "只 resolve id 小的那条");
-  const rows = findingRows(ctx.db.url);
+  const rows = await findingRows(ctx.db.url);
   assert.equal(rows[0]!.disposition, "continued");
   assert.equal(rows[1]!.disposition, "unresolved", "另一条历史保持原状");
   assert.equal(
@@ -975,7 +966,7 @@ test("同一处的另一个问题:agent 只把其中一条归给历史,另一条
     [[2, "**[P1] 日志里打印了密钥**"]],
     "归给历史的那条沉默,同一处的新问题照常发行级评论",
   );
-  assert.deepEqual(findingRows(ctx.db.url).slice(1), [
+  assert.deepEqual((await findingRows(ctx.db.url)).slice(1), [
     {
       title: "余额校验被删掉",
       disposition: "resolved",
@@ -1120,24 +1111,20 @@ function verdictByTitle(model: string, verdicts: Record<string, ReviewVerdict>):
 }
 
 /** 落库的每条 Finding:标题、处置、评论与「交接未完成」标记。 */
-function dispositionRows(
+async function dispositionRows(
   databaseUrl: string,
-): { title: unknown; disposition: string; commentId: unknown; handoffPending: unknown }[] {
-  const db = new DatabaseSync(databaseUrl, { readOnly: true });
-  try {
-    return (
-      db
-        .prepare("SELECT title, disposition, comment_id, handoff_pending FROM finding ORDER BY id")
-        .all() as unknown as Record<string, unknown>[]
-    ).map((row) => ({
-      title: row["title"],
-      disposition: String(row["disposition"]),
-      commentId: row["comment_id"],
-      handoffPending: row["handoff_pending"],
-    }));
-  } finally {
-    db.close();
-  }
+): Promise<{ title: unknown; disposition: string; commentId: unknown; handoffPending: unknown }[]> {
+  // 布尔列取成 0/1 再断言:断言说的是「标记在不在」,与列的存储类型无关。
+  return (await query(
+    databaseUrl,
+    `SELECT title, disposition, comment_id, handoff_pending::int AS handoff_pending
+       FROM finding ORDER BY id`,
+  )).map((row) => ({
+    title: row["title"],
+    disposition: String(row["disposition"]),
+    commentId: row["comment_id"],
+    handoffPending: row["handoff_pending"],
+  }));
 }
 
 test("第三轮回填:A 那条评论的已 resolve 不写到同一处 B 的行上", async () => {
@@ -1153,7 +1140,7 @@ test("第三轮回填:A 那条评论的已 resolve 不写到同一处 B 的行�
   });
 
   assert.deepEqual(
-    dispositionRows(ctx.db.url).map((row) => [row.title, row.disposition, row.commentId]),
+    (await dispositionRows(ctx.db.url)).map((row) => [row.title, row.disposition, row.commentId]),
     [
       ["余额校验被删掉", "resolved", "comment-1"],
       ["余额校验被删掉", "resolved", "comment-1"],
@@ -1193,7 +1180,7 @@ test("复核判已修只处置那一条:同一处另一条的评论不被 resolv
 
   assert.deepEqual(ctx.forge.resolvedIds, ["comment-1"], "只该 resolve 判已修的那条评论");
   assert.deepEqual(
-    dispositionRows(ctx.db.url).map((row) => [row.title, row.disposition, row.commentId]),
+    (await dispositionRows(ctx.db.url)).map((row) => [row.title, row.disposition, row.commentId]),
     [
       ["余额校验被删掉", "fixed", "comment-1"],
       ["余额校验被删掉", "fixed", "comment-1"],
@@ -1218,7 +1205,7 @@ test("所在文件回退:同一处的两条各自自动处置,两条评论都 re
 
   assert.deepEqual([...ctx.forge.resolvedIds].sort(), ["comment-1", "comment-2"]);
   assert.deepEqual(
-    dispositionRows(ctx.db.url).map((row) => [row.title, row.disposition]),
+    (await dispositionRows(ctx.db.url)).map((row) => [row.title, row.disposition]),
     [
       ["余额校验被删掉", "fixed"],
       ["余额校验被删掉", "fixed"],
@@ -1254,7 +1241,7 @@ test("延续 B:只 resolve B 的旧评论,同一处的 A 留在未处置", async
 
   assert.deepEqual(ctx.forge.resolvedIds, ["comment-2"], "交接的是 B 的旧评论");
   assert.deepEqual(
-    dispositionRows(ctx.db.url).map((row) => [row.title, row.disposition, row.commentId]),
+    (await dispositionRows(ctx.db.url)).map((row) => [row.title, row.disposition, row.commentId]),
     [
       ["余额校验被删掉", "unresolved", "comment-1"],
       ["余额校验被删掉", "unresolved", "comment-1"],
@@ -1263,7 +1250,7 @@ test("延续 B:只 resolve B 的旧评论,同一处的 A 留在未处置", async
     ],
     "A 只是与 B 同处一行,它不该被这次交接带走",
   );
-  assert.equal(findingRows(ctx.db.url)[3]!.continuedFrom, ctx.forge.publishedComments[1]!.htmlUrl);
+  assert.equal((await findingRows(ctx.db.url))[3]!.continuedFrom, ctx.forge.publishedComments[1]!.htmlUrl);
 
   const store = openStore(ctx.db.url);
   const summary = await store.stageSummary({
@@ -1307,7 +1294,7 @@ test("交接未完成的标记只落在 B 那一条上,下一轮重试清掉它"
   });
 
   assert.deepEqual(
-    dispositionRows(ctx.db.url).map((row) => [row.title, row.handoffPending]),
+    (await dispositionRows(ctx.db.url)).map((row) => [row.title, row.handoffPending]),
     [
       ["余额校验被删掉", null],
       ["余额校验被删掉", null],
@@ -1329,7 +1316,7 @@ test("交接未完成的标记只落在 B 那一条上,下一轮重试清掉它"
 
   assert.deepEqual(ctx.forge.resolvedIds, ["comment-2"]);
   assert.deepEqual(
-    dispositionRows(ctx.db.url).map((row) => [row.title, row.disposition, row.handoffPending]),
+    (await dispositionRows(ctx.db.url)).map((row) => [row.title, row.disposition, row.handoffPending]),
     [
       ["余额校验被删掉", "unresolved", null],
       ["余额校验被删掉", "unresolved", null],
@@ -1362,35 +1349,26 @@ function recordMergeBuilds(builds: MergeBuild[]): PanelHarnessOptions["buildMerg
 }
 
 /** 这一轮落库的辅助模型引用。列是 JSON,没有即 null。 */
-function runAuxiliaryModel(databaseUrl: string): unknown {
-  const raw = new DatabaseSync(databaseUrl);
-  try {
-    const row = raw
-      .prepare("SELECT auxiliary_model FROM review_run ORDER BY id DESC LIMIT 1")
-      .get();
-    const value = row?.["auxiliary_model"];
-    return value === null || value === undefined ? null : JSON.parse(String(value));
-  } finally {
-    raw.close();
-  }
+async function runAuxiliaryModel(databaseUrl: string): Promise<unknown> {
+  const [row] = await query(
+    databaseUrl,
+    "SELECT auxiliary_model FROM review_run ORDER BY id DESC LIMIT 1",
+  );
+  const value = row?.["auxiliary_model"];
+  return value === null || value === undefined ? null : JSON.parse(String(value));
 }
 
 /**
  * 直接写审查策略里那一处辅助模型。面板写链与 store 的兜底都只收当前可用的模型,这里要造的
  * 正是「解析得出、却跑不了」的那一处,所以绕过 store 直写那一行。
  */
-function setGlobalAuxiliaryModel(databaseUrl: string, spec: unknown): void {
-  const raw = new DatabaseSync(databaseUrl);
-  try {
-    raw
-      .prepare(
-        `INSERT INTO global_setting (key, value) VALUES ('auxiliary_model', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      )
-      .run(JSON.stringify(spec));
-  } finally {
-    raw.close();
-  }
+async function setGlobalAuxiliaryModel(databaseUrl: string, spec: unknown): Promise<void> {
+  await query(
+    databaseUrl,
+    `INSERT INTO global_setting (key, value) VALUES ('auxiliary_model', $1)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    JSON.stringify(spec),
+  );
 }
 
 /**
@@ -1405,12 +1383,12 @@ async function runOnceWithAuxiliary(
   await seedAvailableModelService(h, HARNESS_SPEC.provider, [HARNESS_SPEC.model]);
   await seedAvailableModelService(h, "second", ["other-model"], { reasoning: true });
   const hook = await seedHistoricalRepo(h);
-  if (auxiliary !== undefined) setGlobalAuxiliaryModel(h.db.url, auxiliary);
+  if (auxiliary !== undefined) await setGlobalAuxiliaryModel(h.db.url, auxiliary);
 
   assert.equal((await h.deliverViaHook(h.repo.headSha, hook)).status, 200);
   await h.settledAtLeast(1);
   assert.equal(h.settled[0]!.error, undefined);
-  return { builds, frozen: runAuxiliaryModel(h.db.url) };
+  return { builds, frozen: await runAuxiliaryModel(h.db.url) };
 }
 
 test("没设辅助模型时合并 agent 用生效组合的第一个", async () => {
@@ -1456,13 +1434,13 @@ test("开跑后改辅助模型不影响本轮:轮次落的是开跑时解析出�
   const hook = await seedHistoricalRepo(h);
 
   assert.equal((await h.deliverViaHook(h.repo.headSha, hook)).status, 200);
-  setGlobalAuxiliaryModel(h.db.url, { provider: "second", model: "other-model" });
+  await setGlobalAuxiliaryModel(h.db.url, { provider: "second", model: "other-model" });
   release();
   await h.settledAtLeast(1);
 
   // 这一轮的合并 agent 与落库的那一处都是开跑时的解析结果。
   assert.deepEqual(builds[0], { provider: "test", model: "global-model" });
-  assert.deepEqual(runAuxiliaryModel(h.db.url), HARNESS_SPEC);
+  assert.deepEqual(await runAuxiliaryModel(h.db.url), HARNESS_SPEC);
 });
 
 test("解析出的辅助模型跑不了时不建合并 agent,这一轮的合并走算法档", async () => {

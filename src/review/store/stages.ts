@@ -48,7 +48,7 @@ import type {
   StageScope,
   Store,
 } from "./index.ts";
-import { UNRECORDED_RUN_FAILURE } from "./index.ts";
+import { UNRECORDED_RUN_FAILURE } from "./runs.ts";
 import {
   carriedAttribution,
   identityKey,

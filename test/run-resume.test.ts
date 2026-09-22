@@ -5,7 +5,6 @@
  * 合并与发评论。中断期间有人处置了历史也不影响续跑批次拿到的历史——那是开跑时落的快照。
  */
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import type { ReviewRunReviewerPin } from "../src/config.ts";
@@ -39,6 +38,29 @@ function deps(
     maxParallelBatches: 1,
     ...extra,
   };
+}
+
+/** 把已落库的那几批的起止时刻改写成指定的样子,造出「崩溃发生在很久以前」的现场。 */
+async function rewriteBatchTimes(
+  databaseUrl: string,
+  runId: number,
+  at: (batchIndex: number) => { startedAt: number; durationMs: number },
+): Promise<void> {
+  const stored = await query(
+    databaseUrl,
+    "SELECT batch_index, outcome_json FROM review_run_batch_outcome",
+  );
+  for (const row of stored) {
+    const index = Number(row["batch_index"]);
+    const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
+    await query(
+      databaseUrl,
+      "UPDATE review_run_batch_outcome SET outcome_json = $1 WHERE run_id = $2 AND batch_index = $3",
+      JSON.stringify({ ...timed, ...at(index) }),
+      runId,
+      index,
+    );
+  }
 }
 
 test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断时一致", async () => {
@@ -79,7 +101,7 @@ test("三批跑到第二批后被打断,续跑只调第三批,结果与不中断
   // 沿用原轮次的编号,收尾正常结束。
   const [after] = (await query(
     fixture.db.url,
-    "SELECT id, failed, finished_at, total_tokens FROM review_run",
+    "SELECT id, failed::int AS failed, finished_at, total_tokens FROM review_run",
   ));
   assert.equal(Number(after?.["id"]), runId);
   assert.equal(after?.["failed"], 0);
@@ -118,7 +140,7 @@ test("不中断跑完的一轮与续跑完成的一轮,Finding、用量与评论
     result.findings.map((finding) => finding.file),
     FILES,
   );
-  const [run] = (await query(fixture.db.url, "SELECT failed, total_tokens FROM review_run"));
+  const [run] = (await query(fixture.db.url, "SELECT failed::int AS failed, total_tokens FROM review_run"));
   assert.equal(run?.["failed"], 0);
   assert.equal(run?.["total_tokens"], USAGE.totalTokens * 3);
   assert.equal(fixture.forge.createdReviews.length, 1);
@@ -174,12 +196,7 @@ test("中断期间处置了一条历史,续跑批次收到的仍是开跑时的�
   ));
 
   // 有人在重启期间把这条历史处置掉了。库里当前的历史因此变了,快照不变。
-  const db = new DatabaseSync(fixture.db.url);
-  try {
-    db.prepare("UPDATE finding SET disposition = 'resolved' WHERE id = ?").run(historyId);
-  } finally {
-    db.close();
-  }
+  await query(fixture.db.url, "UPDATE finding SET disposition = 'resolved' WHERE id = $1", historyId);
 
   const resumed = batchReviewer("model-a");
   await runReview(
@@ -220,12 +237,10 @@ test("最低报告等级改了就不续跑:一轮里报出的口径不能一半�
   const [run] = (await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL"));
 
   // 重启期间有人把审查策略的最低报告等级从全报改成了 P1。
-  const db = new DatabaseSync(fixture.db.url);
-  try {
-    db.prepare("INSERT INTO global_setting (key, value) VALUES ('min_report_severity', 'P1')").run();
-  } finally {
-    db.close();
-  }
+  await query(
+    fixture.db.url,
+    "INSERT INTO global_setting (key, value) VALUES ('min_report_severity', 'P1')",
+  );
 
   const resumed = batchReviewer("model-a");
   await assert.rejects(
@@ -317,7 +332,7 @@ test("开跑时冻结全部批次的分组;零批次完成的轮次续跑跑全�
   );
   const [after] = (await query(
     fixture.db.url,
-    "SELECT id, failed, finished_at, total_tokens, batch_plan_json FROM review_run",
+    "SELECT id, failed::int AS failed, finished_at, total_tokens, batch_plan_json FROM review_run",
   ));
   assert.equal(Number(after?.["id"]), runId);
   assert.equal(after?.["failed"], 0);
@@ -338,12 +353,7 @@ test("升级前没有批次计划的轮次不续跑:抛续跑不成立,不调用
   const runId = Number(run?.["id"]);
 
   // 升级前落的行:有历史快照(issue #248)却没有批次计划。
-  const db = new DatabaseSync(fixture.db.url);
-  try {
-    db.prepare("UPDATE review_run SET batch_plan_json = NULL WHERE id = ?").run(runId);
-  } finally {
-    db.close();
-  }
+  await query(fixture.db.url, "UPDATE review_run SET batch_plan_json = NULL WHERE id = $1", runId);
 
   const resumed = batchReviewer("model-a");
   await assert.rejects(
@@ -408,7 +418,7 @@ test("批内一个 Reviewer 跑完、另一个没跑完:续跑只调没跑完的
   // 结论与不中断时一致:沿用原编号、六份用量一份不少、一轮只发一次 review。
   const [after] = (await query(
     fixture.db.url,
-    "SELECT id, failed, finished_at, total_tokens FROM review_run",
+    "SELECT id, failed::int AS failed, finished_at, total_tokens FROM review_run",
   ));
   assert.equal(Number(after?.["id"]), runId);
   assert.equal(after?.["failed"], 0);
@@ -517,26 +527,10 @@ test("续跑轮次的单模型耗时不含两次进程之间的空档(issue #415
   // 把已落库的那两批改写成一小时前的两段。它们各跑 1000 毫秒、错开 500 毫秒,并集因此是
   // 1500 毫秒;中间那一小时是停机,没有任何一批盖着它。
   const crashedAt = Date.now() - 3_600_000;
-  const db = new DatabaseSync(fixture.db.url);
-  try {
-    const stored = db
-      .prepare("SELECT batch_index, outcome_json FROM review_run_batch_outcome")
-      .all() as unknown as Record<string, unknown>[];
-    const update = db.prepare(
-      "UPDATE review_run_batch_outcome SET outcome_json = ? WHERE run_id = ? AND batch_index = ?",
-    );
-    for (const row of stored) {
-      const index = Number(row["batch_index"]);
-      const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
-      update.run(
-        JSON.stringify({ ...timed, startedAt: crashedAt + index * 500, durationMs: 1_000 }),
-        runId,
-        index,
-      );
-    }
-  } finally {
-    db.close();
-  }
+  await rewriteBatchTimes(fixture.db.url, runId, (index) => ({
+    startedAt: crashedAt + index * 500,
+    durationMs: 1_000,
+  }));
 
   await runReview(EVENT, deps(fixture, [batchReviewer("model-a")], { resumeRunId: runId }));
 
@@ -556,37 +550,18 @@ test("续跑轮次的轮次级耗时含崩溃前各批的并集,不含停机(iss
 
   // 已落库的那两批改写成隔着一小时的两段,各跑 1000 毫秒:并集因此是 2000 毫秒。两段分得
   // 这么开,就是连续续跑两次时「已落库批次来自前两个进程」的样子——同一条规则覆盖。
-  const db = new DatabaseSync(fixture.db.url);
-  try {
-    const stored = db
-      .prepare("SELECT batch_index, outcome_json FROM review_run_batch_outcome")
-      .all() as unknown as Record<string, unknown>[];
-    const update = db.prepare(
-      "UPDATE review_run_batch_outcome SET outcome_json = ? WHERE run_id = ? AND batch_index = ?",
-    );
-    for (const row of stored) {
-      const index = Number(row["batch_index"]);
-      const timed = JSON.parse(String(row["outcome_json"])) as Record<string, unknown>;
-      update.run(
-        JSON.stringify({
-          ...timed,
-          startedAt: Date.now() - (index === 0 ? 7_200_000 : 3_600_000),
-          durationMs: 1_000,
-        }),
-        runId,
-        index,
-      );
-    }
-  } finally {
-    db.close();
-  }
+  await rewriteBatchTimes(fixture.db.url, runId, (index) => ({
+    startedAt: Date.now() - (index === 0 ? 7_200_000 : 3_600_000),
+    durationMs: 1_000,
+  }));
 
   await runReview(EVENT, deps(fixture, [batchReviewer("model-a")], { resumeRunId: runId }));
 
   const [row] = (await query(
     fixture.db.url,
     `SELECT r.duration_ms AS run, MAX(o.duration_ms) AS model
-       FROM review_run r JOIN reviewer_outcome o ON o.run_id = r.id WHERE r.id = ${runId}`,
+       FROM review_run r JOIN reviewer_outcome o ON o.run_id = r.id WHERE r.id = ${runId}
+      GROUP BY r.id, r.duration_ms`,
   ));
   const runMs = Number(row?.["run"]);
   const modelMs = Number(row?.["model"]);

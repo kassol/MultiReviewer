@@ -204,7 +204,8 @@ test("只复核那一轮:代码只是下移时位置跟到本轮,不落新行、
   assert.equal((await query(db.url, "SELECT id FROM finding")).length, 1);
   // 本轮各 Reviewer 一条结论都没给,按漏复核落库(ADR 0016),处置因此一格未动。
   assert.deepEqual(
-    (await query(db.url, "SELECT verdict, missing FROM finding_verdict")).map((row) => ({
+    // 布尔列取成 0/1 再断言:断言说的是「这条是不是漏给的」,与列的存储类型无关。
+    (await query(db.url, "SELECT verdict, missing::int AS missing FROM finding_verdict")).map((row) => ({
       verdict: row["verdict"],
       missing: row["missing"],
     })),

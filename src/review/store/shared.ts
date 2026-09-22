@@ -15,7 +15,6 @@ import type {
   CarriedAttribution,
   Category,
   KnowledgeType,
-  ReviewerUsage,
   ReviewTriggerSource,
   Severity,
 } from "../finding.ts";
@@ -49,17 +48,6 @@ export function readTriggerSource(stored: unknown): ReviewTriggerSource {
   return stored === "panel" || stored === "scheduled" ? stored : "delivery";
 }
 
-/** 「同一个 pull request 名下的历史 finding」。回填与自动处置都按它限定范围。 */
-export const PULL_REQUEST_SCOPE = `run_id IN (SELECT id FROM review_run
-                                        WHERE owner = ? AND repo = ? AND pull_number = ?)`;
-
-/**
- * 还能自动处置的那些行(ADR 0016):当前处置是 unknown 或未处置,且从来没有被显式
- * 处置过。`disposed_at` 就是那个标记——面板处置写它,自动处置也写它(处置人留空),
- * 于是一行至多被自动处置一次:人把「已修复」改回未处置之后,自动规则不再碰它。
- */
-export const AUTO_DISPOSABLE = "disposition IN ('unknown', 'unresolved') AND disposed_at IS NULL";
-
 /**
  * 一行 finding 属于哪条 Finding Identity(CONTEXT.md Finding Identity,ADR 0030)。
  *
@@ -76,17 +64,6 @@ export function identityKey(prefix: string): string {
   return `COALESCE(${prefix}comment_id,
                    ${prefix}file || chr(10) || COALESCE(${prefix}fingerprint, 'row:' || ${prefix}id))`;
 }
-
-/**
- * 回填一条更新时它该落在哪些行上(issue #307)。绑三个参数:承载它的评论 id、文件、指纹。
- *
- * 先认评论:一条评论的 resolve 状态只说得了它自己承载的那条 Finding,同一处的另一条
- * Identity 各有各的评论(ADR 0030)。没有评论载体的行才退回「文件 + 指纹」,与 `identityKey`
- * 的兜底同一档——那些行本来就没有可分辨的载体。评论 id 传 NULL 时前一档恒不成立,整个
- * 条件就只剩后一档,正文锚点那一档因此走同一句 SQL。
- */
-export const BACKFILL_TARGET =
-  "(comment_id = ? OR (comment_id IS NULL AND file = ? AND fingerprint = ?))";
 
 /**
  * 统计口径的共同前半段:`src` 把参与统计的 finding 行摊平(fallback 在最内层就排除),
@@ -133,17 +110,6 @@ export function repoPairCondition(
     sql: `(${pairs.map(() => `(${prefix}owner = ? AND ${prefix}repo = ?)`).join(" OR ")})`,
     params: pairs.flatMap((pair) => [pair.owner, pair.repo]),
   };
-}
-
-export function usageColumns(usage: ReviewerUsage | undefined): (number | null)[] {
-  if (usage === undefined) return Array.from({ length: 5 }, () => null);
-  return [
-    usage.inputTokens,
-    usage.outputTokens,
-    usage.cacheReadTokens,
-    usage.cacheWriteTokens,
-    usage.totalTokens,
-  ];
 }
 
 /** 一行 finding_attribution 读成面板要的归属(issue #266)。两段的 NULL 原样透出。 */
@@ -251,17 +217,6 @@ export async function carriedByFinding(
     .all(...params);
   const grouped = Map.groupBy(rows, (row) => Number(row["finding_id"]));
   return new Map([...grouped].map(([id, group]) => [id, group.map(carriedAttribution)]));
-}
-
-export function recordedUsage(row: Record<string, unknown>): ReviewerUsage | undefined {
-  if (row["total_tokens"] === null || row["total_tokens"] === undefined) return undefined;
-  return {
-    inputTokens: Number(row["input_tokens"] ?? 0),
-    outputTokens: Number(row["output_tokens"] ?? 0),
-    cacheReadTokens: Number(row["cache_read_tokens"] ?? 0),
-    cacheWriteTokens: Number(row["cache_write_tokens"] ?? 0),
-    totalTokens: Number(row["total_tokens"]),
-  };
 }
 
 export function agentSessionEntry(row: Record<string, unknown>): AgentSessionEntryRecord {
