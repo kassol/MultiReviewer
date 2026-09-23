@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
-import { Badge, Callout, Checkbox, Dialog, Flex, IconButton, Select, Skeleton, TabNav, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Callout, Checkbox, Dialog, Flex, IconButton, SegmentedControl, Select, Skeleton, TabNav, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 
@@ -2317,7 +2317,9 @@ function discoveryDiffersFromRuntime(model: ModelServiceModel): boolean {
     model.discovery.maxOutput !== model.runtime.maxOutput;
 }
 
-const MODEL_ROWS_PAGE_SIZE = 40;
+const MODEL_ROWS_PAGE_SIZE = 20;
+
+type ModelStateFilter = "all" | "enabled" | "disabled";
 
 function ModelsTable({
   service,
@@ -2331,23 +2333,33 @@ function ModelsTable({
   const [search, setSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [visibleCount, setVisibleCount] = useState(MODEL_ROWS_PAGE_SIZE);
+  const [stateFilter, setStateFilter] = useState<ModelStateFilter>("all");
+  const [page, setPage] = useState(0);
+  const listTop = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const normalizedSearch = search.trim().toLowerCase();
+  const filtering = normalizedSearch !== "" || stateFilter !== "all";
   const filteredModels = useMemo(() => {
-    if (normalizedSearch === "") return models;
-    const terms = normalizedSearch.split(/\s+/);
+    const terms = normalizedSearch === "" ? [] : normalizedSearch.split(/\s+/);
     return models.filter((model) => {
+      if (stateFilter !== "all" && model.enabled !== (stateFilter === "enabled")) return false;
       const haystack = [model.discovery.name ?? "", model.identity].join(" ").toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [models, normalizedSearch]);
-  const visibleModels = filteredModels.slice(0, visibleCount);
-  const remainingModels = filteredModels.length - visibleModels.length;
+  }, [models, normalizedSearch, stateFilter]);
+  const pageCount = Math.max(1, Math.ceil(filteredModels.length / MODEL_ROWS_PAGE_SIZE));
+  // 批量停用之后「已启用」筛选下的行会变少,页码只往回收、不跳回第一页。
+  const currentPage = Math.min(page, pageCount - 1);
+  const visibleModels = filteredModels.slice(currentPage * MODEL_ROWS_PAGE_SIZE, (currentPage + 1) * MODEL_ROWS_PAGE_SIZE);
+  const goToPage = (next: number): void => {
+    setPage(next);
+    // 翻页键在列表底部,翻完回到列表顶上读新的一页。
+    listTop.current?.scrollIntoView({ block: "start" });
+  };
 
   useEffect(() => {
-    setVisibleCount(MODEL_ROWS_PAGE_SIZE);
-  }, [models, normalizedSearch]);
+    setPage(0);
+  }, [normalizedSearch, stateFilter]);
 
   useEffect(() => {
     const availableIds = new Set(models.map((model) => model.identity));
@@ -2421,7 +2433,7 @@ function ModelsTable({
         help={<HelpTooltip label="模型状态说明" content="已停用的模型不会出现在审查策略的模型选择中。" />}
         meta={
           <span aria-live="polite">
-            {normalizedSearch === "" ? (
+            {!filtering ? (
               <><span className="font-mono tabular-nums">{models.length}</span> 个模型</>
             ) : (
               <><span className="font-mono tabular-nums">{filteredModels.length}</span> / <span className="font-mono tabular-nums">{models.length}</span> 个模型</>
@@ -2429,12 +2441,22 @@ function ModelsTable({
           </span>
         }
         action={
-          <div className="w-full sm:w-64">
+          <div className="flex w-full flex-wrap items-center gap-2.5 sm:w-auto">
+            <SegmentedControl.Root
+              size={{ initial: "3", sm: "2" }}
+              value={stateFilter}
+              onValueChange={(value) => setStateFilter(value as ModelStateFilter)}
+              aria-label="按启用状态筛选"
+            >
+              <SegmentedControl.Item value="all">全部</SegmentedControl.Item>
+              <SegmentedControl.Item value="enabled">已启用</SegmentedControl.Item>
+              <SegmentedControl.Item value="disabled">已停用</SegmentedControl.Item>
+            </SegmentedControl.Root>
             <Text as="label" htmlFor="model-list-search" className="sr-only">筛选模型</Text>
             <TextField.Root
               id="model-list-search"
               size={{ initial: "3", sm: "2" }}
-              className="w-full min-w-0"
+              className="w-full min-w-0 sm:w-64"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="按名称或 model id 筛选"
@@ -2455,7 +2477,7 @@ function ModelsTable({
               onCheckedChange={toggleAllFiltered}
               aria-label="全选当前筛选结果"
             />
-            <span>全选当前结果</span>
+            <span>全选筛选结果</span>
           </Text>
           <span className="text-base text-text-muted" aria-live="polite">
             已选 <span className="font-mono tabular-nums">{selectedIds.size}</span> 个
@@ -2504,14 +2526,14 @@ function ModelsTable({
       {filteredModels.length === 0 ? (
         <EmptyState
           title="没有匹配的模型"
-          description="请调整名称或 model id 后重新搜索。"
+          description="请调整启用状态、名称或 model id 后重新筛选。"
           className="border-t border-line px-4 py-8 sm:px-5"
         />
       ) : (
         // 不给模型清单开自己的滚动条:这一页整页跟外壳滚,再套一层内滚就是两条滚动条
         // 并存——外壳滚到底了,清单里还剩一大半没露出来。清单上面就是筛选框,长清单
         // 靠筛,不靠一个 640px 的窗口。
-        <div className="flex flex-col [&>:last-child]:rounded-b-xl sm:[&>:last-child]:rounded-b-lg">
+        <div ref={listTop} className="flex scroll-mt-[var(--v8-top-chrome)] flex-col [&>:last-child]:rounded-b-xl sm:[&>:last-child]:rounded-b-lg">
           {/* 表头只在三列真正并排时出现:窄屏行内是纵向堆叠,一排列名对不上任何一列。 */}
           <div className={cn(
             "sticky top-[var(--v8-top-chrome)] z-10 hidden gap-3 border-t border-line bg-surface bg-linear-to-b from-sunken to-sunken px-5 py-2 text-sm font-bold text-text-muted xl:grid",
@@ -2570,22 +2592,35 @@ function ModelsTable({
               </div>
             </article>
           ))}
-          {remainingModels > 0 ? (
-            <div className="flex items-center justify-between gap-3 border-t border-line bg-sunken px-4 py-3 sm:px-5">
+          {pageCount > 1 ? (
+            <nav aria-label="模型分页" className="flex items-center justify-between gap-3 border-t border-line bg-sunken px-4 py-3 sm:px-5">
               <p className="text-base text-text-muted" aria-live="polite">
-                已显示 <span className="font-mono tabular-nums">{visibleModels.length}</span> /{" "}
-                <span className="font-mono tabular-nums">{filteredModels.length}</span> 个
+                第 <span className="font-mono tabular-nums">{currentPage + 1}</span> /{" "}
+                <span className="font-mono tabular-nums">{pageCount}</span> 页
               </p>
-              <Button
-                type="button"
-                variant="outline"
-                color="gray"
-                size={{ initial: "3", sm: "1" }}
-                onClick={() => setVisibleCount((current) => current + MODEL_ROWS_PAGE_SIZE)}
-              >
-                再显示 {Math.min(MODEL_ROWS_PAGE_SIZE, remainingModels)} 个
-              </Button>
-            </div>
+              <div className="flex gap-2.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  color="gray"
+                  size={{ initial: "3", sm: "1" }}
+                  disabled={currentPage === 0}
+                  onClick={() => goToPage(currentPage - 1)}
+                >
+                  上一页
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  color="gray"
+                  size={{ initial: "3", sm: "1" }}
+                  disabled={currentPage === pageCount - 1}
+                  onClick={() => goToPage(currentPage + 1)}
+                >
+                  下一页
+                </Button>
+              </div>
+            </nav>
           ) : null}
         </div>
       )}
