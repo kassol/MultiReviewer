@@ -613,6 +613,11 @@ function describe(event: NormalizedEvent): string {
   return `${event.platform} ${event.owner}/${event.repo}#${event.number} ${event.action} @${event.headSha.slice(0, 7)}`;
 }
 
+/** 投递日志的去处:测试注入的 `onDelivery`,缺省打到 stdout。 */
+function deliveryLog(deps: WebhookServerDeps): (message: string) => void {
+  return deps.onDelivery ?? ((message) => console.log(`[webhook] ${message}`));
+}
+
 function logFailure(event: NormalizedEvent, error?: unknown): void {
   const what = event.action === "closed" ? "回填" : "审查";
   if (error === undefined) {
@@ -1061,12 +1066,9 @@ async function startRun(
   triggerSource: ReviewTriggerSource = "delivery",
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
-  // 投递那一档的「开始审查」由 `handle` 经 `onDelivery` 记;面板与定时开的轮次(范围审查、
-  // 重跑、增量评审)在这里补上同形的一行,与 `logFailure` 那句「审查结束」同一个去处
-  // (backlog #443)。
-  if (triggerSource !== "delivery" && deps.onRunSettled === undefined) {
-    console.log(`[webhook] ${describe(event)} — 开始审查`);
-  }
+  // 投递那一档的「开始审查」由 `handle` 记;面板与定时开的轮次(范围审查、重跑、增量评审)
+  // 在这里补上同形的一行,走同一个输出(backlog #443)。
+  if (triggerSource !== "delivery") deliveryLog(deps)(`${describe(event)} — 开始审查`);
   // 排空要等的就是这一段(issue #249):这一轮到达可退出点之前进程不退出。
   const reachedExitPoint = drainTracked(deps, describe(event));
   try {
@@ -1138,7 +1140,7 @@ async function handle(
   const body = await readBody(req, res);
   if (body === undefined) return;
 
-  const log = deps.onDelivery ?? ((message: string) => console.log(`[webhook] ${message}`));
+  const log = deliveryLog(deps);
 
   // 正在排空(issue #249):这次投递不受理,也不占幂等键——占了的话这个 head commit
   // 之后再也不会自动审。503 让平台把它记成一次失败投递,人重投或下一次 push 即可。

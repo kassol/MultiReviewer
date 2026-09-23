@@ -853,18 +853,14 @@ declare module "@tanstack/react-router" {
   interface Register { router: typeof router }
 }
 
-// mutationCache 的 onSuccess 回调没有拿得到 queryClient 的参数,只能先建它要用的这个
-// 实例、再把它交给要用它的 QueryClient(issue #443)。
-let queryClient: QueryClient;
-const mutationCache = new MutationCache({
-  onSuccess: () => {
-    void queryClient.invalidateQueries({ queryKey: SETUP_STATUS_QUERY_KEY });
-  },
-});
-queryClient = new QueryClient({
+const queryClient = new QueryClient({
   // 4xx 不重试(issue #440):打开不存在或没分到的阶段不必先等约 7 秒骨架才出错误态。
   defaultOptions: { queries: { retry: shouldRetryQuery } },
-  mutationCache,
+  mutationCache: new MutationCache({
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SETUP_STATUS_QUERY_KEY });
+    },
+  }),
 });
 
 createRoot(document.getElementById("root")!).render(
