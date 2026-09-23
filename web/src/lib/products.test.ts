@@ -210,13 +210,13 @@ test("陈述按成对的反引号拆段,没配对的整句当正文", () => {
 
 test("关掉前那句确认报清楚关的是哪一条", () => {
   assert.deepEqual(trackerCloseConfirm({ kind: "spec", id: 7, title: "结算重构" }), {
-    title: "关掉 spec「结算重构」?",
+    title: "关掉 spec「结算重构」？",
     description: "它下面那几张票的开关不动。关错了再点一次「重新打开这条 spec」。",
   });
   // 票报票号:一条 spec 下的票标题常常只差几个字,只报标题认不出是哪一张。
   assert.deepEqual(trackerCloseConfirm({ kind: "ticket", id: 12, title: "补对账口径" }), {
-    title: "关掉票 #12「补对账口径」?",
-    description: "它不再算可开工的票,被它挡着的票跟着放开。关错了再点一次「重新打开」。",
+    title: "关掉票 #12「补对账口径」？",
+    description: "它不再算可开工的票，被它挡着的票跟着放开。关错了再点一次「重新打开」。",
   });
 });
 

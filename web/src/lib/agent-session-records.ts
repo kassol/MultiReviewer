@@ -78,7 +78,18 @@ export const AGENT_SESSION_QUESTION_ROUND_CUSTOM_TYPE = "multireviewer-session-q
 /** 对话流里的一项。 */
 export type ConversationItem =
   /** `images` 是这条消息带的图片 id(issue #336),按它取缩略图。没带图即空数组。 */
-  | { kind: "user"; seq: number; at: string; text: string; images: string[] }
+  /**
+   * 人的一条消息。它恰是前面某张提问卡片的答案时带 `answering`:那一轮的题与所答各项,
+   * 对话流据它画「题 → 答」,不把合成出来的那段纯文本原样摊开。
+   */
+  | {
+      kind: "user";
+      seq: number;
+      at: string;
+      text: string;
+      images: string[];
+      answering?: { round: QuestionRound; answers: string[][] };
+    }
   | { kind: "assistant"; seq: number; at: string; text: string }
   | { kind: "system"; seq: number; at: string; text: string }
   /**
@@ -466,10 +477,15 @@ export function conversation(records: readonly AgentSessionRecord[]): Conversati
 function settleRounds(items: ConversationItem[]): void {
   for (const [index, item] of items.entries()) {
     if (item.kind !== "round") continue;
-    const next = items.slice(index + 1).find((one) => one.kind === "user");
+    const next = items
+      .slice(index + 1)
+      .find((one): one is Extract<ConversationItem, { kind: "user" }> => one.kind === "user");
     if (next === undefined) continue;
     const answers = roundAnswersFrom(next.text, item.round);
     if (answers === undefined) item.expired = true;
-    else item.answers = answers;
+    else {
+      item.answers = answers;
+      next.answering = { round: item.round, answers };
+    }
   }
 }

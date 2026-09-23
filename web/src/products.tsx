@@ -195,7 +195,7 @@ export function ProductsPage({
         ? []
         : [
             `${knowledge.length} 条产品知识`,
-            open === 0 ? "没有开着的票" : `${open} 张票开着,${pickable} 张可开工`,
+            open === 0 ? "没有开着的票" : `${open} 张票开着，${pickable} 张可开工`,
           ]),
       ...(lastSurvey === undefined ? [] : [`上一场梳理 ${localMinute(lastSurvey)} 谈完`]),
       `建于 ${localMinute(selected.createdAt)}`,
@@ -231,7 +231,7 @@ export function ProductsPage({
         text:
           result.cascade.sessions === 0
             ? `已删产品 ${product.name}。`
-            : `已删产品 ${product.name},连同 ${result.cascade.sessions} 个 Agent 会话。`,
+            : `已删产品 ${product.name}，连同 ${result.cascade.sessions} 个 Agent 会话。`,
         error: false,
       });
       void refresh();
@@ -414,7 +414,7 @@ export function ProductsPage({
     );
 
   return (
-    <PageBody>
+    <PageBody className="lg:pb-4">
       <h1 className="sr-only">产品</h1>
       {/*
         当前产品名。`lg` 起顶栏面包屑与概览卡都说着它,这一行只在 `lg` 以下画:那一档面包屑
@@ -451,9 +451,10 @@ export function ProductsPage({
         里滚,左栏因此 sticky 在顶栏之下自己滚:跳到会话页时它停在同一处,不跟着主区走。
         `lg` 以下左栏让出自己的盒子,它那三张卡与这一列主区同为这个 flex 容器的直接子项,靠
         `max-lg:order-*` 排成 产品列表 → 会话 → 仓库 → 概览 + 产品知识(issue #383)。
-        左栏最大高度 = 视口 − 顶栏 − `PageBody` 的底部留白 `pb-20`(80px):滚到最底时这一行
-        的底边停在视口底边之上 80px,左栏再高就被这条底边顶上去、钻进顶栏底下(issue #444,
-        原先减的是 24px,差出的正是那 56px)。改 `PageBody` 的底部留白要连这里一起改。
+        左栏最大高度 = 视口 − 顶栏 − `PageBody` 的底部留白:滚到最底时这一行的底边停在视口
+        底边之上那么高,左栏再高就被这条底边顶上去、钻进顶栏底下(issue #444)。这一页在 `lg`
+        起把底部留白收到 `pb-4`(16px),与会话页的左栏底边落在同一处,两页来回跳时左栏不再
+        一长一短。改这里的留白要连 `PageBody` 的 `lg:pb-4` 一起改。
       */}
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:gap-[18px]">
         <ProductRail
@@ -462,7 +463,7 @@ export function ProductsPage({
           canChat={canChat}
           busy={busy}
           onFeedback={setFeedback}
-          className="lg:sticky lg:top-[var(--v8-top-chrome)] lg:max-h-[calc(100vh_-_var(--v8-top-chrome)_-_80px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
+          className="lg:sticky lg:top-[var(--v8-top-chrome)] lg:max-h-[calc(100vh_-_var(--v8-top-chrome)_-_16px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
         />
         <div className="flex min-w-0 flex-1 flex-col gap-3 max-lg:order-4">
           {productsQuery.isPending ? (
@@ -477,7 +478,7 @@ export function ProductsPage({
                 titleAs="h2"
                 description={
                   canWrite
-                    ? "把已注册的仓库归到一个产品下,Agent 会话就挂在它上面。左栏的「建产品」开第一个。"
+                    ? "把已注册的仓库归到一个产品下，Agent 会话就挂在它上面。左栏的「建产品」开第一个。"
                     : "产品的可见范围由仓库分配决定。请联系系统管理员为该账号分配负责的仓库。"
                 }
               />
@@ -493,7 +494,7 @@ export function ProductsPage({
           <NameDialog
             open={dialog === "rename"}
             title="改名"
-            description="改名只改这个产品的名字,它的仓库一个不动。"
+            description="改名只改这个产品的名字，它的仓库一个不动。"
             label="产品名"
             submitLabel="保存"
             initial={selected.name}
@@ -524,7 +525,7 @@ export function ProductsPage({
             titleSize="4"
             // 条数取当前产品下这一份会话列表(系统管理员读到的是所有人的),真正删掉
             // 多少由接口回的 `cascade.sessions` 说,成功那句照它写。
-            description={`产品下的 ${sessions.length} 个 Agent 会话连记录与图片一并删除,不可撤销。仓库只是从产品里摘出,注册表不动。`}
+            description={`产品下的 ${sessions.length} 个 Agent 会话连记录与图片一并删除，不可撤销。仓库只是从产品里摘出，注册表不动。`}
             cancelLabel="取消"
             cancelVariant="outline"
             cancelDisabled={remove.isPending}
@@ -590,7 +591,7 @@ function SurveyDialog({
               梳理
             </Dialog.Title>
             <Dialog.Description size="2" color="gray">
-              让 agent 读一遍 {productName} 的全部仓库,再按轮问你,把谈定的写进产品知识。
+              让 agent 读一遍 {productName} 的全部仓库，再按轮问你，把谈定的写进产品知识。
             </Dialog.Description>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -814,7 +815,7 @@ function KnowledgeSection({
             <span className="text-md text-text-secondary">术语表、仓库关系与产品决策</span>
             <HelpTooltip
               label="产品知识说明"
-              content="产品知识是这个产品的术语表、仓库关系段与产品决策记录:这个产品是什么、它的仓库之间怎么协作、为什么这样定。条目由 Agent 会话在你的回答下写成,写下即生效。"
+              content="产品知识是这个产品的术语表、仓库关系段与产品决策记录：这个产品是什么、它的仓库之间怎么协作、为什么这样定。条目由 Agent 会话在你的回答下写成，写下即生效。"
             />
           </div>
           {canWrite ? (
@@ -822,7 +823,7 @@ function KnowledgeSection({
               content={
                 product.repos.length < 2
                   ? "产品梳理要这个产品至少有两个仓库"
-                  : "开一场产品梳理:agent 读一遍全部仓库,再按轮问你"
+                  : "开一场产品梳理：agent 读一遍全部仓库，再按轮问你"
               }
             >
               {/* disabled 按钮不冒泡指针事件,套一层 span 让提示仍能弹出。 */}
@@ -839,7 +840,7 @@ function KnowledgeSection({
           <EmptyState
             title="还没有产品知识。"
             {...(canWrite && product.repos.length >= 2
-              ? { description: "点「梳理」跟 agent 谈一遍,或在一个 Agent 会话里聊出来。" }
+              ? { description: "点「梳理」跟 agent 谈一遍，或在一个 Agent 会话里聊出来。" }
               : {})}
           />
         ) : (
@@ -898,7 +899,7 @@ function KnowledgeSection({
             )}
 
             {shown.length === 0 ? (
-              <EmptyState title="没有匹配的条目。" description="换个词,或清空筛选。" />
+              <EmptyState title="没有匹配的条目。" description="换个词，或清空筛选。" />
             ) : null}
 
             {terms === 0 ? null : (
@@ -1079,7 +1080,7 @@ function BlockerLink({
   return (
     <button
       type="button"
-      aria-label={closed ? `#${id}(已关)` : undefined}
+      aria-label={closed ? `#${id}（已关）` : undefined}
       className={cn(
         "rounded-sm font-mono tabular-nums hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none",
         closed ? "text-text-muted line-through" : "text-primary",
@@ -1274,7 +1275,7 @@ function TrackerSection({
       {/* 说明挂在左边这一组的末尾:窄屏上右边那组整行折下去,挂在它后面会单独落一行。 */}
       <HelpTooltip
         label="产品 tracker 说明"
-        content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
+        content="需求拆分会话谈定之后把 spec 写进来，再拆成带阻塞边的票。正文只由会话写；认领、改标签、开关与评论打开一条 spec 就能做。"
       />
       <div className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto max-sm:w-full">
         <TextField.Root
@@ -1524,7 +1525,7 @@ function TrackerSection({
           <h2 className="sr-only">产品 tracker</h2>
           <EmptyState
             title="还没有 spec。"
-            description="在需求拆分会话里谈定一个需求,agent 就把它连同拆出的票写进来。"
+            description="在需求拆分会话里谈定一个需求，agent 就把它连同拆出的票写进来。"
           />
         </CardShell>
       ) : (
@@ -1897,7 +1898,7 @@ function SpecDialog({
                       </Button>
                     ) : null}
                   </div>
-                  <p className="text-sm text-text-muted">正文由会话写,这里只读。</p>
+                  <p className="text-sm text-text-muted">正文由会话写，这里只读。</p>
                 </SidebarBlock>
               </aside>
 

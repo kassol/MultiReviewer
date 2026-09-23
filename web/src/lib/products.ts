@@ -304,12 +304,12 @@ export function trackerCloseConfirm(target: TrackerCloseTarget): {
 } {
   return target.kind === "spec"
     ? {
-        title: `关掉 spec「${target.title}」?`,
+        title: `关掉 spec「${target.title}」？`,
         description: "它下面那几张票的开关不动。关错了再点一次「重新打开这条 spec」。",
       }
     : {
-        title: `关掉票 #${target.id}「${target.title}」?`,
-        description: "它不再算可开工的票,被它挡着的票跟着放开。关错了再点一次「重新打开」。",
+        title: `关掉票 #${target.id}「${target.title}」？`,
+        description: "它不再算可开工的票，被它挡着的票跟着放开。关错了再点一次「重新打开」。",
       };
 }
 

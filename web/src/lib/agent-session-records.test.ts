@@ -451,6 +451,8 @@ test("提问轮次条目投成选择卡片,三态由它后面第一条用户消�
   const answered = conversation([record(1, "custom", round), record(2, "message", message("user", answer))]);
   assert.deepEqual(answered[0]!.kind === "round" ? answered[0]!.answers : undefined, [["月末统一"]]);
   assert.equal(answered[0]!.kind === "round" ? answered[0]!.expired : true, undefined);
+  // 答案那条用户消息带上这一轮的题与所答,对话流据它画「题 → 答」。
+  assert.deepEqual(answered[1]!.kind === "user" ? answered[1]!.answering?.answers : undefined, [["月末统一"]]);
 
   // 下一条用户消息是别的话:过期,答不了了。
   const expired = conversation([

@@ -96,7 +96,7 @@ const MAX_SESSION_IMAGES = 4;
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
 
 /** 当前辅助模型看不了图时按钮上的那句提示(spec #329 的 US 23)。 */
-const NO_IMAGE_INPUT_HINT = "当前辅助模型不支持图片,换一个支持图片的辅助模型";
+const NO_IMAGE_INPUT_HINT = "当前辅助模型不支持图片，换一个支持图片的辅助模型";
 
 /** 一张图的地址。对话流的缩略图与输入区的预览都取它。 */
 function imageSrc(sessionId: number, imageId: string): string {
@@ -187,7 +187,7 @@ function ImageButton({
     ? NO_IMAGE_INPUT_HINT
     : full
       ? `一条消息最多带 ${MAX_SESSION_IMAGES} 张图`
-      : `加图片(最多 ${MAX_SESSION_IMAGES} 张,也可以直接粘贴)`;
+      : `加图片（最多 ${MAX_SESSION_IMAGES} 张，也可以直接粘贴）`;
   return (
     <>
       <input
@@ -710,10 +710,10 @@ function QuestionRoundCard({
         })}
       </ol>
       {settled !== undefined ? null : expired ? (
-        <p className="text-sm text-text-muted">这一轮被后来的消息顶掉了,答案交不上去了。</p>
+        <p className="text-sm text-text-muted">这一轮被后来的消息顶掉了，答案交不上去了。</p>
       ) : answerable ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm text-text-muted">整轮一次提交,提交后 agent 接着这一轮往下走。</p>
+          <p className="text-sm text-text-muted">整轮一次提交，提交后 agent 接着这一轮往下走。</p>
           <Button type="button" disabled={!ready || sending} onClick={() => void submit()}>
             {sending ? "提交中" : "提交这一轮"}
           </Button>
@@ -887,26 +887,55 @@ function UserMessage({
   /** 待上屏(还没落库)时气泡下那一行小字,取代时刻;气泡本身压淡。 */
   pendingLabel?: string;
 }) {
-  const long = isLongReply(item.text);
+  const answering = item.answering;
+  const long = answering === undefined && isLongReply(item.text);
   const [expanded, setExpanded] = useState(false);
+  // 时刻行在 `md` 起悬停才显,却仍占着气泡下面 28px:人的消息离 agent 的回复反倒比离上一轮的
+  // 回复还远,一轮对话读着像是往下挂的。短消息把它挪到气泡左侧同一行,不再占高;长消息的
+  // 「展开」要贴着气泡底,仍排在下面。
+  const inline = !long && pendingLabel === undefined;
   return (
-    <div className="group flex flex-col items-end gap-1">
+    <div
+      className={cn(
+        "group flex flex-col items-end gap-1",
+        inline ? "md:flex-row-reverse md:justify-start md:gap-2" : null,
+      )}
+    >
       <div
         className={cn(
           "max-w-[80%] rounded-2xl rounded-br-md bg-accent-tint px-4 py-2.5",
           pendingLabel === undefined ? null : "opacity-60",
         )}
       >
-        <p
-          className={cn(
-            "min-w-0 break-words whitespace-pre-wrap text-lg",
-            long && !expanded
-              ? "max-h-[320px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_calc(100%-4rem),transparent)]"
-              : null,
-          )}
-        >
-          {item.text}
-        </p>
+        {answering === undefined ? (
+          <p
+            className={cn(
+              "min-w-0 break-words whitespace-pre-wrap text-lg",
+              long && !expanded
+                ? "max-h-[320px] overflow-hidden [mask-image:linear-gradient(to_bottom,black_calc(100%-4rem),transparent)]"
+                : null,
+            )}
+          >
+            {item.text}
+          </p>
+        ) : (
+          // 提问轮次的答案:合成出来的那段纯文本(抬头、编号、「- 」)是给 agent 读的,人读的是
+          // 「哪一题 → 答了什么」。题目退到次级小字,所答各项走正文字号。
+          <ol className="flex min-w-0 flex-col gap-2" aria-label="提问轮次的回答">
+            {answering.round.questions.map((question, index) => (
+              <li key={index} className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm break-words text-text-secondary">
+                  {index + 1}. {question.title}
+                </span>
+                {(answering.answers[index] ?? []).map((answer) => (
+                  <span key={answer} className="text-lg break-words">
+                    {answer}
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ol>
+        )}
         {/* 带的图片以缩略图出现在这条消息里(issue #336),点开看原图。 */}
         {item.images.length === 0 ? null : (
           <ul className="mt-2 flex flex-wrap gap-2" aria-label="这条消息带的图片">
@@ -924,7 +953,7 @@ function UserMessage({
           </ul>
         )}
       </div>
-      <div className="flex min-h-6 items-center gap-4">
+      <div className="flex min-h-6 shrink-0 items-center gap-4">
         {long ? (
           <Button
             type="button"
@@ -1260,7 +1289,7 @@ function QueueBlock({
       </ol>
       {/* `sm` 以下不画这句:排队块加输入区已经占掉半屏,手机上对话流只剩一条缝。 */}
       <Text as="p" size="2" color="gray" className="max-sm:hidden">
-        不支持单条撤回,只能整队清空。
+        不支持单条撤回，只能整队清空。
       </Text>
     </div>
   );
@@ -1405,7 +1434,7 @@ function Composer({
           aria-label="发消息"
           rows={1}
           value={draft}
-          placeholder={running ? "在跑:这一条按所选模式投" : "给 agent 发消息"}
+          placeholder={running ? "在跑：这一条按所选模式投" : "给 agent 发消息"}
           // 发送中不禁用输入框:禁用会丢焦点,发完还得再点一次才能接着打;重复发送由 canSend 挡。
           className="max-h-48 w-full resize-none overflow-y-auto bg-transparent px-3 pt-3 pb-1 text-lg outline-none placeholder:text-text-disabled"
           onChange={(event) => {
@@ -1444,7 +1473,7 @@ function Composer({
           ) : null}
           <div className="flex-1" />
           {running ? (
-            <Tooltip content="停止:只中止当前这一步,排队的消息保留">
+            <Tooltip content="停止：只中止当前这一步，排队的消息保留">
               <IconButton
                 type="button"
                 variant="soft"
@@ -1458,7 +1487,7 @@ function Composer({
               </IconButton>
             </Tooltip>
           ) : null}
-          <Tooltip content={`${sendLabel}(回车)`}>
+          <Tooltip content={`${sendLabel}（回车）`}>
             {/* 禁用态换成淡蓝 tint 底加弱文字色:Themes 给实心键的禁用态是 12% 灰底加
                 `--v8-text-faint` 的图标,在白底的输入框里几乎看不出还有这么一颗键,空着的
                 会话因此像没有发送入口。这是唯一一处覆写 Themes 的禁用态(DESIGN.md 7.5)。 */}
@@ -1484,7 +1513,7 @@ function Composer({
       <p className="text-right text-sm text-text-disabled max-sm:hidden">
         {running
           ? mode === "steer"
-            ? "插话在下一个回合边界生效,不会打断正在跑的工具调用。"
+            ? "插话在下一个回合边界生效，不会打断正在跑的工具调用。"
             : "排队的消息等这一轮跑完按顺序投递。"
           : "Enter 发送 · Shift+Enter 换行"}
       </p>
@@ -1573,7 +1602,7 @@ function BaselinesSummary({
                 <Tooltip
                   content={
                     baselineBusy
-                      ? "会话在跑或还有排队的消息,空闲后才能更新基点"
+                      ? "会话在跑或还有排队的消息，空闲后才能更新基点"
                       : "把会话基点换成这条分支此刻的最新提交"
                   }
                 >
@@ -1649,7 +1678,7 @@ function BaselineUpdateDialog({
       description={
         latest
           ? "这个仓库的会话基点已经是这条分支的最新提交。"
-          : "会话基点换成这条分支此刻的最新提交,回不到旧提交。下一条消息会重建会话。"
+          : "会话基点换成这条分支此刻的最新提交，回不到旧提交。下一条消息会重建会话。"
       }
       cancelLabel="取消"
       cancelVariant="outline"
@@ -2150,7 +2179,7 @@ export function AgentSessionPage({
                 <CrossCircledIcon aria-hidden />
               </Callout.Icon>
               <Callout.Text>
-                这个会话的记录有缺损:最早的 {dropped} 条不在 agent 的上下文里,它看不到那一段。
+                这个会话的记录有缺损：最早的 {dropped} 条不在 agent 的上下文里，它看不到那一段。
               </Callout.Text>
             </Callout.Root>
           ) : null}
@@ -2252,7 +2281,7 @@ export function AgentSessionPage({
         }}
         title="删除这个 Agent 会话?"
         titleSize="4"
-        description="会话的记录与图片一并删除,不可撤销。它写下的 spec 与票留在产品 tracker 里。"
+        description="会话的记录与图片一并删除，不可撤销。它写下的 spec 与票留在产品 tracker 里。"
         cancelLabel="取消"
         cancelVariant="outline"
         cancelDisabled={remove.isPending}

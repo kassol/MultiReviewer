@@ -84,7 +84,7 @@ export function useProductDetail(productId: number | undefined) {
  * 改写或撤回,而那一场由人在产品页上开(issue #365)。
  */
 const DETACH_CONSEQUENCE =
-  "说到这个仓库的产品知识留着,由下一场产品梳理改写。仓库本身留在注册表里。";
+  "说到这个仓库的产品知识留着，由下一场产品梳理改写。仓库本身留在注册表里。";
 
 /**
  * 产品页与会话页共用的左栏(spec #349 的收口):产品列表、当前产品的仓库、会话。两页
@@ -403,7 +403,7 @@ export function ProductRail({
       <NameDialog
         open={dialog === "create"}
         title="建产品"
-        description="产品是若干已注册仓库的命名集合,名称不可重复。"
+        description="产品是若干已注册仓库的命名集合，名称不可重复。"
         label="产品名"
         submitLabel="创建"
         busy={create.isPending}
@@ -693,7 +693,7 @@ function RoleField({
       resize="none"
       className="min-h-0 min-w-0 w-full"
       aria-label={`${repoPath(repo)} 的职责`}
-      placeholder="职责(选填)"
+      placeholder="职责（选填）"
       maxLength={64}
       autoFocus
       disabled={busy}
@@ -768,7 +768,7 @@ function AttachDialog({
           </div>
           {repos.length === 0 ? (
             <Text as="p" size="2" color="gray">
-              没有可归入的仓库:分配内的仓库都已经归在某个产品下了。
+              没有可归入的仓库：分配内的仓库都已经归在某个产品下了。
             </Text>
           ) : (
             <div className="flex flex-col gap-1.5">
@@ -796,7 +796,7 @@ function AttachDialog({
                 id="attach-repo-role"
                 size={{ initial: "3", sm: "2" }}
                 className="min-w-0 w-full"
-                placeholder="选填,例如:后端 API(Node)"
+                placeholder="选填，例如：后端 API(Node)"
                 maxLength={64}
                 value={role}
                 onChange={(event) => setRole(event.target.value)}
@@ -879,7 +879,7 @@ function CreateSessionDialog({
               建会话
             </Dialog.Title>
             <Dialog.Description size="2" color="gray">
-              在 {productName} 下开一个 Agent 会话。用途决定它的工具面与启用的 skill,建后不可更改。
+              在 {productName} 下开一个 Agent 会话。用途决定它的工具面与启用的 skill，建后不可更改。
             </Dialog.Description>
           </div>
           <div className="flex flex-col gap-1.5">
