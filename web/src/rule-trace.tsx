@@ -6,7 +6,7 @@ import { Badge, Callout, Dialog, Skeleton, Text } from "@radix-ui/themes";
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/theme-button";
-import { num, str } from "@/lib/payload";
+import { num, reason as reasonOf, str } from "@/lib/payload";
 
 import {
   EventTime,
@@ -166,7 +166,7 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
               （提案 <span className="font-mono tabular-nums">{proposalId}</span>）
             </>
           )}
-          ：{str(payload, "reason") ?? "未记录原因"}
+          ：{reasonOf(payload, "reason")}
         </span>
       );
     }
@@ -174,7 +174,7 @@ function RuleEventBody({ event }: { event: RuleTraceEvent }) {
       return (
         <Callout.Root role="alert" color="red" size="1">
           <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
-          <Callout.Text>失败：{str(payload, "failure") ?? "未记录原因"}</Callout.Text>
+          <Callout.Text>失败：{reasonOf(payload, "failure")}</Callout.Text>
         </Callout.Root>
       );
     case "rule_agent_finished":

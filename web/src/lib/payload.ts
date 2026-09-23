@@ -13,3 +13,12 @@ export function num(payload: Record<string, unknown>, key: string): number | nul
   const value = payload[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
+
+/**
+ * 轨迹里的一条失败 / 丢弃原因,去空白之后再判空(issue #443)。`str()` 只挡得住恰好是
+ * `""` 的那一种,升级前落的行与个别写入路径给的可能是只有空白的字符串,不 trim 就会显示
+ * 成一段看不见的空白,而不是回落成「未记录原因」。
+ */
+export function reason(payload: Record<string, unknown>, key: string): string {
+  return str(payload, key)?.trim() || "未记录原因";
+}

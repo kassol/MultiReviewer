@@ -933,7 +933,8 @@ export function StageSummaryView({
               <div ref={sentinel} />
               <p className="text-center text-sm text-text-muted" aria-live="polite">
                 已显示 <span className="font-mono tabular-nums">{shown}</span> /{" "}
-                <span className="font-mono tabular-nums">{visible.length}</span> 条，向下滚动继续加载
+                <span className="font-mono tabular-nums">{visible.length}</span>{" "}
+                条，向下滚动加载其余；页内查找只搜得到已显示的条目
               </p>
             </>
           ) : null}
