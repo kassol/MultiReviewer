@@ -116,9 +116,9 @@ function scheduledCheckTone(result: ScheduledCheckResult): StatusTone {
 /** 最近一次定时检查读成一句话。一次都没检查过时说明白,不留空。 */
 function lastScheduledCheck(rangeReview: RangeReview): string {
   if (rangeReview.scheduledCheckResult === null || rangeReview.scheduledCheckAt === null) {
-    return "最近一次定时检查:还没检查过";
+    return "最近一次定时检查：还没检查过";
   }
-  return `最近一次定时检查:${localMinute(rangeReview.scheduledCheckAt)} · ${
+  return `最近一次定时检查：${localMinute(rangeReview.scheduledCheckAt)} · ${
     SCHEDULED_CHECK_RESULT_LABEL[rangeReview.scheduledCheckResult]
   }`;
 }
@@ -605,7 +605,7 @@ function AdvanceDialogContent({
 
           <div className="shrink-0">
             <Text as="label" htmlFor="advance-directive" size="1" color="gray">
-              本轮指令(选填,只作用于推进出来的这一轮)
+              本轮指令（选填，只作用于推进出来的这一轮）
             </Text>
             <TextArea
               id="advance-directive"

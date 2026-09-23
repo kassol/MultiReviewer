@@ -130,7 +130,7 @@ export async function rerunRequest(run: {
  * 本轮指令输入框的共同措辞:三处重审入口挂同一句,人不必分别理解一遍。
  * 字段名义与一次性语义由各处可见的 label 与提示承担,placeholder 只举例。
  */
-export const RUN_DIRECTIVE_PLACEHOLDER = "如:只报 P0";
+export const RUN_DIRECTIVE_PLACEHOLDER = "如：只报 P0";
 
 /**
  * 本轮指令的能力边界(issue #270)。四处指令输入框挂同一句:指令进的是 Reviewer 的
@@ -138,7 +138,7 @@ export const RUN_DIRECTIVE_PLACEHOLDER = "如:只报 P0";
  * 发生。线上有过一句「P2 可以都关闭」的指令,评审方等来的是「指令没生效」。
  */
 export const RUN_DIRECTIVE_HINT =
-  "指令只影响本轮审查看什么、报什么,不会处置任何 Finding;处置请用面板动作。";
+  "指令只影响本轮审查看什么、报什么，不会处置任何 Finding；处置请用面板动作。";
 
 /**
  * 一次重跑的模式(CONTEXT.md 只复核,issue #242)。两处重跑入口共用一个类型与一句
@@ -152,7 +152,7 @@ import type { ReviewRunMode as RerunMode } from "../../src/contracts/stages.ts";
 export type { RerunMode };
 
 /** 「完整审查」勾选的说明。勾上才会新报;重跑与增量评审两处默认都不勾。 */
-export const FULL_REVIEW_HINT = "不勾即只复核历史 Finding,不新报";
+export const FULL_REVIEW_HINT = "不勾即只复核历史 Finding，不新报";
 
 /**
  * 桌面左栏与窄视口那一行各挂一份注册入口,同一时刻只有一份真正占位——`display: none`
@@ -1143,7 +1143,7 @@ export function RerunPullRequest({
             </Text>
             <TextField.Root
               size={{ initial: "3", sm: "2" }}
-              placeholder="如:42"
+              placeholder="如：42"
               inputMode="numeric"
               value={pullNumber}
               onChange={(event) => setPullNumber(event.target.value)}
@@ -1151,7 +1151,7 @@ export function RerunPullRequest({
           </label>
           <label className="flex flex-col gap-1.5">
             <Text size="1" color="gray">
-              本轮指令(选填)
+              本轮指令（选填）
             </Text>
             <TextField.Root
               size={{ initial: "3", sm: "2" }}
@@ -1176,7 +1176,7 @@ export function RerunPullRequest({
               完整审查
             </Text>
             <p className="text-sm text-text-muted">
-              {FULL_REVIEW_HINT}。指令只作用于这一轮;要长期生效的要求请录进知识集。
+              {FULL_REVIEW_HINT}。指令只作用于这一轮；要长期生效的要求请录进知识集。
             </p>
           </div>
           {/* 触屏上点浮层外收起是唯一出口,人看不见它;给一个明说的「取消」(issue #378)。 */}

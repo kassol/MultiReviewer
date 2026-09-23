@@ -229,7 +229,7 @@ function LaunchDialogContent({
               onChange={(event) => setDirective(event.target.value)}
             />
             <Text id="range-review-directive-help" as="p" size="1" color="gray" className="mt-1.5">
-              指令只作用于发起出来的这一轮;要长期生效的要求请录进知识集。{RUN_DIRECTIVE_HINT}
+              指令只作用于发起出来的这一轮；要长期生效的要求请录进知识集。{RUN_DIRECTIVE_HINT}
             </Text>
           </div>
         </div>

@@ -501,7 +501,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
             <span className="text-warning">
               第 <span className="font-mono tabular-nums">{group === null ? "?" : group + 1}</span>{" "}
-              组没有综合说明,正文取原文最完整的一段
+              组没有综合说明，正文取原文最完整的一段
             </span>
             <span className="min-w-0 text-sm break-words text-text-secondary">
               {reasonOf(payload, "reason")}
@@ -517,7 +517,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         return (
           <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
             <span className="text-warning">
-              同根因组提议被丢弃:{reasonOf(payload, "reason")}
+              同根因组提议被丢弃：{reasonOf(payload, "reason")}
             </span>
             <span className="min-w-0 text-sm break-words text-text-secondary">
               {groups.length === 0
@@ -541,8 +541,8 @@ function RunMilestone({ event }: { event: TraceEvent }) {
             <span className="flex flex-wrap items-center gap-1.5">
               <span className="text-base text-text">
                 {event.kind === "finding_discarded"
-                  ? "锚不进本次改动,已丢弃"
-                  : `报在第 ${batch ?? "?"} 批之外的文件上,已丢弃`}
+                  ? "锚不进本次改动，已丢弃"
+                  : `报在第 ${batch ?? "?"} 批之外的文件上，已丢弃`}
               </span>
               {file === null ? null : (
                 <span className="font-mono text-xs break-all text-text-secondary">
@@ -610,7 +610,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         return (
           <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
             <span>
-              低于最低报告等级,已丢弃{" "}
+              低于最低报告等级，已丢弃{" "}
               <span className="font-mono tabular-nums">{discarded ?? 0}</span> 条
             </span>
             {threshold === null ? null : (
@@ -671,7 +671,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         return (
           <span className="text-base text-warning">
             本轮因服务排空停在第 <span className="font-mono tabular-nums">{batch ?? "?"}</span>/
-            <span className="font-mono tabular-nums">{total ?? "?"}</span> 批,等下一次启动续跑
+            <span className="font-mono tabular-nums">{total ?? "?"}</span> 批，等下一次启动续跑
           </span>
         );
       }
@@ -682,7 +682,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
       case "run_failed":
         return (
           <span className="text-base text-danger">
-            本轮失败:{reasonOf(payload, "reason")}
+            本轮失败：{reasonOf(payload, "reason")}
           </span>
         );
       case "run_finished":

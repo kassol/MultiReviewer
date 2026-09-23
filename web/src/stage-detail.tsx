@@ -697,7 +697,7 @@ function RerunAction({
           再跑一轮
         </ThemedDialog.Title>
         <ThemedDialog.Description size="2" color="gray" mb="3">
-          本轮指令只作用于这一轮,下一轮不带。要长期生效的要求请录进知识集。
+          本轮指令只作用于这一轮，下一轮不带。要长期生效的要求请录进知识集。
         </ThemedDialog.Description>
         <form
           aria-busy={rerun.isPending}
