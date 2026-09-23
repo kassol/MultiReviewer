@@ -995,6 +995,15 @@ async function configuredDefaultBranch(store: Store, repoId: number): Promise<st
   return (await store.getRepo(repoId))?.defaultBranch ?? null;
 }
 
+/** 一个仓库在 `prepareSessionRoot` 里各段的耗时(临时诊断,冷启动计时)。 */
+type RepoPrepareTiming = {
+  name: string;
+  forgeMs: number;
+  /** 只有没记基点、真走了 `defaultBranchHead` 才有值(issue #350)。 */
+  headMs: number | undefined;
+  worktreeMs: number;
+};
+
 /**
  * 备好会话根:一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树。位置即工具面的
  * 判据——路径前缀就是仓库,圈根就是圈这个目录。
@@ -1009,20 +1018,28 @@ async function prepareSessionRoot(
   session: AgentSessionRecord,
   repos: readonly ProductRepoRecord[],
   entry: RuntimeEntry,
-): Promise<{ sessionRoot: string; repos: SessionRepoInput[] }> {
+): Promise<{
+  sessionRoot: string;
+  repos: SessionRepoInput[];
+  repoTimings: RepoPrepareTiming[];
+  baselineMs: number;
+}> {
   const sessionRoot = mkdtempSync(join(tmpdir(), "multireviewer-session-root-"));
   entry.sessionRoot = sessionRoot;
   const prepared: SessionRepoInput[] = [];
   const baselines: AgentSessionBaseline[] = [];
+  const repoTimings: RepoPrepareTiming[] = [];
   const recorded = new Map(
     session.baselines.map((one) => [`${one.owner}/${one.repo}`, one] as const),
   );
   for (const repo of repos) {
     const ref = { owner: repo.owner, repo: repo.repo };
+    const forgeStart = performance.now();
     const [repository, credentials] = await Promise.all([
       deps.forge.getRepository(ref),
       deps.forge.cloneCredentials(ref),
     ]);
+    const forgeMs = performance.now() - forgeStart;
     const clone = {
       cacheDir: deps.cacheDir,
       ref,
@@ -1030,21 +1047,33 @@ async function prepareSessionRoot(
       credentials,
     };
     // 没记过的仓库读生效默认分支的 head,来源种类因此是分支(issue #355)。
-    const { branch, sha: headSha, kind } = recorded.get(`${repo.owner}/${repo.repo}`)
-      ?? {
-        ...await defaultBranchHead(
-          clone,
-          repository,
-          await configuredDefaultBranch(deps.store, repo.repoId),
-        ),
-        kind: "branch" as const,
-      };
+    const existing = recorded.get(`${repo.owner}/${repo.repo}`);
+    let branch: string;
+    let headSha: string;
+    let kind: AgentSessionBaseline["kind"];
+    let headMs: number | undefined;
+    if (existing !== undefined) {
+      ({ branch, sha: headSha, kind } = existing);
+    } else {
+      const headStart = performance.now();
+      const head = await defaultBranchHead(
+        clone,
+        repository,
+        await configuredDefaultBranch(deps.store, repo.repoId),
+      );
+      headMs = performance.now() - headStart;
+      branch = head.branch;
+      headSha = head.sha;
+      kind = "branch";
+    }
+    const worktreeStart = performance.now();
     const worktree = await prepareWorktree({
       ...clone,
       headSha,
       baseSha: headSha,
       path: join(sessionRoot, repo.owner, repo.repo),
     });
+    const worktreeMs = performance.now() - worktreeStart;
     entry.worktrees.push(worktree);
     prepared.push({
       ...ref,
@@ -1053,11 +1082,14 @@ async function prepareSessionRoot(
       ...(await repoKnowledgeCounts(deps.store, repo.repoId)),
     });
     baselines.push({ ...ref, sha: headSha, branch, kind });
+    repoTimings.push({ name: `${repo.owner}/${repo.repo}`, forgeMs, headMs, worktreeMs });
   }
   // 整列一次写完:备到一半失败的那一次不落半份清单,下一条消息重试时从头再备一遍。
   const store = deps.store;
+  const baselineStart = performance.now();
   await store.setAgentSessionBaselines(session.id, baselines);
-  return { sessionRoot, repos: prepared };
+  const baselineMs = performance.now() - baselineStart;
+  return { sessionRoot, repos: prepared, repoTimings, baselineMs };
 }
 
 /**
@@ -1084,8 +1116,11 @@ async function boot(
   model: AgentSessionModel,
   repos: readonly ProductRepoRecord[],
   entry: RuntimeEntry,
+  /** 冷启动链的计时(临时诊断,见收尾那一行日志),不影响协议与行为。 */
+  timing: { deliveredAt: number; queueMs: number; queueCount: number; promptSentAt: number },
 ): Promise<ChildProcess> {
   const prepared = await prepareSessionRoot(deps, session, repos, entry);
+  const forkStart = performance.now();
   const child = fork(WORKER_PATH, {
     // cwd 是会话根。只设 Pi 的 cwd 不够:模型会拼出相对于编排进程目录的路径。
     cwd: prepared.sessionRoot,
@@ -1113,6 +1148,8 @@ async function boot(
     ready = resolve;
     failed = reject;
   });
+  // 首条 entries 回传只打一次(临时诊断):从 `startRun` 投出 prompt 到这里的间隔。
+  let firstEntryLogged = false;
 
   child.on("message", (message: SessionWorkerMessage) => {
     // 每条回传都是活着的证据:静默闸从头再来(issue #335)。
@@ -1122,6 +1159,12 @@ async function boot(
         ready?.();
         return;
       case "entries": {
+        if (!firstEntryLogged) {
+          firstEntryLogged = true;
+          console.log(
+            `[agent-session] 会话 ${session.id} 首条记录=${(performance.now() - timing.promptSentAt).toFixed(0)}ms`,
+          );
+        }
         // 图片块在这一步换成文件引用(issue #336):库里不存 base64,记录表因此不随图片长大。
         // **换在收到那一刻,不在落库那一刻**:`imageRefs` 是按投递顺序排的,而 `turn-end` 会
         // 把它清空——推迟到落库时换,这一批的图就被下一回合的消息认走了。
@@ -1239,7 +1282,9 @@ async function boot(
   });
 
   // 重建:整段记录原样喂回去(issue #335)。新会话那一次是空数组,与不给等价。
+  const storedStart = performance.now();
   const stored = await storedSession(deps.store, session.id);
+  const storedMs = performance.now() - storedStart;
   const productName = await productHeading(deps.store, session.productId);
   if (stored.gap > 0) {
     console.warn(
@@ -1263,6 +1308,20 @@ async function boot(
     if (error !== null) failed?.(new Error(`无法向子进程投递任务: ${error.message}`));
   });
   await opened;
+  const readyMs = performance.now() - forkStart;
+  const totalMs = performance.now() - timing.deliveredAt;
+  const repoParts = prepared.repoTimings.map((one) => {
+    const head = one.headMs === undefined ? "" : ` head=${one.headMs.toFixed(0)}ms`;
+    return `${one.name} forge=${one.forgeMs.toFixed(0)}ms${head} 工作树=${one.worktreeMs.toFixed(0)}ms`;
+  });
+  console.log(
+    `[agent-session] 会话 ${session.id} 启动耗时 总计=${totalMs.toFixed(0)}ms ` +
+      `取队列=${timing.queueMs.toFixed(0)}ms(${timing.queueCount} 条) ` +
+      `仓库=[${repoParts.join("; ")}] ` +
+      `基点落库=${prepared.baselineMs.toFixed(0)}ms ` +
+      `子进程就绪=${readyMs.toFixed(0)}ms ` +
+      `读记录=${storedMs.toFixed(0)}ms(${stored.entries.length} 条)`,
+  );
   return child;
 }
 
@@ -1323,6 +1382,9 @@ export function deliverAgentSessionMessage(
   /** 这一条是等着人答的那一轮提问的答案(issue #406):它排在留存的排队消息前面。 */
   first = false,
 ): void {
+  // 没有常驻子进程时这一条消息要经历完整的冷启动链;`deliveredAt` 是那条链的起点,
+  // 传给 `boot` 算「总计」(临时诊断,不影响协议与行为)。
+  const deliveredAt = performance.now();
   const message: AgentSessionQueuedMessage = {
     mode,
     text,
@@ -1378,9 +1440,18 @@ export function deliverAgentSessionMessage(
     await switched;
     // 上一次回收或排空时落库的那几条:它们排在这一条之前,顺序就是人当初写下的顺序。
     // `unshift` 而不是整列赋值——万一这一个微任务里有谁往镜像里加了消息,不把它抹掉。
-    entry.queue.unshift(...(await takePendingQueue(deps, session.id)));
+    const queueStart = performance.now();
+    const pendingQueue = await takePendingQueue(deps, session.id);
+    const queueMs = performance.now() - queueStart;
+    entry.queue.unshift(...pendingQueue);
+    const promptSentAt = performance.now();
     startRun(session.id, entry, message, first);
-    return boot(deps, session, model, repos, entry);
+    return boot(deps, session, model, repos, entry, {
+      deliveredAt,
+      queueMs,
+      queueCount: pendingQueue.length,
+      promptSentAt,
+    });
   })();
   entry.booting = booting;
   void booting

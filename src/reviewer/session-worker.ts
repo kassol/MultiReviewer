@@ -80,6 +80,13 @@ import {
   sessionThinkingLevel,
 } from "./worker-tools.ts";
 
+/**
+ * 模块顶部取一次(临时诊断,冷启动计时):`performance.now()` 的零点是这个子进程启动那一刻,
+ * 这里往上数的全部 `import`(尤其是 Pi SDK)已经跑完了,这个数本身就是 Node + Pi 的 import
+ * 冷启动耗时。
+ */
+const moduleLoadedAt = performance.now();
+
 function send(message: SessionWorkerMessage): void {
   process.send?.(message);
 }
@@ -286,11 +293,17 @@ function recordSubagentRuns(toolCallId: string, result: unknown): void {
 }
 
 async function open(request: OpenSessionRequest): Promise<void> {
+  // 临时诊断(冷启动计时):模块顶部到这里的间隔多半是等 `open` 指令的 IPC 往返,
+  // `moduleLoadedAt` 这个数本身才是 import 冷启动那一段。
+  console.log(
+    `[agent-session-worker] 模块加载(冷启动)=${moduleLoadedAt.toFixed(0)}ms 到进入 open=${(performance.now() - moduleLoadedAt).toFixed(0)}ms`,
+  );
   const thinkingLevel = sessionThinkingLevel(
     request.runtimeModel.reasoning,
     request.thinkingLevel,
   );
   const repos = request.repos.map((repo) => `${repo.owner}/${repo.repo}`);
+  const prepareStart = performance.now();
   const prepared = await prepareAgentRuntime({
     agentDirPrefix: "multireviewer-agent-session-",
     worktreePath: request.sessionRoot,
@@ -318,6 +331,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
     // 常驻会话开自动 compaction(spec #329):它按天续谈,不压就会撞上上下文上限。
     compaction: true,
   });
+  const prepareMs = performance.now() - prepareStart;
   if ("failure" in prepared) {
     send({ kind: "failed", failure: prepared.failure });
     return;
@@ -330,6 +344,7 @@ async function open(request: OpenSessionRequest): Promise<void> {
   // 喂回去的那一段已经在记录表里,镜像的起点因此是它的长度——从 0 起会把整段历史再落一遍。
   // 置在建会话之前:建会话本身会追加「这次用哪个模型、哪个思考档位」两条,它们要镜像出去。
   mirrored = request.entries?.length ?? 0;
+  const openStart = performance.now();
   session = await openAgentSession({
     runtime: prepared,
     worktreePath: request.sessionRoot,
@@ -405,6 +420,9 @@ async function open(request: OpenSessionRequest): Promise<void> {
       }
     },
   });
+  console.log(
+    `[agent-session-worker] 建会话耗时 铺装=${prepareMs.toFixed(0)}ms 建 Pi 会话=${(performance.now() - openStart).toFixed(0)}ms`,
+  );
   send({ kind: "ready" });
 }
 
