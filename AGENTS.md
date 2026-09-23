@@ -105,6 +105,20 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 向导可以中断后重跑:已经写进 `.env` 的值会被认出来,对应阶段直接跳过,只补没做完的部分。`FORCE=1 bash setup.sh` 强制每个阶段都重做。
 
+### 发版与部署目录的清理
+
+部署目录只该有这几样:`.env`、`docker-compose.yml`、`setup.sh`、`data/`,加上**当前这一版**的回滚点备份。其余一律是垃圾。规则的由来:2026-09-23 盘点 00-test,SQLite 时期每次发版各留一份库备份、从不清,攒到 41 份约 650 MB,另有废弃的配置文件与三代 `.env` 备份。
+
+发版时:
+
+- **备份只为回滚而留,按需做。**只有改 schema 或改 `.env` 的那一版做备份;纯代码发版回滚只改 `MULTIREVIEWER_IMAGE` 一行,不必备份。备份就地命名 `<原文件名>.bak-<YYYYMMDD>-<issue 号>`,库用 `pg_dump` 导出,另打包 `data/agent-sessions`。
+- **一类备份只留最新一份。**新一版验收通过,同类的上一份备份即刻删掉:回滚只回退一版,更早的那份再也用不上。回滚窗口(例如换库那种一次性切换)过后只留一份归档,在变更日志里写明留的是哪一份、要哪个镜像才打得开。
+- **同一版里废弃的东西,同一版里清。**一版废弃了某个文件或 `.env` 变量,那一版的变更日志写明服务器上要删哪一样,发版的人当场删。服务与向导都不自动清理。
+- **`docker-compose.yml` 与 `setup.sh` 不随镜像走。**这一版改了它们(含 `stop_grace_period` 这类与应用同值的项),发版时把仓库里的新版拷到部署目录,拷前后各跑一次 `docker compose config` 比对展开结果。
+- **`.env` 只增删整行,不重排、不改格式。**已有的行哪怕看着像折断了也原样留着:凭据主密钥参与加解密的是服务此刻读到的那个值,把它拼回或删掉等于换主密钥,已存凭据全部作废。
+
+永远不删:`.env`、`data/agent-sessions/`(会话图片)、`data/worktrees/`(工作副本缓存与历史轮次 diff 的 ref;其下 `.checkouts/` 由服务自己清)。
+
 ### 从 SQLite 切到 PostgreSQL
 
 一次性的停机切换(ADR 0036,spec #445)。现役实例只有 00-test;这一段在切完并过了回滚窗口之后可以删。
@@ -193,6 +207,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-23: **部署目录的清理规则写进「部署」**(新一节「发版与部署目录的清理」)。00-test 盘点:SQLite 库与 40 份备份(约 650 MB)删掉,只留 `data/multireviewer.db.bak-20260922-pg` 归档(打开它要镜像 `:9894ffc`);三份旧 `.env` 备份、`docker-compose.yml` 旧备份、空的图片目录打包与自 #66 起废除的 `multireviewer.config.json` 删掉;`.env` 删两行废弃的模型变量;部署目录的 `setup.sh` 与 compose 换成仓库版。规则:备份只在改 schema 或 `.env` 的那一版做、一类只留最新一份,废弃什么同一版清什么,compose 与 `setup.sh` 改了就随发版拷过去,`.env` 只增删整行不改格式。
 - 2026-09-23: **Pi 升到 0.87.1,pi-subagents 升到 0.70.1**(issue #462,调研见 `docs/research/pi-upgrade-2026-09-23.md`)。重试或溢出恢复之后,失败的那次尝试不再留在上下文里;只有图片的用户消息不再带空文本块;自定义网关上的 `claude-opus-5-5`、`gpt-6-sol` 等型号拿得到真实参数。两版目录的 compat 键没有增减,`gatewayCompat` 不变。取证契约的真实 SDK 回归全过。升级带出一处竞态:0.87 在模型请求发出之后才回传一回合的头几条条目,删一个正在跑的会话时会撞上它们落库,外键拦下删除;删会话现在先等这些条目落完再删行。发版后刷新一次内置 openai-completions 模型服务(deepseek)的目录,快照才带上 `supportsStrictMode`。
 - 2026-09-22: **00-test 切到 PostgreSQL,spec #445 收口**(issue #458)。彩排一次(线上库副本搬进临时库 `mr_rehearsal`,49 张表逐表相等,临时容器上面板各页可读)——彩排抓到一条真问题:一条审查轨迹的 Finding 片段带 `\u0000`,PostgreSQL 的 `jsonb` 收不了(22P05),写入侧与搬迁脚本一并换成 U+FFFD。正式切换 15:15 CST:`docker compose stop` 排空 → 备份 `data/multireviewer.db.bak-20260922-pg`、`.env.bak-20260922-pg` 与图片目录 → `.env` 改镜像 `:9894ffc`、加 `MULTIREVIEWER_DATABASE_URL` → 建 schema、搬 49 张表 65,426 行逐表相等 → `up -d`,停机约 6 分钟。线上验收:切换前的登录态照样认(会话表一起搬了);评审记录、范围审查 #23 与 PR #54 的阶段页、轨迹与 diff 侧滑、处置率、审查策略、模型服务、访问控制、两个产品页、会话 #35 全部可读;真实 PR #56 投递一轮(Run 136,4 条 Finding,5m26s);范围审查 #24 发起并增量评审推进一轮(Run 138 / 139,第二轮只复核,一个模型判仍在于是记延续而不是已修复——复核口径本来如此);会话 #35 续谈 seq 12–18 接在切换前的 11 之后,新建会话 #36 从 1 起;日志无报错。回滚窗口到当天 24:00,过后旧库文件归档;搬迁脚本连同它的用例、夹具与 `Dockerfile` 那一行一起删除,`.dockerignore` 的例外撤回。线上 PG 是 00-test 宿主机上的 `postgres:17.6`,`multireviewer` 角色已改成库属主并授 CREATEDB(彩排要自建临时库)。
 - 2026-09-22: **文档与部署向导改口到 PostgreSQL**(issue #458,spec #445 第二段)。向导从六步变七步,新增「数据库」一阶段:拦下 `.env` 里残留的 `MULTIREVIEWER_DB`(服务读到它拒绝启动),问一条连接串,再拿容器里镜像自带的 `pg` 连一次读版本——服务器上没有 psql,而容器的网络视角才是服务的视角。起服务那一步的自检多一道「迁移表 `drizzle.__drizzle_migrations` 就位」,「读 SQLite」改成「读库」,查库提示换 `psql`,排障速查加一条备份(`pg_dump` 加 data 目录)。「部署」新增「从 SQLite 切到 PostgreSQL」一节:先拿线上库的备份副本彩排一次,正式窗口按「停容器排空 → 备份库文件与 `./data` → 改 `.env` → 起新容器跑迁移 → 跑搬迁脚本核行数 → 面板验」六步走,回滚窗口内改回旧 tag 与 `MULTIREVIEWER_DB` 即回 SQLite、代价是 PG 上这段时间的写入全丢,窗口过后旧库归档。搬迁脚本随这一版镜像走,切完即删。`README.md` 的 Requirements 加一条「需要一个 PostgreSQL 实例」,`CONTEXT.md` 的会话记录词条点明 data 目录是 `MULTIREVIEWER_DATA_DIR`、与库分开配。
