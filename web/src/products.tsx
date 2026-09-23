@@ -1066,11 +1066,24 @@ function TicketStatusIcon({ status, className }: { status: TicketStatus; classNa
  * 一处阻塞边的另一头(issue #363 的阻塞边):票号可点,点了打开它所在的 spec 并展开那一张——
  * 挡着它的票常挂在另一条 spec 下,只写个号人还得自己去翻。
  */
-function BlockerLink({ id, onJump }: { id: number; onJump: (ticketId: number) => void }) {
+function BlockerLink({
+  id,
+  closed = false,
+  onJump,
+}: {
+  id: number;
+  /** 已关的那一头划掉、退成次要色:它不再挡着谁,但边还在,人要知道当初等过它。 */
+  closed?: boolean;
+  onJump: (ticketId: number) => void;
+}) {
   return (
     <button
       type="button"
-      className="rounded-sm font-mono text-primary tabular-nums hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+      aria-label={closed ? `#${id}(已关)` : undefined}
+      className={cn(
+        "rounded-sm font-mono tabular-nums hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none",
+        closed ? "text-text-muted line-through" : "text-primary",
+      )}
       onClick={() => onJump(id)}
     >
       #{id}
@@ -1840,13 +1853,7 @@ function SpecDialog({
                             <BlockerLink id={ticket.id} onJump={onJump} />
                             <span className="text-text-muted">等</span>
                             {ticket.blockedBy.map((id) => (
-                              <span
-                                key={id}
-                                className={cn(!openTickets.has(id) && "line-through decoration-text-muted")}
-                                title={openTickets.has(id) ? undefined : `#${id} 已关`}
-                              >
-                                <BlockerLink id={id} onJump={onJump} />
-                              </span>
+                              <BlockerLink key={id} id={id} closed={!openTickets.has(id)} onJump={onJump} />
                             ))}
                           </li>
                         ))}
