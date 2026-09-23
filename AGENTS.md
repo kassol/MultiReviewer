@@ -21,7 +21,7 @@ TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内�
 - `docker-compose.yml` — 服务器上的编排定义。与 `.env` 两个文件即可运行,不需要源码。库不在这里:PostgreSQL 实例由部署方提供(ADR 0036)。
 - `docker-compose.test.yml` — 跑测试用的本机 PostgreSQL(端口 54329),只服务开发机。
 - `drizzle/` — 库的迁移文件,由 `pnpm exec drizzle-kit generate` 按 `src/review/schema/` 生成,服务启动时执行。改 schema 就要生成一份新的并提交。
-- `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。每次推两个 tag:给定的那一个与当前提交的短 sha(回滚点,见「部署」)。
+- `scripts/build-push.sh` — 在开发机构建镜像并推到 registry,默认目标架构 `linux/amd64`。每次推两个 tag:给定的那一个与版本 tag `YYYY.MM.DD-N`(回滚点,见「部署」)。
 - `scripts/setup.sh` — 部署向导。在服务器上执行,逐步问出库的连接串、Forge 凭据与面板配置、写 `.env`、拉镜像起容器、以「面板能用」为验收自检;新实例从日志抽出一次性 bootstrap 口令交给第一个系统管理员,仓库接入、用户与角色、模型凭据及模型组合在面板上做。
 - `docs/adr/` — 架构决策记录。
 - `docs/idea.md` — 初始产品与架构草案,部分设定已被 ADR 推翻。
@@ -55,7 +55,7 @@ bash setup.sh
 docker compose pull && docker compose up -d
 ```
 
-**每次构建推两个 tag,回滚靠改 `.env` 一行。**`scripts/build-push.sh` 除了给定的那个 tag(通常是 `:latest`),再推一个当前提交的短 sha(工作区有改动时带 `-dirty` 后缀,免得同一个 sha 指向两份不一样的产物;不在 git 仓库里时只推给定的那一个)。部署目录的 `.env` 里 `MULTIREVIEWER_IMAGE` **写具体的 sha tag**,不写 `:latest`——这样「现在跑的是哪一版」在服务器上答得出,回滚也只是把那一行改回上一个 sha 再 `docker compose up -d`,不必回开发机重新构建。脚本推完会把这一版的 sha tag 打在屏幕上。`:latest` 仍然推,给「随便拉个最新的」用;`.env` 指着它的实例回滚不了,只能重新构建。**回滚不回滚库**:schema 只增列不删列,回上一版镜像读得动新库,但那一版之后加的列与表它不认——带 schema 变更的那几次发版回滚前先看变更日志。
+**每次构建推两个 tag,回滚靠改 `.env` 一行。**`scripts/build-push.sh` 除了给定的那个 tag(通常是 `:latest`),再推一个版本 tag `YYYY.MM.DD-N`:当天第 N 次发版,N 由脚本查 registry 里当天已有的 tag 递增(只认 registry 明说 not found 的号,网络或鉴权出错即中止,不会覆盖已发的版本);工作区有改动时带 `-dirty` 后缀。对应的提交写在镜像 label `org.opencontainers.image.revision` 上(`docker buildx imagetools inspect <镜像> --format '{{json .Image.Config.Labels}}'` 读得到)。部署目录的 `.env` 里 `MULTIREVIEWER_IMAGE` **写具体的版本 tag**,不写 `:latest`——这样「现在跑的是哪一版」在服务器上答得出,回滚也只是把那一行改回上一版再 `docker compose up -d`,不必回开发机重新构建。脚本推完会把这一版的版本 tag 打在屏幕上。2026-09-23 之前推的是短 sha tag(如 `:258e9ef`),那些 tag 仍在 registry 里、照样拉得动。`:latest` 仍然推,给「随便拉个最新的」用;`.env` 指着它的实例回滚不了,只能重新构建。**回滚不回滚库**:schema 只增列不删列,回上一版镜像读得动新库,但那一版之后加的列与表它不认——带 schema 变更的那几次发版回滚前先看变更日志。
 
 向导的边界收在「面板能用」:问库的连接串并当场拿容器里的 `pg` 连一次读版本(服务器上没有 psql,而镜像里那个驱动正是服务用的),生成凭据主密钥、问基地址,起服务后核对迁移表 `drizzle.__drizzle_migrations` 在不在、打登录页并探测 `GET /api/session`。`.env` 里还留着 `MULTIREVIEWER_DB` 时向导当场拦下并说明删哪一行——服务读到它会拒绝启动,不拦的话要等到起容器那一步才显形,报出来的只是「没等到监听」。零用户时该端点回 401 加 `bootstrap: true`,向导再从容器日志抽出一次性 bootstrap 口令;已有账号时 401 不带这一位,正常提示用已有账号登录。bootstrap 只在库里零用户时打印,注册第一个用户成功即失效,服务重启换一枚,不进 `.env` 也不落库;第一个注册的人就是系统管理员,注册入口随后关闭。仓库接入、用户与角色、模型服务、模型组合与覆盖都在面板上做;首次进入业务页会显示「可运行模型服务 → 审查配置就绪 → 注册仓库」检查单,实例启用后隐藏。仓库注册要求审查配置先就绪,未就绪时服务端在访问 Gitea、生成 Key 与写库之前回 409。系统不预置角色,给同事建号时先把仓库分给他:不授角色的账号读得到分到的仓库,要写或做动作时才建角色并勾权限格(ADR 0018)。向导不问模型凭据也不问模型标识,不生成全局 webhook secret,也不指导手工配 hook。它只写自己这一轮问出来的那几项,`.env` 里别的行原样留着——早年那些废弃变量(`MULTIREVIEWER_ADMIN_TOKEN` / `MULTIREVIEWER_WEBHOOK_SECRET` / `MULTIREVIEWER_PUBLIC_URL` 等)的自动清理已经取消,服务不读它们,留着也只是几行陈迹;要清自己删。
 
@@ -97,7 +97,7 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 只有 `docker-compose.yml` 读、应用不读的:
 
-- `MULTIREVIEWER_IMAGE` — 镜像引用,必填。写具体的 sha tag,别写 `:latest`——回滚就是改这一行(见「部署」)
+- `MULTIREVIEWER_IMAGE` — 镜像引用,必填。写具体的版本 tag(`YYYY.MM.DD-N`),别写 `:latest`——回滚就是改这一行(见「部署」)
 - `MULTIREVIEWER_HOST_PORT` — 对外映射的宿主机端口,默认 3000
 - `MULTIREVIEWER_UID` / `MULTIREVIEWER_GID` — 容器以哪个 uid/gid 运行,默认 1000
 
@@ -188,6 +188,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-23: **镜像版本 tag 从短 sha 换成 `YYYY.MM.DD-N`**。sha 看不出哪天发的、谁新谁旧,回滚时要回开发机翻 git log 才对得上。`scripts/build-push.sh` 改推日期加当天序号(序号查 registry 递增,查询出错即中止而不当空号),提交 sha 挪到镜像 label `org.opencontainers.image.revision`。00-test 正在跑的 `:1055a48` 用 `imagetools create` 补打成 `:2026.09.23-1`(里面是同一个镜像 digest),部署目录 `.env` 已改指它。旧的 sha tag 留在 registry 里,改 `.env` 回滚到它们照样可行。
 - 2026-09-23: **库在启动时开一次,经依赖注入往下传;更新基点等记录落库再回 200;backlog #443 清一批**(issue #460、#461、#443)。`withStore` 与每处 `openStore` 加 `close()` 的写法退役,`Store.close()` 删除,连接池仍由 `closeStorePools()` 在排空时关,行为与响应体不变。更新基点的接口此前在那条基点更新记录落库之前就回 200(漏了一个 `await`),紧接着读会话记录的人偶尔看不到它;现在等它落完再回,并发复现修前 18/64 失败、修后 0/64。同票里删会话偶发的 500 是外键拦下删除,已随 #462 修掉,那条用例从此在状态码不对时打出响应原文。按类型检查扫了一遍 `src/` 里没有 await 的 Promise 调用,其余都是有意不等(轨迹链、`.catch` 已接住)。backlog #443:面板入口 JS 把 React 与 TanStack 拆成 `vendor` 块吃长缓存(首屏体积持平);审查轨迹与知识轨迹「未记录原因」回落统一成 trim 后判空,阶段汇总时间线对旧的空白失败原因同样回落;面板重跑与定时开的轮次日志补「开始审查」;Finding 列表尾部写明页内查找只搜得到已显示的条目;会话挂多个仓库时提示写明「这个仓库」指不清就先问或逐个答。无 schema 变更。
 - 2026-09-23: **部署目录的清理规则写进「部署」**(新一节「发版与部署目录的清理」)。00-test 盘点:SQLite 库与 40 份备份(约 650 MB)删掉,只留 `data/multireviewer.db.bak-20260922-pg` 归档(打开它要镜像 `:9894ffc`);三份旧 `.env` 备份、`docker-compose.yml` 旧备份、空的图片目录打包与自 #66 起废除的 `multireviewer.config.json` 删掉;`.env` 删两行废弃的模型变量;「从 SQLite 切到 PostgreSQL」一节随回滚窗口结束删除(切换经过见 2026-09-22 的两条);部署目录的 `setup.sh` 与 compose 换成仓库版。规则:备份只在改 schema 或 `.env` 的那一版做、一类只留最新一份,废弃什么同一版清什么,compose 与 `setup.sh` 改了就随发版拷过去,`.env` 只增删整行不改格式。
 - 2026-09-23: **Pi 升到 0.87.1,pi-subagents 升到 0.70.1**(issue #462,调研见 `docs/research/pi-upgrade-2026-09-23.md`)。重试或溢出恢复之后,失败的那次尝试不再留在上下文里;只有图片的用户消息不再带空文本块;自定义网关上的 `claude-opus-5-5`、`gpt-6-sol` 等型号拿得到真实参数。两版目录的 compat 键没有增减,`gatewayCompat` 不变。取证契约的真实 SDK 回归全过。升级带出一处竞态:0.87 在模型请求发出之后才回传一回合的头几条条目,删一个正在跑的会话时会撞上它们落库,外键拦下删除;删会话现在先等这些条目落完再删行。发版后刷新一次内置 openai-completions 模型服务(deepseek)的目录,快照才带上 `supportsStrictMode`。
