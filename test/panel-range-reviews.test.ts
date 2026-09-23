@@ -119,7 +119,6 @@ test("发起范围审查:建两条分支与容器 PR,第一轮 Review Run 归属
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30 });
-  await store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.rangeReviewId, rangeReview.id);
   assert.equal(runs[0]!.pullNumber, container.number);
@@ -145,7 +144,6 @@ test("标题必填:不给与只给空白都被拒,一条分支都不建", async 
   assert.deepEqual(h.memory.createdPullRequests, []);
   const store = openStore(h.db.url);
   assert.deepEqual(await store.listRangeReviews({}), []);
-  await store.close();
 });
 
 test("base 预填:取同仓库最近一个审查完成的范围审查的最终比较项,没有则为空", async () => {
@@ -205,7 +203,6 @@ test("比较项不是 base 的后代:拒绝,一条分支都不建", async () => 
 
   const store = openStore(h.db.url);
   assert.deepEqual(await store.listRangeReviews({}), []);
-  await store.close();
 });
 
 test("同一 base 已有进行中的:先提醒,带确认标志重发即成功,两条记录并存", async () => {
@@ -268,7 +265,6 @@ test("建容器 PR 失败:记下失败原因,已建的两条分支被清理", as
 
   const store = openStore(h.db.url);
   const record = (await store.getRangeReview(rangeReviewId))!;
-  await store.close();
   assert.equal(record.state, "failed");
   assert.equal(record.containerPullNumber, null);
   assert.match(record.lastForgeFailure!, /branch protection/);
@@ -335,7 +331,6 @@ test("发起范围审查不收模式:带上只复核照样是完整审查(issue 
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  await store.close();
   assert.deepEqual(
     runs.map((run) => run.mode),
     ["full"],
@@ -403,7 +398,6 @@ test("没有 review:create 的用户发起被拒,新权限格不落到已有角�
     isSystemAdmin: false,
     roleId: legacy.id,
   });
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -531,5 +525,4 @@ test("发起带来源:落库并回给面板,不带时是 null(issue #234)", asyn
     name: "v1.0.0",
   });
   assert.equal((await store.getRangeReview(plain.id))!.comparisonSource, null);
-  await store.close();
 });

@@ -49,7 +49,6 @@ async function boot(
     reviewersJson: reviewers.length === 0 ? null : JSON.stringify(reviewers),
     maxChangedLinesPerBatch: null,
   });
-  await seed.close();
 
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {

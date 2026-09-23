@@ -413,7 +413,6 @@ test("会话记录分页:缺省回最后一页,before 往前翻,hasMore 说还�
       usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
     });
   }
-  await store.close();
 
   const page = async (
     query: string,
@@ -451,35 +450,31 @@ test("面板标题与最后动静:读时从记录派生,不落库", async () => 
   const firstAt = "2026-09-12T00:10:00.000Z";
   const secondAt = "2026-09-12T00:20:00.000Z";
   const store = openStore(h.db.url);
-  try {
-    // 第一条用户消息带一张图,文字块排在图片块后面:标题不能假定文字在下标 0。正文里的
-    // 连续空白与首尾空白折成一个空格。
-    await store.appendAgentSessionEntry(withMessage.id, {
+  // 第一条用户消息带一张图,文字块排在图片块后面:标题不能假定文字在下标 0。正文里的
+  // 连续空白与首尾空白折成一个空格。
+  await store.appendAgentSessionEntry(withMessage.id, {
+    type: "message",
+    at: firstAt,
+    entry: {
+      id: "e1",
       type: "message",
-      at: firstAt,
-      entry: {
-        id: "e1",
-        type: "message",
-        message: {
-          role: "user",
-          content: [
-            { type: "image-ref", imageId: "img-1", path: "/tmp/img-1.png", mimeType: "image/png" },
-            { type: "text", text: "  这是   第一条\n用户消息  " },
-          ],
-        },
+      message: {
+        role: "user",
+        content: [
+          { type: "image-ref", imageId: "img-1", path: "/tmp/img-1.png", mimeType: "image/png" },
+          { type: "text", text: "  这是   第一条\n用户消息  " },
+        ],
       },
-      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
-    });
-    // 之后一条 assistant 消息更晚:最后动静跟着它走,标题仍然是第一条用户消息。
-    await store.appendAgentSessionEntry(withMessage.id, {
-      type: "message",
-      at: secondAt,
-      entry: { id: "e2", type: "message", message: { role: "assistant", content: "收到" } },
-      usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
-    });
-  } finally {
-    await store.close();
-  }
+    },
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+  });
+  // 之后一条 assistant 消息更晚:最后动静跟着它走,标题仍然是第一条用户消息。
+  await store.appendAgentSessionEntry(withMessage.id, {
+    type: "message",
+    at: secondAt,
+    entry: { id: "e2", type: "message", message: { role: "assistant", content: "收到" } },
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+  });
 
   const read = await sessions(h, owner, productId);
   const row = read.find((one) => one.id === withMessage.id)!;

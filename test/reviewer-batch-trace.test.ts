@@ -30,7 +30,7 @@ function deps(fixture: Awaited<ReturnType<typeof setupRepo>>) {
   return {
     forge: fixture.forge.forge,
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   };
@@ -39,19 +39,15 @@ function deps(fixture: Awaited<ReturnType<typeof setupRepo>>) {
 /** 这一轮落库的全部 `reviewer_batch_finished`,按批次序号排。 */
 async function batchFinished(databaseUrl: string): Promise<{ reviewer: string; payload: Record<string, unknown> }[]> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    return (await store
-      .listTrace(runId))
-      .filter((event) => event.kind === "reviewer_batch_finished")
-      .map((event) => ({
-        reviewer: event.reviewer!,
-        payload: event.payload as Record<string, unknown>,
-      }))
-      .sort((a, b) => (a.payload["batch"] as number) - (b.payload["batch"] as number));
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  return (await store
+    .listTrace(runId))
+    .filter((event) => event.kind === "reviewer_batch_finished")
+    .map((event) => ({
+      reviewer: event.reviewer!,
+      payload: event.payload as Record<string, unknown>,
+    }))
+    .sort((a, b) => (a.payload["batch"] as number) - (b.payload["batch"] as number));
 }
 
 /** 耗时每次都不一样,单独判类型再从载荷里摘掉,剩下的整份比对。 */
@@ -189,7 +185,6 @@ test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得
     .listTrace(runId))
     .filter((event) => event.kind === "reviewer_batch_finished")
     .map((event) => event.payload as Record<string, number | boolean>);
-  await store.close();
 
   // 跑完了却没给的那些:失败的那一批不算,它没跑。
   const skipped = batchEnds

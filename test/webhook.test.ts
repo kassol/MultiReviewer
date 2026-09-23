@@ -127,7 +127,6 @@ async function startHarness(options: HarnessOptions = {}) {
     generation: GENERATION,
     key: KEY_B,
   });
-  await seed.close();
   // 这两个仓库播种成升级前那一代:门禁分代(issue #206)只挡新注册且未确认知识集的仓库。
   if (options.ruleSetUnconfirmed !== true) await confirmEmptyRuleSet(db.url, REPO_ID);
   await confirmEmptyRuleSet(db.url, REPO_B_ID);
@@ -174,7 +173,7 @@ async function startHarness(options: HarnessOptions = {}) {
         ? plans.map((plan) => scriptedReviewer(plan.spec.model, []))
         : [options.reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     dataDir: db.dataDir,
     bootstrapSecret: "webhook-bootstrap",
     baseUrl: "https://reviewer.example.test",
@@ -273,19 +272,15 @@ test("知识集还没确认的仓库:投递照常受理但不跑 Run,知识确�
 
   // 知识确认:草案整组生效,这个仓库有了第一个知识集版本。
   const store = openStore(h.db.url);
-  try {
-    assert.equal(
-      (await store.appendRuleDraftItems(
-        REPO_ID,
-        [{ type: "rule", scope: "", statement: "公开函数要有类型标注" }],
-        "2026-08-28T00:00:00.000Z",
-      )).length,
-      1,
-    );
-    assert.equal(await store.confirmRuleDraft(REPO_ID), 1);
-  } finally {
-    await store.close();
-  }
+  assert.equal(
+    (await store.appendRuleDraftItems(
+      REPO_ID,
+      [{ type: "rule", scope: "", statement: "公开函数要有类型标注" }],
+      "2026-08-28T00:00:00.000Z",
+    )).length,
+    1,
+  );
+  assert.equal(await store.confirmRuleDraft(REPO_ID), 1);
 
   // 不重启,下一次投递即放行。
   assert.equal((await h.deliver("gitea", "synchronized", { headSha: "sha-2" })).status, 200);

@@ -86,7 +86,6 @@ async function seedRun(
       },
     ],
   );
-  await store.close();
   return runId;
 }
 
@@ -194,7 +193,6 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
     advancedBy: "reviewer",
     advancedAt: "2026-08-02T00:00:00.000Z",
   });
-  await store.close();
   // 容器 PR 的 head 就是当前比较项:两个比较项各跑过一轮。
   const first = await seedRun(
     h.db.url,
@@ -228,7 +226,6 @@ test("阶段详情:范围审查阶段按比较项分组,带推进的人与时刻
     advancedBy: "reviewer",
     advancedAt: "2026-08-03T00:00:00.000Z",
   });
-  await advanced.close();
 
   const body = await detail(h, `range:${rangeReviewId}`);
   assert.equal(body.stage.stageId, `range:${rangeReviewId}`);
@@ -297,7 +294,6 @@ test("阶段详情:未认证 401,一格权限都没有的人分到仓库就读�
     roleId: null,
   });
   await store.setPanelUserAssignment("plain-user", [GITEA_REPO.id]);
-  await store.close();
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },

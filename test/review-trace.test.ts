@@ -54,18 +54,14 @@ async function trace(databaseUrl: string): Promise<{
   payload: Record<string, unknown>;
 }[]> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    return (await store.listTrace(runId)).map((event) => ({
-      seq: event.seq,
-      scope: event.scope,
-      ...(event.reviewer === undefined ? {} : { reviewer: event.reviewer }),
-      kind: event.kind,
-      payload: event.payload as Record<string, unknown>,
-    }));
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  return (await store.listTrace(runId)).map((event) => ({
+    seq: event.seq,
+    scope: event.scope,
+    ...(event.reviewer === undefined ? {} : { reviewer: event.reviewer }),
+    kind: event.kind,
+    payload: event.payload as Record<string, unknown>,
+  }));
 }
 
 const SAID: ReviewerEvent = { kind: "assistant_message", text: "先读一遍 src/m.js" };
@@ -95,7 +91,7 @@ test("Reviewer 发出的事件按发生顺序落进这一轮的轨迹,带模型�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID, READ, REJECTED] })],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   const reviewerEvents = (await trace(db.url)).filter((e) => e.scope === "reviewer");
@@ -143,7 +139,7 @@ test("轮次级编排事件按顺序落库:工作副本、批次起止、评论�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2])],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   const runEvents = (await trace(db.url)).filter((e) => e.scope === "run");
@@ -172,7 +168,7 @@ test("锚不进 diff hunk 的 Finding 被丢弃,轨迹留下一条被拒记录",
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   const discarded = (await trace(db.url)).filter((e) => e.kind === "finding_discarded");
@@ -204,7 +200,7 @@ test("两个模型报同一行:一条合并事件,成员齐全,判据是同一�
       scriptedReviewer("model-b", [{ ...AT_LINE_2, title: "减法结果偏移" }]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   const merges = (await trace(db.url)).filter((e) => e.kind === "finding_merged");
@@ -232,7 +228,7 @@ test("行号相近而内容相似的两条:合并事件的判据带行距与相�
       scriptedReviewer("model-b", [{ ...AT_LINE_2, line: 4, title: "sub 多减了一次" }]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   const merges = (await trace(db.url)).filter((e) => e.kind === "finding_merged");
@@ -259,7 +255,7 @@ test("相邻但讲的不是一回事:两条各自成组,一条合并事件都不
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 2, "内容不相似的相邻两条不该合并");
@@ -280,7 +276,7 @@ test("Reviewer 失败:末尾一条失败事件带原因,它之前发出的事件
       scriptedReviewer("model-b", [AT_LINE_2]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   const failed = (await trace(db.url)).filter((e) => e.reviewer === "model-a");
@@ -304,7 +300,7 @@ test("两轮各记各的轨迹,序号各自从 1 起", async () => {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID] })],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   };
 
   await runReview(EVENT, deps);
@@ -312,17 +308,13 @@ test("两轮各记各的轨迹,序号各自从 1 起", async () => {
   await runReview(EVENT, deps);
 
   const store = openStore(db.url);
-  try {
-    const runs = await store.listRuns({ limit: 10 });
-    assert.equal(runs.length, 2);
-    for (const run of runs) {
-      const events = await store.listTrace(run.id);
-      assert.ok(events.length > 0, "每一轮都要有自己的轨迹");
-      assert.equal(events[0]!.seq, 1, "序号在一轮之内自增,跨轮不接着数");
-      assert.ok(events.every((event) => event.runId === run.id));
-    }
-  } finally {
-    await store.close();
+  const runs = await store.listRuns({ limit: 10 });
+  assert.equal(runs.length, 2);
+  for (const run of runs) {
+    const events = await store.listTrace(run.id);
+    assert.ok(events.length > 0, "每一轮都要有自己的轨迹");
+    assert.equal(events[0]!.seq, 1, "序号在一轮之内自增,跨轮不接着数");
+    assert.ok(events.every((event) => event.runId === run.id));
   }
 });
 
@@ -333,32 +325,28 @@ test("两个连接并发往同一轮次追加事件:序号不撞,一条不丢", 
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID] })],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   // 两份 store 各开各的连接(池里一条事务占一条连接),同时往同一轮次追加:序号是
   // `MAX + 1`,不在事务里先锁轮次那一行的话两条会算出同一个号,主键当场撞上(ADR 0036)。
   const writers = [openStore(db.url), openStore(db.url)];
-  try {
-    const runId = (await writers[0]!.listRuns({ limit: 1 }))[0]!.id;
-    const before = (await writers[0]!.listTrace(runId)).length;
-    const appended = await Promise.all(
-      Array.from({ length: 12 }, (_value, index) =>
-        writers[index % writers.length]!.appendTrace(runId, {
-          scope: "run",
-          kind: "batch_started",
-          payload: { index },
-        }),
-      ),
-    );
+  const runId = (await writers[0]!.listRuns({ limit: 1 }))[0]!.id;
+  const before = (await writers[0]!.listTrace(runId)).length;
+  const appended = await Promise.all(
+    Array.from({ length: 12 }, (_value, index) =>
+      writers[index % writers.length]!.appendTrace(runId, {
+        scope: "run",
+        kind: "batch_started",
+        payload: { index },
+      }),
+    ),
+  );
 
-    const seqs = appended.map((event) => event.seq).sort((a, b) => a - b);
-    assert.equal(new Set(seqs).size, seqs.length, "并发追加不该拿到同一个序号");
-    assert.deepEqual(seqs, Array.from({ length: 12 }, (_value, i) => before + 1 + i));
-    assert.equal((await writers[0]!.listTrace(runId)).length, before + 12);
-  } finally {
-    for (const writer of writers) await writer.close();
-  }
+  const seqs = appended.map((event) => event.seq).sort((a, b) => a - b);
+  assert.equal(new Set(seqs).size, seqs.length, "并发追加不该拿到同一个序号");
+  assert.deepEqual(seqs, Array.from({ length: 12 }, (_value, i) => before + 1 + i));
+  assert.equal((await writers[0]!.listTrace(runId)).length, before + 12);
 });
 
 test("payload 里带 NUL 的事件照样落库:PostgreSQL 收不了 \\u0000,写入侧换成 U+FFFD", async () => {
@@ -368,23 +356,19 @@ test("payload 里带 NUL 的事件照样落库:PostgreSQL 收不了 \\u0000,写�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID] })],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   // 00-test 的彩排在真实轨迹上撞过 22P05:Reviewer 读到二进制味的文件,Finding 片段里带一个 NUL。
   const store = openStore(db.url);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    const event = await store.appendTrace(runId, {
-      scope: "run",
-      kind: "batch_started",
-      payload: { snippet: "a\u0000b" },
-    });
-    const stored = (await store.listTrace(runId)).find((entry) => entry.seq === event.seq);
-    assert.deepEqual(stored?.payload, { snippet: "a\ufffdb" });
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  const event = await store.appendTrace(runId, {
+    scope: "run",
+    kind: "batch_started",
+    payload: { snippet: "a\u0000b" },
+  });
+  const stored = (await store.listTrace(runId)).find((entry) => entry.seq === event.seq);
+  assert.deepEqual(stored?.payload, { snippet: "a\ufffdb" });
 });
 
 test("afterSeq 只回它之后的那些事件", async () => {
@@ -394,20 +378,16 @@ test("afterSeq 只回它之后的那些事件", async () => {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID, READ] })],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   const store = openStore(db.url);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    const all = await store.listTrace(runId);
-    assert.deepEqual(
-      (await store.listTrace(runId, 3)).map((event) => event.seq),
-      all.slice(3).map((event) => event.seq),
-    );
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  const all = await store.listTrace(runId);
+  assert.deepEqual(
+    (await store.listTrace(runId, 3)).map((event) => event.seq),
+    all.slice(3).map((event) => event.seq),
+  );
 });
 
 /** 一次取证调用:子会话的事件嵌在它下面(issue #227)。 */
@@ -441,7 +421,7 @@ test("取证子会话的事件随那次调用一起落库,实时与回看是同�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2], { events: [SAID, EVIDENCE] })],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   // 实时广播与历史回看读的是同一批行(`createTraceRecorder` 把落库与广播合成一个动作),

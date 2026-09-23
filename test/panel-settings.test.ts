@@ -150,22 +150,18 @@ test("四项上限与报告等级一次写全,留空即回系统默认", async (
   await seedAvailableModelService(h, "test", ["global-model"]);
   // harness 的库这几格从没写过,与升级前的库同一形态:读出来全是 null。
   const store = openStore(h.db.url);
-  try {
-    const stored = await store.getGlobalSettings();
-    assert.deepEqual(
-      {
-        auxiliaryModel: stored.auxiliaryModelJson,
-        maxChangedLinesPerBatch: stored.maxChangedLinesPerBatch,
-        maxParallelBatches: stored.maxParallelBatches,
-        maxFilesPerBatch: stored.maxFilesPerBatch,
-        maxEvidenceCallsPerBatch: stored.maxEvidenceCallsPerBatch,
-        minReportSeverity: stored.minReportSeverity,
-      },
-      UNSET_SETTINGS,
-    );
-  } finally {
-    await store.close();
-  }
+  const stored = await store.getGlobalSettings();
+  assert.deepEqual(
+    {
+      auxiliaryModel: stored.auxiliaryModelJson,
+      maxChangedLinesPerBatch: stored.maxChangedLinesPerBatch,
+      maxParallelBatches: stored.maxParallelBatches,
+      maxFilesPerBatch: stored.maxFilesPerBatch,
+      maxEvidenceCallsPerBatch: stored.maxEvidenceCallsPerBatch,
+      minReportSeverity: stored.minReportSeverity,
+    },
+    UNSET_SETTINGS,
+  );
 
   const saved = await putSettings(h, {
     maxChangedLinesPerBatch: 700,
@@ -298,14 +294,10 @@ test("全局组合按模型服务候选校验，失效模型只门禁组合本�
   };
   const serviceState = async () => {
     const store = openStore(h.db.url);
-    try {
-      return {
-        services: await store.listModelServices(),
-        supplements: await store.listModelSupplements(),
-      };
-    } finally {
-      await store.close();
-    }
+    return {
+      services: await store.listModelServices(),
+      supplements: await store.listModelSupplements(),
+    };
   };
 
   await setRecoveringCredential("pending-reverification");
@@ -500,43 +492,39 @@ test("Run 快照冻结分批上限、并发数与取证上限,开跑后改设置
   );
 
   const store = openStore(h.db.url);
-  try {
-    const frozen = await store.getReviewRunSnapshot(GITEA_REPO.id);
-    assert.equal(frozen.maxParallelBatches, 5);
-    assert.equal(frozen.maxFilesPerBatch, 12);
-    assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
+  const frozen = await store.getReviewRunSnapshot(GITEA_REPO.id);
+  assert.equal(frozen.maxParallelBatches, 5);
+  assert.equal(frozen.maxFilesPerBatch, 12);
+  assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
 
-    // 取证上限也是这一轮的:快照取出之后再改,已经开跑的这一轮读到的还是 4。
-    assert.equal((await putSettings(h, { maxEvidenceCallsPerBatch: 1 })).status, 200);
-    assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
-    assert.equal((await store.getReviewRunSnapshot(GITEA_REPO.id)).maxEvidenceCallsPerBatch, 1);
+  // 取证上限也是这一轮的:快照取出之后再改,已经开跑的这一轮读到的还是 4。
+  assert.equal((await putSettings(h, { maxEvidenceCallsPerBatch: 1 })).status, 200);
+  assert.equal(frozen.maxEvidenceCallsPerBatch, 4);
+  assert.equal((await store.getReviewRunSnapshot(GITEA_REPO.id)).maxEvidenceCallsPerBatch, 1);
 
-    // 这一轮已经拿到快照;之后改设置只影响下一次取快照。
-    assert.equal((await putSettings(h, { maxFilesPerBatch: 1 })).status, 200);
-    assert.equal(frozen.maxFilesPerBatch, 12);
-    assert.equal((await store.getReviewRunSnapshot(GITEA_REPO.id)).maxFilesPerBatch, 1);
+  // 这一轮已经拿到快照;之后改设置只影响下一次取快照。
+  assert.equal((await putSettings(h, { maxFilesPerBatch: 1 })).status, 200);
+  assert.equal(frozen.maxFilesPerBatch, 12);
+  assert.equal((await store.getReviewRunSnapshot(GITEA_REPO.id)).maxFilesPerBatch, 1);
 
-    // 留空即跟随系统默认(issue #301):快照里是 null,编排层照它自己的默认值开跑。
-    assert.equal(
-      (await putSettings(h, {
-        maxParallelBatches: null,
-        maxFilesPerBatch: null,
-        maxEvidenceCallsPerBatch: null,
-      })).status,
-      200,
-    );
-    const cleared = await store.getReviewRunSnapshot(GITEA_REPO.id);
-    assert.deepEqual(
-      {
-        maxParallelBatches: cleared.maxParallelBatches,
-        maxFilesPerBatch: cleared.maxFilesPerBatch,
-        maxEvidenceCallsPerBatch: cleared.maxEvidenceCallsPerBatch,
-      },
-      { maxParallelBatches: null, maxFilesPerBatch: null, maxEvidenceCallsPerBatch: null },
-    );
-  } finally {
-    await store.close();
-  }
+  // 留空即跟随系统默认(issue #301):快照里是 null,编排层照它自己的默认值开跑。
+  assert.equal(
+    (await putSettings(h, {
+      maxParallelBatches: null,
+      maxFilesPerBatch: null,
+      maxEvidenceCallsPerBatch: null,
+    })).status,
+    200,
+  );
+  const cleared = await store.getReviewRunSnapshot(GITEA_REPO.id);
+  assert.deepEqual(
+    {
+      maxParallelBatches: cleared.maxParallelBatches,
+      maxFilesPerBatch: cleared.maxFilesPerBatch,
+      maxEvidenceCallsPerBatch: cleared.maxEvidenceCallsPerBatch,
+    },
+    { maxParallelBatches: null, maxFilesPerBatch: null, maxEvidenceCallsPerBatch: null },
+  );
 });
 
 test("全局组合与每仓库覆盖都拒绝新的空组合", async () => {
@@ -597,7 +585,6 @@ test("空库、没配模型组合时投递留下一条失败的 Review Run,原�
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30 });
-  await store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.failed, true);
 
@@ -654,7 +641,6 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
     automaticModels: [],
     supplements: [],
   }), 1);
-  await seed.close();
   const historicalHook = await seedHistoricalRepo(h);
 
   assert.equal((await h.deliverViaHook("sha-1", historicalHook)).status, 200);
@@ -663,7 +649,6 @@ test("组合里有撞名的自定义 provider 时,那一个模型的失败原因
 
   const store = openStore(h.db.url);
   const models = (await store.listRuns({ limit: 1 }))[0]!.models;
-  await store.close();
   const failure = (model: string): string =>
     models.find((row) => row.model === model)?.failure ?? "";
   assert.match(failure("openrouter:corp-qwen3-max"), /名字/, "撞名那一个没写明是名字冲突");

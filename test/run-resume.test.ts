@@ -10,6 +10,7 @@ import { test } from "node:test";
 import type { ReviewRunReviewerPin } from "../src/config.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { RESUME_NOT_VIABLE, runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store/index.ts";
 import {
   EVENT,
   FILES,
@@ -33,7 +34,7 @@ function deps(
     forge: fixture.forge.forge,
     reviewers,
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
     ...extra,
@@ -182,7 +183,7 @@ test("中断期间处置了一条历史,续跑批次收到的仍是开跑时的�
     forge: fixture.forge.forge,
     reviewers: [batchReviewer("model-a")],
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
   });
   const [history] = (await query(fixture.db.url, "SELECT id FROM finding WHERE file = 'src/c.ts'"));
   const historyId = Number(history?.["id"]);

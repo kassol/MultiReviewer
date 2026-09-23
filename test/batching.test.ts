@@ -114,7 +114,7 @@ test("规模在阈值内时不分批,Reviewer 只被调用一次", async () => {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -132,7 +132,7 @@ test("规模超阈值时按文件分批,每个 Reviewer 每批各跑一次,批�
     forge: forge.forge,
     reviewers: [first, second],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -177,7 +177,7 @@ test("文件数上限经 ReviewRunDeps 传到分批,改动行远没到上限也�
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 2,
   });
@@ -197,7 +197,7 @@ test("单个文件的改动行数就超过阈值时它自成一批,不被拒审�
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -217,7 +217,7 @@ test("每一批拿到的都是同一个完整的 head commit 工作副本", asyn
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -246,7 +246,7 @@ test("跨批次的 Finding 汇总后统一去重,只发一次 review", async () 
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -279,7 +279,7 @@ test("某模型部分批次失败时成功批次的 Finding 照常发布,正文�
       batchedReviewer("model-b", [{}, {}]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -327,7 +327,7 @@ test("某模型全部批次失败时按缺席处理,其 Finding 丢弃", async (
       batchedReviewer("model-b", [{}, { findings: [findingAt("src/c.ts", "c 的问题")] }]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -356,7 +356,7 @@ test("锚定打回次数跨批次累加,不是只留最后一批的数", async (
     forge: forge.forge,
     reviewers: [batchedReviewer("model-a", [{ anchorRejections: 2 }, { anchorRejections: 3 }])],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -403,7 +403,7 @@ test("Review Run 开始时记录预估规模:变更文件数、改动行数与�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -449,7 +449,7 @@ test("新增行以 `++ ` 起头时不被读成文件头,该文件的规模照常
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -471,7 +471,7 @@ test("每批只注入 glob 命中该批文件的知识条目,全仓库条目每�
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
     ruleSetVersion: 3,
     rules: [
@@ -543,7 +543,7 @@ test("批次受限并行:同时在跑的批次数不超过并发上限", async (
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 3,
@@ -561,7 +561,7 @@ test("并发上限为 1 时逐批跑完再开下一批,与分批以来的行为�
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
@@ -585,7 +585,7 @@ test("各批完成顺序打乱时,汇总仍按批次序号定序", async () => {
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 3,
@@ -633,7 +633,7 @@ test("并行跑的三批落库的耗时是墙上时间,不是三批相加", asyn
     forge: forge.forge,
     reviewers: [probingReviewer("model-a", 100)],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
     maxParallelBatches: 3,
@@ -654,7 +654,7 @@ test("Reviewer 作用域的轨迹事件带批次序号", async () => {
     forge: forge.forge,
     reviewers: [reviewer],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   });
@@ -703,18 +703,14 @@ function batchesOf(reviewer: {
 /** 人在面板上处置一条 Finding:落库这一步与面板 API 走同一段代码。 */
 async function disposeInPanel(databaseUrl: string, commentId: string): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    await store.recordDisposition({
-      owner: EVENT.owner,
-      repo: EVENT.repo,
-      commentId,
-      disposition: "resolved",
-      disposedBy: "kassol",
-      disposedAt: "2026-09-04T00:00:00.000Z",
-    });
-  } finally {
-    await store.close();
-  }
+  await store.recordDisposition({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    commentId,
+    disposition: "resolved",
+    disposedBy: "kassol",
+    disposedAt: "2026-09-04T00:00:00.000Z",
+  });
 }
 
 /** 三批各一个文件的一轮:分批用例的历史路由都按这一份跑。 */
@@ -722,7 +718,7 @@ function routingDeps(setUp: Awaited<ReturnType<typeof setup>>) {
   return {
     forge: setUp.forge.forge,
     cacheDir: setUp.cache.dir,
-    databaseUrl: setUp.db.url,
+    store: openStore(setUp.db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   };
@@ -899,16 +895,12 @@ test("只复核时判已修的历史照常自动处置为「已修复」", async
 /** 这一轮落库的全部轨迹事件。 */
 async function runTrace(databaseUrl: string): Promise<{ scope: string; kind: string; payload: unknown }[]> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    return (await store.listTrace(runId)).map((event) => ({
-      scope: event.scope,
-      kind: event.kind,
-      payload: event.payload,
-    }));
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  return (await store.listTrace(runId)).map((event) => ({
+    scope: event.scope,
+    kind: event.kind,
+    payload: event.payload,
+  }));
 }
 
 test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一条带批次且与锚不进 diff 的丢弃可区分", async () => {
@@ -928,7 +920,7 @@ test("分批时批外文件的报出被丢弃:不落库、不发评论,轨迹一
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -974,7 +966,7 @@ test("分批时报在本轮范围外的文件上:仍按锚不进 diff 丢弃,不
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 
@@ -1001,7 +993,7 @@ test("单批审查不过批外这一道:范围外文件的报出仍按锚不进 
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     maxChangedLinesPerBatch: 100,
   });
 

@@ -82,7 +82,6 @@ test("两个 Reviewer 都判已修:Forge 收到 resolve,库里记「已修复」
   // 面板的处置进度把人工与自动分开数:这一条落在自动那一列。
   const store = openStore(db.url);
   const first = (await store.listRuns({ limit: 10 })).at(-1)!;
-  await store.close();
   assert.deepEqual(
     { resolved: first.resolved, fixed: first.fixed, total: first.total },
     { resolved: 0, fixed: 1, total: 1 },
@@ -142,7 +141,7 @@ async function twinSetup() {
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   };
 
   return { repo, db, forge, deps };
@@ -346,7 +345,6 @@ test("跨轮折叠继承处置备注与署名:面板处置活过下一轮", asyn
   // 是同一次处置,备注与署名不该只活在上一轮那一行上。
   const store = openStore(db.url);
   const latest = (await store.listRuns({ limit: 10 }))[0]!;
-  await store.close();
   const carried = latest.findings[0]!;
   assert.equal(carried.disposition, "resolved");
   assert.equal(carried.commentId, forge.publishedComments[0]!.id);
@@ -452,7 +450,6 @@ test("延续把旧行的备注、处置人与处置时刻带到新行上", async
 
   const store = openStore(db.url);
   const latest = (await store.listRuns({ limit: 10 }))[0]!;
-  await store.close();
   const carried = latest.findings[0]!;
   assert.equal(carried.note, "确认无影响");
   assert.equal(carried.disposedBy, "kassol");
@@ -721,7 +718,6 @@ test("已延续不进处置计数:旧那一轮的进度里不再有它", async (
 
   const store = openStore(db.url);
   const [second, first] = await store.listRuns({ limit: 10 });
-  await store.close();
   // 旧那一轮的那条已经交接走,它既不算处置掉,也不该继续挂在待处置里。
   assert.deepEqual(
     { resolved: first!.resolved, fixed: first!.fixed, total: first!.total },

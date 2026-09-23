@@ -36,14 +36,10 @@ async function registeredHarness(
 /** 库里每一轮的本轮指令,按开跑先后。 */
 async function directives(h: PanelHarness, rangeReviewId?: number): Promise<(string | null)[]> {
   const store = openStore(h.db.url);
-  try {
-    return (await store
-      .listRuns({ limit: 30, ...(rangeReviewId === undefined ? {} : { rangeReviewId }) }))
-      .map((run) => run.directive)
-      .reverse();
-  } finally {
-    await store.close();
-  }
+  return (await store
+    .listRuns({ limit: 30, ...(rangeReviewId === undefined ? {} : { rangeReviewId }) }))
+    .map((run) => run.directive)
+    .reverse();
 }
 
 type RangeReview = { id: number; comparisonSha: string; containerPullNumber: number | null };
@@ -230,7 +226,6 @@ test("没有 review:rerun 的用户发不出带指令的重审", async () => {
     roleId: role.id,
   });
   await store.setPanelUserAssignment("directive-denied", [GITEA_REPO.id]);
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -269,14 +264,10 @@ const reportingReviewers: NonNullable<
 /** 库里每一轮的模式与指令,按开跑先后。 */
 async function roundsOf(h: PanelHarness): Promise<{ mode: string; directive: string | null }[]> {
   const store = openStore(h.db.url);
-  try {
-    return (await store
-      .listRuns({ limit: 30 }))
-      .map((run) => ({ mode: run.mode, directive: run.directive }))
-      .reverse();
-  } finally {
-    await store.close();
-  }
+  return (await store
+    .listRuns({ limit: 30 }))
+    .map((run) => ({ mode: run.mode, directive: run.directive }))
+    .reverse();
 }
 
 test("PR 重跑默认只复核,与本轮指令同时附上时各自落库,`full` 与非法取值各走各的", async () => {
@@ -325,7 +316,6 @@ test("只复核不新增权限格:没有 review:rerun 的用户照样被拒", as
     roleId: role.id,
   });
   await store.setPanelUserAssignment("mode-denied", [GITEA_REPO.id]);
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -388,7 +378,6 @@ test("PR 重跑:未处置历史全落在回退文件上时先自动处置再 409
     repo: HARNESS_PR.repo,
     pullNumber: HARNESS_PR.number,
   });
-  await store.close();
   assert.deepEqual(
     history.map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null })),
     [{ file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" }],

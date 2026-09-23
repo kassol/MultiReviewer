@@ -119,7 +119,6 @@ async function seedRun(
     })),
   );
   if (extra.closingFailure !== undefined) await store.recordRunFailure(runId, extra.closingFailure);
-  await store.close();
   return runId;
 }
 
@@ -127,7 +126,6 @@ async function seedRun(
 async function historyFindingId(databaseUrl: string, runId: number): Promise<number> {
   const store = openStore(databaseUrl);
   const run = (await store.listRuns({ limit: 50 })).find((item) => item.id === runId);
-  await store.close();
   assert.notEqual(run, undefined, `没有这一轮 ${runId}`);
   return run!.findings[0]!.id;
 }
@@ -369,7 +367,6 @@ test("阶段列表:同一范围审查推进两次只占一行,审查完成后已
   assert.equal(stage.status, "active");
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  await store.close();
   assert.equal(runs.length, 2);
   assert.equal(stage.latestRunId, runs[0]!.id);
   assert.equal(stage.latestRunAt, runs[0]!.startedAt);
@@ -425,7 +422,6 @@ test("阶段列表:按状态、按来源筛选各自生效,组合筛选生效,�
     completedBy: "operator",
     completedAt: "2026-08-05T00:00:00.000Z",
   });
-  await store.close();
 
   const all = await stages(h);
   assert.deepEqual(
@@ -562,7 +558,6 @@ test("阶段列表:失败的那一批上没有历史时,批次没跑成由审查
     kind: "reviewer_batch_finished",
     payload: { batch: 2, failed: true, failure: "429" },
   });
-  await store.close();
 
   const body = await stages(h);
   assert.deepEqual(body.stages[0]!.latestRunAlert, {

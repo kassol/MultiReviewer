@@ -35,22 +35,18 @@ async function setup() {
     changedFiles: [{ path: "src/calc.ts", status: "modified" }],
   }));
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({
-      repoId: REPO_ID,
-      owner: EVENT.owner,
-      repo: EVENT.repo,
-      generation: 1,
-      key: "k".repeat(64),
-    });
-  } finally {
-    await store.close();
-  }
+  await store.registerRepo({
+    repoId: REPO_ID,
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    generation: 1,
+    key: "k".repeat(64),
+  });
   return {
     cache,
     db,
     forge,
-    deps: { forge: forge.forge, cacheDir: cache.dir, databaseUrl: db.url, repoId: REPO_ID },
+    deps: { forge: forge.forge, cacheDir: cache.dir, store: openStore(db.url), repoId: REPO_ID },
   };
 }
 
@@ -58,38 +54,34 @@ async function setup() {
 async function seedProduct(databaseUrl: string): Promise<number> {
   const store = openStore(databaseUrl);
   const at = "2026-09-17T00:00:00.000Z";
-  try {
-    const product = await store.createProduct({ name: "报销系统", createdAt: at });
-    assert.equal(await store.attachProductRepo(product.id, REPO_ID, at), "attached");
-    const write = async (
-      one: Pick<Parameters<typeof store.writeProductKnowledge>[0], "kind" | "name" | "body"> & {
-        topic?: string | null;
-      },
-    ): Promise<number> =>
-      (await store.writeProductKnowledge({
-        productId: product.id,
-        topic: one.topic ?? null,
-        avoided: [],
-        options: null,
-        consequences: null,
-        annotations: [],
-        at,
-        sessionId: null,
-        ...one,
-      }))!.id;
-    await write({
-      kind: "term",
-      name: "报销系统",
-      topic: "定位",
-      body: "员工提交票据、财务审批并打款的内部系统。",
-    });
-    await write({ kind: "term", name: "报销单", body: "一次报销申请的载体,金额以分记。" });
-    await write({ kind: "relationship", name: "", body: "web 的提交走 api 的报销单接口。" });
-    await write({ kind: "decision", name: "金额用整数分表示", body: "浮点会攒出误差。" });
-    return product.id;
-  } finally {
-    await store.close();
-  }
+  const product = await store.createProduct({ name: "报销系统", createdAt: at });
+  assert.equal(await store.attachProductRepo(product.id, REPO_ID, at), "attached");
+  const write = async (
+    one: Pick<Parameters<typeof store.writeProductKnowledge>[0], "kind" | "name" | "body"> & {
+      topic?: string | null;
+    },
+  ): Promise<number> =>
+    (await store.writeProductKnowledge({
+      productId: product.id,
+      topic: one.topic ?? null,
+      avoided: [],
+      options: null,
+      consequences: null,
+      annotations: [],
+      at,
+      sessionId: null,
+      ...one,
+    }))!.id;
+  await write({
+    kind: "term",
+    name: "报销系统",
+    topic: "定位",
+    body: "员工提交票据、财务审批并打款的内部系统。",
+  });
+  await write({ kind: "term", name: "报销单", body: "一次报销申请的载体,金额以分记。" });
+  await write({ kind: "relationship", name: "", body: "web 的提交走 api 的报销单接口。" });
+  await write({ kind: "decision", name: "金额用整数分表示", body: "浮点会攒出误差。" });
+  return product.id;
 }
 
 const FINDING = {
@@ -144,23 +136,19 @@ test("产品写下的条目当轮就读得到:目录在开跑时算,正文按名
     reads: [{ names: ["审批只留一级"] }],
   });
   const store = openStore(db.url);
-  try {
-    await store.writeProductKnowledge({
-      productId,
-      kind: "decision",
-      name: "审批只留一级",
-      body: "两级审批没人真的看第二眼。",
-      topic: null,
-      avoided: [],
-      options: null,
-      consequences: null,
-      annotations: [],
-      at: "2026-09-17T01:00:00.000Z",
-      sessionId: null,
-    });
-  } finally {
-    await store.close();
-  }
+  await store.writeProductKnowledge({
+    productId,
+    kind: "decision",
+    name: "审批只留一级",
+    body: "两级审批没人真的看第二眼。",
+    topic: null,
+    avoided: [],
+    options: null,
+    consequences: null,
+    annotations: [],
+    at: "2026-09-17T01:00:00.000Z",
+    sessionId: null,
+  });
 
   await runReview(EVENT, { ...deps, reviewers: [reviewer] });
 
@@ -184,12 +172,8 @@ test("仓库不在任何产品下:目录与查询回调都不交下去", async (
 test("产品建了但一条都没写下:与不在产品下同一条路径", async () => {
   const { db, deps } = await setup();
   const store = openStore(db.url);
-  try {
-    const product = await store.createProduct({ name: "空产品", createdAt: "2026-09-17T00:00:00.000Z" });
-    await store.attachProductRepo(product.id, REPO_ID, "2026-09-17T00:00:00.000Z");
-  } finally {
-    await store.close();
-  }
+  const product = await store.createProduct({ name: "空产品", createdAt: "2026-09-17T00:00:00.000Z" });
+  await store.attachProductRepo(product.id, REPO_ID, "2026-09-17T00:00:00.000Z");
 
   const reviewer = scriptedReviewer("stub-model", [FINDING]);
   await runReview(EVENT, { ...deps, reviewers: [reviewer] });

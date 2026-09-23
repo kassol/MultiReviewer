@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 import { createDrain } from "../src/drain.ts";
 import { runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { EVENT, FILES, batchReviewer, query, setup } from "./support/batch-run.ts";
 import { makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 import { LISTENING, spawnMain } from "./support/main-process.ts";
@@ -34,7 +35,7 @@ test("排空开始后不再取新批:当前批次落库,这一轮不收尾,轨�
     forge: fixture.forge.forge,
     reviewers: [reviewer],
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
     drain,
@@ -76,7 +77,7 @@ test("排空中止的那一轮,下一次启动续跑得回来", async () => {
     forge: fixture.forge.forge,
     reviewers: [batchReviewer("model-a")],
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
     maxFilesPerBatch: 1,
     maxParallelBatches: 1,
   };

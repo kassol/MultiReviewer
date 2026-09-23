@@ -679,14 +679,10 @@ test("仓库覆盖只接受可用候选，失效保存项仍能移除或清为�
   ];
   const serviceState = async () => {
     const store = openStore(h.db.url);
-    try {
-      return {
-        services: await store.listModelServices(),
-        supplements: await store.listModelSupplements(),
-      };
-    } finally {
-      await store.close();
-    }
+    return {
+      services: await store.listModelServices(),
+      supplements: await store.listModelSupplements(),
+    };
   };
   const before = await serviceState();
 
@@ -760,7 +756,6 @@ test("仓库列表带累计量,按最近活动排序,没跑过的排最后", asy
     reviewerPins: [],
   });
   await seed.registerRepo({ repoId: 556, owner: "acme", repo: "sprockets", generation: 1, key: "kc" });
-  await seed.close();
 
   const list = (await (await h.api("GET", "/repos")).json()) as {
     repoId: number;
@@ -849,12 +844,11 @@ test("没配 Gitea 时注册与移除回 500,说明配置缺口", async () => {
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: null,
   }), true);
-  await seed.close();
   const server = await createWebhookServer({
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     dataDir: db.dataDir,
     bootstrapSecret: "panel-repos-bootstrap",
     baseUrl: BASE_URL,

@@ -221,18 +221,14 @@ test("偏移命中折叠的那条落库沿用历史行的指纹:轨迹折叠数�
   assert.equal(fingerprints[1], fingerprints[0], "折叠命中的行落了与历史行不同的指纹");
 
   const store = openStore(db.url);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    const folded = (await store.listTrace(runId)).filter((event) => event.kind === "finding_folded");
-    const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
-    const latest = summary.timeline.find((entry) => entry.runId === runId)!;
-    assert.equal(folded.length, 1);
-    assert.equal(latest.folded, folded.length, "时间线的折叠数与轨迹 finding_folded 条数不一致");
-    assert.equal(latest.reported, 0);
-    assert.equal(summary.findings.length, 1, "折叠命中的行在阶段汇总里占了新的 Identity");
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  const folded = (await store.listTrace(runId)).filter((event) => event.kind === "finding_folded");
+  const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
+  const latest = summary.timeline.find((entry) => entry.runId === runId)!;
+  assert.equal(folded.length, 1);
+  assert.equal(latest.folded, folded.length, "时间线的折叠数与轨迹 finding_folded 条数不一致");
+  assert.equal(latest.reported, 0);
+  assert.equal(summary.findings.length, 1, "折叠命中的行在阶段汇总里占了新的 Identity");
 });
 
 test("行号相差超过 3 行时不匹配,按新 Finding 提出", async () => {

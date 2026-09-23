@@ -366,7 +366,6 @@ test("图片文件丢了再重建:那一块是占位文本,历史照样续得上
     // 人手动删掉那个文件:库里的引用还在,文件没了。
     const store = openStore(h.db.url);
     const image = (await store.getAgentSessionImage(sessionId, imageId))!;
-    await store.close();
     rmSync(image.path);
 
     assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);

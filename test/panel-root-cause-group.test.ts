@@ -64,64 +64,60 @@ async function seedRun(
   run: { mode?: "verdict-only"; failed?: boolean } = {},
 ): Promise<{ runId: number; findingIds: number[]; groupIds: number[] }> {
   const store = openStore(h.db.url);
-  try {
-    const runId = await store.startRun({
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      pullNumber,
-      headSha: `sha-${pullNumber}-${startedAt}`,
-      startedAt,
-      changedFiles: 1,
-      changedLines: 1,
-      batchCount: 1,
-      reviewerPins: [],
-      ...(run.mode === undefined ? {} : { mode: run.mode }),
-    });
-    const groupIds = await store.finishRun(runId, {
-      finishedAt: startedAt,
-      durationMs: 1,
-      failed: run.failed ?? false,
-      outcomes: [],
-      findings: findings.map((finding, index) => ({
-        file: finding.file,
-        line: 1,
-        title: `${finding.file} 上那条`,
-        severity: "P1" as const,
-        category: "bug" as const,
-        description: `${finding.file} 的问题`,
-        impact: "",
-        suggestion: "",
-        attributions: [
-          {
-            model: HARNESS_SPEC.model,
-            severity: "P1" as const,
-            category: "bug" as const,
-            description: `${finding.file} 的问题`,
-            impact: "",
-            suggestion: "",
-          },
-        ],
-        groupIndex: index,
-        disposition: finding.disposition ?? "unknown",
-        placement: (finding.carrier === false ? "body" : "inline") as "body" | "inline",
-        fingerprint: `fp-${runId}-${index}`,
-        ...(finding.carrier === false
-          ? {}
-          : {
-              commentId: finding.commentId ?? `comment-${runId}-${index}`,
-              commentHtmlUrl: `https://forge.invalid/pulls/${pullNumber}/files#c-${runId}-${index}`,
-            }),
-      })),
-      verdicts: [],
-      ...(rootCauses.length === 0 ? {} : { rootCauses }),
-    });
-    const rows = await withTestDb(h.db.url, async (sql) =>
-      await sql("SELECT id FROM finding WHERE run_id = $1 ORDER BY group_index", runId),
-    );
-    return { runId, findingIds: rows.map((row) => Number(row["id"])), groupIds };
-  } finally {
-    await store.close();
-  }
+  const runId = await store.startRun({
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber,
+    headSha: `sha-${pullNumber}-${startedAt}`,
+    startedAt,
+    changedFiles: 1,
+    changedLines: 1,
+    batchCount: 1,
+    reviewerPins: [],
+    ...(run.mode === undefined ? {} : { mode: run.mode }),
+  });
+  const groupIds = await store.finishRun(runId, {
+    finishedAt: startedAt,
+    durationMs: 1,
+    failed: run.failed ?? false,
+    outcomes: [],
+    findings: findings.map((finding, index) => ({
+      file: finding.file,
+      line: 1,
+      title: `${finding.file} 上那条`,
+      severity: "P1" as const,
+      category: "bug" as const,
+      description: `${finding.file} 的问题`,
+      impact: "",
+      suggestion: "",
+      attributions: [
+        {
+          model: HARNESS_SPEC.model,
+          severity: "P1" as const,
+          category: "bug" as const,
+          description: `${finding.file} 的问题`,
+          impact: "",
+          suggestion: "",
+        },
+      ],
+      groupIndex: index,
+      disposition: finding.disposition ?? "unknown",
+      placement: (finding.carrier === false ? "body" : "inline") as "body" | "inline",
+      fingerprint: `fp-${runId}-${index}`,
+      ...(finding.carrier === false
+        ? {}
+        : {
+            commentId: finding.commentId ?? `comment-${runId}-${index}`,
+            commentHtmlUrl: `https://forge.invalid/pulls/${pullNumber}/files#c-${runId}-${index}`,
+          }),
+    })),
+    verdicts: [],
+    ...(rootCauses.length === 0 ? {} : { rootCauses }),
+  });
+  const rows = await withTestDb(h.db.url, async (sql) =>
+    await sql("SELECT id FROM finding WHERE run_id = $1 ORDER BY group_index", runId),
+  );
+  return { runId, findingIds: rows.map((row) => Number(row["id"])), groupIds };
 }
 
 async function summary(h: PanelHarness, pullNumber = HARNESS_PR.number): Promise<SummaryBody> {

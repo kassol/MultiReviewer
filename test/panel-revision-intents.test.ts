@@ -143,19 +143,15 @@ test("无目标意图:agent 拿到意图与现集,产出入队并带人工提议
   // 现集里先有一条:意图提的是对照它的变更,agent 因此要看得到它。
   const store = openStore(h.db.url);
   let ruleId: number;
-  try {
-    assert.notEqual(
-      (await seedReviewRule(h.db.url, GITEA_REPO.id, {
-        type: "rule",
-        scope: "",
-        statement: "入参要在边界上校验",
-      })),
-      undefined,
-    );
-    ruleId = (await store.getRuleSet(GITEA_REPO.id))!.rules[0]!.id;
-  } finally {
-    await store.close();
-  }
+  assert.notEqual(
+    (await seedReviewRule(h.db.url, GITEA_REPO.id, {
+      type: "rule",
+      scope: "",
+      statement: "入参要在边界上校验",
+    })),
+    undefined,
+  );
+  ruleId = (await store.getRuleSet(GITEA_REPO.id))!.rules[0]!.id;
   items = [
     {
       type: "rule",
@@ -268,26 +264,22 @@ test("agent 指名并入队列里已有的那一条:队列条数不变,附注多
 
   const store = openStore(h.db.url);
   let queued: number;
-  try {
-    queued = (await store.addRuleProposal(GITEA_REPO.id, {
-      type: "rule",
-      change: "add",
-      targetRuleIds: [],
-      scope: "src/api/**",
-      statement: "处理器要校验入参",
-      sources: [
-        {
-          origin: "baseline-exploration",
-          note: null,
-          evidence: null,
-          findingId: null,
-          traceTaskId: null,
-        },
-      ],
-    }))!;
-  } finally {
-    await store.close();
-  }
+  queued = (await store.addRuleProposal(GITEA_REPO.id, {
+    type: "rule",
+    change: "add",
+    targetRuleIds: [],
+    scope: "src/api/**",
+    statement: "处理器要校验入参",
+    sources: [
+      {
+        origin: "baseline-exploration",
+        note: null,
+        evidence: null,
+        findingId: null,
+        traceTaskId: null,
+      },
+    ],
+  }))!;
   items = [
     {
       type: "rule",
@@ -326,16 +318,12 @@ test("知识集未确认:产出追加进草案,原有草案条目留着", async 
   const h = await harnessWithRepo(agent, false);
 
   const store = openStore(h.db.url);
-  try {
-    // 探索产出的那一条:草案手填已经撤掉(issue #299),原有条目只会是探索或意图落的。
-    await store.finishRuleExploration(
-      GITEA_REPO.id,
-      [{ type: "rule", scope: "", statement: "草案里原有的" }],
-      "2026-09-08T00:00:00.000Z",
-    );
-  } finally {
-    await store.close();
-  }
+  // 探索产出的那一条:草案手填已经撤掉(issue #299),原有条目只会是探索或意图落的。
+  await store.finishRuleExploration(
+    GITEA_REPO.id,
+    [{ type: "rule", scope: "", statement: "草案里原有的" }],
+    "2026-09-08T00:00:00.000Z",
+  );
 
   const intentId = await submitAndSettle(h);
   assert.equal(h.revisionIntents[0]!.failure, undefined);
@@ -385,16 +373,12 @@ test("未确认仓库上的处置反哺:产出排进提案队列,草案一字不
   });
 
   const store = openStore(h.db.url);
-  try {
-    // 草案里先有一条探索产出的:反哺不该动它。
-    await store.finishRuleExploration(
-      GITEA_REPO.id,
-      [{ type: "rule", scope: "", statement: "草案里原有的" }],
-      "2026-09-08T00:00:00.000Z",
-    );
-  } finally {
-    await store.close();
-  }
+  // 草案里先有一条探索产出的:反哺不该动它。
+  await store.finishRuleExploration(
+    GITEA_REPO.id,
+    [{ type: "rule", scope: "", statement: "草案里原有的" }],
+    "2026-09-08T00:00:00.000Z",
+  );
 
   const runs = (await (await h.api("GET", "/runs")).json()) as {
     runs: { findings: { id: number; commentId: string | null }[] }[];
@@ -569,49 +553,41 @@ test("重启:停在运行中的意图改判失败", async () => {
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({ repoId: 71, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-    assert.notEqual(
-      await store.startRuleIntent(71, {
-        text: "跑一半就重启了",
-        submittedBy: "someone",
-        targetKind: "none",
-        targetId: null,
-        model: "test:global-model",
-        startedAt: "2026-09-08T00:00:00.000Z",
-      }),
-      undefined,
-    );
-    // 反哺那一行同样是意图行,改判因此一并覆盖它(issue #296)。
-    assert.notEqual(
-      await store.startRuleIntent(71, {
-        text: "处置备注也跑了一半",
-        submittedBy: "someone",
-        targetKind: "finding",
-        targetId: 9,
-        model: "test:global-model",
-        startedAt: "2026-09-08T00:00:30.000Z",
-      }),
-      undefined,
-    );
-  } finally {
-    await store.close();
-  }
+  await store.registerRepo({ repoId: 71, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+  assert.notEqual(
+    await store.startRuleIntent(71, {
+      text: "跑一半就重启了",
+      submittedBy: "someone",
+      targetKind: "none",
+      targetId: null,
+      model: "test:global-model",
+      startedAt: "2026-09-08T00:00:00.000Z",
+    }),
+    undefined,
+  );
+  // 反哺那一行同样是意图行,改判因此一并覆盖它(issue #296)。
+  assert.notEqual(
+    await store.startRuleIntent(71, {
+      text: "处置备注也跑了一半",
+      submittedBy: "someone",
+      targetKind: "finding",
+      targetId: 9,
+      model: "test:global-model",
+      startedAt: "2026-09-08T00:00:30.000Z",
+    }),
+    undefined,
+  );
 
   const restarted = openStore(db.url);
-  try {
-    await restarted.failInterruptedRuleIntents("服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z");
-    const listed = await restarted.listRuleIntents(71);
-    assert.deepEqual(
-      listed.map((row) => [row.targetKind, row.state, row.failure, row.finishedAt]),
-      [
-        ["finding", "failed", "服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z"],
-        ["none", "failed", "服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z"],
-      ],
-    );
-  } finally {
-    await restarted.close();
-  }
+  await restarted.failInterruptedRuleIntents("服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z");
+  const listed = await restarted.listRuleIntents(71);
+  assert.deepEqual(
+    listed.map((row) => [row.targetKind, row.state, row.failure, row.finishedAt]),
+    [
+      ["finding", "failed", "服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z"],
+      ["none", "failed", "服务重启,上一次提议没跑完", "2026-09-08T01:00:00.000Z"],
+    ],
+  );
 });
 
 test("完成很久的意图仍列出,运行中与失败排在完成的前面", async () => {
@@ -619,48 +595,44 @@ test("完成很久的意图仍列出,运行中与失败排在完成的前面", a
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({ repoId: 72, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-    const start = async (text: string, startedAt: string): Promise<number> =>
-      (await store.startRuleIntent(72, {
-        text,
-        submittedBy: "someone",
-        targetKind: "none",
-        targetId: null,
-        model: "test:global-model",
-        startedAt,
-      }))!.id;
-    const old = await start("早就跑完了", "2026-09-01T00:00:00.000Z");
-    await store.finishRuleIntent(
-      old,
-      { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
-      "2026-09-01T00:01:00.000Z",
-    );
-    const failed = await start("跑失败了", "2026-09-02T00:00:00.000Z");
-    await store.failRuleIntent(failed, "模型调用被拒", "2026-09-02T00:01:00.000Z");
-    await start("还在跑", "2026-09-03T00:00:00.000Z");
-    // 开始得最晚的这一条已经完成:它排在运行中与失败之后,而不是按开始时刻排到最前。
-    const recent = await start("刚跑完", "2026-09-08T00:00:00.000Z");
-    await store.finishRuleIntent(
-      recent,
-      { summary: "未产出变更", produced: { proposalIds: [], draftItemIds: [] } },
-      "2026-09-08T00:01:00.000Z",
-    );
+  await store.registerRepo({ repoId: 72, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+  const start = async (text: string, startedAt: string): Promise<number> =>
+    (await store.startRuleIntent(72, {
+      text,
+      submittedBy: "someone",
+      targetKind: "none",
+      targetId: null,
+      model: "test:global-model",
+      startedAt,
+    }))!.id;
+  const old = await start("早就跑完了", "2026-09-01T00:00:00.000Z");
+  await store.finishRuleIntent(
+    old,
+    { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
+    "2026-09-01T00:01:00.000Z",
+  );
+  const failed = await start("跑失败了", "2026-09-02T00:00:00.000Z");
+  await store.failRuleIntent(failed, "模型调用被拒", "2026-09-02T00:01:00.000Z");
+  await start("还在跑", "2026-09-03T00:00:00.000Z");
+  // 开始得最晚的这一条已经完成:它排在运行中与失败之后,而不是按开始时刻排到最前。
+  const recent = await start("刚跑完", "2026-09-08T00:00:00.000Z");
+  await store.finishRuleIntent(
+    recent,
+    { summary: "未产出变更", produced: { proposalIds: [], draftItemIds: [] } },
+    "2026-09-08T00:01:00.000Z",
+  );
 
-    const listed = await store.listRuleIntents(72);
-    assert.deepEqual(
-      listed.map((row) => [row.text, row.state]),
-      [
-        ["还在跑", "running"],
-        ["跑失败了", "failed"],
-        ["刚跑完", "completed"],
-        ["早就跑完了", "completed"],
-      ],
-    );
-    assert.deepEqual(listed.at(-1)!.produced, { proposalIds: [3], draftItemIds: [] });
-  } finally {
-    await store.close();
-  }
+  const listed = await store.listRuleIntents(72);
+  assert.deepEqual(
+    listed.map((row) => [row.text, row.state]),
+    [
+      ["还在跑", "running"],
+      ["跑失败了", "failed"],
+      ["刚跑完", "completed"],
+      ["早就跑完了", "completed"],
+    ],
+  );
+  assert.deepEqual(listed.at(-1)!.produced, { proposalIds: [3], draftItemIds: [] });
 });
 
 /**
@@ -674,13 +646,9 @@ async function seedRule(
   rule: { type: "rule" | "fact"; scope: string; statement: string },
 ): Promise<number> {
   const store = openStore(h.db.url);
-  try {
-    assert.notEqual((await seedReviewRule(h.db.url, GITEA_REPO.id, rule)), undefined);
-    // `seedReviewRule` 回的是新的知识集版本,条目标识要从现集里读。
-    return (await store.getRuleSet(GITEA_REPO.id))!.rules.at(-1)!.id;
-  } finally {
-    await store.close();
-  }
+  assert.notEqual((await seedReviewRule(h.db.url, GITEA_REPO.id, rule)), undefined);
+  // `seedReviewRule` 回的是新的知识集版本,条目标识要从现集里读。
+  return (await store.getRuleSet(GITEA_REPO.id))!.rules.at(-1)!.id;
 }
 
 /** 队列里排一条待裁决提案,回它的标识。 */
@@ -695,22 +663,18 @@ async function seedProposal(
   },
 ): Promise<number> {
   const store = openStore(h.db.url);
-  try {
-    return (await store.addRuleProposal(GITEA_REPO.id, {
-      ...input,
-      sources: [
-        {
-          origin: "baseline-exploration",
-          note: null,
-          evidence: "第一次是探索提的",
-          findingId: null,
-          traceTaskId: null,
-        },
-      ],
-    }))!;
-  } finally {
-    await store.close();
-  }
+  return (await store.addRuleProposal(GITEA_REPO.id, {
+    ...input,
+    sources: [
+      {
+        origin: "baseline-exploration",
+        note: null,
+        evidence: "第一次是探索提的",
+        findingId: null,
+        traceTaskId: null,
+      },
+    ],
+  }))!;
 }
 
 /** 提交一条目标为提案的意图并等它跑完。 */
@@ -1462,13 +1426,9 @@ async function seedDraftItem(
   item: { type: "rule" | "fact"; scope: string; statement: string },
 ): Promise<number> {
   const store = openStore(h.db.url);
-  try {
-    const [id] = await store.appendRuleDraftItems(GITEA_REPO.id, [item], "2026-09-08T00:00:00.000Z");
-    assert.notEqual(id, undefined);
-    return id!;
-  } finally {
-    await store.close();
-  }
+  const [id] = await store.appendRuleDraftItems(GITEA_REPO.id, [item], "2026-09-08T00:00:00.000Z");
+  assert.notEqual(id, undefined);
+  return id!;
 }
 
 /** 提交一条目标为草案条目的意图并等它跑完。 */
@@ -1668,20 +1628,16 @@ async function seedFailedIntent(
   targetId: number | null,
 ): Promise<number> {
   const store = openStore(h.db.url);
-  try {
-    const intent = (await store.startRuleIntent(GITEA_REPO.id, {
-      text: INTENT,
-      submittedBy: "someone",
-      targetKind,
-      targetId,
-      model: "test:global-model",
-      startedAt: "2026-09-11T00:00:00.000Z",
-    }))!;
-    await store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:01:00.000Z");
-    return intent.id;
-  } finally {
-    await store.close();
-  }
+  const intent = (await store.startRuleIntent(GITEA_REPO.id, {
+    text: INTENT,
+    submittedBy: "someone",
+    targetKind,
+    targetId,
+    model: "test:global-model",
+    startedAt: "2026-09-11T00:00:00.000Z",
+  }))!;
+  await store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:01:00.000Z");
+  return intent.id;
 }
 
 test("重试失败的意图:同一行原地变回运行中再完成,模型按此刻的辅助模型解析,轨迹换新", async () => {
@@ -1713,16 +1669,12 @@ test("重试失败的意图:同一行原地变回运行中再完成,模型按此
   // 失败之后换了辅助模型:重试用此刻生效的那一处,不沿用第一次记下的那一处。
   await seedAvailableModelService(h, "second", ["other-model"]);
   const store = openStore(h.db.url);
-  try {
-    assert.equal(
-      await putGlobalSettings(store, {
-        auxiliaryModelJson: JSON.stringify({ provider: "second", model: "other-model" }),
-      }),
-      true,
-    );
-  } finally {
-    await store.close();
-  }
+  assert.equal(
+    await putGlobalSettings(store, {
+      auxiliaryModelJson: JSON.stringify({ provider: "second", model: "other-model" }),
+    }),
+    true,
+  );
 
   const response = await retry(h, intentId);
   assert.equal(response.status, 202);
@@ -1887,70 +1839,66 @@ test("重跑只认这个仓库的失败行:原地改回运行中,清掉上一次
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({ repoId: 73, owner: "acme", repo: "legacy", generation: 1, key: "k" });
-    const intent = (await store.startRuleIntent(73, {
+  await store.registerRepo({ repoId: 73, owner: "acme", repo: "legacy", generation: 1, key: "k" });
+  const intent = (await store.startRuleIntent(73, {
+    text: "跑过一次的那一段",
+    submittedBy: "someone",
+    targetKind: "proposal",
+    targetId: 11,
+    model: "test:global-model",
+    startedAt: "2026-09-11T00:00:00.000Z",
+  }))!;
+  const run = {
+    model: "second:other-model",
+    thinkingLevel: "high" as const,
+    startedAt: "2026-09-11T01:00:00.000Z",
+  };
+  // 运行中与完成的都不重跑。
+  assert.equal(await store.rerunRuleIntent(73, intent.id, run), undefined);
+  await store.setRuleIntentTrace(intent.id, 5);
+  await store.finishRuleIntent(
+    intent.id,
+    { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
+    "2026-09-11T00:01:00.000Z",
+  );
+  assert.equal(await store.rerunRuleIntent(73, intent.id, run), undefined);
+  await store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:02:00.000Z");
+  // 别的仓库认不出这一行。
+  assert.equal(await store.rerunRuleIntent(74, intent.id, run), undefined);
+
+  const rerun = (await store.rerunRuleIntent(73, intent.id, run))!;
+  assert.deepEqual(
+    {
+      id: rerun.id,
+      text: rerun.text,
+      submittedBy: rerun.submittedBy,
+      targetKind: rerun.targetKind,
+      targetId: rerun.targetId,
+      state: rerun.state,
+      failure: rerun.failure,
+      summary: rerun.summary,
+      model: rerun.model,
+      thinkingLevel: rerun.thinkingLevel,
+      traceTaskId: rerun.traceTaskId,
+      produced: rerun.produced,
+      startedAt: rerun.startedAt,
+      finishedAt: rerun.finishedAt,
+    },
+    {
+      id: intent.id,
       text: "跑过一次的那一段",
       submittedBy: "someone",
       targetKind: "proposal",
       targetId: 11,
-      model: "test:global-model",
-      startedAt: "2026-09-11T00:00:00.000Z",
-    }))!;
-    const run = {
+      state: "running",
+      failure: null,
+      summary: null,
       model: "second:other-model",
-      thinkingLevel: "high" as const,
+      thinkingLevel: "high",
+      traceTaskId: null,
+      produced: { proposalIds: [], draftItemIds: [] },
       startedAt: "2026-09-11T01:00:00.000Z",
-    };
-    // 运行中与完成的都不重跑。
-    assert.equal(await store.rerunRuleIntent(73, intent.id, run), undefined);
-    await store.setRuleIntentTrace(intent.id, 5);
-    await store.finishRuleIntent(
-      intent.id,
-      { summary: "已产出一条", produced: { proposalIds: [3], draftItemIds: [] } },
-      "2026-09-11T00:01:00.000Z",
-    );
-    assert.equal(await store.rerunRuleIntent(73, intent.id, run), undefined);
-    await store.failRuleIntent(intent.id, "Connection error.", "2026-09-11T00:02:00.000Z");
-    // 别的仓库认不出这一行。
-    assert.equal(await store.rerunRuleIntent(74, intent.id, run), undefined);
-
-    const rerun = (await store.rerunRuleIntent(73, intent.id, run))!;
-    assert.deepEqual(
-      {
-        id: rerun.id,
-        text: rerun.text,
-        submittedBy: rerun.submittedBy,
-        targetKind: rerun.targetKind,
-        targetId: rerun.targetId,
-        state: rerun.state,
-        failure: rerun.failure,
-        summary: rerun.summary,
-        model: rerun.model,
-        thinkingLevel: rerun.thinkingLevel,
-        traceTaskId: rerun.traceTaskId,
-        produced: rerun.produced,
-        startedAt: rerun.startedAt,
-        finishedAt: rerun.finishedAt,
-      },
-      {
-        id: intent.id,
-        text: "跑过一次的那一段",
-        submittedBy: "someone",
-        targetKind: "proposal",
-        targetId: 11,
-        state: "running",
-        failure: null,
-        summary: null,
-        model: "second:other-model",
-        thinkingLevel: "high",
-        traceTaskId: null,
-        produced: { proposalIds: [], draftItemIds: [] },
-        startedAt: "2026-09-11T01:00:00.000Z",
-        finishedAt: null,
-      },
-    );
-  } finally {
-    await store.close();
-  }
+      finishedAt: null,
+    },
+  );
 });

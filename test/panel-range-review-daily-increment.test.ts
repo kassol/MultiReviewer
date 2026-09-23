@@ -172,7 +172,6 @@ test("开启每日增量不推进:轮次数与容器 PR 的 head 分支都不动
   assert.equal(h.repo.branchSha(rangeReview.headBranch), headBefore);
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  await store.close();
   assert.equal(runs.length, 1);
 });
 
@@ -233,7 +232,6 @@ test("没有 review:advance 的用户设不了每日增量", async () => {
     isSystemAdmin: false,
     roleId: role.id,
   });
-  await store.close();
   const cookie = await userCookie(h.serverUrl, "range-reader", PASSWORD);
 
   const denied = await fetch(

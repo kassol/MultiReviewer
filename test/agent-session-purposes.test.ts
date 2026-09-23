@@ -143,31 +143,27 @@ test("需求拆分:一轮提问、从答案写术语、写 spec 与两张票并�
     await idle(h, cookie, sessionId);
 
     const store = openStore(h.db.url);
-    try {
-      // 答案落成一条术语,写下即生效。
-      assert.deepEqual(
-        (await store
-          .listProductKnowledge(productId))
-          .map((entry) => [entry.kind, entry.name, entry.writtenBySessionId]),
-        [["term", "月结汇率", sessionId]],
-      );
-      // spec 与它的两张票落在这个产品下,记着写下它们的这一场会话。
-      assert.deepEqual(
-        (await store.listProductSpecs(productId)).map((spec) => [spec.id, spec.title, spec.sessionId]),
-        [[SPEC, "报销单按原币录入", sessionId]],
-      );
-      assert.deepEqual(
-        (await store
-          .listProductTickets(productId))
-          .map((one) => [one.id, one.title, one.blockedBy, one.sessionId]),
-        [
-          [FIRST, "月结汇率表", [], sessionId],
-          [SECOND, "报销单按原币录入", [FIRST], sessionId],
-        ],
-      );
-    } finally {
-      await store.close();
-    }
+    // 答案落成一条术语,写下即生效。
+    assert.deepEqual(
+      (await store
+        .listProductKnowledge(productId))
+        .map((entry) => [entry.kind, entry.name, entry.writtenBySessionId]),
+      [["term", "月结汇率", sessionId]],
+    );
+    // spec 与它的两张票落在这个产品下,记着写下它们的这一场会话。
+    assert.deepEqual(
+      (await store.listProductSpecs(productId)).map((spec) => [spec.id, spec.title, spec.sessionId]),
+      [[SPEC, "报销单按原币录入", sessionId]],
+    );
+    assert.deepEqual(
+      (await store
+        .listProductTickets(productId))
+        .map((one) => [one.id, one.title, one.blockedBy, one.sessionId]),
+      [
+        [FIRST, "月结汇率表", [], sessionId],
+        [SECOND, "报销单按原币录入", [FIRST], sessionId],
+      ],
+    );
   } finally {
     await disposeAgentSessions();
     await close();
@@ -206,23 +202,19 @@ async function seedKnowledge(
   record: { kind: "term" | "relationship" | "decision"; name?: string; body: string },
 ): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    return (await store.writeProductKnowledge({
-      productId,
-      kind: record.kind,
-      name: record.name ?? "",
-      body: record.body,
-      topic: null,
-      avoided: [],
-      options: null,
-      consequences: null,
-      annotations: [],
-      at: AT,
-      sessionId: null,
-    }))!.id;
-  } finally {
-    await store.close();
-  }
+  return (await store.writeProductKnowledge({
+    productId,
+    kind: record.kind,
+    name: record.name ?? "",
+    body: record.body,
+    topic: null,
+    avoided: [],
+    options: null,
+    consequences: null,
+    annotations: [],
+    at: AT,
+    sessionId: null,
+  }))!.id;
 }
 
 /**
@@ -608,64 +600,56 @@ test("tracker 工具:写 spec 与票、加阻塞边、改正文、关票与评�
     // 别的产品的 spec 与票:跨产品的边要打回的正是指向它的那一条。
     const store = openStore(h.db.url);
     let foreignProductId: number;
-    try {
-      foreignProductId = (await store.createProduct({ name: "结算系统", createdAt: AT })).id;
-      const foreignSpec = await store.createProductSpec({
-        productId: foreignProductId,
-        title: "对账",
-        body: "别的产品的 spec",
+    foreignProductId = (await store.createProduct({ name: "结算系统", createdAt: AT })).id;
+    const foreignSpec = await store.createProductSpec({
+      productId: foreignProductId,
+      title: "对账",
+      body: "别的产品的 spec",
+      sessionId: null,
+      at: AT,
+    });
+    assert.equal(
+      (await store.createProductTicket({
+        specId: foreignSpec.id,
+        title: "对账明细",
+        body: "别的产品的票",
+        label: "needs-triage",
         sessionId: null,
         at: AT,
-      });
-      assert.equal(
-        (await store.createProductTicket({
-          specId: foreignSpec.id,
-          title: "对账明细",
-          body: "别的产品的票",
-          label: "needs-triage",
-          sessionId: null,
-          at: AT,
-        })).id,
-        FOREIGN_TICKET,
-      );
-    } finally {
-      await store.close();
-    }
+      })).id,
+      FOREIGN_TICKET,
+    );
 
     assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
     await idle(h, cookie, sessionId);
 
     const after = openStore(h.db.url);
-    try {
-      // spec 与票都落在这个产品下,标题两头的空白去掉了。
-      const specs = await after.listProductSpecs(productId);
-      assert.deepEqual(
-        specs.map((spec) => [spec.id, spec.title, spec.state, spec.sessionId]),
-        [[SPEC, "报销单可以撤回", "open", sessionId]],
-      );
-      assert.match(specs[0]!.body, /提交之后改不了。/);
+    // spec 与票都落在这个产品下,标题两头的空白去掉了。
+    const specs = await after.listProductSpecs(productId);
+    assert.deepEqual(
+      specs.map((spec) => [spec.id, spec.title, spec.state, spec.sessionId]),
+      [[SPEC, "报销单可以撤回", "open", sessionId]],
+    );
+    assert.match(specs[0]!.body, /提交之后改不了。/);
 
-      const tickets = await after.listProductTickets(productId);
-      assert.deepEqual(
-        tickets.map((one) => [one.id, one.title, one.label, one.state, one.blockedBy]),
-        [
-          [FIRST, "撤回接口", "ready-for-agent", "closed", []],
-          [SECOND, "撤回按钮", "needs-info", "open", [FIRST]],
-        ],
-      );
-      // 改正文改的就是那一张票。
-      assert.match(tickets[0]!.body, /重复撤回回 409/);
-      // 评论记在写它的那个会话名下。
-      assert.deepEqual(
-        (await after.listProductTicketComments(SECOND)).map((one) => [one.body, one.sessionId]),
-        [["财务确认了只有草稿态能撤回。", sessionId]],
-      );
-      // 打回的那两条一条边都没加上,别的产品那张票也没被牵进来。
-      assert.deepEqual((await after.getProductTicket(FOREIGN_TICKET))?.blockedBy, []);
-      assert.equal((await after.listProductSpecs(foreignProductId)).length, 1);
-    } finally {
-      await after.close();
-    }
+    const tickets = await after.listProductTickets(productId);
+    assert.deepEqual(
+      tickets.map((one) => [one.id, one.title, one.label, one.state, one.blockedBy]),
+      [
+        [FIRST, "撤回接口", "ready-for-agent", "closed", []],
+        [SECOND, "撤回按钮", "needs-info", "open", [FIRST]],
+      ],
+    );
+    // 改正文改的就是那一张票。
+    assert.match(tickets[0]!.body, /重复撤回回 409/);
+    // 评论记在写它的那个会话名下。
+    assert.deepEqual(
+      (await after.listProductTicketComments(SECOND)).map((one) => [one.body, one.sessionId]),
+      [["财务确认了只有草稿态能撤回。", sessionId]],
+    );
+    // 打回的那两条一条边都没加上,别的产品那张票也没被牵进来。
+    assert.deepEqual((await after.getProductTicket(FOREIGN_TICKET))?.blockedBy, []);
+    assert.equal((await after.listProductSpecs(foreignProductId)).length, 1);
 
     // 两次打回各自的理由在记录表里的工具结果上,打回走的是正常返回。
     const results = (await records(h, cookie, sessionId))
@@ -789,18 +773,14 @@ test("开放对话:grill 得到提问轮次,收成 spec 写进 tracker,写文件
     assert.equal((await send(h, cookie, sessionId, "c2", "收成 spec")).status, 202);
     await idle(h, cookie, sessionId);
     const store = openStore(h.db.url);
-    try {
-      assert.deepEqual(
-        (await store.listProductSpecs(productId)).map((spec) => [spec.id, spec.title, spec.sessionId]),
-        [[SPEC, "报销单可以撤回", sessionId]],
-      );
-      assert.deepEqual(
-        (await store.listProductTickets(productId)).map((one) => [one.id, one.title, one.label]),
-        [[TICKET, "撤回接口", "ready-for-agent"]],
-      );
-    } finally {
-      await store.close();
-    }
+    assert.deepEqual(
+      (await store.listProductSpecs(productId)).map((spec) => [spec.id, spec.title, spec.sessionId]),
+      [[SPEC, "报销单可以撤回", sessionId]],
+    );
+    assert.deepEqual(
+      (await store.listProductTickets(productId)).map((one) => [one.id, one.title, one.label]),
+      [[TICKET, "撤回接口", "ready-for-agent"]],
+    );
 
     // 写文件那一次:`write` 一开始就没注册,调用它拿回的是一条错误的工具结果。
     assert.equal((await send(h, cookie, sessionId, "c3", "顺手写份笔记进仓库")).status, 202);
@@ -1009,11 +989,7 @@ test("提问轮次:一轮题落成新种类条目、回合就地收尾转空闲,
     );
     // 条目接在这次工具调用后面:主进程直接落库会让它成旁支,重建时被算成「不在上下文」。
     const store = openStore(h.db.url);
-    try {
-      assert.equal(agentSessionContextGap(await store.agentSessionEntryLinks(sessionId)), 0);
-    } finally {
-      await store.close();
-    }
+    assert.equal(agentSessionContextGap(await store.agentSessionEntryLinks(sessionId)), 0);
 
     // 整轮答案作一条用户消息回来,会话接着跑。
     assert.equal((await send(h, cookie, sessionId, "c2", ROUND_ANSWER)).status, 202);

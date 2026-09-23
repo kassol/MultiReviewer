@@ -68,12 +68,8 @@ async function productWithRepos(
   // 归属行直接落库:走归入端点在第二个仓库上会自己开一场梳理(issue #347),这几例压的是
   // 发消息。
   const store = openStore(h.db.url);
-  try {
-    for (const repoId of repoIds) {
-      assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
-    }
-  } finally {
-    await store.close();
+  for (const repoId of repoIds) {
+    assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
   }
   return product.id;
 }
@@ -114,27 +110,23 @@ async function queueOf(
 /** 直接往记录表里落一条(ADR 0031)。这几条用例要的是用量累加,不是子进程。 */
 async function seedEntry(databaseUrl: string, sessionId: number, usage: Partial<ReviewerUsage>): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    const full: ReviewerUsage = {
-      inputTokens: usage.inputTokens ?? 0,
-      outputTokens: usage.outputTokens ?? 0,
-      cacheReadTokens: usage.cacheReadTokens ?? 0,
-      cacheWriteTokens: usage.cacheWriteTokens ?? 0,
-      totalTokens:
-        (usage.inputTokens ?? 0) +
-        (usage.outputTokens ?? 0) +
-        (usage.cacheReadTokens ?? 0) +
-        (usage.cacheWriteTokens ?? 0),
-    };
-    await store.appendAgentSessionEntry(sessionId, {
-      type: "message",
-      at: AT,
-      entry: { type: "message", id: `seeded-${full.totalTokens}`, timestamp: AT },
-      usage: full,
-    });
-  } finally {
-    await store.close();
-  }
+  const full: ReviewerUsage = {
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    cacheReadTokens: usage.cacheReadTokens ?? 0,
+    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+    totalTokens:
+      (usage.inputTokens ?? 0) +
+      (usage.outputTokens ?? 0) +
+      (usage.cacheReadTokens ?? 0) +
+      (usage.cacheWriteTokens ?? 0),
+  };
+  await store.appendAgentSessionEntry(sessionId, {
+    type: "message",
+    at: AT,
+    entry: { type: "message", id: `seeded-${full.totalTokens}`, timestamp: AT },
+    usage: full,
+  });
 }
 
 test("会话根只挂创建者有分配的仓库:产品里别的仓库不出现", async () => {
@@ -148,16 +140,12 @@ test("会话根只挂创建者有分配的仓库:产品里别的仓库不出现"
   const admin = await createSession(h, h.cookie, productId);
 
   const store = openStore(h.db.url);
-  try {
-    const names = async (sessionId: number): Promise<string[]> =>
-      (await agentSessionRepos(h.db.url, (await store.getAgentSession(sessionId))!)).map(
-        (repo) => `${repo.owner}/${repo.repo}`,
-      );
-    assert.deepEqual(await names(mine), ["acme/widgets"]);
-    assert.deepEqual(await names(admin), ["acme/alpha", "acme/widgets"]);
-  } finally {
-    await store.close();
-  }
+  const names = async (sessionId: number): Promise<string[]> =>
+    (await agentSessionRepos(store, (await store.getAgentSession(sessionId))!)).map(
+      (repo) => `${repo.owner}/${repo.repo}`,
+    );
+  assert.deepEqual(await names(mine), ["acme/widgets"]);
+  assert.deepEqual(await names(admin), ["acme/alpha", "acme/widgets"]);
 });
 
 /**
@@ -330,7 +318,6 @@ test("服务正在排空:发消息回 503,不起新的子进程", async () => {
   // 受理判在这道闸之后:排空结束、服务起回来之后,人重发的还是同一条消息。
   const store = openStore(h.db.url);
   assert.equal(await store.acceptedAgentSessionMessage(sessionId, "c1"), undefined);
-  await store.close();
 });
 
 test("同一个客户端消息 id 重发回原受理结果,另一个 id 在执行中进队列", async () => {
@@ -660,7 +647,6 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
     purpose: "product-survey",
     createdAt: AT,
   })).id;
-  await store0.close();
   await refused((await updateBaseline(h, h.cookie, survey)), 403, "只有会话的创建者能做");
   // 会话里没有这个仓库的会话基点(创建者没有 alpha 的仓库分配)。
   await refused(
@@ -679,7 +665,6 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
   // 有排队的消息(回收时落库的那一种):等它投出去再更新。
   const store = openStore(h.db.url);
   await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: "再补一句" }]);
-  await store.close();
   const busy = "会话在跑或还有排队的消息,等它空闲再更新基点";
   await refused((await updateBaseline(h, owner, sessionId)), 409, busy);
   await unchanged();

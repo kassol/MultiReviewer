@@ -99,7 +99,6 @@ async function seedRun(
       ...(v.missing === true ? { missing: "no-verdict" as const } : {}),
     })),
   );
-  await store.close();
   return runId;
 }
 
@@ -288,7 +287,6 @@ test("重跑:注册仓库触发新 Review Run,同一 head commit 重复审合法
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30 });
-  await store.close();
   assert.equal(runs.length, 2);
   assert.equal(runs[0]!.pullNumber, HARNESS_PR.number);
   assert.deepEqual(
@@ -311,7 +309,6 @@ test("投递触发的 Review Run 不写调用者快照", async () => {
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30 });
-  await store.close();
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.triggeredBy, null);
 });
@@ -378,7 +375,6 @@ test("重跑:PR 号读不到 404,不开跑", async () => {
   assert.equal(rerun.status, 404);
   const store = openStore(h.db.url);
   assert.equal((await store.listRuns({ limit: 30 })).length, 0);
-  await store.close();
 });
 
 test("重跑:模型覆盖生效,经 buildReviewers 构建", async () => {

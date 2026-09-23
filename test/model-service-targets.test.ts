@@ -118,38 +118,34 @@ async function seedBuiltin(
 ): Promise<void> {
   const at = "2026-09-05T00:00:00.000Z";
   const store = openStore(h.db.url);
-  try {
-    assert.equal(await store.commitModelServiceVersion(null, {
-      provider: PROVIDER,
-      type: "builtin",
-      baseUrl: null,
-      api: null,
-      targetFingerprint: input.targetFingerprint,
-      ...(input.targets === undefined ? {} : { targets: input.targets }),
-      disabledReason: null,
-      createdAt: at,
+  assert.equal(await store.commitModelServiceVersion(null, {
+    provider: PROVIDER,
+    type: "builtin",
+    baseUrl: null,
+    api: null,
+    targetFingerprint: input.targetFingerprint,
+    ...(input.targets === undefined ? {} : { targets: input.targets }),
+    disabledReason: null,
+    createdAt: at,
+    updatedAt: at,
+    credential: {
+      state: "verified",
+      apiKeyEncrypted: encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, input.credential),
       updatedAt: at,
-      credential: {
-        state: "verified",
-        apiKeyEncrypted: encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, input.credential),
-        updatedAt: at,
-        verifiedAt: at,
-        validationModel: modelIdentity({ provider: PROVIDER, model: input.automaticModels[0]?.id ?? "x" }),
-        verificationSource: "inference",
-      },
-      directory: {
-        state: "available",
-        lastAttemptAt: at,
-        lastSuccessAt: at,
-        failure: null,
-        ignoredModelCount: 0,
-      },
-      automaticModels: input.automaticModels,
-      supplements: input.supplements ?? [],
-    }), 1);
-  } finally {
-    await store.close();
-  }
+      verifiedAt: at,
+      validationModel: modelIdentity({ provider: PROVIDER, model: input.automaticModels[0]?.id ?? "x" }),
+      verificationSource: "inference",
+    },
+    directory: {
+      state: "available",
+      lastAttemptAt: at,
+      lastSuccessAt: at,
+      failure: null,
+      ignoredModelCount: 0,
+    },
+    automaticModels: input.automaticModels,
+    supplements: input.supplements ?? [],
+  }), 1);
 }
 
 type ProjectedModel = {
@@ -222,7 +218,6 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
     const setFingerprint = modelServiceTargetSetFingerprint(expectedTargets);
     let store = openStore(h.db.url);
     let record = (await store.getModelService(PROVIDER))!;
-    await store.close();
     assert.equal(record.version, 1);
     assert.deepEqual(record.targets?.map(({ api, baseUrl }) => ({ api, baseUrl })), expectedTargets);
     assert.equal(record.targetFingerprint, setFingerprint);
@@ -242,7 +237,6 @@ test("混合协议目录:预览、验证、版本提交、投影与运行计划�
     assert.equal(stub.calls[1]!.bearer, `Bearer ${credential}`);
     store = openStore(h.db.url);
     record = (await store.getModelService(PROVIDER))!;
-    await store.close();
     assert.equal(record.version, 2);
     assert.deepEqual(record.targets?.map(({ api, baseUrl }) => ({ api, baseUrl })), expectedTargets);
     assert.equal(record.targetFingerprint, setFingerprint);
@@ -309,7 +303,6 @@ test("旧格式内置版本只延续指纹能证明的那一个目标;证明不�
   });
   const store = openStore(proven.db.url);
   assert.equal((await store.getModelService(PROVIDER))!.targets, null, "夹具必须是没有目标集合的旧格式版本");
-  await store.close();
 
   const projected = await projectedService(proven);
   assert.equal(projected.credential.state, "verified");
@@ -424,7 +417,6 @@ test("真实目标变化后:目录刷新不改绑,新目标的模型待验证;�
       }),
       true,
     );
-    await store.close();
 
     const reverify = await h.api("POST", `/model-services/${PROVIDER}/reverify`, {
       validationModel: ANTHROPIC_MODEL,
@@ -467,7 +459,6 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(stub.calls.length, 0);
     let store = openStore(mixed.db.url);
     assert.equal((await store.getModelService(PROVIDER))!.version, 1);
-    await store.close();
 
     // 目录里它自己那一行的目标:验证打到 Anthropic 端点,补录绑的就是那一个目标。
     const own = await mixed.api("POST", `/model-services/${PROVIDER}/supplements`, {
@@ -478,7 +469,6 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(stub.calls[0]!.url, "https://openrouter.ai/api/v1/messages?beta=true");
     store = openStore(mixed.db.url);
     let record = (await store.getModelService(PROVIDER))!;
-    await store.close();
     assert.equal(record.version, 2);
     assert.equal(
       record.supplements.find((entry) => entry.model === ANTHROPIC_MODEL)!.targetFingerprint,
@@ -495,7 +485,6 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(stub.calls[1]!.body?.["model"], PI_TABLE_MODEL);
     store = openStore(mixed.db.url);
     record = (await store.getModelService(PROVIDER))!;
-    await store.close();
     assert.equal(
       record.supplements.find((entry) => entry.model === PI_TABLE_MODEL)!.targetFingerprint,
       modelServiceTargetFingerprint(OPENAI_TARGET.baseUrl, OPENAI_TARGET.api),
@@ -527,7 +516,6 @@ test("模型补录:优先该模型可确认的目标,单目标可沿用,混合�
     assert.equal(singleStub.calls[0]!.body?.["model"], "unknown/model");
     const store = openStore(single.db.url);
     const record = (await store.getModelService(PROVIDER))!;
-    await store.close();
     assert.equal(
       record.supplements.find((entry) => entry.model === "unknown/model")!.targetFingerprint,
       modelServiceTargetFingerprint(OPENAI_TARGET.baseUrl, OPENAI_TARGET.api),

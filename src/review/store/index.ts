@@ -2493,7 +2493,6 @@ type SyncStore = {
     pullNumber: number,
     state: string | null,
   ): void;
-  close(): void;
 };
 
 /**
@@ -2568,9 +2567,9 @@ export type RepoFinding = {
 };
 
 /**
- * 进程内按连接串共用的连接池(ADR 0036)。`openStore` 每次给回一份门面,底下永远是同一个池
- * ——「每请求开一次库、用完关掉」的形状到此退役,`(await store.close())` 因此也不再关任何东西。
- * 池由 `closeStorePools()` 关:服务退出时一次,测试每个文件收尾时一次。
+ * 进程内按连接串共用的连接池(ADR 0036)。`openStore` 每次给回一份门面,底下永远是同一个池;
+ * 服务在启动时建一份 store,经依赖注入传下去(issue #460)。池由 `closeStorePools()` 关:
+ * 服务退出时一次,测试每个文件收尾时一次。
  */
 const pools = new Map<string, PgPool>();
 
@@ -2621,10 +2620,6 @@ export function openStore(databaseUrl: string): Store {
     ...knowledgeMethods(ctx),
     ...productsMethods(ctx),
     ...sessionsMethods(ctx),
-
-    // 连接池活到进程结束,这里不关任何东西(ADR 0036)。调用点仍留着:它们标着「这一段用完
-    // 了」,而池的关闭是 `closeStorePools()` 的事。
-    async close() {},
   };
   return store;
 }

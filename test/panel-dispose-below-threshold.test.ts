@@ -54,58 +54,54 @@ async function seedStage(
   findings: readonly SeedFinding[],
 ): Promise<void> {
   const store = openStore(h.db.url);
-  try {
-    const runId = await store.startRun({
-      owner: ref.owner,
-      repo: ref.repo,
-      pullNumber: ref.pullNumber,
-      headSha: `sha-${ref.owner}-${ref.repo}-${ref.pullNumber}`,
-      startedAt: "2026-09-01T00:00:00.000Z",
-      changedFiles: 1,
-      changedLines: 1,
-      batchCount: 1,
-      reviewerPins: [],
-    });
-    await store.finishRun(runId, {
-      finishedAt: "2026-09-01T00:00:01.000Z",
-      durationMs: 1,
-      failed: false,
-      outcomes: [],
-      findings: findings.map((finding, index) => ({
-        file: finding.file,
-        line: finding.line,
-        title: `${finding.severity} 的那条`,
-        severity: finding.severity,
-        category: "bug" as const,
-        description: `${finding.file}:${finding.line}`,
-        impact: "",
-        suggestion: "",
-        attributions: [
-          {
-            model: HARNESS_SPEC.model,
-            severity: finding.severity,
-            category: "bug" as const,
-            description: `${finding.file}:${finding.line}`,
-            impact: "",
-            suggestion: "",
-          },
-        ],
-        groupIndex: index,
-        disposition: finding.disposition ?? "unknown",
-        placement: (finding.carrier === false ? "body" : "inline") as "body" | "inline",
-        fingerprint: `fp-${ref.repo}-${index}`,
-        ...(finding.carrier === false
-          ? {}
-          : {
-              commentId: `comment-${ref.repo}-${index}`,
-              commentHtmlUrl: `https://forge.invalid/pulls/${ref.pullNumber}/files#comment-${index}`,
-            }),
-      })),
-      verdicts: [],
-    });
-  } finally {
-    await store.close();
-  }
+  const runId = await store.startRun({
+    owner: ref.owner,
+    repo: ref.repo,
+    pullNumber: ref.pullNumber,
+    headSha: `sha-${ref.owner}-${ref.repo}-${ref.pullNumber}`,
+    startedAt: "2026-09-01T00:00:00.000Z",
+    changedFiles: 1,
+    changedLines: 1,
+    batchCount: 1,
+    reviewerPins: [],
+  });
+  await store.finishRun(runId, {
+    finishedAt: "2026-09-01T00:00:01.000Z",
+    durationMs: 1,
+    failed: false,
+    outcomes: [],
+    findings: findings.map((finding, index) => ({
+      file: finding.file,
+      line: finding.line,
+      title: `${finding.severity} 的那条`,
+      severity: finding.severity,
+      category: "bug" as const,
+      description: `${finding.file}:${finding.line}`,
+      impact: "",
+      suggestion: "",
+      attributions: [
+        {
+          model: HARNESS_SPEC.model,
+          severity: finding.severity,
+          category: "bug" as const,
+          description: `${finding.file}:${finding.line}`,
+          impact: "",
+          suggestion: "",
+        },
+      ],
+      groupIndex: index,
+      disposition: finding.disposition ?? "unknown",
+      placement: (finding.carrier === false ? "body" : "inline") as "body" | "inline",
+      fingerprint: `fp-${ref.repo}-${index}`,
+      ...(finding.carrier === false
+        ? {}
+        : {
+            commentId: `comment-${ref.repo}-${index}`,
+            commentHtmlUrl: `https://forge.invalid/pulls/${ref.pullNumber}/files#comment-${index}`,
+          }),
+    })),
+    verdicts: [],
+  });
 }
 
 /** 直接落一行注册表:这几条用例要的是仓库存在,不是它的 hook。 */
@@ -177,25 +173,21 @@ async function scopedCookie(
   repoIds?: readonly number[],
 ): Promise<string> {
   const store = openStore(h.db.url);
-  try {
-    const role = await store.createPanelRole({
-      name: `角色-${username}`,
-      permissions: [...permissions],
-      createdAt: "2026-09-01T00:00:00.000Z",
-    });
-    await store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: HASH,
-      mustChangePassword: false,
-      createdAt: "2026-09-01T00:00:00.000Z",
-      isSystemAdmin: false,
-      roleId: role.id,
-    });
-    if (repoIds !== undefined) await store.setPanelUserAssignment(username, [...repoIds]);
-  } finally {
-    await store.close();
-  }
+  const role = await store.createPanelRole({
+    name: `角色-${username}`,
+    permissions: [...permissions],
+    createdAt: "2026-09-01T00:00:00.000Z",
+  });
+  await store.createPanelUser({
+    username,
+    displayName: null,
+    passwordHash: HASH,
+    mustChangePassword: false,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: role.id,
+  });
+  if (repoIds !== undefined) await store.setPanelUserAssignment(username, [...repoIds]);
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },

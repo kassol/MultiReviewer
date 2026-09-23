@@ -27,13 +27,12 @@ async function startPanel(options: { empty?: boolean; now?: () => number } = {})
       isSystemAdmin: true,
       roleId: null,
     });
-    await store.close();
   }
   const server = await createWebhookServer({
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     dataDir: db.dataDir,
     bootstrapSecret: "bootstrap-test",
     baseUrl: "https://reviewer.example.test",

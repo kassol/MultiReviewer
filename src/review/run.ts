@@ -76,7 +76,6 @@ import {
 } from "./position.ts";
 import {
   DEFAULT_MIN_REPORT_SEVERITY,
-  openStore,
   runFailureText,
   type ContinuationCandidate,
   type DispositionUpdate,
@@ -193,8 +192,7 @@ export type ReviewRunDeps = {
   reviewers: readonly Reviewer[];
   /** 工作副本的缓存根目录,按仓库分子目录。 */
   cacheDir: string;
-  /** 数据库连接串。 */
-  databaseUrl: string;
+  store: Store;
   /**
    * 这一轮的注册表仓库 id(issue #273)。给了它才取得到仓库级的最低报告等级覆盖;
    * 不传即只按全局阈值跑。
@@ -2019,18 +2017,12 @@ export async function runReview(
 
   // 续跑那一轮的已落库状态(issue #248)。读在准备工作副本与加 👀 之前(issue #248 的
   // 评审复核):续不了的旧行到这里就退回改判,不必先白克隆一份工作副本、也不必在 PR
-  // 上挂一只随后要撤掉的眼睛。句柄用完即还——真正的编排还在下面另开一份。
+  // 上挂一只随后要撤掉的眼睛。
   const resumeRunId = deps.resumeRunId;
   // 走到核对那一步的续跑状态,计划一定在(issue #253):没有计划的轮次在这里就退回改判。
   let resume: (ResumeState & { plan: string[][] }) | undefined;
   if (resumeRunId !== undefined) {
-    const resumeStore = openStore(deps.databaseUrl);
-    let stored: ResumeState | undefined;
-    try {
-      stored = await resumeStore.resumeState(resumeRunId);
-    } finally {
-      await resumeStore.close();
-    }
+    const stored = await deps.store.resumeState(resumeRunId);
     // 快照不在(轮次已不在库里,或它是升级前落的旧行)就没有「与原轮各批一致的历史」
     // 可给,续跑到此为止。
     if (stored?.history === undefined) {
@@ -2087,20 +2079,7 @@ export async function runReview(
     // 行作者判定还要 hunk 内的改动位置(issue #241):落点是上下文行时取最近的那一处。
     const diffHunks = parseDiffHunks(diff);
 
-    // 句柄的存活期覆盖整段审查(时长没有总上限,兜底的是子进程那道连续静默闸,
-    // 见 `reviewer/subprocess.ts`),中途出错必须归还:webhook 服务是长跑进程,
-    // 泄漏的连接会一次次攒下来。
-    const store = openStore(deps.databaseUrl);
-    // 从这里到 `startRun` 之间的每一处抛(读历史、只复核过滤成空、分批、落库)都在下面
-    // 那个 `finally` 盖不到的地方,句柄在这一段里统一归还。
-    const opened = async <T>(step: () => T | Promise<T>): Promise<T> => {
-      try {
-        return await step();
-      } catch (error) {
-        await store.close();
-        throw error;
-      }
-    };
+    const { store } = deps;
 
     const stageScope: StageScope =
       deps.rangeReviewId === undefined
@@ -2113,7 +2092,7 @@ export async function runReview(
     // 续跑不做:它接着跑的是原来那一轮,位置在那一轮开跑时已经定过(issue #248)。
     const relocations =
       resume === undefined
-        ? await opened(() => relocateHistory(store, stageScope, worktree.path))
+        ? await relocateHistory(store, stageScope, worktree.path)
         : [];
     const relocatedLines = new Map(relocations.map((one) => [one.findingId, one.line]));
 
@@ -2124,12 +2103,10 @@ export async function runReview(
     // 拿到的历史仍与原轮各批一致。
     let history: readonly HistoryFinding[] =
       resume?.history ??
-      (await opened(async () =>
-        (await store.stageHistory(stageScope)).map((entry) => ({
-          ...entry,
-          line: relocatedLines.get(entry.id) ?? entry.line,
-        })),
-      ));
+      (await store.stageHistory(stageScope)).map((entry) => ({
+        ...entry,
+        line: relocatedLines.get(entry.id) ?? entry.line,
+      }));
 
     // 所在文件不在本轮可审文件集里的未处置历史,开跑就地自动处置(issue #272):它们
     // 谁都复核不到,不处置就永远悬在未处置列表里。判据用的是过滤之前的那份可审文件集,
@@ -2140,14 +2117,9 @@ export async function runReview(
     // 「已修复」按过期的 unresolved 降级回未处置。
     const resolvedByAbsence = new Set<string>();
     if (absent.length > 0) {
-      try {
-        const done = await disposeAbsentHistory(forge, event, store, absent);
-        disposedByAbsence = done.disposed;
-        for (const commentId of done.commentIds) resolvedByAbsence.add(commentId);
-      } catch (error) {
-        await store.close();
-        throw error;
-      }
+      const done = await disposeAbsentHistory(forge, event, store, absent);
+      disposedByAbsence = done.disposed;
+      for (const commentId of done.commentIds) resolvedByAbsence.add(commentId);
       // 处置成功的不再是未处置历史:它不进快照、不注入、也不再被要结论。写 Forge 失败的
       // 照现有规则原样留下,由人处置。
       const closed = new Set([...disposedByAbsence.deleted, ...disposedByAbsence.reverted]);
@@ -2155,29 +2127,24 @@ export async function runReview(
     }
     // 本轮的最低报告等级(issue #271)在开跑这一刻读一次:之后改设置追不上已经开跑的
     // 这一轮,与分批上限那几项同律。它随轮次落库,续跑据它核对阈值有没有改过。
-    const minReportSeverity = await opened(() =>
-      effectiveMinReportSeverity(store, deps.repoId),
-    );
+    const minReportSeverity = await effectiveMinReportSeverity(store, deps.repoId);
 
     // 这个仓库归在哪个产品下(CONTEXT.md 产品,issue #362)。目录在开跑这一刻算一次,
     // 每一批注入同一份;条目的正文不预读——`query_knowledge` 按名字现取,产品页上刚写下
     // 的那一条因此当轮就读得到(写下即生效,ADR 0035)。仓库不属于任何产品即 undefined,
     // 那时 Reviewer 的请求形状与这一票之前逐字一致。
-    const productId = await opened(async () =>
+    const productId =
       deps.repoId === undefined
         ? undefined
         : (await store.listProducts()).find((one) =>
             one.repos.some((row) => row.repoId === deps.repoId),
-          )?.id,
-    );
-    const productKnowledge: ProductKnowledgeContents | undefined = await opened(async () => {
-      if (productId === undefined) return undefined;
-      const contents = productKnowledgeContents(await store.listProductKnowledge(productId));
-      return knowledgeContentsEmpty(contents) ? undefined : contents;
-    });
+          )?.id;
+    const contents =
+      productId === undefined ? undefined : productKnowledgeContents(await store.listProductKnowledge(productId));
+    const productKnowledge: ProductKnowledgeContents | undefined =
+      contents === undefined || knowledgeContentsEmpty(contents) ? undefined : contents;
     /**
-     * Reviewer 子进程的一次 `query_knowledge`(issue #362)。库的句柄在这一侧,整段审查都
-     * 开着;产品层按名字取整条、`relationships` 为真时整段取仓库关系,不封顶——按名字问,
+     * Reviewer 子进程的一次 `query_knowledge`(issue #362)。库在这一侧;产品层按名字取整条、`relationships` 为真时整段取仓库关系,不封顶——按名字问,
      * 问几个回几条。仓库层在这一侧恒为空:评审规则与项目事实已经整段注入了本批提示。
      */
     const queryKnowledge = async (
@@ -2212,9 +2179,7 @@ export async function runReview(
       range.files = range.files.filter((file) => withOpenHistory.has(file));
       // 一轮什么都不做的 Review Run 不该被开出来:落库之前抛,接口层据这句话转 409。
       if (range.files.length === 0) {
-        await opened(() => {
-          throw new Error(VERDICT_ONLY_NO_HISTORY);
-        });
+        throw new Error(VERDICT_ONLY_NO_HISTORY);
       }
     }
 
@@ -2242,13 +2207,11 @@ export async function runReview(
         deps.reviewers,
       );
       if (reason !== undefined) {
-        await opened(() => {
-          throw new Error(`${RESUME_NOT_VIABLE}:${reason}`);
-        });
+        throw new Error(`${RESUME_NOT_VIABLE}:${reason}`);
       }
     }
 
-    const runId = resumeRunId ?? (await opened(() => store.startRun({
+    const runId = resumeRunId ?? (await store.startRun({
       owner: event.owner,
       repo: event.repo,
       pullNumber: event.number,
@@ -2286,13 +2249,13 @@ export async function runReview(
       // 开跑时解析出的辅助模型随这一轮冻结(issue #304):合并 agent 用的就是它,
       // 之后改配置追不上这一轮,续跑读这一行而不重新解析。
       auxiliaryModel: deps.auxiliaryModel ?? null,
-    })));
+    }));
 
     // 重定位落库(issue #368):紧接 `startRun` 写下,不是同一笔——两次写入之间崩溃,这一
     // 轮的位置就缺失,下一轮开跑时按内容指纹重算补回。这一步不建行、不写评论、不写复核
     // 结论、不写处置——它只回答「这条 Finding 此刻在哪一行」。
     if (relocations.length > 0) {
-      await opened(() => store.recordFindingRelocations(runId, relocations));
+      await store.recordFindingRelocations(runId, relocations);
     }
 
     // 一有 runId 就可以接受订阅(ADR 0017):面板打开进行中的轮次时要能接上实时推送,
@@ -3053,13 +3016,12 @@ export async function runReview(
         inlineCount: publishFailure === undefined ? comments.length : 0,
       };
     } finally {
-      // 排在前面的轨迹事件先落完(issue #447):写入口把落库排成一条链,不等它就会连同
-      // 关库一起把还没落的那几条丢掉,订阅者也会先收到结束信号再收到事件。
+      // 排在前面的轨迹事件先落完(issue #447):写入口把落库排成一条链,不等它订阅者就会
+      // 先收到结束信号再收到事件。
       await trace.settle();
       // 订阅者一定要收到结束信号:成功、失败、中途抛异常都要,否则页面会一直等下去。
       // 抛异常那一档没有 `run_finished` 落库——这一轮确实没跑完,轨迹照实停在崩溃前。
       endTrace(runChannel(runId));
-      await store.close();
       // 「正在审查」一定要撤掉:成功、失败、中途抛异常都要。留着它 PR 上会永远挂着
       // 一只眼睛,看起来像审查卡死了。
       await tryReaction(() => forge.removeReaction(event, "eyes"));

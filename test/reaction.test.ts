@@ -10,6 +10,7 @@ import { test } from "node:test";
 import type { Forge } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge, scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -37,7 +38,7 @@ async function harness() {
     changedFiles: [{ path: "src/a.ts", status: "modified" }],
   });
 
-  return { repo, forge, deps: { cacheDir: cache.dir, databaseUrl: db.url } };
+  return { repo, forge, deps: { cacheDir: cache.dir, store: openStore(db.url) } };
 }
 
 const FINDING = {

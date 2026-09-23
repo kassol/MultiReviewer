@@ -35,7 +35,6 @@ import { defaultBranchHead, prepareWorktree, type Worktree } from "../git/worktr
 import type { ReviewerUsage } from "../review/finding.ts";
 import { scopesOverlap } from "../review/run.ts";
 import {
-  openStore,
   type AgentSessionBaseline,
   type AgentSessionEntryLink,
   type AgentSessionRecord,
@@ -43,6 +42,7 @@ import {
   type ProductKnowledgeEntry,
   type ProductRepoRecord,
   type RepoFindingQuery,
+  type Store,
 } from "../review/store/index.ts";
 import {
   agentSessionChannel,
@@ -74,7 +74,7 @@ const WORKER_PATH = fileURLToPath(new URL("../reviewer/session-worker.ts", impor
 
 /** 运行时要的那几样。`forge` 取 Gitea 那一个(ADR 0014)。 */
 export type AgentSessionRuntimeDeps = {
-  databaseUrl: string;
+  store: Store;
   cacheDir: string;
   forge: Forge;
   now: () => number;
@@ -93,7 +93,7 @@ export type AgentSessionRuntimeDeps = {
  * 请求-回应)不起子进程、不取代码,因此不要整份运行时依赖——没配 Forge 的部署里它们照样
  * 落得下去。
  */
-export type AgentSessionRecordDeps = Pick<AgentSessionRuntimeDeps, "databaseUrl" | "now">;
+export type AgentSessionRecordDeps = Pick<AgentSessionRuntimeDeps, "store" | "now">;
 
 /** 这次开跑用的辅助模型(ADR 0029)。解析在 server.ts 那一处,运行时只认结论。 */
 export type AgentSessionModel = {
@@ -247,17 +247,12 @@ export function agentSessionStatus(sessionId: number): AgentSessionStatus {
  *
  */
 export async function agentSessionQueue(
-  databaseUrl: string,
+  store: Store,
   sessionId: number,
 ): Promise<readonly AgentSessionQueuedMessage[]> {
   const entry = registry.get(sessionId);
   if (entry !== undefined) return entry.queue;
-  const store = openStore(databaseUrl);
-  try {
-    return (await store.listAgentSessionPendingMessages(sessionId)).map(queuedMessage);
-  } finally {
-    await store.close();
-  }
+  return (await store.listAgentSessionPendingMessages(sessionId)).map(queuedMessage);
 }
 
 /** 库里那一行排队消息换成运行时的形状。模式那一格在库里是字符串,在这里收口。 */
@@ -284,25 +279,20 @@ function queuedMessage(message: {
  *
  */
 export async function agentSessionRepos(
-  databaseUrl: string,
+  store: Store,
   session: Pick<AgentSessionRecord, "productId" | "createdBy" | "purpose">,
 ): Promise<ProductRepoRecord[]> {
-  const store = openStore(databaseUrl);
-  try {
-    const product = await store.getProduct(session.productId);
-    if (product === undefined) return [];
-    // 产品梳理读产品的全部仓库(CONTEXT.md 产品梳理):梳理的正是这个产品整体是什么、它的
-    // 仓库之间怎么协作,少一个仓库这一场就看不全。开这一场要的是产品里的一个仓库分配,不是
-    // 每一个仓库的分配(`server.ts` 的那道门禁)。
-    if (session.purpose === "product-survey") return product.repos;
-    const user = (await store.listPanelUsers()).find((row) => row.username === session.createdBy);
-    if (user === undefined) return [];
-    if (user.isSystemAdmin) return product.repos;
-    const assigned = new Set(user.repoIds);
-    return product.repos.filter((repo) => assigned.has(repo.repoId));
-  } finally {
-    await store.close();
-  }
+  const product = await store.getProduct(session.productId);
+  if (product === undefined) return [];
+  // 产品梳理读产品的全部仓库(CONTEXT.md 产品梳理):梳理的正是这个产品整体是什么、它的
+  // 仓库之间怎么协作,少一个仓库这一场就看不全。开这一场要的是产品里的一个仓库分配,不是
+  // 每一个仓库的分配(`server.ts` 的那道门禁)。
+  if (session.purpose === "product-survey") return product.repos;
+  const user = (await store.listPanelUsers()).find((row) => row.username === session.createdBy);
+  if (user === undefined) return [];
+  if (user.isSystemAdmin) return product.repos;
+  const assigned = new Set(user.repoIds);
+  return product.repos.filter((repo) => assigned.has(repo.repoId));
 }
 
 /** 仓库 id → `<owner>/<repo>`:产品知识的仓库集合交给子进程与模型时都要这一步。 */
@@ -320,13 +310,8 @@ function repoIdByName(repos: readonly ProductRepoRecord[]): Map<string, number> 
  * `boot` 里现算:改名在下次重建时生效。产品没了即空串——那时会话一个仓库也读不到,消息
  * 根本发不出来。
  */
-async function productHeading(databaseUrl: string, productId: number): Promise<string> {
-  const store = openStore(databaseUrl);
-  try {
-    return (await store.getProduct(productId))?.name ?? "";
-  } finally {
-    await store.close();
-  }
+async function productHeading(store: Store, productId: number): Promise<string> {
+  return (await store.getProduct(productId))?.name ?? "";
 }
 
 /**
@@ -352,15 +337,10 @@ function toSessionKnowledge(entry: ProductKnowledgeEntry): SessionProductKnowled
  * 产品名同律在 `boot` 里现算:一轮里刚写下的一条,下次重建就看得到。
  */
 async function activeProductKnowledge(
-  databaseUrl: string,
+  store: Store,
   productId: number,
 ): Promise<SessionProductKnowledge[]> {
-  const store = openStore(databaseUrl);
-  try {
-    return (await store.listProductKnowledge(productId)).map(toSessionKnowledge);
-  } finally {
-    await store.close();
-  }
+  return (await store.listProductKnowledge(productId)).map(toSessionKnowledge);
 }
 
 /**
@@ -370,15 +350,10 @@ async function activeProductKnowledge(
  * 会让人在等答题的间隙又开起第二场,两场问的是同一批问题、写的是同一批条目。
  *
  */
-export async function productSurveyIncomplete(databaseUrl: string, productId: number): Promise<boolean> {
-  const store = openStore(databaseUrl);
-  try {
-    return (await store.listAgentSessions(productId, null)).some(
-      (session) => session.purpose === "product-survey" && session.completedAt === null,
-    );
-  } finally {
-    await store.close();
-  }
+export async function productSurveyIncomplete(store: Store, productId: number): Promise<boolean> {
+  return (await store.listAgentSessions(productId, null)).some(
+    (session) => session.purpose === "product-survey" && session.completedAt === null,
+  );
 }
 
 /**
@@ -391,12 +366,8 @@ export async function completeProductSurvey(
   deps: AgentSessionRecordDeps,
   session: AgentSessionRecord,
 ): Promise<void> {
-  const store = openStore(deps.databaseUrl);
-  try {
-    await store.completeAgentSession(session.id, new Date(deps.now()).toISOString());
-  } finally {
-    await store.close();
-  }
+  const store = deps.store;
+  await store.completeAgentSession(session.id, new Date(deps.now()).toISOString());
 }
 
 /**
@@ -432,8 +403,7 @@ function entryIndex(entry: unknown): { type: string; at: string } {
 }
 
 /** 落一条记录并广播。落库失败只记日志:一条记录落不下去不该把整个回合掀掉。 */
-async function recordEntry(databaseUrl: string, sessionId: number, entry: unknown): Promise<void> {
-  const store = openStore(databaseUrl);
+async function recordEntry(store: Store, sessionId: number, entry: unknown): Promise<void> {
   try {
     const record = await store.appendAgentSessionEntry(sessionId, {
       ...entryIndex(entry),
@@ -446,8 +416,6 @@ async function recordEntry(databaseUrl: string, sessionId: number, entry: unknow
       `[agent-session] 会话 ${sessionId} 的记录落库失败:`,
       error instanceof Error ? error.message : String(error),
     );
-  } finally {
-    await store.close();
   }
 }
 
@@ -535,7 +503,7 @@ async function recordSystemMessage(
   sessionId: number,
   text: string,
 ): Promise<void> {
-  await recordEntry(deps.databaseUrl, sessionId, {
+  await recordEntry(deps.store, sessionId, {
     ...(await ownEntryBase(deps, sessionId)),
     type: "custom",
     customType: SYSTEM_MESSAGE_ENTRY,
@@ -572,15 +540,10 @@ export function agentSessionContextGap(links: readonly AgentSessionEntryLink[]):
  *
  */
 export async function agentSessionDroppedFromContext(
-  databaseUrl: string,
+  store: Store,
   sessionId: number,
 ): Promise<number> {
-  const store = openStore(databaseUrl);
-  try {
-    return agentSessionContextGap(await store.agentSessionEntryLinks(sessionId));
-  } finally {
-    await store.close();
-  }
+  return agentSessionContextGap(await store.agentSessionEntryLinks(sessionId));
 }
 
 
@@ -622,7 +585,7 @@ function touch(sessionId: number, entry: RuntimeEntry): void {
  */
 async function persistQueue(sessionId: number, entry: RuntimeEntry): Promise<void> {
   if (entry.queue.length === 0) return;
-  const store = openStore(entry.deps.databaseUrl);
+  const store = entry.deps.store;
   try {
     await store.putAgentSessionPendingMessages(
       sessionId,
@@ -638,8 +601,6 @@ async function persistQueue(sessionId: number, entry: RuntimeEntry): Promise<voi
       `[agent-session] 会话 ${sessionId} 的排队消息落库失败:`,
       error instanceof Error ? error.message : String(error),
     );
-  } finally {
-    await store.close();
   }
 }
 
@@ -648,12 +609,8 @@ async function takePendingQueue(
   deps: AgentSessionRuntimeDeps,
   sessionId: number,
 ): Promise<AgentSessionQueuedMessage[]> {
-  const store = openStore(deps.databaseUrl);
-  try {
-    return (await store.takeAgentSessionPendingMessages(sessionId)).map(queuedMessage);
-  } finally {
-    await store.close();
-  }
+  const store = deps.store;
+  return (await store.takeAgentSessionPendingMessages(sessionId)).map(queuedMessage);
 }
 
 /** 放掉这个会话占的磁盘:每棵一次性工作树各自释放,再删会话根(它下面只剩空目录)。 */
@@ -779,19 +736,15 @@ async function ownEntryBase(
   deps: AgentSessionRecordDeps,
   sessionId: number,
 ): Promise<{ id: string; parentId: string | null; timestamp: string }> {
-  const store = openStore(deps.databaseUrl);
-  try {
-    const last = (await store.listAgentSessionEntries(sessionId)).at(-1)?.entry as
-      | { id?: unknown }
-      | undefined;
-    return {
-      id: randomUUID(),
-      parentId: typeof last?.id === "string" ? last.id : null,
-      timestamp: new Date(deps.now()).toISOString(),
-    };
-  } finally {
-    await store.close();
-  }
+  const store = deps.store;
+  const last = (await store.listAgentSessionEntries(sessionId)).at(-1)?.entry as
+    | { id?: unknown }
+    | undefined;
+  return {
+    id: randomUUID(),
+    parentId: typeof last?.id === "string" ? last.id : null,
+    timestamp: new Date(deps.now()).toISOString(),
+  };
 }
 
 /**
@@ -812,7 +765,7 @@ export async function recordAgentSessionBaselineUpdate(
   // 刚收拢的那个子进程还没落完的条目先落完:这一条要接在最后一条记录后面。
   await entry?.recording.catch(() => {});
   const repo = `${update.owner}/${update.repo}`;
-  await recordEntry(deps.databaseUrl, sessionId, {
+  await recordEntry(deps.store, sessionId, {
     ...(await ownEntryBase(deps, sessionId)),
     type: "custom_message",
     customType: AGENT_SESSION_BASELINE_UPDATE_CUSTOM_TYPE,
@@ -830,13 +783,12 @@ export async function recordAgentSessionBaselineUpdate(
  * 下去。仓库在不在会话根内由子进程判(它手里就是那份清单),这里只查它问的那一个。
  */
 async function answerFindingQuery(
-  databaseUrl: string,
+  store: Store,
   child: ChildProcess,
   requestId: string,
   query: RepoFindingQuery,
 ): Promise<void> {
   let result: SessionCommand;
-  const store = openStore(databaseUrl);
   try {
     result = {
       kind: "finding-query-result",
@@ -850,8 +802,6 @@ async function answerFindingQuery(
       findings: [],
       failure: error instanceof Error ? error.message : String(error),
     };
-  } finally {
-    await store.close();
   }
   child.send(result);
 }
@@ -861,19 +811,14 @@ async function answerFindingQuery(
  * `query_knowledge` 按任务的范围取,子进程因此连这些文字都拿不到。
  */
 async function repoKnowledgeCounts(
-  databaseUrl: string,
+  store: Store,
   repoId: number,
 ): Promise<{ ruleCount: number; factCount: number }> {
-  const store = openStore(databaseUrl);
-  try {
-    const entries = (await store.getRuleSet(repoId))?.rules ?? [];
-    return {
-      ruleCount: entries.filter((entry) => entry.type === "rule").length,
-      factCount: entries.filter((entry) => entry.type === "fact").length,
-    };
-  } finally {
-    await store.close();
-  }
+  const entries = (await store.getRuleSet(repoId))?.rules ?? [];
+  return {
+    ruleCount: entries.filter((entry) => entry.type === "rule").length,
+    factCount: entries.filter((entry) => entry.type === "fact").length,
+  };
 }
 
 /**
@@ -888,7 +833,7 @@ async function repoKnowledgeCounts(
  * 侧已经打回过)。
  */
 export async function sessionKnowledge(
-  databaseUrl: string,
+  store: Store,
   productId: number,
   repos: readonly ProductRepoRecord[],
   query: SessionKnowledgeQuery,
@@ -898,44 +843,39 @@ export async function sessionKnowledge(
     .map((name) => idByName.get(name))
     .filter((id): id is number => id !== undefined);
   const names = new Set(query.names ?? []);
-  const store = openStore(databaseUrl);
-  try {
-    const nameById = repoNameById(repos);
-    const nameOf = async (id: number): Promise<string> => {
-      const known = nameById.get(id);
-      if (known !== undefined) return known;
-      const row = await store.getRepo(id);
-      const name = row === undefined ? `#${id}` : `${row.owner}/${row.repo}`;
-      nameById.set(id, name);
-      return name;
-    };
-    const product = (await store.listProductKnowledge(productId))
-      .filter((entry) =>
-        entry.kind === "relationship" ? query.relationships === true : names.has(entry.name),
-      )
-      .map(toSessionKnowledge);
-    // 问到的仓库按顺序取,与 `flatMap` 那一版同序:后面那道封顶砍的是末尾,顺序变了砍掉的
-    // 就换了一批。
-    const repoEntries: SessionKnowledgeEntries["repo"][number][] = [];
-    for (const repoId of askedIds) {
-      const matched = ((await store.getRuleSet(repoId))?.rules ?? []).filter((entry) =>
-        scopesOverlap(entry.scope, query.pathGlob),
-      );
-      if (matched.length === 0) continue;
-      const repo = await nameOf(repoId);
-      for (const entry of matched) {
-        repoEntries.push({
-          repo,
-          type: entry.type === "fact" ? ("fact" as const) : ("rule" as const),
-          scope: entry.scope,
-          statement: entry.statement,
-        });
-      }
+  const nameById = repoNameById(repos);
+  const nameOf = async (id: number): Promise<string> => {
+    const known = nameById.get(id);
+    if (known !== undefined) return known;
+    const row = await store.getRepo(id);
+    const name = row === undefined ? `#${id}` : `${row.owner}/${row.repo}`;
+    nameById.set(id, name);
+    return name;
+  };
+  const product = (await store.listProductKnowledge(productId))
+    .filter((entry) =>
+      entry.kind === "relationship" ? query.relationships === true : names.has(entry.name),
+    )
+    .map(toSessionKnowledge);
+  // 问到的仓库按顺序取,与 `flatMap` 那一版同序:后面那道封顶砍的是末尾,顺序变了砍掉的
+  // 就换了一批。
+  const repoEntries: SessionKnowledgeEntries["repo"][number][] = [];
+  for (const repoId of askedIds) {
+    const matched = ((await store.getRuleSet(repoId))?.rules ?? []).filter((entry) =>
+      scopesOverlap(entry.scope, query.pathGlob),
+    );
+    if (matched.length === 0) continue;
+    const repo = await nameOf(repoId);
+    for (const entry of matched) {
+      repoEntries.push({
+        repo,
+        type: entry.type === "fact" ? ("fact" as const) : ("rule" as const),
+        scope: entry.scope,
+        statement: entry.statement,
+      });
     }
-    return { product, repo: repoEntries.slice(0, FINDING_QUERY_LIMIT) };
-  } finally {
-    await store.close();
   }
+  return { product, repo: repoEntries.slice(0, FINDING_QUERY_LIMIT) };
 }
 
 /**
@@ -949,7 +889,7 @@ export async function writeSessionKnowledge(
   session: AgentSessionRecord,
   write: SessionKnowledgeWrite,
 ): Promise<{ entry?: SessionProductKnowledge; failure?: string }> {
-  const store = openStore(deps.databaseUrl);
+  const store = deps.store;
   try {
     const entry = await store.writeProductKnowledge({
       productId: session.productId,
@@ -978,8 +918,6 @@ export async function writeSessionKnowledge(
         ? `this product already has a ${write.kind} named ${write.name}; pass its entryId to rewrite it, or pick another name`
         : message,
     };
-  } finally {
-    await store.close();
   }
 }
 
@@ -989,14 +927,10 @@ export async function withdrawSessionKnowledge(
   session: AgentSessionRecord,
   entryId: number,
 ): Promise<{ failure?: string }> {
-  const store = openStore(deps.databaseUrl);
-  try {
-    return (await store.withdrawProductKnowledge(session.productId, entryId))
-      ? {}
-      : { failure: `no entry of this product has id ${entryId}; nothing was withdrawn` };
-  } finally {
-    await store.close();
-  }
+  const store = deps.store;
+  return (await store.withdrawProductKnowledge(session.productId, entryId))
+    ? {}
+    : { failure: `no entry of this product has id ${entryId}; nothing was withdrawn` };
 }
 
 /**
@@ -1004,7 +938,7 @@ export async function withdrawSessionKnowledge(
  * ——查不动时带上原因,不然子进程那边的工具调用永远等下去。
  */
 async function answerKnowledgeQuery(
-  deps: { databaseUrl: string },
+  deps: { store: Store },
   child: ChildProcess,
   productId: number,
   repos: readonly ProductRepoRecord[],
@@ -1016,7 +950,7 @@ async function answerKnowledgeQuery(
     result = {
       kind: "knowledge-query-result",
       requestId,
-      entries: await sessionKnowledge(deps.databaseUrl, productId, repos, query),
+      entries: await sessionKnowledge(deps.store, productId, repos, query),
     };
   } catch (error) {
     result = {
@@ -1041,7 +975,7 @@ async function answerTrackerRequest(
   request: TrackerRequest,
 ): Promise<void> {
   let text: string;
-  const store = openStore(deps.databaseUrl);
+  const store = deps.store;
   try {
     text = await runTrackerRequest(
       store,
@@ -1052,20 +986,13 @@ async function answerTrackerRequest(
     );
   } catch (error) {
     text = `could not reach this product's tracker: ${error instanceof Error ? error.message : String(error)}`;
-  } finally {
-    await store.close();
   }
   child.send({ kind: "tracker-result", requestId, text } satisfies SessionCommand);
 }
 
 /** 这个仓库设置的默认分支(CONTEXT.md 默认分支,issue #350)。没设即 null。 */
-async function configuredDefaultBranch(databaseUrl: string, repoId: number): Promise<string | null> {
-  const store = openStore(databaseUrl);
-  try {
-    return (await store.getRepo(repoId))?.defaultBranch ?? null;
-  } finally {
-    await store.close();
-  }
+async function configuredDefaultBranch(store: Store, repoId: number): Promise<string | null> {
+  return (await store.getRepo(repoId))?.defaultBranch ?? null;
 }
 
 /**
@@ -1108,7 +1035,7 @@ async function prepareSessionRoot(
         ...await defaultBranchHead(
           clone,
           repository,
-          await configuredDefaultBranch(deps.databaseUrl, repo.repoId),
+          await configuredDefaultBranch(deps.store, repo.repoId),
         ),
         kind: "branch" as const,
       };
@@ -1123,17 +1050,13 @@ async function prepareSessionRoot(
       ...ref,
       role: repo.role,
       headSha,
-      ...(await repoKnowledgeCounts(deps.databaseUrl, repo.repoId)),
+      ...(await repoKnowledgeCounts(deps.store, repo.repoId)),
     });
     baselines.push({ ...ref, sha: headSha, branch, kind });
   }
   // 整列一次写完:备到一半失败的那一次不落半份清单,下一条消息重试时从头再备一遍。
-  const store = openStore(deps.databaseUrl);
-  try {
-    await store.setAgentSessionBaselines(session.id, baselines);
-  } finally {
-    await store.close();
-  }
+  const store = deps.store;
+  await store.setAgentSessionBaselines(session.id, baselines);
   return { sessionRoot, repos: prepared };
 }
 
@@ -1145,18 +1068,13 @@ async function prepareSessionRoot(
  * 「前 N 条不在上下文」由读接口算给面板,不拒绝续谈。
  */
 async function storedSession(
-  databaseUrl: string,
+  store: Store,
   sessionId: number,
 ): Promise<{ entries: unknown[]; gap: number }> {
-  const store = openStore(databaseUrl);
-  try {
-    return {
-      entries: (await store.listAgentSessionEntries(sessionId)).map((record) => record.entry),
-      gap: agentSessionContextGap(await store.agentSessionEntryLinks(sessionId)),
-    };
-  } finally {
-    await store.close();
-  }
+  return {
+    entries: (await store.listAgentSessionEntries(sessionId)).map((record) => record.entry),
+    gap: agentSessionContextGap(await store.agentSessionEntryLinks(sessionId)),
+  };
 }
 
 /** 起这个会话的常驻子进程,建好 Pi 会话之后兑现。 */
@@ -1212,7 +1130,7 @@ async function boot(
         // 落库那一刻定,各自 `void` 出去就乱了。
         entry.recording = entry.recording
           .then(async () => {
-            for (const one of batch) await recordEntry(deps.databaseUrl, session.id, one);
+            for (const one of batch) await recordEntry(deps.store, session.id, one);
           })
           // 链断了就接不上下一批:`.then` 对一个已拒绝的 promise 直接跳过,这一条之后的条目
           // 会一条不落地全丢掉。`recordEntry` 自己兜住落库失败,这里兜的是它之外的(开库就
@@ -1250,7 +1168,7 @@ async function boot(
         return;
       // 下面这几对请求-回应各自带 `requestId`,互相之间没有顺序:各走各的那一条链,不排队。
       case "finding-query":
-        void answerFindingQuery(deps.databaseUrl, child, message.requestId, message.query);
+        void answerFindingQuery(deps.store, child, message.requestId, message.query);
         return;
       case "knowledge-query":
         void answerKnowledgeQuery(
@@ -1321,8 +1239,8 @@ async function boot(
   });
 
   // 重建:整段记录原样喂回去(issue #335)。新会话那一次是空数组,与不给等价。
-  const stored = await storedSession(deps.databaseUrl, session.id);
-  const productName = await productHeading(deps.databaseUrl, session.productId);
+  const stored = await storedSession(deps.store, session.id);
+  const productName = await productHeading(deps.store, session.productId);
   if (stored.gap > 0) {
     console.warn(
       `[agent-session] 会话 ${session.id} 的记录有缺损,重建后前 ${stored.gap} 条不在上下文里`,
@@ -1335,7 +1253,7 @@ async function boot(
       productName,
       purpose: session.purpose,
       repos: prepared.repos,
-      productKnowledge: await activeProductKnowledge(deps.databaseUrl, session.productId),
+      productKnowledge: await activeProductKnowledge(deps.store, session.productId),
       runtimeModel: model.runtimeModel,
       ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
       ...(stored.entries.length === 0 ? {} : { entries: stored.entries }),
@@ -1532,15 +1450,10 @@ export function queueAgentSessionMessage(
  * 不等它的调用方照样看得到清空的效果(spec #445):清那一下在第一个 `await` 之前就跑完了
  * ——`server.ts` 紧接着同步读一次排队列表回给人,读到的是清完的那一份。
  */
-export async function clearAgentSessionQueue(databaseUrl: string, sessionId: number): Promise<void> {
+export async function clearAgentSessionQueue(store: Store, sessionId: number): Promise<void> {
   const entry = registry.get(sessionId);
   if (entry === undefined) {
-    const store = openStore(databaseUrl);
-    try {
-      await store.putAgentSessionPendingMessages(sessionId, []);
-    } finally {
-      await store.close();
-    }
+    await store.putAgentSessionPendingMessages(sessionId, []);
     return;
   }
   // 清掉的那几条带的图也不再等着被认领(issue #336):留着会被这一回合后面那条消息的图片块

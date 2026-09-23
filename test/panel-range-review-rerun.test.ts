@@ -65,7 +65,6 @@ async function userCookie(h: PanelHarness, username: string, permissions: string
     roleId: role.id,
   });
   await store.setPanelUserAssignment(username, [GITEA_REPO.id]);
-  await store.close();
   return userCookieRow(h.serverUrl, username, PASSWORD);
 }
 
@@ -98,7 +97,6 @@ test("范围审查重跑:在当前比较项上多跑一轮,归入同一个阶段
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
   const record = (await store.getRangeReview(rangeReview.id))!;
-  await store.close();
   assert.equal(runs.length, 2);
   assert.deepEqual(
     runs.map((run) => run.headSha),
@@ -167,7 +165,6 @@ test("范围审查重跑要 review:rerun:有它的用户跑得动,没有的被�
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  await store.close();
   assert.equal(runs.length, 2);
   // 触发人记的是点重跑的那个账号。
   assert.equal(runs[0]!.triggeredBy, "range-rerunner");
@@ -186,14 +183,10 @@ const reportingReviewers: NonNullable<
 /** 库里每一轮的模式,按开跑先后。 */
 async function modes(h: PanelHarness, rangeReviewId: number): Promise<string[]> {
   const store = openStore(h.db.url);
-  try {
-    return (await store
-      .listRuns({ limit: 30, rangeReviewId }))
-      .map((run) => run.mode)
-      .reverse();
-  } finally {
-    await store.close();
-  }
+  return (await store
+    .listRuns({ limit: 30, rangeReviewId }))
+    .map((run) => run.mode)
+    .reverse();
 }
 
 test("范围审查重跑默认只复核,`full` 才是完整审查,非法取值 400", async () => {
@@ -312,7 +305,6 @@ test("未处置历史全落在回退文件上:只复核重跑先自动处置再 
   const history = (await store
     .stageHistory({ rangeReviewId: rangeReview.id }))
     .map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null }));
-  await store.close();
   assert.deepEqual(history, [
     { file: "src/answer.ts", disposition: "fixed", note: "文件已回退,自动处置" },
   ]);

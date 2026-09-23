@@ -63,14 +63,10 @@ async function rootCauseRows(databaseUrl: string): Promise<{
 /** 这一轮落库的全部轨迹事件。 */
 async function trace(databaseUrl: string): Promise<{ kind: string; payload: Record<string, unknown> }[]> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    return (await store
-      .listTrace(runId))
-      .map((event) => ({ kind: event.kind, payload: event.payload as Record<string, unknown> }));
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  return (await store
+    .listTrace(runId))
+    .map((event) => ({ kind: event.kind, payload: event.payload as Record<string, unknown> }));
 }
 
 test("三处同根因归成一组:组与成员落库,三条评论各带同根因一行,组外那条不带", async () => {
@@ -97,7 +93,7 @@ test("三处同根因归成一组:组与成员落库,三条评论各带同根因
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     panelBaseUrl: PANEL,
     mergeAgent: merge,
   });
@@ -153,7 +149,7 @@ test("坏提议逐组丢弃:轨迹各记一条,分组方案与组外评论照常
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     panelBaseUrl: PANEL,
     mergeAgent: merge,
   });
@@ -196,7 +192,7 @@ test("成员一律记本轮那一行:折叠的记本轮落的行,延续的记承
       scriptedReviewer("model-a", [AT(FILES[0]!, 4, "a 处的老问题"), AT(FILES[1]!, 4, "b 处的老问题")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     panelBaseUrl: PANEL,
   });
   ctx.forge.existingComments.push(
@@ -221,7 +217,7 @@ test("成员一律记本轮那一行:折叠的记本轮落的行,延续的记承
       scriptedReviewer("model-a", [AT(FILES[0]!, 4, "a 处的同一个问题"), AT(FILES[1]!, 4, "b 处的同一个问题")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     panelBaseUrl: PANEL,
     mergeAgent: merge,
   });
@@ -265,7 +261,7 @@ test("合并 agent 缺席的那一轮没有组,评论也不多那一行", async 
       scriptedReviewer("model-a", [AT(FILES[0]!, 4, "第一处"), AT(FILES[1]!, 4, "第二处")]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     panelBaseUrl: PANEL,
   });
 

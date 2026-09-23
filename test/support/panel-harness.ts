@@ -144,42 +144,38 @@ export async function seedAvailableModelService(
   const api = "openai-completions";
   const at = "2026-08-20T00:00:00.000Z";
   const store = openStore(harness.db.url);
-  try {
-    assert.equal(await store.commitModelServiceVersion(null, {
-      provider,
-      type: "custom",
-      baseUrl,
-      api,
-      targetFingerprint: modelServiceTargetFingerprint(baseUrl, api),
-      disabledReason: null,
-      createdAt: at,
+  assert.equal(await store.commitModelServiceVersion(null, {
+    provider,
+    type: "custom",
+    baseUrl,
+    api,
+    targetFingerprint: modelServiceTargetFingerprint(baseUrl, api),
+    disabledReason: null,
+    createdAt: at,
+    updatedAt: at,
+    credential: {
+      state: "verified",
+      apiKeyEncrypted: encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, `secret-${provider}`),
       updatedAt: at,
-      credential: {
-        state: "verified",
-        apiKeyEncrypted: encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, `secret-${provider}`),
-        updatedAt: at,
-        verifiedAt: at,
-        validationModel: `${provider}:${models[0]!}`,
-        verificationSource: "inference",
-      },
-      directory: {
-        state: "available",
-        lastAttemptAt: at,
-        lastSuccessAt: at,
-        failure: null,
-        ignoredModelCount: 0,
-      },
-      automaticModels: models.map((model) => ({
-        identity: `${provider}:${model}`,
-        provider,
-        id: model,
-        fields,
-      })),
-      supplements: [],
-    }), 1);
-  } finally {
-    await store.close();
-  }
+      verifiedAt: at,
+      validationModel: `${provider}:${models[0]!}`,
+      verificationSource: "inference",
+    },
+    directory: {
+      state: "available",
+      lastAttemptAt: at,
+      lastSuccessAt: at,
+      failure: null,
+      ignoredModelCount: 0,
+    },
+    automaticModels: models.map((model) => ({
+      identity: `${provider}:${model}`,
+      provider,
+      id: model,
+      fields,
+    })),
+    supplements: [],
+  }), 1);
 }
 
 export type PanelHarnessOptions = {
@@ -286,7 +282,6 @@ export async function startPanelHarness(
     isSystemAdmin: true,
     roleId: null,
   });
-  await seed.close();
   // Harness 初始组合代表升级前已存在的状态；运行期组合写必须走 Store 的原子可用性门禁。
   if (reviewers.length > 0) {
     await withTestDb(db.url, async (sql) => {
@@ -379,7 +374,7 @@ export async function startPanelHarness(
       options.buildMergeAgent ??
       (() => async () => ({ groups: [], failure: "harness 没有注入合并 agent" })),
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     dataDir: db.dataDir,
     bootstrapSecret: "panel-harness-bootstrap",
     baseUrl: PANEL_BASE_URL,
@@ -554,17 +549,13 @@ export async function seedHistoricalRepo(
   key = "historical-repo-key",
 ): Promise<{ url: string; secret: string }> {
   const store = openStore(harness.db.url);
-  try {
-    assert.equal(await store.registerRepo({
-      repoId: GITEA_REPO.id,
-      owner: GITEA_REPO.owner,
-      repo: GITEA_REPO.repo,
-      generation: 1,
-      key,
-    }), true);
-  } finally {
-    await store.close();
-  }
+  assert.equal(await store.registerRepo({
+    repoId: GITEA_REPO.id,
+    owner: GITEA_REPO.owner,
+    repo: GITEA_REPO.repo,
+    generation: 1,
+    key,
+  }), true);
   // 「升级前已经存在」的另一半:存量迁移把这些仓库写成已确认空知识集(issue #206)。
   await confirmEmptyRuleSet(harness.db.url, GITEA_REPO.id);
   return { url: `${PANEL_BASE_URL}/webhook?k=1`, secret: key };
@@ -583,34 +574,30 @@ export async function scopedUser(
   permissions: readonly PanelPermission[] = [],
 ): Promise<string> {
   const store = openStore(h.db.url);
-  try {
-    await store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: await hashTestPassword(password),
-      mustChangePassword: false,
+  await store.createPanelUser({
+    username,
+    displayName: null,
+    passwordHash: await hashTestPassword(password),
+    mustChangePassword: false,
+    createdAt: at,
+    isSystemAdmin: false,
+    roleId: null,
+  });
+  await store.setPanelUserAssignment(username, repoIds);
+  if (permissions.length > 0) {
+    const role = await store.createPanelRole({
+      name: `role-${username}`,
+      permissions: [...permissions],
       createdAt: at,
-      isSystemAdmin: false,
-      roleId: null,
     });
-    await store.setPanelUserAssignment(username, repoIds);
-    if (permissions.length > 0) {
-      const role = await store.createPanelRole({
-        name: `role-${username}`,
-        permissions: [...permissions],
-        createdAt: at,
-      });
-      assert.equal(
-        await store.updatePanelUser(username, {
-          displayName: null,
-          roleId: role.id,
-          isSystemAdmin: false,
-        }),
-        "updated",
-      );
-    }
-  } finally {
-    await store.close();
+    assert.equal(
+      await store.updatePanelUser(username, {
+        displayName: null,
+        roleId: role.id,
+        isSystemAdmin: false,
+      }),
+      "updated",
+    );
   }
   const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -629,14 +616,10 @@ export async function seedRepo(
   repo: string,
 ): Promise<number> {
   const store = openStore(h.db.url);
-  try {
-    assert.equal(
-      await store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
-      true,
-    );
-  } finally {
-    await store.close();
-  }
+  assert.equal(
+    await store.registerRepo({ repoId, owner, repo, generation: 1, key: `key-${repoId}` }),
+    true,
+  );
   return repoId;
 }
 

@@ -106,17 +106,13 @@ async function trace(databaseUrl: string): Promise<{
   payload: Record<string, unknown>;
 }[]> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-    return (await store.listTrace(runId)).map((event) => ({
-      scope: event.scope,
-      ...(event.reviewer === undefined ? {} : { reviewer: event.reviewer }),
-      kind: event.kind,
-      payload: event.payload as Record<string, unknown>,
-    }));
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
+  return (await store.listTrace(runId)).map((event) => ({
+    scope: event.scope,
+    ...(event.reviewer === undefined ? {} : { reviewer: event.reviewer }),
+    kind: event.kind,
+    payload: event.payload as Record<string, unknown>,
+  }));
 }
 
 test("分组方案过验收即生效:同一行的两个问题被拆开,相邻的同一个问题被合并", async () => {
@@ -136,7 +132,7 @@ test("分组方案过验收即生效:同一行的两个问题被拆开,相邻的
       scriptedReviewer("model-b", [AT(2, "删除了类型校验"), AT(3, "余额校验被删掉了")]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: merge,
   });
 
@@ -186,7 +182,7 @@ test("单成员组不产生合并事件", async () => {
       scriptedReviewer("model-b", [AT(2, "删除了类型校验")]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent([
       { members: [0], reason: "余额校验" },
       { members: [1], reason: "类型校验" },
@@ -206,7 +202,7 @@ test("同一个模型逐字重复报的两条,合进同一组后仍折叠成一�
       scriptedReviewer("model-a", [AT(2, "sub 多减了 1"), AT(3, "sub 多减了 1")]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent([{ members: [0, 1], reason: "同一个减法错误报了两遍" }]),
   });
 
@@ -230,7 +226,7 @@ async function assertFallback(
       scriptedReviewer("model-b", [findings[1]!]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent(groups, extra),
   });
 
@@ -310,7 +306,7 @@ test("回退之后的结果与没有合并 agent 时逐字一致", async () => {
     forge: withAgent.forge.forge,
     reviewers: reviewers(),
     cacheDir: withAgent.cache.dir,
-    databaseUrl: withAgent.db.url,
+    store: openStore(withAgent.db.url),
     mergeAgent: scriptedMergeAgent([], { failure: "模型调用失败" }),
   });
 
@@ -319,7 +315,7 @@ test("回退之后的结果与没有合并 agent 时逐字一致", async () => {
     forge: withoutAgent.forge.forge,
     reviewers: reviewers(),
     cacheDir: withoutAgent.cache.dir,
-    databaseUrl: withoutAgent.db.url,
+    store: openStore(withoutAgent.db.url),
   });
 
   assert.deepEqual(fallen.findings, algorithmic.findings);
@@ -366,7 +362,7 @@ test("多归属组的综合说明成为正文,归属保留各模型原话", asyn
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent([
       { members: [0, 1], reason: "两条说的是同一个减法越界", synthesis: SYNTHESIS },
     ]),
@@ -419,7 +415,7 @@ test("缺综合的那一组退回代表段,其余组照用综合,轨迹记一条
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent([
       { members: [0, 2], reason: "同一个减法越界", synthesis: SYNTHESIS },
       { members: [1, 3], reason: "同一个自增步长问题" },
@@ -456,7 +452,7 @@ test("综合的标题或问题说明空白的那一组同样退回代表段", as
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent([
       {
         members: [0, 1],
@@ -483,7 +479,7 @@ test("单归属组落库为原文,agent 给了综合也不用", async () => {
       scriptedReviewer("model-b", [SAID(14, "mod 加了 0", "取模之后又加 0", "白算一次", "删掉")]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent([
       { members: [0], reason: "只有它报了", synthesis: SYNTHESIS },
       { members: [1], reason: "另一个问题" },
@@ -514,7 +510,7 @@ test("agent 随综合给的严重度与分类不采用", async () => {
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent([
       {
         members: [0, 1],
@@ -543,7 +539,7 @@ test("整轮退回算法合并时综合不生效,正文取代表段", async () =
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     mergeAgent: scriptedMergeAgent(
       [{ members: [0, 1], reason: "同一个减法越界", synthesis: SYNTHESIS }],
       { failure: "模型调用超时" },
@@ -569,18 +565,14 @@ test("整轮退回算法合并时综合不生效,正文取代表段", async () =
 /** 人在面板上处置一条 Finding,Forge 上那条评论一并置为已 resolve。 */
 async function dispose(databaseUrl: string, forge: MemoryForge, commentId: string): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    await store.recordDisposition({
-      owner: EVENT.owner,
-      repo: EVENT.repo,
-      commentId,
-      disposition: "resolved",
-      disposedBy: "kassol",
-      disposedAt: "2026-09-04T00:00:00.000Z",
-    });
-  } finally {
-    await store.close();
-  }
+  await store.recordDisposition({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    commentId,
+    disposition: "resolved",
+    disposedBy: "kassol",
+    disposedAt: "2026-09-04T00:00:00.000Z",
+  });
   for (const comment of forge.existingComments) {
     if (comment.id === commentId) comment.resolved = true;
   }
@@ -598,7 +590,7 @@ async function firstRun(
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", findings)],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
   });
   carryComments(ctx);
 }
@@ -645,7 +637,7 @@ test("合并请求里的历史只含本轮有 Finding 的文件,未处置与已�
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(2, "余额校验没了")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -671,7 +663,7 @@ test("agent 把本轮一条与旧指纹仍在的历史分成一组:不发评论,
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(14, "余额没有被校验")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -696,7 +688,6 @@ test("agent 把本轮一条与旧指纹仍在的历史分成一组:不发评论,
   // 未处置计数不因换了说法再报一次而多一条。
   const store = openStore(ctx.db.url);
   const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: EVENT.number });
-  await store.close();
   assert.equal(summary.findings.length, 1);
 });
 
@@ -712,7 +703,7 @@ test("命中已处置的历史:本轮那条沉默,落库折叠到已处置", asy
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(14, "余额没有被校验")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -744,7 +735,7 @@ test("含历史成员的组行距超容差仍过验收", async () => {
       scriptedReviewer("model-b", [AT(11, "取模结果不对")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -767,7 +758,7 @@ test("同一条历史被分进两组的方案整体作废回退", async () => {
       scriptedReviewer("model-b", [AT(11, "取模结果不对")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -785,7 +776,7 @@ test("带上历史之后回退档的结果仍与没有合并 agent 时逐字一�
     forge: withAgent.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(14, "余额没有被校验")])],
     cacheDir: withAgent.cache.dir,
-    databaseUrl: withAgent.db.url,
+    store: openStore(withAgent.db.url),
     mergeAgent: scriptedMergeAgent([], { failure: "模型调用失败" }),
   });
 
@@ -795,7 +786,7 @@ test("带上历史之后回退档的结果仍与没有合并 agent 时逐字一�
     forge: withoutAgent.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(14, "余额没有被校验")])],
     cacheDir: withoutAgent.cache.dir,
-    databaseUrl: withoutAgent.db.url,
+    store: openStore(withoutAgent.db.url),
   });
 
   assert.deepEqual(fallen.findings, algorithmic.findings);
@@ -827,7 +818,7 @@ test("命中的历史所指代码已改写:走延续,旧评论 resolve,新评论
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(14, "余额没有被校验")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -864,7 +855,7 @@ test("命中的历史本轮已被全部 Reviewer 判已修:不延续,旧行留�
     forge: ctx.forge.forge,
     reviewers: [verdictReviewer("model-a", "fixed", [AT(14, "余额没有被校验")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -893,7 +884,7 @@ test("同一条历史同时被 agent 命中与复核结论自带位置:以 agent
     forge: ctx.forge.forge,
     reviewers: [verdictReviewer("model-a", "present", [AT(14, "取模的结果偏了")], 14)],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -920,7 +911,7 @@ test("一组含两条历史:id 小的延续,另一条保持原状", async () => 
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(11, "除法没有防零")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -956,7 +947,7 @@ test("同一处的另一个问题:agent 只把其中一条归给历史,另一条
       scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -993,7 +984,6 @@ test("同一处的另一个问题:agent 只把其中一条归给历史,另一条
     "2000-01-01T00:00:00.000Z",
     "2999-01-01T00:00:00.000Z",
   );
-  await store.close();
   assert.deepEqual(
     summary.findings.map((finding) => [finding.title, finding.disposition]),
     [
@@ -1019,7 +1009,7 @@ test("合并 agent 收到的位置提示只给指纹命中的那条历史", asyn
       scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -1039,7 +1029,7 @@ test("合并 agent 不可用的那一轮:同一处的新问题仍按指纹并进
       scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -1057,7 +1047,6 @@ test("合并 agent 不可用的那一轮:同一处的新问题仍按指纹并进
     repo: EVENT.repo,
     pullNumber: EVENT.number,
   });
-  await store.close();
   assert.equal(summary.findings.length, 1, "回退档的 Identity 与这一票之前逐字一致");
 });
 
@@ -1089,7 +1078,7 @@ async function twoAtOneSpot(
       scriptedReviewer("model-a", [AT(2, "余额校验被删掉"), AT(2, "日志里打印了密钥")]),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
   carryComments(ctx);
@@ -1136,7 +1125,7 @@ test("第三轮回填:A 那条评论的已 resolve 不写到同一处 B 的行�
     forge: ctx.forge.forge,
     reviewers: [verdictReviewer("model-a", "present")],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
   });
 
   assert.deepEqual(
@@ -1155,7 +1144,6 @@ test("第三轮回填:A 那条评论的已 resolve 不写到同一处 B 的行�
     repo: EVENT.repo,
     pullNumber: EVENT.number,
   });
-  await store.close();
   assert.deepEqual(
     summary.findings.map((finding) => [finding.title, finding.disposition]),
     [
@@ -1175,7 +1163,7 @@ test("复核判已修只处置那一条:同一处另一条的评论不被 resolv
       verdictByTitle("model-a", { 余额校验被删掉: "fixed", 日志里打印了密钥: "present" }),
     ],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
   });
 
   assert.deepEqual(ctx.forge.resolvedIds, ["comment-1"], "只该 resolve 判已修的那条评论");
@@ -1200,7 +1188,7 @@ test("所在文件回退:同一处的两条各自自动处置,两条评论都 re
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
   });
 
   assert.deepEqual([...ctx.forge.resolvedIds].sort(), ["comment-1", "comment-2"]);
@@ -1235,7 +1223,7 @@ test("延续 B:只 resolve B 的旧评论,同一处的 A 留在未处置", async
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(14, "日志里打印了密钥")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: merge,
   });
 
@@ -1258,7 +1246,6 @@ test("延续 B:只 resolve B 的旧评论,同一处的 A 留在未处置", async
     repo: EVENT.repo,
     pullNumber: EVENT.number,
   });
-  await store.close();
   assert.deepEqual(
     summary.findings.map((finding) => [finding.title, finding.disposition]),
     [
@@ -1289,7 +1276,7 @@ test("交接未完成的标记只落在 B 那一条上,下一轮重试清掉它"
     forge: ctx.forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT(14, "日志里打印了密钥")])],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
     mergeAgent: scriptedMergeAgent(carry),
   });
 
@@ -1311,7 +1298,7 @@ test("交接未完成的标记只落在 B 那一条上,下一轮重试清掉它"
     forge: ctx.forge.forge,
     reviewers: [verdictReviewer("model-a", "present")],
     cacheDir: ctx.cache.dir,
-    databaseUrl: ctx.db.url,
+    store: openStore(ctx.db.url),
   });
 
   assert.deepEqual(ctx.forge.resolvedIds, ["comment-2"]);
