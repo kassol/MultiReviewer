@@ -201,8 +201,14 @@ function Shell() {
         要有东西可模糊,内容必须从它们底下滚过去。挂在滚动容器外面时,那层 blur 背后
         永远只有页面底色,顶栏就是一块纯白平板。
       */}
-      {/* 滚动条槽位常驻:内容短的页没有滚动条,切页或切 tab 时整块内容会横跳一个槽宽。 */}
-      <div id="panel-main-scroll" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto [scrollbar-gutter:stable]">
+      {/*
+        滚动条槽位常驻:内容短的页没有滚动条,切页或切 tab 时整块内容会横跳一个槽宽。
+        占满视口的页(会话)外层从不滚动,给它留槽只会在右沿多一条空白。
+      */}
+      <div
+        id="panel-main-scroll"
+        className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-auto ${fillsViewport ? "" : "[scrollbar-gutter:stable]"}`}
+      >
         <TopBar
           nav={nav}
           session={session}
