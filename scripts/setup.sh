@@ -532,7 +532,7 @@ printf '\n      %s%s/%s\n\n' "$BOLD" "$MULTIREVIEWER_BASE_URL" "$RESET"
 if [[ "$FRESH_INSTANCE" == "yes" ]]; then
   say "一次性 bootstrap 口令(注册第一个管理员时粘贴):"
   printf '\n      %s%s%s\n\n' "$BOLD" "$BOOTSTRAP_SECRET" "$RESET"
-  note "只在库里零用户时打印;注册成功即失效;服务重启换一枚;不会写进 $ENV_FILE。"
+  note "只在库里零用户时打印;注册成功即失效;服务重启换一枚;不会写进 ${ENV_FILE}。"
 else
   say "库里已有账号,用已有用户名与密码登录;不需要 bootstrap 口令。"
 fi

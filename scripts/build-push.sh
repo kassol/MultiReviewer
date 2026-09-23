@@ -81,6 +81,6 @@ echo
 echo "推送完成。服务器上更新:"
 echo "  docker compose pull && docker compose up -d"
 echo
-echo "这一版是 $VERSION。部署目录 .env 的 MULTIREVIEWER_IMAGE 写成"
+echo "这一版是 ${VERSION}。部署目录 .env 的 MULTIREVIEWER_IMAGE 写成"
 echo "  $VERSION_IMAGE"
 echo "回滚时把那一行改回上一版的版本 tag,再 docker compose up -d。"
