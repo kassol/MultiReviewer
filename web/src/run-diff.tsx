@@ -3,7 +3,7 @@ import type { HLJSApi } from "highlight.js";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { CheckCircledIcon, ChevronDownIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
-import { Badge, IconButton, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
@@ -480,19 +480,18 @@ export function FindingRow({
                   </Button>
                 )}
                 {/* 原始评论的外链与处置并排:两样都是「对这条 Finding 做点什么」。 */}
+                {/* 写出去向:一颗孤零零的外链图标漂在卡片右沿,看不出它通向哪里。 */}
                 {finding.commentHtmlUrl === null ? null : (
-                  <Tooltip content="在 Forge 查看原始评论">
-                    <IconButton size="1" variant="ghost" color="gray" radius="full" className="ml-auto" asChild>
-                      <a
-                        href={finding.commentHtmlUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
-                      >
-                        <ExternalLinkIcon />
-                      </a>
-                    </IconButton>
-                  </Tooltip>
+                  <a
+                    href={finding.commentHtmlUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
+                    className="touch-link inline-flex items-center gap-1 rounded-sm px-1 text-sm text-text-secondary outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40"
+                  >
+                    Forge 评论
+                    <ExternalLinkIcon aria-hidden />
+                  </a>
                 )}
               </div>
             </div>

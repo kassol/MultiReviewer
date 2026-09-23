@@ -183,8 +183,11 @@ function FindingCard({
           </span>
         )}
         <span className="block pt-1 text-sm text-text-secondary tabular-nums">
-          第 {roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第{" "}
-          {roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次 ·{" "}
+          {/* 只报过一轮的写一句:「第 6 轮首次报出 · 第 6 轮最近一次」是同一件事说两遍。 */}
+          {finding.firstRunId === finding.lastRunId
+            ? `第 ${roundOf.get(finding.firstRunId) ?? "?"} 轮报出`
+            : `第 ${roundOf.get(finding.firstRunId) ?? "?"} 轮首次报出 · 第 ${roundOf.get(finding.lastRunId) ?? "?"} 轮最近一次`}
+          {" · "}
           {localMinute(finding.lastReportedAt)}
         </span>
       </Link>

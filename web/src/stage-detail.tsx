@@ -342,7 +342,18 @@ export function StageDetailPage({
           <PageHeader
             visibleTitle
             title={stageLabel(body.stage)}
-            description={`${body.stage.owner}/${body.stage.repo}`}
+            // 来源、状态与警示跟仓库排在同一行(issue #428):它们都是「这是什么阶段」的答案,
+            // 窄屏上也就排在动作格子之前,不被四颗按钮隔到下面去。
+            description={
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                <span className="mr-1">{body.stage.owner}/{body.stage.repo}</span>
+                <StageSourceBadge stage={body.stage} />
+                <StageStatusBadge stage={body.stage} />
+                {body.stage.latestRunAlert === null ? null : (
+                  <StageAlertBadge alert={body.stage.latestRunAlert} />
+                )}
+              </span>
+            }
             actions={
               <StageActions
                 stage={body.stage}
@@ -357,15 +368,6 @@ export function StageDetailPage({
               />
             }
           />
-          {/* 警示跟来源与状态排在同一行,窄屏上跟着一起折(issue #428)。 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <StageSourceBadge stage={body.stage} />
-            <StageStatusBadge stage={body.stage} />
-            {body.stage.latestRunAlert === null ? null : (
-              <StageAlertBadge alert={body.stage.latestRunAlert} />
-            )}
-          </div>
-
           {feedback === null ? null : (
             <Callout.Root
               role={feedback.isError ? "alert" : "status"}
@@ -474,6 +476,7 @@ function StageActions({
     // 窄屏上动作排成两列等宽的格子(每日增量占整行):按各自文字宽度折行时是三排参差的
     // 按钮。`sm` 起这层是 `contents`,按钮照旧是页头那条 flex 的直接子项。
     <div className="contents max-sm:grid max-sm:w-full max-sm:grid-cols-2 max-sm:gap-2 max-sm:[&>button]:w-full">
+      {/* 一条低等级项都没有时不摆一颗点不动的按钮:它只在阈值抬高后留下旧条目时才有事做。 */}
       {canDisposeBatch && minReportSeverity !== "P2" ? (
         <DisposeBelowThresholdAction
           stage={stage}
@@ -570,6 +573,8 @@ function DisposeBelowThresholdAction({
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
   });
 
+  // 处置进行中那几秒条数会先归零,按钮不能跟着消失,否则弹窗的触发器没了。
+  if (targets.length === 0 && !open) return null;
   return (
     <ConfirmDialog
       open={open}
@@ -582,7 +587,7 @@ function DisposeBelowThresholdAction({
           disabled={targets.length === 0 || dispose.isPending}
         >
           {/* 按钮只说动作与条数;「低于最低报告等级」这层规则留给弹窗标题与说明讲。 */}
-          {targets.length === 0 ? "处置低等级项" : `处置 ${targets.length} 条低等级项`}
+          {`处置 ${targets.length} 条低等级项`}
         </Button>
       }
       title={`处置这个阶段里 ${targets.length} 条低于最低报告等级的未处置项？`}
