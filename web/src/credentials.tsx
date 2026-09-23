@@ -2918,7 +2918,9 @@ function ServiceDetail({
   );
   return (
     <div className={cn("flex min-w-0 flex-col gap-4", tab === "models" && "lg:min-h-0 lg:flex-1")}>
-      <div className="flex min-w-0 flex-col gap-0.5">
+      {/* 宽屏左栏选中行已写着服务名、类型与模型数,这里只留给读屏;窄屏左栏收起,
+          详情页上没有别处说明看的是哪一家,标题照常显示。 */}
+      <div className="flex min-w-0 flex-col gap-0.5 lg:sr-only">
         <h2 className="min-w-0 text-3xl font-extrabold tracking-[-0.02em]">{service.name}</h2>
         <p className="text-base text-text-muted">
           {service.name === service.provider ? null : <><span className="font-mono">{service.provider}</span> · </>}
