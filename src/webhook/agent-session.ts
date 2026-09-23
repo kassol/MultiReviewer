@@ -587,17 +587,45 @@ function touch(sessionId: number, entry: RuntimeEntry): void {
 }
 
 /**
- * 把还没投出去的排队消息落库(issue #335)。回收与排空都在收掉子进程之前调它:镜像随进程走,
- * 落库的这一份等下次发消息重建时一并投递。空队列不写:那一次 DELETE 什么也换不掉。
+ * 还没进过模型的那几条消息。子进程的 Pi 会话建好之后就是镜像;**建好之前是 `pending` 里的
+ * prompt**:`startRun` 已经把留存的那几条与触发启动的这一条从镜像里摘走、攒进了 `pending`,
+ * 只看镜像的话它们一条都落不了库——留存的那几条此前已经从库里取出即删,于是静默丢失。
+ *
+ * 建好之前不叠镜像:启动期间来的新消息(`queueAgentSessionMessage`)镜像与 `pending` 各记一份,
+ * 两边都取就落两行。
+ *
+ * `pending` 按子进程收到之后的效果回放:第一条 prompt 直接开跑,之后的进 Pi 的队列;
+ * `clear-queue` 清的只是队列,开跑那一条不动——清掉的那几条不落库,不然人刚点的清空会被
+ * 重启救回来。`stop` 不清:它清掉的 Pi 队列由镜像留存,下次开跑照样投(issue #334)。开跑那
+ * 一条遇上 stop 实际会被中止,这里仍然留下:冷启动时它根本没进过模型,丢掉就是要修的那种丢失。
+ */
+function unsentMessages(entry: RuntimeEntry): readonly AgentSessionQueuedMessage[] {
+  if (entry.opened) return entry.queue;
+  const unsent: AgentSessionQueuedMessage[] = [];
+  for (const command of entry.pending) {
+    if (command.kind === "clear-queue") unsent.splice(1);
+    else if (command.kind === "prompt") {
+      const { mode, text, images } = command;
+      unsent.push({ mode, text, ...(images === undefined ? {} : { images }) });
+    }
+  }
+  return unsent;
+}
+
+/**
+ * 把还没投出去的排队消息落库(issue #335)。回收与排空都在收掉子进程之前调它,子进程起不来
+ * 那一路也调:镜像随进程走,落库的这一份等下次发消息重建时一并投递。空队列不写:那一次
+ * DELETE 什么也换不掉。
  */
 async function persistQueue(sessionId: number, entry: RuntimeEntry): Promise<void> {
-  if (entry.queue.length === 0) return;
+  const unsent = unsentMessages(entry);
+  if (unsent.length === 0) return;
   const store = entry.deps.store;
   try {
     await store.putAgentSessionPendingMessages(
       sessionId,
       // 图片引用跟着它那一条落库(issue #336):重建补投的还是人当初发的那一条,少了图就不是了。
-      entry.queue.map((message) => ({
+      unsent.map((message) => ({
         mode: message.mode,
         text: message.text,
         ...(message.images === undefined ? {} : { images: JSON.stringify(message.images) }),
@@ -1427,6 +1455,9 @@ export function deliverAgentSessionMessage(
       // 起不来就把登记摘掉,下一条消息重试。已经备出来的工作树与会话根照样要放掉——备到一半
       // 失败的那一次留下的目录没人再来收。
       if (registry.get(session.id) === entry) registry.delete(session.id);
+      // 留存的那几条早已从库里取出即删、连同这一条攒在 `pending` 里:不落回去就全丢了,人下次
+      // 发消息时它们该一并投出去。排空那一路已经落过(`disposed`),再落一遍会盖掉同一份。
+      if (!entry.disposed) void persistQueue(session.id, entry);
       clearTimers(entry);
       killChild(entry.child);
       void letGo(entry).catch(() => {

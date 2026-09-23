@@ -682,6 +682,8 @@ test("更新基点的回绝:不可见、不在会话、Tag、在跑、有排队�
   } finally {
     await disposeAgentSessions();
   }
+  // 排空若赶上子进程还在冷启动,那条没进过模型的消息落回库里等下次投递;清掉它,下面只验排空那道闸。
+  await store.putAgentSessionPendingMessages(sessionId, []);
 
   // 排空中。
   drain.begin();

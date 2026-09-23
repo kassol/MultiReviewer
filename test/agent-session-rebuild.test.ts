@@ -380,3 +380,158 @@ test("spawn 同步失败的子进程再强杀不会连整个进程组一起杀",
 
 /* ─────────────── 提问轮次(CONTEXT.md 提问轮次,issue #359) ─────────────── */
 
+
+/**
+ * 冷启动期间备仓库那一步挂住的会话(评审复核):子进程已经 fork、Pi 会话还没建好。留存的排队
+ * 消息此前已经从库里取出即删,连同触发启动的这一条攒在待发指令里——这时收拢或起不来,它们
+ * 都得落回库里,下次发消息时一并投出去。
+ *
+ * 闸在注册仓库的后台工作副本备好之后才合上:那一步同样经 Forge 读仓库。
+ */
+async function coldBootHarness(): Promise<{
+  started: Awaited<ReturnType<typeof startSessionHarness>>;
+  /** 发消息之后等到备仓库那一步撞上闸:这时 `startRun` 已经跑过。 */
+  reached: Promise<void>;
+  release: () => void;
+  fail: (error: Error) => void;
+}> {
+  let gated = false;
+  let hit = (): void => {};
+  const reached = new Promise<void>((resolve) => {
+    hit = resolve;
+  });
+  let release = (): void => {};
+  let fail = (_error: Error): void => {};
+  const gate = new Promise<void>((resolve, reject) => {
+    release = resolve;
+    fail = reject;
+  });
+  const started = await startSessionHarness([{ text: "用不到", usage: { input: 1, output: 1 } }], {
+    wrapForge: (forge) => ({
+      ...forge,
+      getRepository: async (ref) => {
+        if (gated) {
+          hit();
+          await gate;
+        }
+        return forge.getRepository(ref);
+      },
+    }),
+  });
+  for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
+    const rows = (await (await started.h.api("GET", "/repos")).json()) as {
+      repoId: number;
+      worktree: { state: string };
+    }[];
+    if (rows.find((row) => row.repoId === GITEA_REPO.id)?.worktree.state === "ready") break;
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+  gated = true;
+  return { started, reached, release, fail };
+}
+
+/** 上一次收拢时落库的那一条,带一张图:重建补投的必须还是带着图的那一条。 */
+const RETAINED = "上一次留存的那一句";
+const RETAINED_IMAGES = JSON.stringify([
+  { type: "image-ref", imageId: "img-1", path: "/nowhere/img-1.png", mimeType: "image/png" },
+]);
+const DURING_BOOT = "启动期间排进来的那一句";
+
+/** 落库的排队消息,图片解开比:那一列是 jsonb,读回来键序会重排。 */
+async function pendingOf(
+  store: ReturnType<typeof openStore>,
+  sessionId: number,
+): Promise<{ mode: string; text: string; images?: unknown }[]> {
+  return (await store.listAgentSessionPendingMessages(sessionId)).map((message) =>
+    message.images === undefined ? message : { ...message, images: JSON.parse(message.images) },
+  );
+}
+
+test("冷启动时排空:留存的、触发启动的与启动期间排进来的消息按顺序落库,各只一行", async () => {
+  const { started, reached, release } = await coldBootHarness();
+  const { h, cookie, sessionId, close } = started;
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [
+      { mode: "followUp", text: RETAINED, images: RETAINED_IMAGES },
+    ]);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await reached;
+    assert.equal((await send(h, cookie, sessionId, "c2", DURING_BOOT, "steer")).status, 202);
+
+    // 排空把 `disposed` 与落库的取值都做在第一个 `await` 之前:放闸之后 boot 撞上收拢自己收场。
+    const disposing = disposeAgentSessions();
+    release();
+    await disposing;
+
+    assert.deepEqual(await pendingOf(store, sessionId), [
+      { mode: "followUp", text: RETAINED, images: JSON.parse(RETAINED_IMAGES) },
+      { mode: "followUp", text: MESSAGE },
+      { mode: "steer", text: DURING_BOOT },
+    ]);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("冷启动时人清过队列:清掉的不落库,开跑那一条与清空之后的照样落库", async () => {
+  const { started, reached, release } = await coldBootHarness();
+  const { h, cookie, sessionId, close } = started;
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: RETAINED }]);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await reached;
+    assert.equal((await send(h, cookie, sessionId, "c2", DURING_BOOT)).status, 202);
+    const cleared = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/queue`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.ok(cleared.ok, await cleared.text());
+    assert.equal((await send(h, cookie, sessionId, "c3", "清空之后那一句")).status, 202);
+
+    const disposing = disposeAgentSessions();
+    release();
+    await disposing;
+
+    // 子进程侧第一条直接开跑,清空只清它后面排着的:触发启动的与启动期间那一条被清掉了。
+    assert.deepEqual(await store.listAgentSessionPendingMessages(sessionId), [
+      { mode: "followUp", text: RETAINED },
+      { mode: "followUp", text: "清空之后那一句" },
+    ]);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("冷启动时子进程起不来:留存的与这一轮的消息落回库里,记录里留一条启动失败", async () => {
+  const { started, reached, fail } = await coldBootHarness();
+  const { h, cookie, sessionId, close } = started;
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [
+      { mode: "followUp", text: RETAINED, images: RETAINED_IMAGES },
+    ]);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await reached;
+    assert.equal((await send(h, cookie, sessionId, "c2", DURING_BOOT)).status, 202);
+    fail(new Error("仓库取不回来"));
+
+    await systemMessageMatching(h, cookie, sessionId, /会话子进程启动失败:仓库取不回来/);
+    const expected = [
+      { mode: "followUp", text: RETAINED, images: JSON.parse(RETAINED_IMAGES) },
+      { mode: "followUp", text: MESSAGE },
+      { mode: "followUp", text: DURING_BOOT },
+    ];
+    for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
+      if ((await store.listAgentSessionPendingMessages(sessionId)).length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+    assert.deepEqual(await pendingOf(store, sessionId), expected);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
