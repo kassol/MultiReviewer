@@ -1307,6 +1307,7 @@ function Composer({
   onStop,
   onPick,
   onRemove,
+  onPasteImages,
 }: {
   sessionId: number;
   running: boolean;
@@ -1323,8 +1324,12 @@ function Composer({
   onStop: () => void;
   onPick: (files: readonly File[]) => void;
   onRemove: (imageId: string) => void;
+  /** 粘贴进输入框的图片。文字照常落进输入框,这里只收图片那一份;收不下时回一句原因。 */
+  onPasteImages: (files: readonly File[]) => string | null;
 }) {
   const area = useRef<HTMLTextAreaElement>(null);
+  /** 粘贴图片收不下的原因,贴在输入框下方——页顶那条提示离输入框太远。下一次输入即清掉。 */
+  const [pasteHint, setPasteHint] = useState<string | null>(null);
   useLayoutEffect(() => {
     const el = area.current;
     if (el === null) return;
@@ -1351,7 +1356,16 @@ function Composer({
           placeholder={running ? "在跑:这一条按所选模式投" : "给 agent 发消息"}
           // 发送中不禁用输入框:禁用会丢焦点,发完还得再点一次才能接着打;重复发送由 canSend 挡。
           className="max-h-48 w-full resize-none overflow-y-auto bg-transparent px-3 pt-3 pb-1 text-lg outline-none placeholder:text-text-disabled"
-          onChange={(event) => onDraft(event.target.value)}
+          onChange={(event) => {
+            setPasteHint(null);
+            onDraft(event.target.value);
+          }}
+          onPaste={(event) => {
+            const files = [...event.clipboardData.files].filter((file) =>
+              IMAGE_ACCEPT.split(",").includes(file.type),
+            );
+            if (files.length > 0) setPasteHint(onPasteImages(files));
+          }}
           onKeyDown={(event) => {
             if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
             event.preventDefault();
@@ -1412,6 +1426,11 @@ function Composer({
         </div>
       </div>
       {/* 停止的说明已经在上面的 Tooltip 里,这一行只在空闲时教一次快捷键,在跑时不重复它。 */}
+      {pasteHint === null ? null : (
+        <p role="alert" className="text-sm text-danger">
+          {pasteHint}
+        </p>
+      )}
       <p className="text-right text-sm text-text-disabled max-sm:hidden">
         {running
           ? mode === "steer"
@@ -2060,6 +2079,14 @@ export function AgentSessionPage({
                     onSend={() => post.mutate(draft.trim())}
                     onStop={() => stop.mutate()}
                     onPick={(files) => attach.mutate(files)}
+                    onPasteImages={(files) => {
+                      if (!imageInput) return NO_IMAGE_INPUT_HINT;
+                      if (images.length >= MAX_SESSION_IMAGES)
+                        return `一条消息最多带 ${MAX_SESSION_IMAGES} 张图`;
+                      if (!attach.isPending)
+                        attach.mutate(files.slice(0, MAX_SESSION_IMAGES - images.length));
+                      return null;
+                    }}
                     onRemove={(imageId) =>
                       setImages((current) => current.filter((id) => id !== imageId))
                     }
