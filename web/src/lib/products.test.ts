@@ -12,8 +12,11 @@ import {
   filterKnowledge,
   groupedTerms,
   openTicketIds,
+  NO_TRACKER_FILTER,
   pickableTickets,
   statementParts,
+  ticketStatuses,
+  trackerListGroups,
   ticketNotes,
   trackerCloseConfirm,
   unassignedRepos,
@@ -215,4 +218,79 @@ test("关掉前那句确认报清楚关的是哪一条", () => {
     title: "关掉票 #12「补对账口径」?",
     description: "它不再算可开工的票,被它挡着的票跟着放开。关错了再点一次「重新打开」。",
   });
+});
+
+test("看板四列:已关压过一切,有人认领压过阻塞,其余看阻塞", () => {
+  const ticket = (id: number, over: Partial<TrackerTicket> = {}): TrackerTicket => ({
+    id,
+    title: `票 ${id}`,
+    label: "needs-triage",
+    state: "open",
+    claimedBy: null,
+    blockedBy: [],
+    ...over,
+  });
+  const statuses = ticketStatuses([
+    {
+      id: 1,
+      title: "spec 1",
+      state: "open",
+      tickets: [
+        ticket(1),
+        ticket(2, { state: "closed", claimedBy: "wang", blockedBy: [1] }),
+        // 被挡着但有人认领:归认领人,不落「被阻塞」。
+        ticket(3, { claimedBy: "wang", blockedBy: [1] }),
+        ticket(4, { blockedBy: [1] }),
+        ticket(5, { blockedBy: [2] }),
+      ],
+    },
+  ]);
+  assert.deepEqual(Object.fromEntries(statuses), {
+    1: "ready",
+    2: "closed",
+    3: "claimed",
+    4: "blocked",
+    5: "ready",
+  });
+});
+
+test("列表分组:按所选状态与筛选取票,空组只在不筛时为同状态的 spec 留着", () => {
+  const ticket = (id: number, over: Partial<TrackerTicket> = {}): TrackerTicket => ({
+    id,
+    title: `票 ${id}`,
+    label: "needs-triage",
+    state: "open",
+    claimedBy: null,
+    blockedBy: [],
+    ...over,
+  });
+  const specs: TrackerSpec[] = [
+    { id: 1, title: "a", state: "open", tickets: [ticket(1), ticket(2, { state: "closed" })] },
+    // 还没拆票的开着的 spec。
+    { id: 2, title: "b", state: "open", tickets: [] },
+    // 已关的 spec,票全关了。
+    { id: 3, title: "c", state: "closed", tickets: [ticket(3, { state: "closed", label: "wontfix" })] },
+  ];
+  const shape = (groups: ReturnType<typeof trackerListGroups>) =>
+    groups.map((group) => [group.spec.id, group.tickets.map((one) => one.id)]);
+
+  assert.deepEqual(shape(trackerListGroups(specs, "open", NO_TRACKER_FILTER)), [
+    [1, [1]],
+    [2, []],
+  ]);
+  assert.deepEqual(shape(trackerListGroups(specs, "closed", NO_TRACKER_FILTER)), [
+    [1, [2]],
+    [3, [3]],
+  ]);
+  // 筛着标签时空组不画。
+  assert.deepEqual(
+    shape(trackerListGroups(specs, "closed", { label: "wontfix", claimer: undefined })),
+    [[3, [3]]],
+  );
+  // claimer 为 null 即只看没人认领的。
+  specs[0]!.tickets[0]!.claimedBy = "wang";
+  assert.deepEqual(shape(trackerListGroups(specs, "open", { label: null, claimer: null })), []);
+  assert.deepEqual(shape(trackerListGroups(specs, "open", { label: null, claimer: "wang" })), [
+    [1, [1]],
+  ]);
 });

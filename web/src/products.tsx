@@ -9,6 +9,7 @@ import {
   DotsHorizontalIcon,
   MagnifyingGlassIcon,
   Pencil1Icon,
+  RadiobuttonIcon,
   TrashIcon,
 } from "@radix-ui/react-icons";
 import {
@@ -18,6 +19,8 @@ import {
   DropdownMenu,
   Flex,
   IconButton,
+  SegmentedControl,
+  Select,
   Skeleton,
   Tabs,
   Text,
@@ -26,7 +29,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -50,23 +53,31 @@ import {
   currentProduct,
   filterKnowledge,
   groupedTerms,
+  matchesTrackerFilter,
+  NO_TRACKER_FILTER,
   openTicketIds,
   pickableTickets,
   PRODUCTS_QUERY_KEY,
   productQueryKey,
   specQueryKey,
   ticketNotes,
+  ticketStatuses,
+  TICKET_STATUSES,
   trackerCloseConfirm,
+  trackerListGroups,
   type Product,
   type ProductKnowledge,
   type ProductRepo,
   type SpecDetail,
   type TicketLabel,
+  type TicketStatus,
   type TrackerCloseTarget,
+  type TrackerFilter,
   type TrackerSpec,
   type TrackerState,
 } from "@/lib/products";
 import { localMinute } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 import { apiUrl, fetchJson, send } from "./api.ts";
 import { NameDialog, ProductRail, useProductDetail, useProductSessions } from "./product-rail.tsx";
@@ -114,7 +125,8 @@ export function ProductsPage({
       const spec = Number.isSafeInteger(id) && id > 0 ? id : null;
       // 带着 `?spec=` 进来的那一次不必另写 `tab=tracker`:那条 spec 就在 tracker 里。
       const tab: ProductTab = spec !== null || search.tab === "tracker" ? "tracker" : "knowledge";
-      return { spec, tab };
+      const view: TrackerView = search.view === "board" ? "board" : "list";
+      return { spec, tab, view };
     },
   });
   // 地址带不带产品那一段要原样留着:`/products` 与 `/products/$productId` 是两条路由。
@@ -141,6 +153,9 @@ export function ProductsPage({
       tab: prev.tab ?? "tracker",
     }));
   };
+  // 缺省的列表视图不写进地址。
+  const selectView = (next: TrackerView): void =>
+    replaceSearch((prev) => ({ ...prev, view: next === "list" ? undefined : next }));
   // 缺省的产品知识页不写进地址。
   const selectTab = (next: ProductTab): void =>
     replaceSearch((prev) => ({ ...prev, tab: next === "knowledge" ? undefined : next }));
@@ -264,6 +279,7 @@ export function ProductsPage({
   }
 
   const specs = knowledgeQuery.data?.tracker.specs ?? [];
+  const openTicketCount = openTicketIds(specs).size;
 
   /*
    * 右栏:概览那一行,与分两页的产品知识、产品 tracker。概览留在 tab 之外——产品名与
@@ -352,7 +368,8 @@ export function ProductsPage({
             </Tabs.Trigger>
             <Tabs.Trigger value="tracker" className={TAB_TRIGGER}>
               产品 tracker
-              {specs.length === 0 ? null : (
+              {/* 数的是开着的票,与 GitHub 的 Issues 计数同一口径:它说的是还剩多少活。 */}
+              {openTicketCount === 0 ? null : (
                 <Badge
                   color={location.tab === "tracker" ? "blue" : "gray"}
                   variant="soft"
@@ -360,7 +377,7 @@ export function ProductsPage({
                   size="1"
                   className="ml-1.5 tabular-nums"
                 >
-                  {specs.length}
+                  {openTicketCount}
                 </Badge>
               )}
             </Tabs.Trigger>
@@ -386,6 +403,8 @@ export function ProductsPage({
               canChat={canChat}
               openSpecId={location.spec}
               onOpenSpec={openSpec}
+              view={location.view}
+              onView={selectView}
             />
           </Tabs.Content>
         </Tabs.Root>
@@ -1017,13 +1036,54 @@ function PickableMark() {
   return <span className="shrink-0 text-sm font-medium text-primary">可开工</span>;
 }
 
+/** 看板四列各自的状态图标颜色。开着的三档共用一个圆点图形、按颜色分,已关换成对勾。 */
+const STATUS_ICON_CLASS: Record<TicketStatus, string> = {
+  ready: "text-success-icon",
+  blocked: "text-warning-icon",
+  claimed: "text-primary",
+  closed: "text-text-muted",
+};
+
+const STATUS_TITLE = Object.fromEntries(
+  TICKET_STATUSES.map(({ status, title }) => [status, title]),
+) as Record<TicketStatus, string>;
+
+/** 一张票的状态图标(列表行首、看板列头、弹窗里的票行共用)。读屏读到的是列名。 */
+function TicketStatusIcon({ status, className }: { status: TicketStatus; className?: string | undefined }) {
+  const Icon = status === "closed" ? CheckCircledIcon : RadiobuttonIcon;
+  return (
+    <Icon
+      role="img"
+      aria-label={STATUS_TITLE[status]}
+      className={cn("size-4 shrink-0", STATUS_ICON_CLASS[status], className)}
+    />
+  );
+}
+
+/** tracker 两种视图(issue 式列表与看板)。缺省是列表,不写进地址。 */
+export type TrackerView = "list" | "board";
+
+/** 认领人筛选的 Select 取值:Radix Select 不收空串,「全部」「未认领」用前缀与用户名分开。 */
+const CLAIMER_ALL = "all";
+const CLAIMER_NONE = "none";
+const claimerValue = (claimer: string | null | undefined): string =>
+  claimer === undefined ? CLAIMER_ALL : claimer === null ? CLAIMER_NONE : `user:${claimer}`;
+const claimerFromValue = (value: string): string | null | undefined =>
+  value === CLAIMER_ALL ? undefined : value === CLAIMER_NONE ? null : value.slice("user:".length);
+
+/** 看板「已关」那一列默认只画这么多张:它只会越攒越多,而人来看板找的是还开着的。 */
+const CLOSED_COLUMN_LIMIT = 8;
+
 /**
- * 产品页右栏的产品 tracker 区(CONTEXT.md 产品 tracker,issue #361、#363)。排在产品知识区
- * 下面:知识说这个产品是什么,tracker 说它接下来要做什么。
+ * 产品页右栏的产品 tracker 区(CONTEXT.md 产品 tracker,issue #361、#363)。
+ *
+ * 两种视图,形状照 GitHub:**列表**是 issue 式的——「开着 / 已关」两个计数切换,标签与认领人
+ * 筛选,一条 spec 一组、组里一张票一行;**看板**按票此刻的工作状态分四列(可开工 / 被阻塞 /
+ * 已认领 / 已关),回答「现在能接哪一张」。筛选两种视图共用,视图记在地址的 `?view=` 上。
  *
  * **正文只读**:spec 与票的正文只由会话经工具写。人在这里读、导出,并做认领、改标签、开关
- * 与评论——那几个动作在 spec 全文弹窗里,一张票的上下文全在那儿。列表这一层只多一件事:
- * 把可开工的票标出来。读随产品可见性,动作按 `agent:chat` 显隐。
+ * 与评论——那几个动作在 spec 全文弹窗里,一张票的上下文全在那儿;点一张票打开它所在的 spec
+ * 并展开这一张。读随产品可见性,动作按 `agent:chat` 显隐。
  */
 function TrackerSection({
   product,
@@ -1032,6 +1092,8 @@ function TrackerSection({
   canChat,
   openSpecId,
   onOpenSpec,
+  view,
+  onView,
 }: {
   product: Product;
   specs: readonly TrackerSpec[];
@@ -1040,159 +1102,358 @@ function TrackerSection({
   /** 地址上 `?spec=` 说的那一条(null 即弹窗关着)。会话页右栏点过来的链接带的就是它。 */
   openSpecId: number | null;
   onOpenSpec: (specId: number | null) => void;
+  view: TrackerView;
+  onView: (view: TrackerView) => void;
 }) {
   const openSpec = specs.find((spec) => spec.id === openSpecId) ?? null;
-  /** 弹窗是受控的,没有 `Dialog.Trigger`,焦点得自己送回打开它的那颗 spec 标题键;
-   *  关掉 spec 后列表重取、那颗键被换掉时,按 spec id 找回新渲染的同一颗。带着 `?spec=`
-   *  进来的那一次没有点过任何键,同样照这个 id 找。 */
-  const lastOpenedSpecId = useRef<number | null>(null);
-  if (openSpecId !== null) lastOpenedSpecId.current = openSpecId;
+  const [listState, setListState] = useState<TrackerState>("open");
+  const [filter, setFilter] = useState<TrackerFilter>(NO_TRACKER_FILTER);
+  const [showAllClosed, setShowAllClosed] = useState(false);
+  /** 从一张票点进来时弹窗里展开并滚到这一张;点 spec 标题进来时为 null。 */
+  const [focusTicketId, setFocusTicketId] = useState<number | null>(null);
+  /** 弹窗是受控的,没有 `Dialog.Trigger`,焦点得自己送回打开它的那颗键;关掉后列表重取、
+   *  那颗键被换掉时,按票号或 spec id 找回新渲染的同一颗。带着 `?spec=` 进来的那一次没有
+   *  点过任何键,同样照 spec id 找。 */
+  const lastTrigger = useRef<string | null>(null);
+  if (openSpecId !== null && focusTicketId === null) {
+    lastTrigger.current = `[data-spec-trigger="${openSpecId}"]`;
+  }
   const returnFocus = useDialogReturnFocus(useCallback(
-    () => document.querySelector<HTMLElement>(`[data-spec-trigger="${lastOpenedSpecId.current}"]`),
+    () => (lastTrigger.current === null ? null : document.querySelector<HTMLElement>(lastTrigger.current)),
     [],
   ));
-  const ticketCount = specs.reduce((total, spec) => total + spec.tickets.length, 0);
-  const pickable = pickableTickets(specs);
+  const statuses = ticketStatuses(specs);
   const openTickets = openTicketIds(specs);
+  const pickable = pickableTickets(specs);
+  const tickets = specs.flatMap((spec) => spec.tickets.map((ticket) => ({ spec, ticket })));
+  const matching = tickets.filter(({ ticket }) => matchesTrackerFilter(ticket, filter));
+  const filtering = filter.label !== null || filter.claimer !== undefined;
+  const claimers = [...new Set(tickets.map(({ ticket }) => ticket.claimedBy).filter((one) => one !== null))].sort();
+
+  const openFromSpec = (event: MouseEvent<HTMLElement>, specId: number): void => {
+    returnFocus.captureTrigger(event);
+    lastTrigger.current = `[data-spec-trigger="${specId}"]`;
+    setFocusTicketId(null);
+    onOpenSpec(specId);
+  };
+  const openFromTicket = (event: MouseEvent<HTMLElement>, specId: number, ticketId: number): void => {
+    returnFocus.captureTrigger(event);
+    lastTrigger.current = `[data-ticket-trigger="${ticketId}"]`;
+    setFocusTicketId(ticketId);
+    onOpenSpec(specId);
+  };
+
+  const toolbar = (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+      <h2 className="sr-only">产品 tracker</h2>
+      {view === "list" ? (
+        // 与 GitHub issue 列表同一形状:两个带数的开关,当前那一个字重压实。数跟着筛选走。
+        <div role="group" aria-label="按开关筛选" className="flex items-center gap-1">
+          {(["open", "closed"] as const).map((state) => {
+            const count = matching.filter(({ ticket }) => ticket.state === state).length;
+            const current = listState === state;
+            return (
+              <Button
+                key={state}
+                variant="ghost"
+                color="gray"
+                size="2"
+                aria-pressed={current}
+                className={cn(
+                  "pointer-coarse:min-h-11",
+                  current ? "font-semibold text-text" : "text-text-muted",
+                )}
+                onClick={() => setListState(state)}
+              >
+                {state === "open" ? (
+                  <RadiobuttonIcon aria-hidden />
+                ) : (
+                  <CheckCircledIcon aria-hidden />
+                )}
+                <span className="font-mono tabular-nums">{count}</span>
+                {state === "open" ? "开着" : "已关"}
+              </Button>
+            );
+          })}
+        </div>
+      ) : (
+        <span className="text-md text-text-secondary">
+          <span className="font-mono tabular-nums">{matching.length}</span> 张票
+        </span>
+      )}
+      <div className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto max-sm:w-full">
+        <Select.Root
+          size={{ initial: "3", sm: "1" }}
+          value={filter.label ?? "all"}
+          onValueChange={(value) =>
+            setFilter((prev) => ({ ...prev, label: value === "all" ? null : (value as TicketLabel) }))
+          }
+        >
+          <Select.Trigger aria-label="按标签筛选" className="max-sm:flex-1" />
+          <Select.Content>
+            <Select.Item value="all">全部标签</Select.Item>
+            {TICKET_LABELS.map((label) => (
+              <Select.Item key={label} value={label}>
+                {label}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+        <Select.Root
+          size={{ initial: "3", sm: "1" }}
+          value={claimerValue(filter.claimer)}
+          onValueChange={(value) => setFilter((prev) => ({ ...prev, claimer: claimerFromValue(value) }))}
+        >
+          <Select.Trigger aria-label="按认领人筛选" className="max-sm:flex-1" />
+          <Select.Content>
+            <Select.Item value={CLAIMER_ALL}>全部认领人</Select.Item>
+            <Select.Item value={CLAIMER_NONE}>未认领</Select.Item>
+            {claimers.map((name) => (
+              <Select.Item key={name} value={claimerValue(name)}>
+                {name}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+        <SegmentedControl.Root
+          size={{ initial: "3", sm: "1" }}
+          value={view}
+          onValueChange={(next) => onView(next as TrackerView)}
+          aria-label="tracker 视图"
+          className="max-sm:w-full"
+        >
+          <SegmentedControl.Item value="list" className="max-sm:flex-1">列表</SegmentedControl.Item>
+          <SegmentedControl.Item value="board" className="max-sm:flex-1">看板</SegmentedControl.Item>
+        </SegmentedControl.Root>
+        <HelpTooltip
+          label="产品 tracker 说明"
+          content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
+        />
+      </div>
+    </div>
+  );
+
+  const clearFilter = filtering ? (
+    <Button variant="soft" color="gray" size="1" onClick={() => setFilter(NO_TRACKER_FILTER)}>
+      清除筛选
+    </Button>
+  ) : undefined;
+
+  const listBody = (() => {
+    const groups = trackerListGroups(specs, listState, filter);
+    if (groups.length === 0) {
+      return (
+        <CardShell className="px-5 py-4">
+          <EmptyState
+            title={filtering ? "没有符合筛选的票。" : listState === "open" ? "没有开着的票。" : "没有关掉的票。"}
+            action={clearFilter}
+          />
+        </CardShell>
+      );
+    }
+    return (
+      <CardShell className="min-w-0 overflow-hidden">
+        {groups.map(({ spec, tickets: rows }) => {
+          const done = spec.tickets.filter((ticket) => ticket.state === "closed").length;
+          return (
+            <section key={spec.id} className="min-w-0 border-t border-line first:border-t-0">
+              {/* 组头是 spec:标题点开全文,右端是它的票关了几张与导出。底色让它与下面的票行分层。 */}
+              <div className="flex min-w-0 items-center justify-between gap-3 bg-sunken px-4 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    data-spec-trigger={spec.id}
+                    className="min-w-0 break-words rounded-sm text-left text-md font-semibold text-text hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none pointer-coarse:min-h-11"
+                    onClick={(event) => openFromSpec(event, spec.id)}
+                  >
+                    {spec.title}
+                  </button>
+                  {spec.state === "closed" ? (
+                    <Badge color="gray" variant="soft" size="1">
+                      已关
+                    </Badge>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  {spec.tickets.length === 0 ? null : (
+                    <span className="text-sm text-text-muted" title={`${spec.tickets.length} 张票里关了 ${done} 张`}>
+                      <span className="font-mono tabular-nums">
+                        {done}/{spec.tickets.length}
+                      </span>{" "}
+                      已关
+                    </span>
+                  )}
+                  {/* 导出就是那一个 GET:交给浏览器下载,不必先在前端拼一遍 Markdown。 */}
+                  <Button asChild variant="ghost" color="gray" size="1" className="pointer-coarse:min-h-11">
+                    <a
+                      href={apiUrl(`/products/${product.id}/specs/${spec.id}/export`)}
+                      download={`${spec.title}.md`}
+                    >
+                      导出
+                    </a>
+                  </Button>
+                </div>
+              </div>
+              {rows.length === 0 ? (
+                <p className="border-t border-line px-4 py-2.5 text-base text-text-muted">还没有拆出票。</p>
+              ) : (
+                <ul>
+                  {rows.map((ticket) => {
+                    const notes = ticketNotes(ticket, openTickets);
+                    const status = statuses.get(ticket.id) ?? "ready";
+                    return (
+                      <li
+                        key={ticket.id}
+                        className="flex min-w-0 items-start gap-2.5 border-t border-line px-4 py-2.5 transition-colors hover:bg-sunken"
+                      >
+                        <TicketStatusIcon status={status} className="mt-0.5" />
+                        <div className="flex min-w-0 grow flex-col gap-0.5">
+                          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                            <button
+                              type="button"
+                              data-ticket-trigger={ticket.id}
+                              className={cn(
+                                "min-w-0 break-words rounded-sm text-left text-lg font-medium hover:text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none",
+                                ticket.state === "closed" ? "text-text-secondary" : "text-text",
+                              )}
+                              onClick={(event) => openFromTicket(event, spec.id, ticket.id)}
+                            >
+                              {ticket.title}
+                            </button>
+                            <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
+                              {ticket.label}
+                            </Badge>
+                          </div>
+                          <span className="text-sm text-text-muted">
+                            <span className="font-mono tabular-nums">#{ticket.id}</span>
+                            {notes === "" ? null : ` · ${notes}`}
+                          </span>
+                        </div>
+                        {pickable.has(ticket.id) ? <PickableMark /> : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+      </CardShell>
+    );
+  })();
+
+  const boardBody = (
+    // 列不是卡:页面灰底上一道更深一档的槽,白卡浮在里面。窄屏按 2 列、1 列折下来,不横向滚。
+    <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {TICKET_STATUSES.map(({ status, title }) => {
+        const all = matching.filter(({ ticket }) => statuses.get(ticket.id) === status);
+        // 已关那一列新关的在前:票号越大越晚写下,没有关闭时刻可排,拿它近似。
+        const ordered = status === "closed" ? [...all].sort((x, y) => y.ticket.id - x.ticket.id) : all;
+        const cut = status === "closed" && !showAllClosed && ordered.length > CLOSED_COLUMN_LIMIT;
+        const cards = cut ? ordered.slice(0, CLOSED_COLUMN_LIMIT) : ordered;
+        return (
+          <section
+            key={status}
+            aria-label={title}
+            className="flex min-w-0 flex-col gap-2 rounded-[var(--v8-radius-card)] bg-sunken p-2"
+          >
+            <h3 className="flex items-center gap-2 px-1.5 pt-1 text-md font-semibold">
+              <TicketStatusIcon status={status} />
+              {title}
+              <span className="font-mono text-sm font-normal text-text-muted tabular-nums">{all.length}</span>
+            </h3>
+            {cards.length === 0 ? (
+              <p className="px-1.5 pb-1.5 text-base text-text-disabled">没有票</p>
+            ) : (
+              cards.map(({ spec, ticket }) => {
+                const notes = ticketNotes(ticket, openTickets);
+                return (
+                  <button
+                    key={ticket.id}
+                    type="button"
+                    data-ticket-trigger={ticket.id}
+                    className="flex min-w-0 flex-col gap-1.5 rounded-[var(--v8-radius-control)] border border-card-line bg-surface p-3 text-left shadow-[var(--v8-shadow-control)] transition-[box-shadow,border-color] hover:border-input hover:shadow-[var(--v8-shadow-card)] focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+                    onClick={(event) => openFromTicket(event, spec.id, ticket.id)}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span className="font-mono text-xs text-text-muted tabular-nums">#{ticket.id}</span>
+                      <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
+                        {ticket.label}
+                      </Badge>
+                    </span>
+                    <span
+                      className={cn(
+                        "line-clamp-3 break-words text-md font-medium",
+                        ticket.state === "closed" ? "text-text-secondary" : "text-text",
+                      )}
+                    >
+                      {ticket.title}
+                    </span>
+                    <span className="truncate text-sm text-text-muted" title={spec.title}>
+                      {spec.title}
+                    </span>
+                    {/* 已关那一句列头已经说了,卡上只留认领人与还挡着它的票。 */}
+                    {notes.replace(/^已关( · )?/, "") === "" ? null : (
+                      <span className="text-sm text-text-secondary">{notes.replace(/^已关( · )?/, "")}</span>
+                    )}
+                  </button>
+                );
+              })
+            )}
+            {cut ? (
+              <Button variant="ghost" color="gray" size="1" className="mx-1 mb-1 self-start" onClick={() => setShowAllClosed(true)}>
+                显示全部 {ordered.length} 张
+              </Button>
+            ) : null}
+          </section>
+        );
+      })}
+    </div>
+  );
 
   return (
-    // 带着 `?spec=` 进来的那一次不必滚:tracker 自己就是主区的一页,它已经在视野里。
-    <CardShell className="min-w-0 px-5 py-4">
-      <div className="flex min-w-0 flex-col gap-3">
-        <div className="flex min-w-0 items-center gap-1">
+    <div className="flex min-w-0 flex-col gap-3">
+      {pending ? (
+        <Skeleton aria-hidden className="h-24" />
+      ) : specs.length === 0 ? (
+        <CardShell className="px-5 py-4">
           <h2 className="sr-only">产品 tracker</h2>
-          <span className="text-md text-text-secondary">会话写下的 spec 与票</span>
-          <HelpTooltip
-            label="产品 tracker 说明"
-            content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
-          />
-          {/* 两个数各带单位:「4 / 17」读着像做完了几件,而它说的是这里有几条 spec、几张票。 */}
-          {pending || specs.length === 0 ? null : (
-            <span className="ml-1 text-sm text-text-muted">
-              <span className="font-mono tabular-nums">{specs.length}</span> 条 spec ·{" "}
-              <span className="font-mono tabular-nums">{ticketCount}</span> 张票
-            </span>
-          )}
-        </div>
-
-        {pending ? (
-          <Skeleton aria-hidden className="h-16" />
-        ) : specs.length === 0 ? (
           <EmptyState
             title="还没有 spec。"
             description="在需求拆分会话里谈定一个需求,agent 就把它连同拆出的票写进来。"
           />
-        ) : (
-          <ul>
-            {specs.map((spec) => (
-              <li
-                key={spec.id}
-                className="flex min-w-0 flex-col gap-1.5 border-t border-line py-2.5 first:border-t-0 first:pt-0"
-              >
-                {/* 整行 hover 铺一层底:标题在左、「导出」在右端,宽屏上两头能隔着 650px,
-                    没有底色时看不出它们属于同一条 spec。 */}
-                <div className="-mx-2 flex items-start justify-between gap-3 rounded-md px-2 transition-colors hover:bg-sunken">
-                  {/* `shrink`:Themes 的 Button 自带 `flex-shrink: 0`,只给 `min-w-0` 挡不住
-                      它按标题全长撑开,窄屏上标题会顶出卡片右沿。 */}
-                  <Button
-                    variant="ghost"
-                    color="gray"
-                    size="2"
-                    className="group min-w-0 shrink justify-start text-left"
-                    data-spec-trigger={spec.id}
-                    onClick={(event) => {
-                      returnFocus.captureTrigger(event);
-                      onOpenSpec(spec.id);
-                    }}
-                  >
-                    {/* 静息态一颗 chevron 加 hover / focus 下划线:ghost 键平时与纯文字无异,
-                        没有提示时这条标题看不出点得开。 */}
-                    <ChevronRightIcon aria-hidden className="shrink-0 text-text-muted" />
-                    <span className="min-w-0 break-words text-lg font-semibold text-text group-hover:underline group-focus-visible:underline">
-                      {spec.title}
-                    </span>
-                  </Button>
-                  <Flex gap="2" align="center" className="shrink-0">
-                    {spec.state === "closed" ? (
-                      <Badge color="gray" variant="soft" size="1">
-                        已关
-                      </Badge>
-                    ) : null}
-                    {/* 导出就是那一个 GET:交给浏览器下载,不必先在前端拼一遍 Markdown。 */}
-                    <Button asChild variant="ghost" color="gray" size="1">
-                      <a
-                        href={apiUrl(`/products/${product.id}/specs/${spec.id}/export`)}
-                        download={`${spec.title}.md`}
-                      >
-                        导出
-                      </a>
-                    </Button>
-                  </Flex>
-                </div>
-                {spec.tickets.length === 0 ? (
-                  <Text as="span" size="2" color="gray">
-                    还没有拆出票。
-                  </Text>
-                ) : (
-                  // 票缩进到 spec 标题的字下面(让开 chevron 那一格):一眼看得出它们挂在这条 spec 下。
-                  <ul className="flex min-w-0 flex-col gap-1.5 sm:pl-6">
-                    {spec.tickets.map((ticket) => {
-                      const notes = ticketNotes(ticket, openTickets);
-                      return (
-                        // 标签、状态那几格宽度固定,390px 下把标题挤成一行一个字。让这一行
-                        // 可折行,`sm` 以下标题的 flex 基准给满行宽:它自己独占一行,元信息被
-                        // 挤到下一行,读起来是 编号 → 标题 → 元信息;此前元信息落在标题第一行
-                        // 右端,标题从它左边起折到下一行,像标题里插了一段(issue #390)。
-                        // 宽屏基准回到 0、留 12rem 下限,照旧一行排完。
-                        <li
-                          key={ticket.id}
-                          className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1"
-                        >
-                          <span className="mt-0.5 shrink-0 font-mono text-xs text-text-muted tabular-nums">
-                            #{ticket.id}
-                          </span>
-                          {/* 标签那一格 `sm` 起定宽(最长的 ready-for-human 放得下):五个标签长短
-                              不一,不定宽时几张票的标题起点参差。 */}
-                          <span className="mt-0.5 flex shrink-0 sm:w-[7.5rem]">
-                            <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
-                              {ticket.label}
-                            </Badge>
-                          </span>
-                          <Text
-                            as="span"
-                            size="2"
-                            className={
-                              ticket.state === "closed"
-                                ? "min-w-[12rem] grow basis-full break-words text-text-muted line-through sm:basis-0"
-                                : "min-w-[12rem] grow basis-full break-words sm:basis-0"
-                            }
-                          >
-                            {ticket.title}
-                          </Text>
-                          {notes === "" ? null : (
-                            <span className="shrink-0 text-sm text-text-muted">{notes}</span>
-                          )}
-                          {pickable.has(ticket.id) ? <PickableMark /> : null}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+        </CardShell>
+      ) : (
+        <>
+          {toolbar}
+          {view === "list" ? listBody : boardBody}
+        </>
+      )}
       <SpecDialog
         productId={product.id}
         spec={openSpec}
         canChat={canChat}
         pickable={pickable}
         openTickets={openTickets}
-        onClose={() => onOpenSpec(null)}
+        statuses={statuses}
+        focusTicketId={focusTicketId}
+        onClose={() => {
+          setFocusTicketId(null);
+          onOpenSpec(null);
+        }}
         onCloseAutoFocus={returnFocus.onCloseAutoFocus}
       />
-    </CardShell>
+    </div>
+  );
+}
+
+/** spec 弹窗侧栏里的一段:小标题加内容,段与段之间一道发丝线。 */
+function SidebarBlock({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="flex min-w-0 flex-col gap-2 border-t border-line pt-3 first:border-t-0 first:pt-0">
+      <h3 className="text-sm font-semibold text-text-muted">{title}</h3>
+      {children}
+    </section>
   );
 }
 
@@ -1252,6 +1513,8 @@ function SpecDialog({
   canChat,
   pickable,
   openTickets,
+  statuses,
+  focusTicketId,
   onClose,
   onCloseAutoFocus,
 }: {
@@ -1263,6 +1526,10 @@ function SpecDialog({
   pickable: ReadonlySet<number>;
   /** 开着的票号:「等 #n」只列还挡着的那几张。 */
   openTickets: ReadonlySet<number>;
+  /** 每张票落在看板哪一列,与产品页那一份同一份。 */
+  statuses: ReadonlyMap<number, TicketStatus>;
+  /** 从一张票点进来时展开并滚到这一张。 */
+  focusTicketId: number | null;
   onClose: () => void;
   /** 关闭后把焦点送回打开它的那颗 spec 标题键。 */
   onCloseAutoFocus: (event: Event) => void;
@@ -1315,6 +1582,14 @@ function SpecDialog({
     [],
   ));
   const closeConfirm = shownClosing === null ? null : trackerCloseConfirm(shownClosing);
+  /** 从一张票点进来:内容一到就把那一行滚进视野(它在折叠行里已按 `defaultOpen` 展开)。 */
+  const loaded = detail.data !== undefined;
+  useEffect(() => {
+    if (!loaded || focusTicketId === null) return;
+    document
+      .querySelector(`[data-ticket-row="${focusTicketId}"]`)
+      ?.scrollIntoView({ block: "start" });
+  }, [loaded, focusTicketId]);
 
   return (
     <Dialog.Root
@@ -1327,14 +1602,13 @@ function SpecDialog({
       }}
     >
       <Dialog.Content
-        maxWidth="820px"
+        maxWidth="980px"
         size={{ initial: "2", sm: "3" }}
         onCloseAutoFocus={onCloseAutoFocus}
       >
-        {/* 关闭键在标题行右端(issue #390)。此前浮层里一个 `Dialog.Close` 都没有,390px 上
-            的出口只剩两侧那道 16px 空隙与 Tab 栏上方的窄条。与仓库配置弹窗同一形状。 */}
+        {/* 关闭键在标题行右端(issue #390)。与仓库配置弹窗同一形状。 */}
         <div className="flex items-start justify-between gap-3">
-          <Dialog.Title size="4" mb="2" className="min-w-0 break-words">
+          <Dialog.Title size="5" mb="2" className="min-w-0 break-words">
             {spec?.title ?? ""}
           </Dialog.Title>
           <Dialog.Close>
@@ -1350,8 +1624,25 @@ function SpecDialog({
             </IconButton>
           </Dialog.Close>
         </div>
-        <Dialog.Description size="2" color="gray" mb="3">
-          spec 与票的正文由会话写,这里读它,并认领、改标签、开关与评论。
+        {/* 标题下那一行照 GitHub issue 头:状态胶囊,再跟几件事实。 */}
+        <Dialog.Description size="2" color="gray" mb="4" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {spec === null ? null : spec.state === "open" ? (
+              <Badge color="green" variant="soft" size="2" radius="full">
+                <RadiobuttonIcon aria-hidden />
+                开着
+              </Badge>
+            ) : (
+              <Badge color="gray" variant="soft" size="2" radius="full">
+                <CheckCircledIcon aria-hidden />
+                已关
+              </Badge>
+            )}
+            {detail.data === undefined ? null : (
+              <span>
+                <span className="font-mono tabular-nums">{detail.data.tickets.length}</span> 张票 · 建于{" "}
+                {localMinute(detail.data.spec.createdAt)}
+              </span>
+            )}
         </Dialog.Description>
         {failure === null ? null : (
           <Callout.Root role="alert" color="red" size="1" mb="3">
@@ -1370,167 +1661,261 @@ function SpecDialog({
         ) : (
           // `relative`:里面任何绝对定位的东西都按这一格定位,不漏到弹窗外层去撑它的滚动高度。
           // 横向不滚:ghost 键的负外边距会多出几像素,`-mx-1 px-1` 给焦点环留位置。
-          <div className="relative -mx-1 flex max-h-[min(70vh,720px)] min-w-0 max-sm:max-h-[58dvh] flex-col gap-4 overflow-x-hidden overflow-y-auto px-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {detail.data.spec.state === "closed" ? (
-                <Badge color="gray" variant="soft" size="1">
-                  已关
-                </Badge>
-              ) : null}
-              {canChat ? (
-                <Button
-                  size="1"
-                  variant="soft"
-                  color="gray"
-                  disabled={busy}
-                  onClick={(event) =>
-                    // 关要先问一句(issue #389);重新打开照旧点完就写——它把状态放回去,误触没有代价。
-                    detail.data.spec.state === "open"
-                      ? (confirmFocus.captureTrigger(event), setClosing({
-                          kind: "spec",
-                          id: detail.data.spec.id,
-                          title: detail.data.spec.title,
-                        }))
-                      : act.mutate({
-                          path: `/products/${productId}/specs/${detail.data.spec.id}`,
-                          method: "PUT",
-                          payload: { state: "open" },
-                        })
-                  }
-                >
-                  {detail.data.spec.state === "open" ? "关掉这条 spec" : "重新打开这条 spec"}
-                </Button>
-              ) : null}
-            </div>
-            <Markdown text={detail.data.spec.body} />
-            {/*
-              一张票一行:标题那一行装齐编号、标签、状态、认领人、可开工与那几个动作,正文与
-              评论点开才展开(issue #366 之后一条 spec 常带十来张票,全摊开要滚半天才找得到
-              要动的那一张)。动作贴着标题那一行——收起时也要认领得了、改得了标签。
-            */}
-            {detail.data.tickets.length === 0 ? null : (
-              <h3 className="flex items-center gap-1.5 border-t border-line pt-4 text-lg font-semibold">
-                票
-                <span className="font-mono text-xs font-normal text-text-muted tabular-nums">
-                  {detail.data.tickets.length}
-                </span>
-              </h3>
-            )}
-            {detail.data.tickets.map((ticket) => (
-              <section
-                key={ticket.id}
-                className="flex min-w-0 flex-col border-t border-line pt-3 first-of-type:border-t-0 first-of-type:pt-0"
-              >
-                <Collapsible.Root className="group/ticket flex min-w-0 flex-col gap-1.5">
-                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                    <Collapsible.Trigger asChild>
-                      {/* 原生 button,触控高度自己给(DESIGN.md 6.1 触控):coarse 块只发给
-                          Radix 类名。 */}
-                      <button
-                        type="button"
-                        className="flex min-w-[12rem] grow basis-full items-center gap-2 rounded-md py-1 text-left max-sm:flex-wrap transition-colors pointer-coarse:min-h-11 hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:basis-0"
+          <div className="relative -mx-1 max-h-[min(70vh,720px)] min-w-0 overflow-x-hidden overflow-y-auto px-1 max-sm:max-h-[58dvh]">
+            <div className="grid min-w-0 gap-6 md:grid-cols-[minmax(0,1fr)_13rem]">
+              {/* 侧栏照 GitHub issue 页右侧:进度、看板分布、动作。`md` 以下排到正文之前,
+                  动作不必滚过整篇正文才够得着。 */}
+              <aside className="flex min-w-0 flex-col gap-4 text-base md:sticky md:top-0 md:order-last md:self-start">
+                {detail.data.tickets.length === 0 ? null : (
+                  <SidebarBlock title="进度">
+                    {(() => {
+                      const total = detail.data.tickets.length;
+                      const done = detail.data.tickets.filter((ticket) => ticket.state === "closed").length;
+                      return (
+                        <>
+                          <div
+                            role="progressbar"
+                            aria-label="票的进度"
+                            aria-valuemin={0}
+                            aria-valuemax={total}
+                            aria-valuenow={done}
+                            className="h-1.5 overflow-hidden rounded-full bg-accent-track"
+                          >
+                            <div className="h-full rounded-full bg-primary" style={{ width: `${(done / total) * 100}%` }} />
+                          </div>
+                          <span className="text-text-secondary">
+                            <span className="font-mono tabular-nums">
+                              {done} / {total}
+                            </span>{" "}
+                            张已关
+                          </span>
+                        </>
+                      );
+                    })()}
+                  </SidebarBlock>
+                )}
+                {detail.data.tickets.length === 0 ? null : (
+                  <SidebarBlock title="票的状态">
+                    <ul className="flex flex-col gap-1">
+                      {TICKET_STATUSES.map(({ status, title }) => {
+                        const count = detail.data.tickets.filter((ticket) => statuses.get(ticket.id) === status).length;
+                        return (
+                          <li key={status} className={cn("flex items-center gap-2", count === 0 && "text-text-disabled")}>
+                            <TicketStatusIcon status={status} className={count === 0 ? "opacity-40" : undefined} />
+                            <span className="grow">{title}</span>
+                            <span className="font-mono tabular-nums">{count}</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </SidebarBlock>
+                )}
+                <SidebarBlock title="操作">
+                  <div className="flex flex-wrap gap-2 md:flex-col md:items-start">
+                    <Button asChild variant="soft" color="gray" size="1" className="pointer-coarse:min-h-11">
+                      <a
+                        href={apiUrl(`/products/${productId}/specs/${detail.data.spec.id}/export`)}
+                        download={`${detail.data.spec.title}.md`}
                       >
-                        <ChevronRightIcon
-                          aria-hidden
-                          className="shrink-0 text-text-muted transition-transform group-data-[state=open]/ticket:rotate-90"
-                        />
-                        <span className="shrink-0 font-mono text-xs text-text-muted tabular-nums">
-                          #{ticket.id}
-                        </span>
-                        <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
-                          {ticket.label}
-                        </Badge>
-                        {/* `sm` 以下标题独占一行:挤在标签右边只剩半屏宽,一个标题折成三四行。 */}
-                        <Text
-                          as="span"
-                          size="3"
-                          weight="medium"
-                          className="min-w-0 break-words max-sm:basis-full max-sm:pl-6"
-                        >
-                          {ticket.title}
-                        </Text>
-                      </button>
-                    </Collapsible.Trigger>
-                    {ticketNotes(ticket, openTickets) === "" ? null : (
-                      <span className="shrink-0 text-sm text-text-muted">{ticketNotes(ticket, openTickets)}</span>
-                    )}
-                    {pickable.has(ticket.id) ? <PickableMark /> : null}
+                        导出 Markdown
+                      </a>
+                    </Button>
                     {canChat ? (
-                      <div className="flex flex-wrap items-center gap-4 pl-1">
-                        <Button
-                          size="1"
-                          className="pointer-coarse:min-h-11"
-                          variant="ghost"
-                          color="gray"
-                          disabled={busy}
-                          onClick={() =>
-                            ticketAction(ticket.id, { claimed: ticket.claimedBy === null })
-                          }
-                        >
-                          {ticket.claimedBy === null ? "认领" : "取消认领"}
-                        </Button>
-                        <DropdownMenu.Root>
-                          <DropdownMenu.Trigger>
-                            <Button size="1" variant="ghost" color="gray" disabled={busy} className="pointer-coarse:min-h-11">
-                              改标签
-                              <ChevronDownIcon aria-hidden />
-                            </Button>
-                          </DropdownMenu.Trigger>
-                          <DropdownMenu.Content align="start">
-                            {TICKET_LABELS.map((label) => (
-                              <DropdownMenu.Item
-                                key={label}
-                                disabled={label === ticket.label}
-                                onSelect={() => ticketAction(ticket.id, { label })}
-                              >
-                                {label}
-                              </DropdownMenu.Item>
-                            ))}
-                          </DropdownMenu.Content>
-                        </DropdownMenu.Root>
-                        <Button
-                          size="1"
-                          className="pointer-coarse:min-h-11"
-                          variant="ghost"
-                          color="gray"
-                          disabled={busy}
-                          onClick={(event) =>
-                            ticket.state === "open"
-                              ? (confirmFocus.captureTrigger(event), setClosing({ kind: "ticket", id: ticket.id, title: ticket.title }))
-                              : ticketAction(ticket.id, { state: "open" })
-                          }
-                        >
-                          {ticket.state === "open" ? "关掉" : "重新打开"}
-                        </Button>
-                      </div>
+                      <Button
+                        size="1"
+                        variant="soft"
+                        color="gray"
+                        className="pointer-coarse:min-h-11"
+                        disabled={busy}
+                        onClick={(event) =>
+                          // 关要先问一句(issue #389);重新打开照旧点完就写——它把状态放回去,误触没有代价。
+                          detail.data.spec.state === "open"
+                            ? (confirmFocus.captureTrigger(event), setClosing({
+                                kind: "spec",
+                                id: detail.data.spec.id,
+                                title: detail.data.spec.title,
+                              }))
+                            : act.mutate({
+                                path: `/products/${productId}/specs/${detail.data.spec.id}`,
+                                method: "PUT",
+                                payload: { state: "open" },
+                              })
+                        }
+                      >
+                        {detail.data.spec.state === "open" ? "关掉这条 spec" : "重新打开这条 spec"}
+                      </Button>
                     ) : null}
                   </div>
-                  <Collapsible.Content className="collapsible-motion">
-                    <div className="flex min-w-0 flex-col gap-1.5">
-                      <Markdown text={ticket.body} />
-                      {/* 评论整段显示,不折叠:一张票上的来龙去脉就这几条。 */}
-                      {ticket.comments.map((comment) => (
-                        <Text as="p" key={comment.id} size="2" color="gray" className="break-words">
-                          {comment.author ?? "会话"}:{comment.body}
-                        </Text>
-                      ))}
-                      {canChat ? (
-                        <CommentBox
-                          busy={busy}
-                          onSend={(text) =>
-                            act.mutate({
-                              path: `/products/${productId}/tickets/${ticket.id}/comments`,
-                              method: "POST",
-                              payload: { text },
-                            })
-                          }
-                        />
-                      ) : null}
-                    </div>
-                  </Collapsible.Content>
-                </Collapsible.Root>
-              </section>
-            ))}
+                  <p className="text-sm text-text-muted">正文由会话写,这里只读。</p>
+                </SidebarBlock>
+              </aside>
+
+              <div className="flex min-w-0 flex-col gap-4">
+                <Markdown text={detail.data.spec.body} />
+                {/*
+                  一张票一行,形状照 GitHub 的子 issue:状态图标、标题、标签,动作贴着标题那一行——
+                  收起时也要认领得了、改得了标签;正文与评论点开才展开(一条 spec 常带十来张票,
+                  全摊开要滚半天才找得到要动的那一张)。
+                */}
+                {detail.data.tickets.length === 0 ? null : (
+                  <h3 className="flex items-center gap-1.5 border-t border-line pt-4 text-lg font-semibold">
+                    票
+                    <span className="font-mono text-xs font-normal text-text-muted tabular-nums">
+                      {detail.data.tickets.length}
+                    </span>
+                  </h3>
+                )}
+                {detail.data.tickets.length === 0 ? null : (
+                  <div className="min-w-0 overflow-hidden rounded-[var(--v8-radius-control)] border border-card-line">
+                    {detail.data.tickets.map((ticket) => {
+                      const status = statuses.get(ticket.id) ?? "ready";
+                      const notes = ticketNotes(ticket, openTickets);
+                      return (
+                        <section
+                          key={ticket.id}
+                          data-ticket-row={ticket.id}
+                          className="flex min-w-0 scroll-mt-2 flex-col border-t border-line first:border-t-0"
+                        >
+                          <Collapsible.Root
+                            defaultOpen={ticket.id === focusTicketId}
+                            className="group/ticket flex min-w-0 flex-col"
+                          >
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 group-data-[state=open]/ticket:bg-sunken">
+                              <Collapsible.Trigger asChild>
+                                {/* 原生 button,触控高度自己给(DESIGN.md 6.1 触控):coarse 块只发给
+                                    Radix 类名。 */}
+                                <button
+                                  type="button"
+                                  className="flex min-w-[12rem] grow basis-full items-start gap-2 rounded-md py-0.5 text-left transition-colors pointer-coarse:min-h-11 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:basis-0"
+                                >
+                                  <ChevronRightIcon
+                                    aria-hidden
+                                    className="mt-0.5 shrink-0 text-text-muted transition-transform group-data-[state=open]/ticket:rotate-90"
+                                  />
+                                  <TicketStatusIcon status={status} className="mt-0.5" />
+                                  <span className="flex min-w-0 flex-col gap-0.5">
+                                    <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                      <Text
+                                        as="span"
+                                        size="3"
+                                        weight="medium"
+                                        className={cn(
+                                          "min-w-0 break-words hover:underline",
+                                          ticket.state === "closed" && "text-text-secondary",
+                                        )}
+                                      >
+                                        {ticket.title}
+                                      </Text>
+                                      <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
+                                        {ticket.label}
+                                      </Badge>
+                                    </span>
+                                    <span className="text-sm text-text-muted">
+                                      <span className="font-mono tabular-nums">#{ticket.id}</span>
+                                      {notes === "" ? null : ` · ${notes}`}
+                                      {pickable.has(ticket.id) ? (
+                                        <>
+                                          {" · "}
+                                          <span className="font-medium text-primary">可开工</span>
+                                        </>
+                                      ) : null}
+                                    </span>
+                                  </span>
+                                </button>
+                              </Collapsible.Trigger>
+                              {canChat ? (
+                                <div className="flex flex-wrap items-center gap-4 pl-1 max-sm:pl-12">
+                                  <Button
+                                    size="1"
+                                    className="pointer-coarse:min-h-11"
+                                    variant="ghost"
+                                    color="gray"
+                                    disabled={busy}
+                                    onClick={() =>
+                                      ticketAction(ticket.id, { claimed: ticket.claimedBy === null })
+                                    }
+                                  >
+                                    {ticket.claimedBy === null ? "认领" : "取消认领"}
+                                  </Button>
+                                  <DropdownMenu.Root>
+                                    <DropdownMenu.Trigger>
+                                      <Button size="1" variant="ghost" color="gray" disabled={busy} className="pointer-coarse:min-h-11">
+                                        改标签
+                                        <ChevronDownIcon aria-hidden />
+                                      </Button>
+                                    </DropdownMenu.Trigger>
+                                    <DropdownMenu.Content align="end">
+                                      {TICKET_LABELS.map((label) => (
+                                        <DropdownMenu.Item
+                                          key={label}
+                                          disabled={label === ticket.label}
+                                          onSelect={() => ticketAction(ticket.id, { label })}
+                                        >
+                                          {label}
+                                        </DropdownMenu.Item>
+                                      ))}
+                                    </DropdownMenu.Content>
+                                  </DropdownMenu.Root>
+                                  <Button
+                                    size="1"
+                                    className="pointer-coarse:min-h-11"
+                                    variant="ghost"
+                                    color="gray"
+                                    disabled={busy}
+                                    onClick={(event) =>
+                                      ticket.state === "open"
+                                        ? (confirmFocus.captureTrigger(event), setClosing({ kind: "ticket", id: ticket.id, title: ticket.title }))
+                                        : ticketAction(ticket.id, { state: "open" })
+                                    }
+                                  >
+                                    {ticket.state === "open" ? "关掉" : "重新打开"}
+                                  </Button>
+                                </div>
+                              ) : null}
+                            </div>
+                            <Collapsible.Content className="collapsible-motion">
+                              {/* 正文缩进到标题的字下面(让开 chevron 与状态图标两格)。 */}
+                              <div className="flex min-w-0 flex-col gap-2 border-t border-line px-3 py-3 sm:pl-[3.25rem]">
+                                <Markdown text={ticket.body} />
+                                {/* 评论整段显示,不折叠:一张票上的来龙去脉就这几条。 */}
+                                {ticket.comments.length === 0 ? null : (
+                                  <ul className="flex min-w-0 flex-col gap-2 border-t border-line pt-2">
+                                    {ticket.comments.map((comment) => (
+                                      <li key={comment.id} className="flex min-w-0 flex-col gap-0.5">
+                                        <span className="text-sm text-text-muted">
+                                          <span className="font-semibold text-text-secondary">{comment.author ?? "会话"}</span>
+                                          {" · "}
+                                          {localMinute(comment.createdAt)}
+                                        </span>
+                                        <Text as="p" size="2" className="break-words whitespace-pre-wrap">
+                                          {comment.body}
+                                        </Text>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                                {canChat ? (
+                                  <CommentBox
+                                    busy={busy}
+                                    onSend={(text) =>
+                                      act.mutate({
+                                        path: `/products/${productId}/tickets/${ticket.id}/comments`,
+                                        method: "POST",
+                                        payload: { text },
+                                      })
+                                    }
+                                  />
+                                ) : null}
+                              </div>
+                            </Collapsible.Content>
+                          </Collapsible.Root>
+                        </section>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
         <ConfirmDialog

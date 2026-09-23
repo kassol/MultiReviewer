@@ -98,24 +98,87 @@ export function ticketNotes(ticket: TrackerTicket, openTickets: ReadonlySet<numb
 }
 
 /**
- * 可开工的那几张票的票号(CONTEXT.md 票,issue #363):开着、没有未关的阻塞、无人认领。
+ * 一张票此刻落在看板的哪一列(CONTEXT.md 票、认领)。四档互斥,由状态、认领人与阻塞边推出,
+ * 不另存:
+ *
+ * - `closed` 已关;
+ * - `claimed` 开着、有人认领——有人接手了,挡没挡着由认领人自己处理;
+ * - `blocked` 开着、没人认领、还有未关的阻塞;
+ * - `ready` 可开工:开着、没有未关的阻塞、无人认领。
  *
  * 阻塞边只在同一产品的票之间,但挡着它的那张票可能挂在另一条 spec 下,因此判定跨整份
  * tracker 做,不在单条 spec 里算。认不出的票号当作不挡着——票不会被删,那一档只可能来自
  * 一份还没读全的数据,让它照常显示比整张票消失好。
  */
-export function pickableTickets(specs: readonly TrackerSpec[]): Set<number> {
+export type TicketStatus = "ready" | "blocked" | "claimed" | "closed";
+
+/** 看板四列的次序与列名。列表与看板的状态图标、筛选都按这一份。 */
+export const TICKET_STATUSES: readonly { status: TicketStatus; title: string }[] = [
+  { status: "ready", title: "可开工" },
+  { status: "blocked", title: "被阻塞" },
+  { status: "claimed", title: "已认领" },
+  { status: "closed", title: "已关" },
+];
+
+export function ticketStatuses(specs: readonly TrackerSpec[]): Map<number, TicketStatus> {
   const byId = new Map(specs.flatMap((spec) => spec.tickets).map((ticket) => [ticket.id, ticket]));
-  return new Set(
-    [...byId.values()]
-      .filter(
-        (ticket) =>
-          ticket.state === "open" &&
-          ticket.claimedBy === null &&
-          ticket.blockedBy.every((id) => byId.get(id)?.state !== "open"),
-      )
-      .map((ticket) => ticket.id),
+  return new Map(
+    [...byId.values()].map((ticket): [number, TicketStatus] => [
+      ticket.id,
+      ticket.state === "closed"
+        ? "closed"
+        : ticket.claimedBy !== null
+          ? "claimed"
+          : ticket.blockedBy.some((id) => byId.get(id)?.state === "open")
+            ? "blocked"
+            : "ready",
+    ]),
   );
+}
+
+/** 可开工的那几张票的票号(CONTEXT.md 票,issue #363):看板「可开工」那一列。 */
+export function pickableTickets(specs: readonly TrackerSpec[]): Set<number> {
+  return new Set(
+    [...ticketStatuses(specs)].filter(([, status]) => status === "ready").map(([id]) => id),
+  );
+}
+
+/**
+ * tracker 的筛选(列表与看板共用)。`label` 为 null 即不筛标签;`claimer` 为 undefined 即
+ * 不筛认领人,为 null 即只看没人认领的。
+ */
+export type TrackerFilter = { label: TicketLabel | null; claimer: string | null | undefined };
+
+export const NO_TRACKER_FILTER: TrackerFilter = { label: null, claimer: undefined };
+
+export function matchesTrackerFilter(ticket: TrackerTicket, filter: TrackerFilter): boolean {
+  return (
+    (filter.label === null || ticket.label === filter.label) &&
+    (filter.claimer === undefined || ticket.claimedBy === filter.claimer)
+  );
+}
+
+/**
+ * 列表视图的分组:一条 spec 一组,组里是它那几张落在所选状态(开着 / 已关)且过了筛选的票。
+ *
+ * 哪些组出现:有票入选的组一律出现;一张票都没入选的组,只有在没设标签与认领人筛选、且
+ * spec 自己的状态就是所选状态时才出现——一条刚写下还没拆票的 spec 仍要看得见,而人筛着
+ * 某个标签时,一个空组只是噪音。
+ */
+export function trackerListGroups(
+  specs: readonly TrackerSpec[],
+  state: TrackerState,
+  filter: TrackerFilter,
+): { spec: TrackerSpec; tickets: TrackerTicket[] }[] {
+  const filtering = filter.label !== null || filter.claimer !== undefined;
+  return specs
+    .map((spec) => ({
+      spec,
+      tickets: spec.tickets.filter(
+        (ticket) => ticket.state === state && matchesTrackerFilter(ticket, filter),
+      ),
+    }))
+    .filter(({ spec, tickets }) => tickets.length > 0 || (!filtering && spec.state === state));
 }
 
 /**
