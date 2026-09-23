@@ -78,6 +78,25 @@ export type ProductDetail = {
   tracker: { specs: TrackerSpec[] };
 };
 
+/** 还开着的票号。「等 #n」只列其中的那几张:关掉的阻塞不再挡着谁,还写着它会与「可开工」自相矛盾。 */
+export function openTicketIds(specs: readonly TrackerSpec[]): Set<number> {
+  return new Set(
+    specs.flatMap((spec) => spec.tickets).filter((ticket) => ticket.state === "open").map((ticket) => ticket.id),
+  );
+}
+
+/** 一张票那一行右侧的几句:状态、认领人、还挡着它的票。没有的那几样不占位置。 */
+export function ticketNotes(ticket: TrackerTicket, openTickets: ReadonlySet<number>): string {
+  const blockers = ticket.blockedBy.filter((id) => openTickets.has(id));
+  return [
+    ticket.state === "closed" ? "已关" : null,
+    ticket.claimedBy === null ? null : `${ticket.claimedBy} 认领`,
+    blockers.length === 0 ? null : `等 ${blockers.map((id) => `#${id}`).join("、")}`,
+  ]
+    .filter((one) => one !== null)
+    .join(" · ");
+}
+
 /**
  * 可开工的那几张票的票号(CONTEXT.md 票,issue #363):开着、没有未关的阻塞、无人认领。
  *

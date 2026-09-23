@@ -314,7 +314,10 @@ export function ProductRail({
           <>
             <div className="min-w-0 max-lg:order-3">
             <RailCard
-              title={`${current.name} 的仓库`}
+              // 与「产品」「会话」两张卡同一个卡头语法:名词加条数。卡紧贴在选中的产品下面,
+              // 不必再把产品名拼进标题(中文名后面跟一个空格再接「的」读着别扭)。
+              title="仓库"
+              count={current.repos.length}
               action={
                 canWrite ? (
                   <Button

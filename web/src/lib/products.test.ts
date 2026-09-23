@@ -11,8 +11,10 @@ import {
   currentProduct,
   filterKnowledge,
   groupedTerms,
+  openTicketIds,
   pickableTickets,
   statementParts,
+  ticketNotes,
   trackerCloseConfirm,
   unassignedRepos,
   type ProductKnowledge,
@@ -155,6 +157,28 @@ test("可开工的票:开着、无未关阻塞、无人认领", () => {
   // 认不出的票号不挡着:一份还没读全的数据不该让整张票从可开工里消失。
   assert.deepEqual([...pickableTickets([spec(1, [ticket(1, { blockedBy: [99] })])])], [1]);
   assert.deepEqual([...pickableTickets([])], []);
+});
+
+test("票行只列还开着的阻塞", () => {
+  const ticket = (over: Partial<TrackerTicket>): TrackerTicket => ({
+    id: 3,
+    title: "票 3",
+    label: "needs-triage",
+    state: "open",
+    claimedBy: null,
+    blockedBy: [],
+    ...over,
+  });
+  assert.equal(ticketNotes(ticket({ blockedBy: [1, 2] }), new Set([2])), "等 #2");
+  assert.equal(ticketNotes(ticket({ blockedBy: [1, 2] }), new Set()), "");
+  assert.equal(
+    ticketNotes(ticket({ state: "closed", claimedBy: "admin", blockedBy: [1] }), new Set([1])),
+    "已关 · admin 认领 · 等 #1",
+  );
+  assert.deepEqual(
+    [...openTicketIds([{ id: 1, title: "s", state: "open", tickets: [ticket({ id: 1 }), ticket({ id: 2, state: "closed" })] }])],
+    [1],
+  );
 });
 
 test("陈述按成对的反引号拆段,没配对的整句当正文", () => {

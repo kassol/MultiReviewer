@@ -50,10 +50,12 @@ import {
   currentProduct,
   filterKnowledge,
   groupedTerms,
+  openTicketIds,
   pickableTickets,
   PRODUCTS_QUERY_KEY,
   productQueryKey,
   specQueryKey,
+  ticketNotes,
   trackerCloseConfirm,
   type Product,
   type ProductKnowledge,
@@ -63,7 +65,6 @@ import {
   type TrackerCloseTarget,
   type TrackerSpec,
   type TrackerState,
-  type TrackerTicket,
 } from "@/lib/products";
 import { localMinute } from "@/lib/time";
 
@@ -272,57 +273,64 @@ export function ProductsPage({
   const rightColumn =
     selected === undefined ? null : (
       <>
-        <div className="flex min-w-0 flex-col gap-1">
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        {/* 名字与事实在左、产品操作在右:`lg` 以下名字让位给页顶那一行,「…」仍贴在事实那一行
+            右端,不在左边单独悬一行。 */}
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-col gap-1">
             {/* `lg` 以下这一份让位给页顶那一行:主区排在左栏三张卡之后,名字摆在这里要滚过
                 三张卡才读得到。 */}
             <h2 className="min-w-0 break-all text-2xl font-bold tracking-[-0.015em] max-lg:hidden">
               {selected.name}
             </h2>
-            {canWrite ? (
-              <DropdownMenu.Root>
-                <DropdownMenu.Trigger>
-                  <IconButton
-                    type="button"
-                    variant="ghost"
-                    color="gray"
-                    size={{ initial: "3", sm: "2" }}
-                    disabled={busy}
-                    aria-label="产品操作"
-                  >
-                    <DotsHorizontalIcon aria-hidden />
-                  </IconButton>
-                </DropdownMenu.Trigger>
-                <DropdownMenu.Content align="end">
-                  <DropdownMenu.Item onSelect={() => openDialog("rename")}>
-                    <Pencil1Icon aria-hidden />
-                    改名
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    color="red"
-                    onSelect={() => {
-                      setFeedback(null);
-                      setConfirming(true);
-                    }}
-                  >
-                    <TrashIcon aria-hidden />
-                    删除
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Root>
-            ) : null}
-          </div>
-          {/* 这个产品此刻的几件事实,一行读完:知识写了多少、tracker 上还开着几张票、其中几张
-              现在就能接、上一场梳理什么时候谈完。数都来自已经读到的那两份(产品详情与会话列表),
-              还没读到的那一截先不画。 */}
-          <p className="flex flex-wrap gap-x-2 text-base text-text-muted">
-            {overviewFacts.map((fact, index) => (
-              <span key={fact} className="whitespace-nowrap">
-                {index === 0 ? null : <span aria-hidden className="mr-2 text-text-faint">·</span>}
-                {fact}
+            {/* 这个产品此刻的几件事实,一行读完:知识写了多少、tracker 上还开着几张票、其中几张
+                现在就能接、上一场梳理什么时候谈完。数都来自已经读到的那两份(产品详情与会话列表),
+                还没读到的那一截先不画。分隔点挂在每一项前面、整排左移一个点的宽度再裁掉:折行后
+                落在行首的那个点被裁在外面,窄屏上不会有一行以「·」起头。 */}
+            <p className="overflow-hidden text-base text-text-muted">
+              <span className="-ml-5 flex flex-wrap">
+                {overviewFacts.map((fact) => (
+                  <span key={fact} className="whitespace-nowrap">
+                    <span aria-hidden className="inline-block w-5 text-center text-text-faint">
+                      ·
+                    </span>
+                    {fact}
+                  </span>
+                ))}
               </span>
-            ))}
-          </p>
+            </p>
+          </div>
+          {canWrite ? (
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger>
+                <IconButton
+                  type="button"
+                  variant="ghost"
+                  color="gray"
+                  size={{ initial: "3", sm: "2" }}
+                  disabled={busy}
+                  aria-label="产品操作"
+                >
+                  <DotsHorizontalIcon aria-hidden />
+                </IconButton>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Content align="end">
+                <DropdownMenu.Item onSelect={() => openDialog("rename")}>
+                  <Pencil1Icon aria-hidden />
+                  改名
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  color="red"
+                  onSelect={() => {
+                    setFeedback(null);
+                    setConfirming(true);
+                  }}
+                >
+                  <TrashIcon aria-hidden />
+                  删除
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Root>
+          ) : null}
         </div>
 
         <Tabs.Root value={location.tab} onValueChange={(next) => selectTab(next as ProductTab)}>
@@ -746,10 +754,12 @@ function KnowledgeSection({
   // 五条以内扫一眼就完了,不必先读一个输入框。
   const filterable = knowledge.length > 5;
 
+  // 还一条知识都没有时,空态那句话指的就是它:升成主按钮,不让人在卡头找一颗灰色小键。
+  const firstSurvey = !pending && knowledge.length === 0;
   const surveyButton = (
     <Button
-      variant="soft"
-      color="gray"
+      variant={firstSurvey ? "solid" : "soft"}
+      {...(firstSurvey ? {} : { color: "gray" as const })}
       size="1"
       className="shrink-0"
       disabled={busy || product.repos.length < 2}
@@ -999,17 +1009,6 @@ const LABEL_COLOR: Record<TicketLabel, "gray" | "amber" | "green" | "blue" | "re
 /** 改标签菜单里的五项。取值就是上面那张表的键,两处不会各写一份。 */
 const TICKET_LABELS = Object.keys(LABEL_COLOR) as TicketLabel[];
 
-/** 一张票那一行右侧的几句:状态、认领人、挡着它的票。没有的那几样不占位置。 */
-function ticketNotes(ticket: TrackerTicket): string {
-  return [
-    ticket.state === "closed" ? "已关" : null,
-    ticket.claimedBy === null ? null : `${ticket.claimedBy} 认领`,
-    ticket.blockedBy.length === 0 ? null : `等 ${ticket.blockedBy.map((id) => `#${id}`).join("、")}`,
-  ]
-    .filter((one) => one !== null)
-    .join(" · ");
-}
-
 /**
  * 可开工的那一枚标记(CONTEXT.md 票,issue #363)。不另起一枚 Badge:标签那一格已经占着
  * 颜色,再来一枚绿的会与 `ready-for-agent` 撞脸。一行主色小字说完即可。
@@ -1054,6 +1053,7 @@ function TrackerSection({
   ));
   const ticketCount = specs.reduce((total, spec) => total + spec.tickets.length, 0);
   const pickable = pickableTickets(specs);
+  const openTickets = openTicketIds(specs);
 
   return (
     // 带着 `?spec=` 进来的那一次不必滚:tracker 自己就是主区的一页,它已经在视野里。
@@ -1137,7 +1137,7 @@ function TrackerSection({
                   // 票缩进到 spec 标题的字下面(让开 chevron 那一格):一眼看得出它们挂在这条 spec 下。
                   <ul className="flex min-w-0 flex-col gap-1.5 sm:pl-6">
                     {spec.tickets.map((ticket) => {
-                      const notes = ticketNotes(ticket);
+                      const notes = ticketNotes(ticket, openTickets);
                       return (
                         // 标签、状态那几格宽度固定,390px 下把标题挤成一行一个字。让这一行
                         // 可折行,`sm` 以下标题的 flex 基准给满行宽:它自己独占一行,元信息被
@@ -1188,6 +1188,7 @@ function TrackerSection({
         spec={openSpec}
         canChat={canChat}
         pickable={pickable}
+        openTickets={openTickets}
         onClose={() => onOpenSpec(null)}
         onCloseAutoFocus={returnFocus.onCloseAutoFocus}
       />
@@ -1250,6 +1251,7 @@ function SpecDialog({
   spec,
   canChat,
   pickable,
+  openTickets,
   onClose,
   onCloseAutoFocus,
 }: {
@@ -1259,6 +1261,8 @@ function SpecDialog({
   canChat: boolean;
   /** 可开工的票号,与产品页那一列同一份。 */
   pickable: ReadonlySet<number>;
+  /** 开着的票号:「等 #n」只列还挡着的那几张。 */
+  openTickets: ReadonlySet<number>;
   onClose: () => void;
   /** 关闭后把焦点送回打开它的那颗 spec 标题键。 */
   onCloseAutoFocus: (event: Event) => void;
@@ -1447,8 +1451,8 @@ function SpecDialog({
                         </Text>
                       </button>
                     </Collapsible.Trigger>
-                    {ticketNotes(ticket) === "" ? null : (
-                      <span className="shrink-0 text-sm text-text-muted">{ticketNotes(ticket)}</span>
+                    {ticketNotes(ticket, openTickets) === "" ? null : (
+                      <span className="shrink-0 text-sm text-text-muted">{ticketNotes(ticket, openTickets)}</span>
                     )}
                     {pickable.has(ticket.id) ? <PickableMark /> : null}
                     {canChat ? (
