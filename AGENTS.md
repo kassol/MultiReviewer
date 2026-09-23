@@ -188,6 +188,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-23: **backlog #463 清空**:Agent 会话冷启动开跑之前那段窗口里的三处边角修掉——删会话不再往已删的会话落排队消息、取留存失败时触发那一条照样投出去、开跑之前点清空连留存一起清;测试夹具的假模型服务改为起来即进收尾队列,harness 建到一半失败不再让测试进程挂死;开发机临时目录里残留的会话根来自被外部强杀的测试进程,正常收尾不漏,已手动清掉。无 schema 变更,细节见 `src/AGENTS.md`。
 - 2026-09-23: 地图 [#386](https://github.com/kassol/MultiReviewer/issues/386) 改方向(未开工):平台本期不自建执行环境,产品 tracker 的票交给开发者本机的 coding agent 消费,平台负责 spec / 票与 PR 上的多模型审查两头并接上交接(本机 agent 接入 tracker、票与 PR 关联、合并关票、审查拿票当规格)。原目的地「实现会话用途」与 grill 第一轮四题作废;认领与 `ready-for-agent` / `ready-for-human` 眼下仍只是标记。
 - 2026-09-23: **镜像版本 tag 从短 sha 换成 `YYYY.MM.DD-N`**。sha 看不出哪天发的、谁新谁旧,回滚时要回开发机翻 git log 才对得上。`scripts/build-push.sh` 改推日期加当天序号(序号查 registry 递增,查询出错即中止而不当空号),提交 sha 挪到镜像 label `org.opencontainers.image.revision`。00-test 正在跑的 `:1055a48` 用 `imagetools create` 补打成 `:2026.09.23-1`(里面是同一个镜像 digest),部署目录 `.env` 已改指它。旧的 sha tag 留在 registry 里,改 `.env` 回滚到它们照样可行。
 - 2026-09-23: **库在启动时开一次,经依赖注入往下传;更新基点等记录落库再回 200;backlog #443 清一批**(issue #460、#461、#443)。`withStore` 与每处 `openStore` 加 `close()` 的写法退役,`Store.close()` 删除,连接池仍由 `closeStorePools()` 在排空时关,行为与响应体不变。更新基点的接口此前在那条基点更新记录落库之前就回 200(漏了一个 `await`),紧接着读会话记录的人偶尔看不到它;现在等它落完再回,并发复现修前 18/64 失败、修后 0/64。同票里删会话偶发的 500 是外键拦下删除,已随 #462 修掉,那条用例从此在状态码不对时打出响应原文。按类型检查扫了一遍 `src/` 里没有 await 的 Promise 调用,其余都是有意不等(轨迹链、`.catch` 已接住)。backlog #443:面板入口 JS 把 React 与 TanStack 拆成 `vendor` 块吃长缓存(首屏体积持平);审查轨迹与知识轨迹「未记录原因」回落统一成 trim 后判空,阶段汇总时间线对旧的空白失败原因同样回落;面板重跑与定时开的轮次日志补「开始审查」;Finding 列表尾部写明页内查找只搜得到已显示的条目;会话挂多个仓库时提示写明「这个仓库」指不清就先问或逐个答。无 schema 变更。

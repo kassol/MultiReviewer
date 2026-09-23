@@ -17,6 +17,8 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { testCleanups } from "./git-fixture.ts";
+
 /** 一次响应声明的用量。缓存两项不给即 0。 */
 export type StubUsage = {
   input: number;
@@ -250,15 +252,16 @@ export async function startModelStub(turns: readonly StubTurn[]): Promise<ModelS
   server.keepAliveTimeout = 0;
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
-  return {
-    baseUrl: `http://127.0.0.1:${port}/v1`,
-    requests,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        for (const timer of delayed) clearTimeout(timer);
-        delayed.clear();
-        server.closeAllConnections();
-        server.close((error) => (error === undefined ? resolve() : reject(error)));
-      }),
-  };
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> =>
+    (closing ??= new Promise<void>((resolve, reject) => {
+      for (const timer of delayed) clearTimeout(timer);
+      delayed.clear();
+      server.closeAllConnections();
+      server.close((error) => (error === undefined ? resolve() : reject(error)));
+    }));
+  // 起来即进文件级收尾队列:用例在拿到 `close` 之前就抛了(harness 建到一半断言失败),
+  // 监听着的服务会让测试进程跑完所有用例也退不出去。`close` 因此幂等,用例自己关过也不碍事。
+  testCleanups().push(close);
+  return { baseUrl: `http://127.0.0.1:${port}/v1`, requests, close };
 }

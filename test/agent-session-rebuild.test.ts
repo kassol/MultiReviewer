@@ -18,6 +18,7 @@ import {
   agentSessionStatus,
   disposeAgentSessions,
   killChild,
+  reclaimAgentSession,
 } from "../src/webhook/agent-session.ts";
 import { withTestDb } from "./support/git-fixture.ts";
 import { GITEA_REPO, HARNESS_SPEC } from "./support/panel-harness.ts";
@@ -619,6 +620,90 @@ test("冷启动开跑之前排空:留存的、触发启动的与这段里排进�
       { mode: "followUp", text: DURING_BOOT },
     ]);
     assert.equal(agentSessionStatus(sessionId), "idle");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("冷启动开跑之前删会话:启动链收场时不把排队消息落回库里", async () => {
+  const { h, cookie, sessionId, close } = await startSessionHarness([
+    { text: "用不到", usage: { input: 1, output: 1 } },
+  ]);
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: RETAINED }]);
+    const release = await holdPendingTake(h.db.url, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 删会话那一路在删行之前收拢(issue #463):这之后启动链落回去的每一行都会撞上删行。
+    await reclaimAgentSession(sessionId);
+    await release();
+
+    // 留存被取走即启动链已过了取留存那一步,收场只差几个微任务;修之前它随即落回两行。
+    for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
+      if ((await store.listAgentSessionPendingMessages(sessionId)).length === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual(await store.listAgentSessionPendingMessages(sessionId), []);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("冷启动取留存失败:这一条照样开跑,留存留在库里", async () => {
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness([
+    { text: "第一轮", usage: { input: 1, output: 1 } },
+  ]);
+  const admin = new pg.Client({ connectionString: h.db.url });
+  await admin.connect();
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: RETAINED }]);
+    const release = await holdPendingTake(h.db.url, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    // 取留存那一笔事务读表时表不在:抛错、回滚。
+    await admin.query("ALTER TABLE agent_session_pending_message RENAME TO pending_away");
+    await release();
+
+    await requestsAtLeast(requests, 1);
+    await idle(h, cookie, sessionId);
+    await admin.query("ALTER TABLE pending_away RENAME TO agent_session_pending_message");
+    assert.deepEqual(userTexts(await records(h, cookie, sessionId)), [MESSAGE]);
+    assert.deepEqual(await store.listAgentSessionPendingMessages(sessionId), [
+      { mode: "followUp", text: RETAINED },
+    ]);
+  } finally {
+    await admin.query("ALTER TABLE IF EXISTS pending_away RENAME TO agent_session_pending_message");
+    await admin.end();
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("冷启动开跑之前清空队列:留存的与启动期间排进来的都不投,触发那一条照跑", async () => {
+  const { h, cookie, sessionId, close } = await startSessionHarness([
+    { text: "第一轮", usage: { input: 1, output: 1 } },
+    { text: "第二轮", usage: { input: 1, output: 1 } },
+  ]);
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: RETAINED }]);
+    const release = await holdPendingTake(h.db.url, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    assert.equal((await send(h, cookie, sessionId, "c2", DURING_BOOT)).status, 202);
+    const cleared = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/queue`, {
+      method: "DELETE",
+      headers: { cookie },
+    });
+    assert.ok(cleared.ok, await cleared.text());
+    await release();
+
+    await messagesAtLeast(h.db.url, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    assert.deepEqual(userTexts(await records(h, cookie, sessionId)), [MESSAGE]);
+    assert.deepEqual(await store.listAgentSessionPendingMessages(sessionId), []);
   } finally {
     await disposeAgentSessions();
     await close();

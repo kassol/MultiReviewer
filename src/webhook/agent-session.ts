@@ -222,8 +222,15 @@ type RuntimeEntry = {
   /**
    * 已经收拢过。`disposeAgentSessions` 可能正赶上这个会话在备工作树:子进程已经 fork、收拢
    * 当场杀掉它,而 boot 还在等工作树备完——这一格让它备完之后不再往下发 `open`、直接收场。
+   * `drop` 是删会话那一路:冷启动链收场时不把排队消息落回去——那个会话的行正在被删,落下去只会
+   * 撞上外键。
    */
-  disposed: boolean;
+  disposed: false | "keep" | "drop";
+  /**
+   * 开跑之前人点过清空(issue #463):启动链随后从库里取回的留存一并丢掉。清空那一刻取留存
+   * 可能已在路上,只清库拦不住它。
+   */
+  retainedCleared: boolean;
   /**
    * 落条目的那条链(spec #445)。落库转异步之后 `child.on("message")` 这个同步回调等不了它,
    * 而条目的会话内序号由落库那一刻定:一批里顺序落、两批之间也不交错,靠的就是把每一批接在
@@ -686,7 +693,7 @@ export function killChild(child: ChildProcess | undefined): void {
 
 async function reclaim(sessionId: number, entry: RuntimeEntry, persist = true): Promise<void> {
   if (registry.get(sessionId) === entry) registry.delete(sessionId);
-  entry.disposed = true;
+  entry.disposed = persist ? "keep" : "drop";
   clearTimers(entry);
   // 等它落完再往下走(spec #445):库换成真异步之后,不等就会在收掉子进程之后才写这几条。
   // 失败由 `persistQueue` 自己记日志,不往外抛。
@@ -1445,6 +1452,7 @@ export function deliverAgentSessionMessage(
     pending: [],
     imageRefs: [],
     disposed: false,
+    retainedCleared: false,
     recording: Promise.resolve(),
     stream: { text: "", tool: undefined, subagent: undefined, timer: undefined },
   };
@@ -1456,14 +1464,26 @@ export function deliverAgentSessionMessage(
     await switched;
     // 上一次回收或排空时落库的那几条:它们排在这一条之前,顺序就是人当初写下的顺序。
     // `unshift` 而不是整列赋值——上面两次 `await` 里到的消息已经在镜像里,不把它们抹掉。
-    const pendingQueue = await takePendingQueue(deps, session.id);
+    let pendingQueue: AgentSessionQueuedMessage[] = [];
+    try {
+      pendingQueue = await takePendingQueue(deps, session.id);
+    } catch (error) {
+      // 取不出来照样开跑(issue #463):抛出去的话这一条与启动期间排进来的都只在内存里,跟着
+      // 失败一起丢。取留存是一笔事务,失败即回滚,那几条仍在库里,下一次冷启动再取——代价是
+      // 这一次它们排到了这一条后面。
+      console.error(
+        `[agent-session] 会话 ${session.id} 的留存消息取不出来,先投这一条:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    if (entry.retainedCleared) pendingQueue = [];
     entry.queue.unshift(...pendingQueue);
     startRun(session.id, entry, message, first, pendingQueue.length);
     // 上面两次 `await` 里被收拢了:收拢那一路落库时 `pending` 还是空的,什么都没写(写了反倒会
     // 把库里还没取的留存整批覆盖掉)。留存、这一条与新来的此刻都在 `pending` 里,由这里落回去,
     // 子进程不再起。排空的 `letGo` 等的正是这条链,落完它才往下走。
     if (entry.disposed) {
-      await persistQueue(session.id, entry);
+      if (entry.disposed === "keep") await persistQueue(session.id, entry);
       throw new Error("会话已经收拢");
     }
     return boot(deps, session, model, repos, entry);
@@ -1553,6 +1573,8 @@ export async function clearAgentSessionQueue(store: Store, sessionId: number): P
   const dropped = new Set(entry.queue.flatMap((queued) => queued.images ?? []));
   entry.imageRefs = entry.imageRefs.filter((ref) => !dropped.has(ref));
   entry.queue = [];
+  // 冷启动还没开跑:留存还在库里或正被取出,镜像里没有它们。
+  if (!entry.started) entry.retainedCleared = true;
   // 队列空了:空闲着的这个会话从此刻起计回收(issue #335)。
   rearm(sessionId, entry);
   sendCommand(entry, { kind: "clear-queue" });
@@ -1597,7 +1619,7 @@ export async function disposeAgentSessions(): Promise<void> {
   const entries = [...registry.entries()];
   registry.clear();
   for (const [sessionId, entry] of entries) {
-    entry.disposed = true;
+    entry.disposed = "keep";
     clearTimers(entry);
     await persistQueue(sessionId, entry);
     const child = entry.child;
