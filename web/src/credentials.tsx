@@ -4,7 +4,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useBlocker, useLocation, useNavigate } from "@tanstack/react-router";
-import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
+import { ArrowLeftIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon, MagnifyingGlassIcon, MinusCircledIcon, ReloadIcon, TrashIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Checkbox, Dialog, Flex, IconButton, SegmentedControl, Select, Skeleton, TabNav, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
@@ -24,6 +24,7 @@ import { StatusBadge, type StatusTone } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus, visibleNavCurrentItem } from "@/components/use-dialog-return-focus";
 import { cn } from "@/lib/utils";
+import { pageItems } from "@/lib/pagination";
 import { localMinute } from "@/lib/time";
 
 import { api, errorText, fetchJson, send } from "./api.ts";
@@ -2078,6 +2079,7 @@ function CatalogControls({
   const queryClient = useQueryClient();
   const [model, setModel] = useState("");
   const [deleting, setDeleting] = useState<ModelServiceModel | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
   const inputId = `supplement-model-${service.provider}`;
   const deleteFocus = useDialogReturnFocus(() => document.getElementById(inputId));
   const refresh = useMutation<{ version: number }, Error>({
@@ -2127,9 +2129,8 @@ function CatalogControls({
   const busy = refresh.isPending || addSupplement.isPending || removeSupplement.isPending;
   const operationError = refresh.error ?? addSupplement.error;
 
-  return (
+  if (section === "maintenance") return (
     <CardShell aria-labelledby={`catalog-actions-${service.provider}`}>
-      {section === "maintenance" ? <>
         <CardHeader
           id={`catalog-actions-${service.provider}`}
           title="模型目录"
@@ -2159,15 +2160,56 @@ function CatalogControls({
             </Callout.Root>
           </CardSection>
         )}
-      </> : null}
+    </CardShell>
+  );
 
-      {section === "models" ? <><CardHeader
-        id={`catalog-actions-${service.provider}`}
-        title="手动添加模型"
-        help={<HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、上下文窗口和能力信息由目录或运行基线提供。" />}
-      />
+  // 模型页上它是模型目录卡头的一颗按钮加一个弹窗:模型目录在卡内滚动、整页不滚,
+  // 手动添加若仍单独占一张卡,1440×900 上目录只剩两行多的高度。
+  return (
+    <Dialog.Root
+      open={addOpen}
+      onOpenChange={(open) => {
+        setAddOpen(open);
+        if (!open) addSupplement.reset();
+      }}
+    >
+      <Dialog.Trigger>
+        <Button type="button" variant="outline" color="gray" size={{ initial: "3", sm: "2" }}>
+          手动添加
+          {supplementalModels.length === 0 ? null : (
+            <Badge color="gray" variant="soft" radius="full" size="1" className="tabular-nums">
+              {supplementalModels.length}
+            </Badge>
+          )}
+        </Button>
+      </Dialog.Trigger>
+      <Dialog.Content
+        aria-describedby={undefined}
+        maxWidth="600px"
+        maxHeight="calc(100dvh - 2rem)"
+        size={{ initial: "2", sm: "3" }}
+        className="flex flex-col overflow-hidden"
+      >
+      <div className="flex shrink-0 items-start justify-between gap-3">
+        <Dialog.Title size="4" mb="1" className="flex min-w-0 items-center gap-1.5">
+          手动添加模型
+          <HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、上下文窗口和能力信息由目录或运行基线提供。" />
+        </Dialog.Title>
+        <Dialog.Close>
+          <IconButton
+            variant="ghost"
+            color="gray"
+            size={{ initial: "3", sm: "1" }}
+            className="shrink-0"
+            aria-label="关闭手动添加模型"
+          >
+            <Cross2Icon aria-hidden />
+          </IconButton>
+        </Dialog.Close>
+      </div>
+      <div className="-mr-2 mt-3 flex min-h-0 flex-col gap-4 overflow-y-auto pr-2">
       <form
-        className="flex flex-col gap-1.5 border-t border-line px-4 pt-3.5 pb-4 sm:px-5"
+        className="flex flex-col gap-1.5"
         onSubmit={(event) => {
           event.preventDefault();
           const submittedModel = model.trim();
@@ -2205,7 +2247,8 @@ function CatalogControls({
         )}
       </form>
 
-      <CardSection>
+      <div className="flex flex-col gap-2">
+        <h3 className="text-md font-semibold text-text-secondary">手动来源</h3>
         {service.models === undefined ? (
           <p className="text-base text-text-muted">已有来源清单按模型读权限隐藏；手动添加和刷新仍由服务端校验。</p>
         ) : supplementalModels.length === 0 ? (
@@ -2240,7 +2283,8 @@ function CatalogControls({
             })}
           </ul>
         )}
-      </CardSection>
+      </div>
+      </div>
 
       <ConfirmDialog
         open={deleting !== null}
@@ -2287,8 +2331,9 @@ function CatalogControls({
             <ReferenceBlockers references={removeSupplement.error.references} />
           </div>
         )}
-      </ConfirmDialog></> : null}
-    </CardShell>
+      </ConfirmDialog>
+      </Dialog.Content>
+    </Dialog.Root>
   );
 }
 
@@ -2317,7 +2362,7 @@ function discoveryDiffersFromRuntime(model: ModelServiceModel): boolean {
     model.discovery.maxOutput !== model.runtime.maxOutput;
 }
 
-const MODEL_ROWS_PAGE_SIZE = 20;
+const MODEL_ROWS_PAGE_SIZE = 50;
 
 type ModelStateFilter = "all" | "enabled" | "disabled";
 
@@ -2335,7 +2380,7 @@ function ModelsTable({
   const [feedback, setFeedback] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<ModelStateFilter>("all");
   const [page, setPage] = useState(0);
-  const listTop = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const normalizedSearch = search.trim().toLowerCase();
   const filtering = normalizedSearch !== "" || stateFilter !== "all";
@@ -2350,15 +2395,19 @@ function ModelsTable({
   const pageCount = Math.max(1, Math.ceil(filteredModels.length / MODEL_ROWS_PAGE_SIZE));
   // 批量停用之后「已启用」筛选下的行会变少,页码只往回收、不跳回第一页。
   const currentPage = Math.min(page, pageCount - 1);
-  const visibleModels = filteredModels.slice(currentPage * MODEL_ROWS_PAGE_SIZE, (currentPage + 1) * MODEL_ROWS_PAGE_SIZE);
+  const pageStart = currentPage * MODEL_ROWS_PAGE_SIZE;
+  const visibleModels = filteredModels.slice(pageStart, pageStart + MODEL_ROWS_PAGE_SIZE);
   const goToPage = (next: number): void => {
     setPage(next);
-    // 翻页键在列表底部,翻完回到列表顶上读新的一页。
-    listTop.current?.scrollIntoView({ block: "start" });
+    if (scroller.current === null) return;
+    scroller.current.scrollTop = 0;
+    // 窄屏列表不在卡内滚、跟整页走,翻页键在列表底部,翻完把整页带回列表顶。
+    scroller.current.scrollIntoView({ block: "nearest" });
   };
 
   useEffect(() => {
     setPage(0);
+    if (scroller.current !== null) scroller.current.scrollTop = 0;
   }, [normalizedSearch, stateFilter]);
 
   useEffect(() => {
@@ -2410,23 +2459,30 @@ function ModelsTable({
     updateState.reset();
   };
 
+  const manualAdd = canWriteModels ? <CatalogControls service={service} section="models" /> : null;
+
   if (models.length === 0) {
     return (
       <CardShell>
+        <CardHeader title="模型目录" action={manualAdd} />
         <EmptyState
           title="暂无可用模型"
           titleAs="h3"
           description="模型目录尚未成功发现，也没有手动添加或迁移保留的模型。"
-          className="px-4 py-8 sm:px-5"
+          className="border-t border-line px-4 py-8 sm:px-5"
         />
       </CardShell>
     );
   }
   return (
-    // 不加 overflow-hidden:它会把下面那排吸顶列头关在卡里。行底色的圆角改由末行自己收。
+    // lg 起这张卡占满详情栏余下的高度,只让中间的模型清单在卡内滚:整页不滚,
+    // 卡头的筛选与卡底的页码条始终在视口里。窄屏卡片上方还有返回链接、服务名与 tab,
+    // 再锁视口清单就只剩几行,那里仍随整页滚。
     <CardShell
       aria-label="模型列表"
       aria-busy={updateState.isPending}
+      // 高度下限:视口矮到连这点都放不下时让整页滚,而不是把清单压没。
+      className="overflow-hidden lg:min-h-96 lg:flex-1"
     >
       <CardHeader
         title="模型目录"
@@ -2456,7 +2512,7 @@ function ModelsTable({
             <TextField.Root
               id="model-list-search"
               size={{ initial: "3", sm: "2" }}
-              className="w-full min-w-0 sm:w-64"
+              className="w-full min-w-0 sm:w-56"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="按名称或 model id 筛选"
@@ -2465,6 +2521,7 @@ function ModelsTable({
                 <MagnifyingGlassIcon aria-hidden="true" />
               </TextField.Slot>
             </TextField.Root>
+            {manualAdd}
           </div>
         }
       />
@@ -2523,107 +2580,131 @@ function ModelsTable({
           {updateState.error.references.length === 0 ? null : <ReferenceBlockers references={updateState.error.references} />}
         </CardSection>
       )}
-      {filteredModels.length === 0 ? (
-        <EmptyState
-          title="没有匹配的模型"
-          description="请调整启用状态、名称或 model id 后重新筛选。"
-          className="border-t border-line px-4 py-8 sm:px-5"
-        />
-      ) : (
-        // 不给模型清单开自己的滚动条:这一页整页跟外壳滚,再套一层内滚就是两条滚动条
-        // 并存——外壳滚到底了,清单里还剩一大半没露出来。清单上面就是筛选框,长清单
-        // 靠筛,不靠一个 640px 的窗口。
-        <div ref={listTop} className="flex scroll-mt-[var(--v8-top-chrome)] flex-col [&>:last-child]:rounded-b-xl sm:[&>:last-child]:rounded-b-lg">
-          {/* 表头只在三列真正并排时出现:窄屏行内是纵向堆叠,一排列名对不上任何一列。 */}
-          <div className={cn(
-            "sticky top-[var(--v8-top-chrome)] z-10 hidden gap-3 border-t border-line bg-surface bg-linear-to-b from-sunken to-sunken px-5 py-2 text-sm font-bold text-text-muted xl:grid",
-            MODEL_ROW_COLUMNS,
-          )}>
-            <div>模型</div>
-            <div>运行规格</div>
-            <div>状态</div>
-          </div>
-          {visibleModels.map((model) => (
-            <article
-              key={model.identity}
-              className={cn(
-                "grid gap-3 border-t border-line px-4 py-3 sm:px-5 xl:items-start",
-                MODEL_ROW_COLUMNS,
-                !model.available && model.unavailableReason !== "model-disabled" && "bg-danger-tint",
-                model.unavailableReason === "model-disabled" && "bg-sunken",
-              )}
-            >
-              <div className="flex min-w-0 items-start gap-2">
-                {canWriteModels ? (
-                  <Text
-                    as="label"
+      {/* 表头只在三列真正并排时出现:窄屏行内是纵向堆叠,一排列名对不上任何一列。
+          它在滚动区外面,清单滚动时它不动,不必吸顶。 */}
+      <div className={cn(
+        "hidden gap-3 border-t border-line bg-sunken px-5 py-2 text-sm font-bold text-text-muted xl:grid",
+        MODEL_ROW_COLUMNS,
+      )}>
+        <div>模型</div>
+        <div>运行规格</div>
+        <div>状态</div>
+      </div>
+      <div
+        ref={scroller}
+        className="scroll-mt-[var(--v8-top-chrome)] border-t border-line lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
+      >
+        {filteredModels.length === 0 ? (
+          <EmptyState
+            title="没有匹配的模型"
+            description="请调整启用状态、名称或 model id 后重新筛选。"
+            className="px-4 py-8 sm:px-5"
+          />
+        ) : visibleModels.map((model) => (
+          <article
+            key={model.identity}
+            className={cn(
+              "grid gap-3 border-t border-line px-4 py-3 first:border-t-0 sm:px-5 xl:items-start",
+              MODEL_ROW_COLUMNS,
+              !model.available && model.unavailableReason !== "model-disabled" && "bg-danger-tint",
+              model.unavailableReason === "model-disabled" && "bg-sunken",
+            )}
+          >
+            <div className="flex min-w-0 items-start gap-2">
+              {canWriteModels ? (
+                <Text
+                  as="label"
+                  size="2"
+                  className="mt-0.5 inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-start justify-center pt-0.5"
+                >
+                  <Checkbox
                     size="2"
-                    className="mt-0.5 inline-flex min-h-8 min-w-8 shrink-0 cursor-pointer items-start justify-center pt-0.5"
-                  >
-                    <Checkbox
-                      size="2"
-                      checked={selectedIds.has(model.identity)}
-                      onCheckedChange={() => toggleSelected(model.identity)}
-                      aria-label={`选择 ${model.identity}`}
-                    />
-                  </Text>
-                ) : null}
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <p className={cn("break-words font-medium", model.unavailableReason === "model-disabled" && "text-text-secondary")}>
-                    {model.discovery.name ?? "未提供显示名"}
-                  </p>
-                  <p className="max-w-full wrap-anywhere font-mono text-base text-text-muted">
-                    {model.identity}
-                  </p>
-                  <p className="mt-1 flex flex-wrap items-center gap-1.5">
-                    <span className="sr-only">来源：</span>
-                    {model.sources.map((source) => (
-                      <SourceBadge key={source}>{SOURCE_LABEL[source]}</SourceBadge>
-                    ))}
-                  </p>
-                </div>
+                    checked={selectedIds.has(model.identity)}
+                    onCheckedChange={() => toggleSelected(model.identity)}
+                    aria-label={`选择 ${model.identity}`}
+                  />
+                </Text>
+              ) : null}
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <p className={cn("break-words font-medium", model.unavailableReason === "model-disabled" && "text-text-secondary")}>
+                  {model.discovery.name ?? "未提供显示名"}
+                </p>
+                <p className="max-w-full wrap-anywhere font-mono text-base text-text-muted">
+                  {model.identity}
+                </p>
+                <p className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <span className="sr-only">来源：</span>
+                  {model.sources.map((source) => (
+                    <SourceBadge key={source}>{SOURCE_LABEL[source]}</SourceBadge>
+                  ))}
+                </p>
               </div>
-              <div className="min-w-0 max-xl:border-t max-xl:border-line max-xl:pt-2">
-                <ModelRuntimeFacts model={model} />
-                <ModelDiscoveryDifference model={model} />
-              </div>
-              <div className="min-w-0">
-                <ModelAvailability model={model} />
-              </div>
-            </article>
-          ))}
-          {pageCount > 1 ? (
-            <nav aria-label="模型分页" className="flex items-center justify-between gap-3 border-t border-line bg-sunken px-4 py-3 sm:px-5">
-              <p className="text-base text-text-muted" aria-live="polite">
-                第 <span className="font-mono tabular-nums">{currentPage + 1}</span> /{" "}
-                <span className="font-mono tabular-nums">{pageCount}</span> 页
-              </p>
-              <div className="flex gap-2.5">
-                <Button
-                  type="button"
-                  variant="outline"
-                  color="gray"
-                  size={{ initial: "3", sm: "1" }}
-                  disabled={currentPage === 0}
-                  onClick={() => goToPage(currentPage - 1)}
-                >
-                  上一页
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  color="gray"
-                  size={{ initial: "3", sm: "1" }}
-                  disabled={currentPage === pageCount - 1}
-                  onClick={() => goToPage(currentPage + 1)}
-                >
-                  下一页
-                </Button>
-              </div>
-            </nav>
-          ) : null}
-        </div>
-      )}
+            </div>
+            <div className="min-w-0 max-xl:border-t max-xl:border-line max-xl:pt-2">
+              <ModelRuntimeFacts model={model} />
+              <ModelDiscoveryDifference model={model} />
+            </div>
+            <div className="min-w-0">
+              <ModelAvailability model={model} />
+            </div>
+          </article>
+        ))}
+      </div>
+      {pageCount > 1 ? (
+        <nav
+          aria-label="模型分页"
+          className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-line px-4 py-2 sm:px-5"
+        >
+          <p className="font-mono text-base tabular-nums text-text-muted" aria-live="polite">
+            {pageStart + 1}–{pageStart + visibleModels.length}
+            <span className="font-sans"> / </span>
+            {filteredModels.length}
+          </p>
+          <div className="flex items-center gap-1">
+            <IconButton
+              type="button"
+              variant="ghost"
+              color="gray"
+              size={{ initial: "3", sm: "2" }}
+              className="m-0"
+              aria-label="上一页"
+              disabled={currentPage === 0}
+              onClick={() => goToPage(currentPage - 1)}
+            >
+              <ChevronLeftIcon aria-hidden />
+            </IconButton>
+            {pageItems(currentPage, pageCount).map((item, index) => item === "gap" ? (
+              <span key={`gap-${index}`} aria-hidden className="w-6 text-center text-text-muted">…</span>
+            ) : (
+              <Button
+                key={item}
+                type="button"
+                variant={item === currentPage ? "soft" : "ghost"}
+                color={item === currentPage ? "blue" : "gray"}
+                size={{ initial: "3", sm: "2" }}
+                className="m-0 min-w-8 px-2 font-mono tabular-nums"
+                aria-label={`第 ${item + 1} 页`}
+                aria-current={item === currentPage ? "page" : undefined}
+                onClick={() => goToPage(item)}
+              >
+                {item + 1}
+              </Button>
+            ))}
+            <IconButton
+              type="button"
+              variant="ghost"
+              color="gray"
+              size={{ initial: "3", sm: "2" }}
+              className="m-0"
+              aria-label="下一页"
+              disabled={currentPage === pageCount - 1}
+              onClick={() => goToPage(currentPage + 1)}
+            >
+              <ChevronRightIcon aria-hidden />
+            </IconButton>
+          </div>
+        </nav>
+      ) : null}
     </CardShell>
   );
 }
@@ -2828,7 +2909,7 @@ function ServiceDetail({
     </Button>
   );
   return (
-    <div className="flex min-w-0 flex-col gap-4">
+    <div className={cn("flex min-w-0 flex-col gap-4", tab === "models" && "lg:min-h-0 lg:flex-1")}>
       <div className="flex min-w-0 flex-col gap-0.5">
         <h2 className="min-w-0 text-3xl font-extrabold tracking-[-0.02em]">{service.name}</h2>
         <p className="text-base text-text-muted">
@@ -2933,10 +3014,6 @@ function ServiceDetail({
         <NoticeBar tone="neutral" icon={InfoCircledIcon} title="暂无修改权限" />
       ) : null}
 
-      {tab === "models" && canWriteModels ? (
-        <CatalogControls service={service} section="models" />
-      ) : null}
-
       {tab !== "models" ? null : canReadModels && service.models !== undefined ? (
         <ModelsTable service={service} models={service.models} canWriteModels={canWriteModels} />
       ) : (
@@ -3016,11 +3093,14 @@ export function ModelServicesPage({
   // 有服务列表时「添加」挂在左栏栏头(与评审记录首页的「注册仓库」同位),页头不再单独
   // 占一行;列表出不来的那几档(空、无读权限、加载失败)它退回页头。
   const railVisible = canReadServices && query.isSuccess && services.length > 0;
+  // 模型 tab 在 lg 起占满视口、整页不滚,滚动只在模型清单里(壳那一侧见 main.tsx)。
+  const fill = tab === "models" && provider !== undefined;
 
   return (
     // 整页跟着壳里的 main 一起滚:列表与详情不再各自开滚动区,回到这一页时要恢复的
     // 位置也只剩 panel-main-scroll 一个,`restoreScroll` 的回落分支正是为此留的。
-    <PageBody className="gap-4 sm:gap-[18px]">
+    // 例外是 lg 起的模型 tab(`fill`):模型清单在卡内滚,整页不滚。
+    <PageBody className={cn("gap-4 sm:gap-[18px]", fill && "lg:h-full lg:pb-6")}>
       <PageHeader
         title="模型服务"
         actions={railVisible || (canReadServices && query.isPending) ? undefined : addButton}
@@ -3069,8 +3149,12 @@ export function ModelServicesPage({
           />
         </CardShell>
       ) : (
-        <div className={cn("grid min-w-0 gap-4", MASTER_DETAIL_COLUMNS)}>
-          <div className={cn("min-w-0 flex-col gap-2.5", provider === undefined ? "flex" : "hidden lg:flex")}>
+        <div className={cn(
+          "grid min-w-0 gap-4",
+          MASTER_DETAIL_COLUMNS,
+          fill && "lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] lg:items-stretch",
+        )}>
+          <div className={cn("min-w-0 flex-col gap-2.5 lg:self-start", provider === undefined ? "flex" : "hidden lg:flex")}>
             <div className="flex min-h-8 items-center justify-between gap-2 pl-1">
               <h2 className="text-md font-semibold text-text-secondary">
                 已配置服务
@@ -3125,7 +3209,7 @@ export function ModelServicesPage({
               })}
             </CardShell>
           </div>
-          <div className={cn("min-w-0", provider === undefined ? "hidden lg:block" : "block")}>
+          <div className={cn("min-w-0", provider === undefined ? "hidden lg:block" : "block", fill && "lg:flex lg:min-h-0 lg:flex-col")}>
             {provider === undefined ? null : (
               <Button variant="ghost" color="gray" size="3" className="mb-3 w-fit lg:hidden" asChild>
                 <Link to="/credentials" activeOptions={{ exact: true }}>
