@@ -183,9 +183,10 @@ export function CompleteAction({
         maxWidth="440px"
         description={
           <>
-            承载 Finding 的 Forge pull request 将关闭，两个临时分支将删除，比较项将无法继续推进。
-            未处置 Finding 继续按未处置计入处置率；Finding、处置和备注均会保留。
-            后续可使用相同 base 发起新的范围审查。
+            {/* 中文句子之间不留空格:JSX 会把换行拼成一个空格,所以三句拼成一个字符串。 */}
+            {"承载 Finding 的 Forge pull request 将关闭，两个临时分支将删除，比较项将无法继续推进。" +
+              "未处置 Finding 继续按未处置计入处置率；Finding、处置和备注均会保留。" +
+              "后续可使用相同 base 发起新的范围审查。"}
           </>
         }
         direction={{ initial: "column-reverse", sm: "row" }}
@@ -318,8 +319,8 @@ function DailyIncrementDialogContent({
         </span>
       </Dialog.Title>
       <Text as="p" size="2" color="gray">
-        开着时每天到检查时刻由定时检查把这条分支的最新提交推成新比较项，按检查模式开一轮。
-        开、关、改任一项都不会立刻推进。
+        {"开着时每天到检查时刻由定时检查把这条分支的最新提交推成新比较项，按检查模式开一轮。" +
+          "开、关、改任一项都不会立刻推进。"}
       </Text>
       {/* 最近一次定时检查的时间与结果(issue #314)。 */}
       <Text as="p" size="2" color="gray" mt="2">
