@@ -1149,7 +1149,9 @@ function ToolGroup({
           ) : (
             <Spinner size="1" className="shrink-0" />
           )}
-          {calls.length === 0 ? null : (
+          {/* 总步数只在一组里有几种动作时才有用;只有一种时摘要已经写着「派子代理 1 次」,
+              前面再挂一颗「1」是同一个数说两遍。 */}
+          {new Set(calls.map((call) => call.step.kind)).size < 2 ? null : (
             <span className="rounded-full bg-fill px-1.5 text-xs tabular-nums text-text-secondary">
               {calls.length}
             </span>
@@ -2018,7 +2020,10 @@ export function AgentSessionPage({
         />
 
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex shrink-0 flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-line pb-2 sm:pb-3">
+          {/* 分隔线占满中栏,里面的标题与动作收进对话流那一列(`CHAT_TRACK`):没有右栏时对话流
+              居中,标题原先贴着中栏左沿、「更多操作」贴着右沿,与下面的消息错开近 90px。 */}
+          <div className="shrink-0 border-b border-line pb-2 sm:pb-3">
+          <div className={`${CHAT_TRACK} flex flex-wrap items-start justify-between gap-x-3 gap-y-2`}>
             {/* 标题块占满剩余宽度,动作组才留在同一行;窄屏上动作只剩图标,文字给读屏。 */}
             <div className="flex min-w-0 flex-1 items-start gap-1.5">
               {product === undefined ? (
@@ -2168,6 +2173,7 @@ export function AgentSessionPage({
                 </DropdownMenu.Root>
               ) : null}
             </div>
+          </div>
           </div>
           {/*
             记录有缺损时头部下面一道横幅(spec #329 的 US 14):agent 忘了哪一段要让人知道,

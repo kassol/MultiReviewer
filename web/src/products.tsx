@@ -592,7 +592,7 @@ function SurveyDialog({
               梳理
             </Dialog.Title>
             <Dialog.Description size="2" color="gray">
-              让 agent 读一遍 {productName} 的全部仓库，再按轮问你，把谈定的写进产品知识。
+              让 agent 读一遍「{productName}」的全部仓库，再按轮问你，把谈定的写进产品知识。
             </Dialog.Description>
           </div>
           <div className="flex flex-col gap-1.5">
@@ -1034,10 +1034,11 @@ const TICKET_LABELS = Object.keys(LABEL_COLOR) as TicketLabel[];
 
 /**
  * 可开工的那一枚标记(CONTEXT.md 票,issue #363)。不另起一枚 Badge:标签那一格已经占着
- * 颜色,再来一枚绿的会与 `ready-for-agent` 撞脸。一行主色小字说完即可。
+ * 颜色,再来一枚绿的会与 `ready-for-agent` 撞脸。一行小字说完即可,颜色随行首那枚「可开工」
+ * 状态图标走绿:原先是主色,而主色在同一套图标里是「已认领」,读着像一个链接。
  */
 function PickableMark() {
-  return <span className="shrink-0 text-sm font-medium text-primary">可开工</span>;
+  return <span className="shrink-0 text-sm font-medium text-success">可开工</span>;
 }
 
 /** 看板四列各自的状态图标颜色。开着的三档共用一个圆点图形、按颜色分,已关换成对勾。 */
@@ -1131,7 +1132,7 @@ function TicketMeta({
       {pickable ? (
         <>
           {" · "}
-          <span className="font-medium text-primary">可开工</span>
+          <span className="font-medium text-success">可开工</span>
         </>
       ) : null}
     </span>
