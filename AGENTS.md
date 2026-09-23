@@ -119,25 +119,6 @@ Forge 凭据至少要配齐一组,一组都没有时启动失败——服务起�
 
 永远不删:`.env`、`data/agent-sessions/`(会话图片)、`data/worktrees/`(工作副本缓存与历史轮次 diff 的 ref;其下 `.checkouts/` 由服务自己清)。
 
-### 从 SQLite 切到 PostgreSQL
-
-一次性的停机切换(ADR 0036,spec #445)。现役实例只有 00-test;这一段在切完并过了回滚窗口之后可以删。
-
-**先彩排一次。**拿线上库文件的一份备份副本,在 PG 上另建一个临时库跑搬迁脚本,核逐表行数、把服务指过去开面板翻几个历史阶段。彩排过了再定正式窗口——搬迁脚本第一次在真实数据上跑出来的问题,不该在停机窗口里发现。
-
-**选窗口。**挑没人跑审查、且避开每日增量检查时刻(`TZ` 加范围审查各自配的那个钟点)的时段,提前通知评审人:窗口多长、回滚窗口多长、以及「回滚会丢掉 PG 上这段时间的写入」这一条代价。
-
-切换按这个顺序走,每一步都等上一步真的完成:
-
-1. `docker compose stop` —— Docker 发 SIGTERM,服务排空,在跑的轮次跑完当前批次并落库之后才停,最长等 `stop_grace_period`(900 秒)。
-2. 备份:`cp` 出那个 SQLite 库文件,另把 `./data` 整个打包。**两样都要**——图片附件不在库里。
-3. 改 `.env`:`MULTIREVIEWER_IMAGE` 换成新版的 sha tag、加 `MULTIREVIEWER_DATABASE_URL`、**删掉 `MULTIREVIEWER_DB`**(留着服务拒绝启动);`MULTIREVIEWER_DATA_DIR` 不必写,镜像里就是 `/data`。
-4. `docker compose up -d` 起新容器,它在开始监听之前把 `drizzle/` 下的迁移跑完,建出空表。
-5. 跑搬迁脚本(`scripts/migrate-sqlite-to-pg.ts`,收两个参数:旧库路径与目标连接串),把旧库文件搬进新库,核它打印的逐表行数对照表——有一行对不上就停下来查,别往下走。**脚本已随 00-test 切完删除**(2026-09-22,它只在镜像 `:9894ffc` 里,这一版之后不再带):要再搬一个 SQLite 实例,取那一版镜像,在服务器上 `docker run --rm --entrypoint node -v $PWD/data:/data <镜像:9894ffc> scripts/migrate-sqlite-to-pg.ts /data/multireviewer.db "$MULTIREVIEWER_DATABASE_URL"`(旧库文件在 `./data` 里,容器里就是 `/data`;建表由起一次服务或调 `migrateStore` 先做)。
-6. 面板登录,翻一个迁库前的历史阶段(轮次 diff、审查轨迹、Finding 处置记录都要打得开),再投一个真实 PR 跑一轮、推进一次范围审查、续谈一次 Agent 会话。
-
-**回滚窗口。**窗口内出问题就把 `.env` 的 `MULTIREVIEWER_IMAGE` 改回上一个 sha tag、把 `MULTIREVIEWER_DATABASE_URL` 换回 `MULTIREVIEWER_DB`,再 `docker compose up -d` 即回到 SQLite——旧库文件一直没动过。代价是 **PG 上这段时间的写入全部丢掉**(新跑的轮次、新做的处置、新写的会话),所以窗口要短、要事先讲清。窗口一过不再回滚,旧库文件归档留存,搬迁脚本从仓库删除。
-
 ### 面板门禁的运维
 
 - **怀疑某个人的会话 cookie 泄露时,由系统管理员在访问控制页重置那个人的密码。**重置会只作废该用户的全部会话,并要求他用临时密码登录后立即改密,不牵连其他人。会话已经落库,所以**重启容器不再清空会话**;登出只作废当前会话,用户自己改密码会保留当前会话并踢掉其余会话。
@@ -207,7 +188,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
-- 2026-09-23: **部署目录的清理规则写进「部署」**(新一节「发版与部署目录的清理」)。00-test 盘点:SQLite 库与 40 份备份(约 650 MB)删掉,只留 `data/multireviewer.db.bak-20260922-pg` 归档(打开它要镜像 `:9894ffc`);三份旧 `.env` 备份、`docker-compose.yml` 旧备份、空的图片目录打包与自 #66 起废除的 `multireviewer.config.json` 删掉;`.env` 删两行废弃的模型变量;部署目录的 `setup.sh` 与 compose 换成仓库版。规则:备份只在改 schema 或 `.env` 的那一版做、一类只留最新一份,废弃什么同一版清什么,compose 与 `setup.sh` 改了就随发版拷过去,`.env` 只增删整行不改格式。
+- 2026-09-23: **部署目录的清理规则写进「部署」**(新一节「发版与部署目录的清理」)。00-test 盘点:SQLite 库与 40 份备份(约 650 MB)删掉,只留 `data/multireviewer.db.bak-20260922-pg` 归档(打开它要镜像 `:9894ffc`);三份旧 `.env` 备份、`docker-compose.yml` 旧备份、空的图片目录打包与自 #66 起废除的 `multireviewer.config.json` 删掉;`.env` 删两行废弃的模型变量;「从 SQLite 切到 PostgreSQL」一节随回滚窗口结束删除(切换经过见 2026-09-22 的两条);部署目录的 `setup.sh` 与 compose 换成仓库版。规则:备份只在改 schema 或 `.env` 的那一版做、一类只留最新一份,废弃什么同一版清什么,compose 与 `setup.sh` 改了就随发版拷过去,`.env` 只增删整行不改格式。
 - 2026-09-23: **Pi 升到 0.87.1,pi-subagents 升到 0.70.1**(issue #462,调研见 `docs/research/pi-upgrade-2026-09-23.md`)。重试或溢出恢复之后,失败的那次尝试不再留在上下文里;只有图片的用户消息不再带空文本块;自定义网关上的 `claude-opus-5-5`、`gpt-6-sol` 等型号拿得到真实参数。两版目录的 compat 键没有增减,`gatewayCompat` 不变。取证契约的真实 SDK 回归全过。升级带出一处竞态:0.87 在模型请求发出之后才回传一回合的头几条条目,删一个正在跑的会话时会撞上它们落库,外键拦下删除;删会话现在先等这些条目落完再删行。发版后刷新一次内置 openai-completions 模型服务(deepseek)的目录,快照才带上 `supportsStrictMode`。
 - 2026-09-22: **00-test 切到 PostgreSQL,spec #445 收口**(issue #458)。彩排一次(线上库副本搬进临时库 `mr_rehearsal`,49 张表逐表相等,临时容器上面板各页可读)——彩排抓到一条真问题:一条审查轨迹的 Finding 片段带 `\u0000`,PostgreSQL 的 `jsonb` 收不了(22P05),写入侧与搬迁脚本一并换成 U+FFFD。正式切换 15:15 CST:`docker compose stop` 排空 → 备份 `data/multireviewer.db.bak-20260922-pg`、`.env.bak-20260922-pg` 与图片目录 → `.env` 改镜像 `:9894ffc`、加 `MULTIREVIEWER_DATABASE_URL` → 建 schema、搬 49 张表 65,426 行逐表相等 → `up -d`,停机约 6 分钟。线上验收:切换前的登录态照样认(会话表一起搬了);评审记录、范围审查 #23 与 PR #54 的阶段页、轨迹与 diff 侧滑、处置率、审查策略、模型服务、访问控制、两个产品页、会话 #35 全部可读;真实 PR #56 投递一轮(Run 136,4 条 Finding,5m26s);范围审查 #24 发起并增量评审推进一轮(Run 138 / 139,第二轮只复核,一个模型判仍在于是记延续而不是已修复——复核口径本来如此);会话 #35 续谈 seq 12–18 接在切换前的 11 之后,新建会话 #36 从 1 起;日志无报错。回滚窗口到当天 24:00,过后旧库文件归档;搬迁脚本连同它的用例、夹具与 `Dockerfile` 那一行一起删除,`.dockerignore` 的例外撤回。线上 PG 是 00-test 宿主机上的 `postgres:17.6`,`multireviewer` 角色已改成库属主并授 CREATEDB(彩排要自建临时库)。
 - 2026-09-22: **文档与部署向导改口到 PostgreSQL**(issue #458,spec #445 第二段)。向导从六步变七步,新增「数据库」一阶段:拦下 `.env` 里残留的 `MULTIREVIEWER_DB`(服务读到它拒绝启动),问一条连接串,再拿容器里镜像自带的 `pg` 连一次读版本——服务器上没有 psql,而容器的网络视角才是服务的视角。起服务那一步的自检多一道「迁移表 `drizzle.__drizzle_migrations` 就位」,「读 SQLite」改成「读库」,查库提示换 `psql`,排障速查加一条备份(`pg_dump` 加 data 目录)。「部署」新增「从 SQLite 切到 PostgreSQL」一节:先拿线上库的备份副本彩排一次,正式窗口按「停容器排空 → 备份库文件与 `./data` → 改 `.env` → 起新容器跑迁移 → 跑搬迁脚本核行数 → 面板验」六步走,回滚窗口内改回旧 tag 与 `MULTIREVIEWER_DB` 即回 SQLite、代价是 PG 上这段时间的写入全丢,窗口过后旧库归档。搬迁脚本随这一版镜像走,切完即删。`README.md` 的 Requirements 加一条「需要一个 PostgreSQL 实例」,`CONTEXT.md` 的会话记录词条点明 data 目录是 `MULTIREVIEWER_DATA_DIR`、与库分开配。
