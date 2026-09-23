@@ -3447,7 +3447,7 @@ async function handleUpdateAgentSessionBaseline(
       ),
     );
   });
-  recordAgentSessionBaselineUpdate({ databaseUrl: deps.databaseUrl, now: deps.now ?? Date.now }, sessionId, answer);
+  await recordAgentSessionBaselineUpdate({ databaseUrl: deps.databaseUrl, now: deps.now ?? Date.now }, sessionId, answer);
   return sendJson(res, 200, { changed: true, ...answer });
 }
 

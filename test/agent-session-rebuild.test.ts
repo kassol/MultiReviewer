@@ -241,7 +241,7 @@ test("删会话与删产品都把常驻子进程收掉:登记表里不再有它"
       method: "DELETE",
       headers: { cookie },
     });
-    assert.equal(removed.status, 204);
+    assert.equal(removed.status, 204, await removed.text());
     assert.equal(agentSessionStatus(sessionId), "idle");
 
     // 删产品级联:它下面那个还在跑的会话同样被收掉。
