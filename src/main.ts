@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { buildReviewers } from "./config.ts";
 import { createDrain } from "./drain.ts";
-import { closeStorePools, migrateStore } from "./review/store/index.ts";
+import { closeStorePools, migrateStore, openStore } from "./review/store/index.ts";
 
 import {
   assertSupportedVersion,
@@ -139,7 +139,7 @@ const server = await createWebhookServer({
     ...(gitea === undefined ? {} : { gitea: createGiteaForge(gitea) }),
   },
   cacheDir,
-  databaseUrl,
+  store: openStore(databaseUrl),
   dataDir,
   baseUrl,
   panelDist: process.env["MULTIREVIEWER_PANEL_DIST"] ?? "web/dist",

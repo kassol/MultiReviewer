@@ -121,7 +121,7 @@ export function storeDb(pool: PgPool): StoreDb {
 }
 
 /**
- * 连接池。启动时建一个,进程内共用——每请求开关库的 `withStore` 到此退役(ADR 0036)。
+ * 连接池。启动时建一个,进程内共用——每请求开关库的写法到此退役(ADR 0036,issue #460)。
  *
  * 池的上限由 `MULTIREVIEWER_DB_POOL_MAX` 给,默认 10。测试要调小它:一个测试文件建好几个库、
  * 好几个池,几路并发跑起来就会把 PostgreSQL 的 `max_connections` 占满(报 too many clients),

@@ -342,8 +342,7 @@ export type RuleTraceRecorder = {
  * 过程记录不该让一次探索或一次反哺白跑。
  */
 export async function startRuleTrace(
-  /** 开一次库做一件事。规则 agent 的两条链路都跑在后台,没有一份长活的 `Store`。 */
-  withStore: <T>(use: (store: Store) => Promise<T>) => Promise<T>,
+  store: Store,
   repoId: number,
   source: RuleTraceSource,
   startedPayload: unknown,
@@ -369,7 +368,7 @@ export async function startRuleTrace(
           try {
             publishTrace(
               ruleChannel(taskId),
-              await withStore((store) => store.appendRuleTrace(taskId, { kind, payload })),
+              await store.appendRuleTrace(taskId, { kind, payload }),
             );
           } catch (error) {
             failed(error);
@@ -384,7 +383,7 @@ export async function startRuleTrace(
   };
 
   try {
-    return recorder(await withStore((store) => store.startRuleTrace(repoId, source, startedPayload)));
+    return recorder(await store.startRuleTrace(repoId, source, startedPayload));
   } catch (error) {
     failed(error);
     return recorder(null);

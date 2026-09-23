@@ -451,9 +451,5 @@ async function onAdminConnection(
  */
 export async function confirmEmptyRuleSet(databaseUrl: string, repoId: number): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    await store.confirmRuleDraft(repoId);
-  } finally {
-    await store.close();
-  }
+  await store.confirmRuleDraft(repoId);
 }

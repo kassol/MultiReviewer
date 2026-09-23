@@ -71,72 +71,68 @@ test("知识轨迹的任务分号、续读与级联", async () => {
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    assert.equal(
-      await store.registerRepo({ repoId: 90, owner: "acme", repo: "traced", generation: 1, key: "k" }),
-      true,
-    );
-    const first = await store.startRuleTrace(90, "baseline-exploration", { model: "test:m" });
-    const second = await store.startRuleTrace(90, "disposition-feedback", { note: "备注原文" });
-    // 两条轨迹各自一份序号,互不干扰。
-    assert.notEqual(first, second);
-    assert.equal((await store.listRuleTrace(first)).length, 1);
-    assert.equal((await store.listRuleTrace(first))[0]!.kind, "rule_agent_started");
+  assert.equal(
+    await store.registerRepo({ repoId: 90, owner: "acme", repo: "traced", generation: 1, key: "k" }),
+    true,
+  );
+  const first = await store.startRuleTrace(90, "baseline-exploration", { model: "test:m" });
+  const second = await store.startRuleTrace(90, "disposition-feedback", { note: "备注原文" });
+  // 两条轨迹各自一份序号,互不干扰。
+  assert.notEqual(first, second);
+  assert.equal((await store.listRuleTrace(first)).length, 1);
+  assert.equal((await store.listRuleTrace(first))[0]!.kind, "rule_agent_started");
 
-    const appended = await store.appendRuleTrace(first, {
-      kind: "assistant_message",
-      payload: { text: "说了一段" },
-    });
-    assert.equal(appended.seq, 2);
-    assert.equal(appended.taskId, first);
-    await store.appendRuleTrace(first, { kind: "rule_agent_finished", payload: { items: 0 } });
-    assert.deepEqual(
-      (await store.listRuleTrace(first)).map((event) => event.seq),
-      [1, 2, 3],
-    );
-    // 断线续传按序号续。
-    assert.deepEqual(
-      (await store.listRuleTrace(first, 2)).map((event) => event.kind),
-      ["rule_agent_finished"],
-    );
-    assert.equal((await store.listRuleTrace(second)).length, 1);
+  const appended = await store.appendRuleTrace(first, {
+    kind: "assistant_message",
+    payload: { text: "说了一段" },
+  });
+  assert.equal(appended.seq, 2);
+  assert.equal(appended.taskId, first);
+  await store.appendRuleTrace(first, { kind: "rule_agent_finished", payload: { items: 0 } });
+  assert.deepEqual(
+    (await store.listRuleTrace(first)).map((event) => event.seq),
+    [1, 2, 3],
+  );
+  // 断线续传按序号续。
+  assert.deepEqual(
+    (await store.listRuleTrace(first, 2)).map((event) => event.kind),
+    ["rule_agent_finished"],
+  );
+  assert.equal((await store.listRuleTrace(second)).length, 1);
 
-    // 探索与它的轨迹显式关联(issue #214):写进 `rule_exploration` 那一行的就是这一次的
-    // 轨迹,不按「这个仓库最近一条探索轨迹」反推。
-    assert.equal(
-      await store.startRuleExploration(90, {
-        baselineSha: "abc1234",
-        model: "test:m",
-        startedAt: "2026-08-29T00:00:00.000Z",
-      }),
-      true,
-    );
-    assert.equal((await store.getRuleExploration(90))?.traceTaskId, null);
-    await store.setRuleExplorationTrace(90, first);
-    assert.equal((await store.getRuleExploration(90))?.traceTaskId, first);
-    // 重新探索是另一次任务:上一次的轨迹标识不留在这一行上,这一次轨迹起头失败时因此
-    // 不会把上一次的过程挂到它名下。
-    await store.failRuleExploration(90, "停下", "2026-08-29T00:10:00.000Z");
-    assert.equal(
-      await store.startRuleExploration(90, {
-        baselineSha: "def5678",
-        model: "test:m2",
-        startedAt: "2026-08-29T01:00:00.000Z",
-      }),
-      true,
-    );
-    assert.equal((await store.getRuleExploration(90))?.traceTaskId, null);
+  // 探索与它的轨迹显式关联(issue #214):写进 `rule_exploration` 那一行的就是这一次的
+  // 轨迹,不按「这个仓库最近一条探索轨迹」反推。
+  assert.equal(
+    await store.startRuleExploration(90, {
+      baselineSha: "abc1234",
+      model: "test:m",
+      startedAt: "2026-08-29T00:00:00.000Z",
+    }),
+    true,
+  );
+  assert.equal((await store.getRuleExploration(90))?.traceTaskId, null);
+  await store.setRuleExplorationTrace(90, first);
+  assert.equal((await store.getRuleExploration(90))?.traceTaskId, first);
+  // 重新探索是另一次任务:上一次的轨迹标识不留在这一行上,这一次轨迹起头失败时因此
+  // 不会把上一次的过程挂到它名下。
+  await store.failRuleExploration(90, "停下", "2026-08-29T00:10:00.000Z");
+  assert.equal(
+    await store.startRuleExploration(90, {
+      baselineSha: "def5678",
+      model: "test:m2",
+      startedAt: "2026-08-29T01:00:00.000Z",
+    }),
+    true,
+  );
+  assert.equal((await store.getRuleExploration(90))?.traceTaskId, null);
 
-    assert.equal(await store.ruleTraceRepo(first), 90);
-    assert.equal(await store.ruleTraceRepo(9999), undefined);
+  assert.equal(await store.ruleTraceRepo(first), 90);
+  assert.equal(await store.ruleTraceRepo(9999), undefined);
 
-    // 知识集跟着仓库走,轨迹同理。
-    await store.removeRepo(90);
-    assert.equal((await store.listRuleTrace(first)).length, 0);
-    assert.equal(await store.getRuleExploration(90), null);
-  } finally {
-    await store.close();
-  }
+  // 知识集跟着仓库走,轨迹同理。
+  await store.removeRepo(90);
+  assert.equal((await store.listRuleTrace(first)).length, 0);
+  assert.equal(await store.getRuleExploration(90), null);
 });
 
 test("一次基点探索留下一条轨迹:说的话、调的工具与提出的条目都在,知识集读得到它", async () => {
@@ -248,21 +244,17 @@ test("知识轨迹的可见性与知识集读侧一致:分配外 404,别的仓�
   );
   const store = openStore(h.db.url);
   let taskId: number;
-  try {
-    taskId = await store.startRuleTrace(GITEA_REPO.id, "baseline-exploration", { model: "test:m" });
-    await store.createPanelUser({
-      username: "outsider",
-      displayName: null,
-      passwordHash: await hashTestPassword(PASSWORD),
-      mustChangePassword: false,
-      createdAt: AT,
-      isSystemAdmin: false,
-      roleId: null,
-    });
-    await store.setPanelUserAssignment("outsider", []);
-  } finally {
-    await store.close();
-  }
+  taskId = await store.startRuleTrace(GITEA_REPO.id, "baseline-exploration", { model: "test:m" });
+  await store.createPanelUser({
+    username: "outsider",
+    displayName: null,
+    passwordHash: await hashTestPassword(PASSWORD),
+    mustChangePassword: false,
+    createdAt: AT,
+    isSystemAdmin: false,
+    roleId: null,
+  });
+  await store.setPanelUserAssignment("outsider", []);
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },

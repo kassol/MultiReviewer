@@ -249,7 +249,7 @@ import type {
 export type { FindingPlacement, RecordedFindingAttribution, RecordedLineAuthor };
 
 /** 一条 Finding 的一个归属:报出它的那个模型自己的说法(ADR 0015)。 */
-export type FindingAttributionRecord = {
+type FindingAttributionRecord = {
   model: string;
   severity: Severity;
   category: Category;
@@ -263,7 +263,7 @@ export type FindingAttributionRecord = {
  * 落库的一段延续承接来的历史说法(issue #267),与 `CarriedAttribution` 同一形状去掉
  * `headSha`——那是所属轮次的事实,读回时按 `runId` 取。
  */
-export type CarriedAttributionRecord = Omit<CarriedAttribution, "headSha">;
+type CarriedAttributionRecord = Omit<CarriedAttribution, "headSha">;
 
 /**
  * 一条 Finding。`groupIndex` 是它在本次 Review Run 中的合并组序号,发布之后按它把
@@ -335,7 +335,7 @@ export type DispositionUpdate = {
  * 的行级评论(issue #275),候选按行展开,一行一条评论;`commentId` 是承载它的那条 Forge
  * 评论——自动处置写回 Forge 的仍是同一个 resolve,载体与人工处置是同一条。
  */
-export type AutoDispositionCandidate = {
+type AutoDispositionCandidate = {
   findingId: number;
   commentId: string;
 };
@@ -389,7 +389,7 @@ export type HistoryPlacement = ContinuationCandidate & { disposition: Dispositio
  * `line` 是它此刻的位置(`placed_line ?? line`),不是它被报出来时的那一行:重定位一轮
  * 接一轮地接力,拿报出位置去找最近的那一处会在代码连着挪几轮之后挑错地方。
  */
-export type RelocationCandidate = {
+type RelocationCandidate = {
   findingId: number;
   file: string;
   line: number;
@@ -426,7 +426,7 @@ export type FindingDispositionTarget = {
  * 一轮 Review Run 的 Review Range 两端。base 只有范围审查那一档记在库里(阶段基准),
  * PR 触发的那一档要去 Forge 上读当时那个 pull request 的 base,因此这里给 null。
  */
-export type RunRange = {
+type RunRange = {
   id: number;
   owner: string;
   repo: string;
@@ -440,7 +440,7 @@ export type RunRange = {
  * 一条结论为什么没给出来(issue #412、#413):这个模型跑了那一批却没给、那一批根本没跑成,
  * 或者本轮没有哪一批读到它那个文件。只有第一种说的是模型有没有认真复核。
  */
-export type MissingVerdictReason = "no-verdict" | "batch-failed" | "no-batch";
+type MissingVerdictReason = "no-verdict" | "batch-failed" | "no-batch";
 
 /**
  * 一个 Reviewer 对一条历史 Finding 的复核结论(ADR 0016)。`findingId` 是注入时该
@@ -454,7 +454,7 @@ export type VerdictRecord = {
   missing?: MissingVerdictReason;
 };
 
-export type RunResult = {
+type RunResult = {
   finishedAt: string;
   durationMs: number;
   failed: boolean;
@@ -482,7 +482,7 @@ export type RunResult = {
  * 历史的那一条也不例外,那一行与被折叠到的历史在 `identityKey` 下是同一条 Finding
  * Identity。行在收尾插进去之前没有 id,因此用合并组下标说,由这一笔事务换成 id。
  */
-export type RootCauseGroupRecord = {
+type RootCauseGroupRecord = {
   reason: string;
   members: readonly number[];
 };
@@ -555,7 +555,7 @@ export type ModelDirectoryState =
   | "discovery-failed";
 export type ModelSupplementSource = "manual" | "migration-retention";
 
-export type ModelServiceCredential = {
+type ModelServiceCredential = {
   state: ModelCredentialState;
   apiKeyEncrypted: string | null;
   updatedAt: string | null;
@@ -565,7 +565,7 @@ export type ModelServiceCredential = {
   verificationSource: ModelVerificationSource | null;
 };
 
-export type ModelDirectory = {
+type ModelDirectory = {
   state: ModelDirectoryState;
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
@@ -573,7 +573,7 @@ export type ModelDirectory = {
   ignoredModelCount: number;
 };
 
-export type ModelSupplementRecord = {
+type ModelSupplementRecord = {
   provider: string;
   model: string;
   source: ModelSupplementSource;
@@ -582,14 +582,14 @@ export type ModelSupplementRecord = {
   createdAt: string;
 };
 
-export type ModelServiceModelStateRecord = {
+type ModelServiceModelStateRecord = {
   provider: string;
   model: string;
   enabled: boolean;
   updatedAt: string;
 };
 
-export type ModelServiceModelStateUpdateResult =
+type ModelServiceModelStateUpdateResult =
   | { status: "updated"; updated: number }
   | { status: "version-conflict" }
   | { status: "unknown-models"; models: string[] }
@@ -622,7 +622,7 @@ export type ModelServiceRecord = {
  * 一次读事务取得的全部可变启动输入。`modelServices` 只含本轮模型组合实际引用的
  * provider，因而未引用凭据的密文也不会越过这条边界。
  */
-export type ReviewRunStoreSnapshot = Readonly<{
+type ReviewRunStoreSnapshot = Readonly<{
   reviewers: readonly ReviewerSpec[];
   maxChangedLinesPerBatch: number | null;
   /** 本轮冻结的另外两项分批上限(issue #230)。null 即取编排层的默认值。 */
@@ -658,7 +658,7 @@ export type ModelReference = {
   locations: ModelReferenceLocation[];
 };
 
-export type RenameConflictingCustomModelServiceResult =
+type RenameConflictingCustomModelServiceResult =
   | { status: "renamed"; version: number }
   | {
       status:
@@ -748,7 +748,7 @@ export type ResolvedAuxiliaryModel = {
  * 整块写仓库配置的结果(issue #302)。`stale` 是期望版本对不上,`unavailable` 是同一事务
  * 里看到的模型服务已经跑不了这组覆盖,`missing` 是这一行不在了——三种都一项不写。
  */
-export type RepoSettingsWrite =
+type RepoSettingsWrite =
   | { ok: true; version: number }
   | { ok: false; reason: "stale" | "unavailable" | "missing" };
 
@@ -756,7 +756,7 @@ export type RepoSettingsWrite =
  * 工作副本的准备状态(issue #184)。`unknown` 是升级前注册的仓库与从没备过副本的那些
  * 行:副本可能在也可能不在,面板据此提供准备入口。
  */
-export type WorktreeState = "unknown" | "preparing" | "ready" | "failed";
+type WorktreeState = "unknown" | "preparing" | "ready" | "failed";
 
 /** 工作副本的准备结果。`failure` 只在 `failed` 时有值,`checkedAt` 是这个结果的时刻。 */
 export type WorktreeStatus = {
@@ -1010,7 +1010,7 @@ export type RuleProposal = Omit<RuleProposalInput, "sources"> & {
  * 改写换的是这一条本身,陈述、作用范围与型都可能换。两格缺席即不动,处置反哺那条并入
  * 路径因此一行未变。
  */
-export type RuleProposalMerge = {
+type RuleProposalMerge = {
   statement: string;
   /** 换新的作用范围。缺席即保持原样。 */
   scope?: string;
@@ -1041,7 +1041,7 @@ export type RunListItem = RunProjection & {
  * 带上它自己那一轮的 head:行作者按所属 Review Run 的 head 判定,一个阶段里各轮的
  * head 各不相同,补录时不能拿最新那一轮的去判所有行。
  */
-export type PendingLineAuthorFinding = {
+type PendingLineAuthorFinding = {
   findingId: number;
   headSha: string;
   file: string;
@@ -1049,7 +1049,7 @@ export type PendingLineAuthorFinding = {
 };
 
 /** 一条 Finding 补录到的行作者(issue #199)。 */
-export type FindingLineAuthor = {
+type FindingLineAuthor = {
   findingId: number;
   lineAuthor: LineAuthor;
 };
@@ -1156,7 +1156,7 @@ export type RangeReviewRecord = {
 };
 
 /** 一个范围审查审过的一个比较项。发起时那个也在内,按记录先后。 */
-export type RangeReviewComparison = {
+type RangeReviewComparison = {
   id: number;
   sha: string;
   /** 发起或推进的人。 */
@@ -1212,7 +1212,7 @@ export type ProductRecord = {
  * 把一个仓库归入产品的结果。`other-product` 即这个仓库已经归在别的产品下;`role-updated` 即
  * 这个仓库本来就在这个产品下,这一次只改了仓库职责——仓库集没变,因此不开产品梳理(issue #347)。
  */
-export type ProductRepoAttach =
+type ProductRepoAttach =
   | "attached"
   | "role-updated"
   | "missing-product"
@@ -1251,7 +1251,7 @@ export type ProductKnowledgeEntry = {
 };
 
 /** 写一条产品知识要给的那几格。`id` 给了即改写那一条(CONTEXT.md 产品知识:写下即生效)。 */
-export type ProductKnowledgeWrite = {
+type ProductKnowledgeWrite = {
   productId: number;
   kind: ProductKnowledgeKind;
   name: string;
@@ -1412,13 +1412,13 @@ export type AgentSessionEntryRecord = {
 };
 
 /** 一次发消息的受理结果(issue #333)。`fresh` 为假即这个客户端消息 id 早已受理过。 */
-export type AgentSessionMessageAcceptance = { acceptedAt: string; fresh: boolean };
+type AgentSessionMessageAcceptance = { acceptedAt: string; fresh: boolean };
 
 /**
  * 一张落好盘的会话图片(spec #329,issue #336)。库里只有路径与 mimeType:图片本身在 data
  * 目录下的文件里,base64 不进库也不进会话记录。
  */
-export type AgentSessionImageRecord = {
+type AgentSessionImageRecord = {
   sessionId: number;
   imageId: string;
   path: string;
@@ -1452,7 +1452,7 @@ export type AgentSessionEntryLink = {
 };
 
 /** 时间窗内的 Agent 会话用量:会话数与它们的 token 之和。一个都没有时缺失。 */
-export type AgentSessionUsageStats = ReviewerUsage & { sessions: number };
+type AgentSessionUsageStats = ReviewerUsage & { sessions: number };
 
 /**
  * 181 个方法的签名写在这里,一律写成同步形状——对外的 `Store` 是它的映射类型,每个方法
@@ -2493,7 +2493,6 @@ type SyncStore = {
     pullNumber: number,
     state: string | null,
   ): void;
-  close(): void;
 };
 
 /**
@@ -2568,9 +2567,9 @@ export type RepoFinding = {
 };
 
 /**
- * 进程内按连接串共用的连接池(ADR 0036)。`openStore` 每次给回一份门面,底下永远是同一个池
- * ——「每请求开一次库、用完关掉」的形状到此退役,`(await store.close())` 因此也不再关任何东西。
- * 池由 `closeStorePools()` 关:服务退出时一次,测试每个文件收尾时一次。
+ * 进程内按连接串共用的连接池(ADR 0036)。`openStore` 每次给回一份门面,底下永远是同一个池;
+ * 服务在启动时建一份 store,经依赖注入传下去(issue #460)。池由 `closeStorePools()` 关:
+ * 服务退出时一次,测试每个文件收尾时一次。
  */
 const pools = new Map<string, PgPool>();
 
@@ -2621,10 +2620,6 @@ export function openStore(databaseUrl: string): Store {
     ...knowledgeMethods(ctx),
     ...productsMethods(ctx),
     ...sessionsMethods(ctx),
-
-    // 连接池活到进程结束,这里不关任何东西(ADR 0036)。调用点仍留着:它们标着「这一段用完
-    // 了」,而池的关闭是 `closeStorePools()` 的事。
-    async close() {},
   };
   return store;
 }

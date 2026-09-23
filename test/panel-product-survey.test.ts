@@ -62,26 +62,18 @@ async function seedSurveySession(
   createdBy: string,
 ): Promise<AgentSessionRecord> {
   const store = openStore(h.db.url);
-  try {
-    return await store.createAgentSession({
-      productId,
-      createdBy,
-      purpose: "product-survey",
-      createdAt: AT,
-    });
-  } finally {
-    await store.close();
-  }
+  return await store.createAgentSession({
+    productId,
+    createdBy,
+    purpose: "product-survey",
+    createdAt: AT,
+  });
 }
 
 /** 把这一场梳理记成谈完了,与完成工具落的是同一格。 */
 async function completeSession(h: PanelHarness, sessionId: number): Promise<void> {
   const store = openStore(h.db.url);
-  try {
-    await store.completeAgentSession(sessionId, AT);
-  } finally {
-    await store.close();
-  }
+  await store.completeAgentSession(sessionId, AT);
 }
 
 async function sessionsOf(

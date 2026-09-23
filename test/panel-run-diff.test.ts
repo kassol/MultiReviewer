@@ -111,7 +111,6 @@ test("diff API:head 已不在本地副本里时 409 说明原因,不是 500", as
     batchCount: 1,
     reviewerPins: [],
   });
-  await store.close();
 
   const response = await h.api("GET", `/runs/${runId}/diff`);
   assert.equal(response.status, 409);
@@ -174,7 +173,6 @@ test("diff API:一格权限都没有的用户,只要仓库分给了他就读得�
     roleId: null,
   });
   await store.setPanelUserAssignment("diff-reader", [GITEA_REPO.id]);
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -250,7 +248,6 @@ test("diff API:同一轮的并发文件请求共用一次准备,不按请求数�
     batchCount: 1,
     reviewerPins: [],
   });
-  await store.close();
 
   // 详情页打开的一整套请求:先文件列表,再按文件取 patch。
   const dispatchedBefore = h.dispatched.length;

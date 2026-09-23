@@ -206,28 +206,23 @@ async function seedRun(
       },
     ],
   );
-  await store.close();
   return runId;
 }
 
 /** 播种一个范围审查:推进、审查完成与重跑三个动作的目标。容器 PR 不建,不碰 Forge。 */
 async function seedRangeReview(h: PanelHarness, repoId: number, owner: string, repo: string): Promise<number> {
   const store = openStore(h.db.url);
-  try {
-    const id = await store.createRangeReview({
-      repoId,
-      owner,
-      repo,
-      title: "一段范围",
-      baseSha: "a".repeat(40),
-      comparisonSha: "b".repeat(40),
-      createdBy: PANEL_ADMIN_USERNAME,
-      createdAt: "2026-08-10T00:00:00.000Z",
-    });
-    return id;
-  } finally {
-    await store.close();
-  }
+  const id = await store.createRangeReview({
+    repoId,
+    owner,
+    repo,
+    title: "一段范围",
+    baseSha: "a".repeat(40),
+    comparisonSha: "b".repeat(40),
+    createdBy: PANEL_ADMIN_USERNAME,
+    createdAt: "2026-08-10T00:00:00.000Z",
+  });
+  return id;
 }
 
 /** 建一个带角色与仓库分配的普通用户并登录。 */
@@ -238,25 +233,21 @@ async function scopedUser(
   permissions: readonly PanelPermission[],
 ): Promise<string> {
   const store = openStore(h.db.url);
-  try {
-    const role = await store.createPanelRole({
-      name: `role-${username}`,
-      permissions,
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    await store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: await hashTestPassword(PASSWORD),
-      mustChangePassword: false,
-      createdAt: "2026-08-20T00:00:00.000Z",
-      isSystemAdmin: false,
-      roleId: role.id,
-    });
-    await store.setPanelUserAssignment(username, repoIds);
-  } finally {
-    await store.close();
-  }
+  const role = await store.createPanelRole({
+    name: `role-${username}`,
+    permissions,
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  await store.createPanelUser({
+    username,
+    displayName: null,
+    passwordHash: await hashTestPassword(PASSWORD),
+    mustChangePassword: false,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: role.id,
+  });
+  await store.setPanelUserAssignment(username, repoIds);
   return (await userCookie(h, username));
 }
 
@@ -439,7 +430,6 @@ test("直达分配外的阶段页、汇总、轨迹与 diff 一律 404", async (
   const store = openStore(h.db.url);
   const mine = (await store.listRuns({ limit: 30, owner: "acme", repo: "alpha" }))[0]!.id;
   const theirs = (await store.listRuns({ limit: 30, owner: "acme", repo: "beta" }))[0]!.id;
-  await store.close();
 
   const stage = (name: string): string => `/stages/${encodeURIComponent(`pr:acme/${name}`)}`;
   const summary = (name: string): string =>
@@ -557,7 +547,6 @@ test("webhook 投递不经过仓库分配", async () => {
   // 谁都没分到这个仓库也照样投递:webhook 路径不经过过滤层。
   const store = openStore(h.db.url);
   await store.setPanelUserAssignment("maintainer", []);
-  await store.close();
 
   assert.equal((await h.deliverViaHook(h.repo.headSha)).status, 200);
   await h.settledAtLeast(1);

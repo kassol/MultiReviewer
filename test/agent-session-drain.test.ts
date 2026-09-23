@@ -129,7 +129,6 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
   // 全局模型组合代表升级前已存在的状态,与 harness 同一做法:运行期写要走设置页的门禁。
   // **排在模型服务播种之后**:那道门禁要这一组此刻跑得动,服务还没落库时它整份不写。
   assert.equal(await putGlobalSettings(store, { reviewersJson: JSON.stringify([HARNESS_SPEC]) }), true);
-  await store.close();
   const port = await freePort();
   const env = {
     ...process.env,
@@ -166,14 +165,10 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
   /** 这个会话此刻落库的记录。进程在不在都读得到:库是唯一真相(ADR 0031)。 */
   const records = async (): Promise<{ type: string; entry: unknown }[]> => {
     const read = openStore(databaseUrl);
-    try {
-      return (await read.listAgentSessionEntries(session.id)).map((record) => ({
-        type: record.type,
-        entry: record.entry,
-      }));
-    } finally {
-      await read.close();
-    }
+    return (await read.listAgentSessionEntries(session.id)).map((record) => ({
+      type: record.type,
+      entry: record.entry,
+    }));
   };
 
   // ── 第一个进程:一条消息跑起来,另一条排着,然后 SIGTERM ──
@@ -209,7 +204,6 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
   ]);
   // 读完就删,再放回去:下面那个进程要的正是它。
   await pending.putAgentSessionPendingMessages(session.id, [{ mode: "followUp", text: QUEUED }]);
-  await pending.close();
 
   // ── 第二个进程:同一个库。人下次发消息才重建,中止前排着的那条一并投递 ──
   const second = spawnMain(dir, env);
@@ -233,7 +227,6 @@ test("SIGTERM:在跑的会话被中止并记明原因,进程按时退出;重启�
   // 排队消息投出去就不留:重建那一刻取出即删。
   const drained = openStore(databaseUrl);
   assert.deepEqual(await drained.takeAgentSessionPendingMessages(session.id), []);
-  await drained.close();
 
   second.child.kill("SIGTERM");
   await new Promise<void>((resolve) => {

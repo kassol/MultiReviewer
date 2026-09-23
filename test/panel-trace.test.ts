@@ -42,38 +42,34 @@ async function seedFinishedRun(
   events: readonly { kind: TraceKind; text: string }[],
 ): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = await store.startRun({
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      pullNumber: HARNESS_PR.number,
-      headSha: "seeded-sha",
-      startedAt: "2026-08-25T00:00:00.000Z",
-      changedFiles: 1,
-      changedLines: 1,
-      batchCount: 1,
-      reviewerPins: [],
+  const runId = await store.startRun({
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+    headSha: "seeded-sha",
+    startedAt: "2026-08-25T00:00:00.000Z",
+    changedFiles: 1,
+    changedLines: 1,
+    batchCount: 1,
+    reviewerPins: [],
+  });
+  for (const event of events) {
+    await store.appendTrace(runId, {
+      scope: "reviewer",
+      reviewer: "test:global-model",
+      kind: event.kind,
+      payload: { text: event.text },
     });
-    for (const event of events) {
-      await store.appendTrace(runId, {
-        scope: "reviewer",
-        reviewer: "test:global-model",
-        kind: event.kind,
-        payload: { text: event.text },
-      });
-    }
-    await store.finishRun(runId, {
-      finishedAt: "2026-08-25T00:01:00.000Z",
-      durationMs: 60_000,
-      failed: false,
-      outcomes: [],
-      findings: [],
-      verdicts: [],
-    });
-    return runId;
-  } finally {
-    await store.close();
   }
+  await store.finishRun(runId, {
+    finishedAt: "2026-08-25T00:01:00.000Z",
+    durationMs: 60_000,
+    failed: false,
+    outcomes: [],
+    findings: [],
+    verdicts: [],
+  });
+  return runId;
 }
 
 test("已结束的轮次:`/trace` 按 seq 升序回全部事件", async () => {
@@ -136,7 +132,6 @@ test("轨迹的可见范围与轮次详情一致:一格权限都没有的人,分
     roleId: null,
   });
   await store.setPanelUserAssignment("no-permission", [GITEA_REPO.id]);
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -333,7 +328,6 @@ test("瞬时帧:到在线订阅者、帧里没有 id,重连续传只回放落库
   // 不落库:表里只有那条落库事件。
   const store = openStore(h.db.url);
   const kinds = (await store.listTrace(runId, lastSeq)).map((event) => event.kind);
-  await store.close();
   assert.deepEqual(kinds, ["assistant_message"]);
 
   // 续传:另开一条带 `?after=` 的流,回放只补落库的那条,瞬时帧不在其中。
@@ -401,11 +395,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 /** 这个库里唯一那一轮的 id。 */
 async function openStoreRunId(databaseUrl: string): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    const runs = await store.listRuns({ limit: 1 });
-    assert.equal(runs.length, 1, "库里应当正好有一轮 Review Run");
-    return runs[0]!.id;
-  } finally {
-    await store.close();
-  }
+  const runs = await store.listRuns({ limit: 1 });
+  assert.equal(runs.length, 1, "库里应当正好有一轮 Review Run");
+  return runs[0]!.id;
 }

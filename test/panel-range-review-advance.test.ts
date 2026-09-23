@@ -87,14 +87,10 @@ async function startedHarness(
 /** 库里每一轮的模式,按开跑先后。 */
 async function modes(h: PanelHarness, rangeReviewId: number): Promise<string[]> {
   const store = openStore(h.db.url);
-  try {
-    return (await store
-      .listRuns({ limit: 30, rangeReviewId }))
-      .map((run) => run.mode)
-      .reverse();
-  } finally {
-    await store.close();
-  }
+  return (await store
+    .listRuns({ limit: 30, rangeReviewId }))
+    .map((run) => run.mode)
+    .reverse();
 }
 
 /** 发起一个范围审查并等第一轮跑完。 */
@@ -137,7 +133,6 @@ test("增量评审:head 分支指向新 commit,新一轮归属同一范围审查
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  await store.close();
   assert.equal(runs.length, 2);
   assert.deepEqual(
     runs.map((run) => run.headSha),
@@ -187,7 +182,6 @@ test("新比较项不是 base 的后代:拒绝,分支不动,不开新一轮", as
 
   const store = openStore(h.db.url);
   assert.equal((await store.getRangeReview(rangeReview.id))!.comparisonSha, comparison);
-  await store.close();
 });
 
 test("推分支失败:记下失败原因,状态仍是进行中,分支与轮次都不动", async () => {
@@ -207,7 +201,6 @@ test("推分支失败:记下失败原因,状态仍是进行中,分支与轮次�
 
   const store = openStore(h.db.url);
   const record = (await store.getRangeReview(rangeReview.id))!;
-  await store.close();
   assert.equal(record.state, "in-progress");
   assert.equal(record.comparisonSha, h.repo.headSha);
   assert.notEqual(record.lastForgeFailure, null);
@@ -295,7 +288,6 @@ test("没有 review:advance 的用户推进被拒,分支不动", async () => {
     isSystemAdmin: false,
     roleId: role.id,
   });
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -339,7 +331,6 @@ test("持有旧格 review:create 但没有 review:advance:推进被拒,分支不
     isSystemAdmin: false,
     roleId: role.id,
   });
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -376,7 +367,6 @@ test("新比较项就是当前比较项:拒绝,比较项不动,不开新一轮(i
 
   const store = openStore(h.db.url);
   assert.equal((await store.getRangeReview(rangeReview.id))!.comparisonSha, h.repo.headSha);
-  await store.close();
 });
 
 test("推进带来源:阶段详情的 rangeReview 回得出这一格(issue #234)", async () => {
@@ -480,7 +470,6 @@ test("增量评审默认完整审查,`full` 同档,非法取值 400(issue #250)"
 
   const store = openStore(h.db.url);
   assert.equal((await store.getRangeReview(rangeReview.id))!.comparisonSha, later);
-  await store.close();
   assert.deepEqual(await modes(h, rangeReview.id), ["full", "full", "full"]);
 });
 
@@ -501,7 +490,6 @@ test("没有未处置历史的阶段:只复核推进 409,比较项与 head 分�
   assert.equal(h.settled.length, 1);
   const store = openStore(h.db.url);
   assert.equal((await store.getRangeReview(rangeReview.id))!.comparisonSha, h.repo.headSha);
-  await store.close();
 
   // 勾回完整审查:同一个比较项推得动。
   assert.equal(
@@ -539,7 +527,6 @@ test("有未处置历史:只复核推进 202,head 跟着走,范围仍是 base..�
 
   const store = openStore(h.db.url);
   const runs = await store.listRuns({ limit: 30, rangeReviewId: rangeReview.id });
-  await store.close();
   assert.equal(runs.length, 2);
   assert.equal(runs[0]!.pullNumber, rangeReview.containerPullNumber);
   assert.deepEqual(await modes(h, rangeReview.id), ["full", "verdict-only"]);
@@ -597,13 +584,9 @@ function replaceableChangedFiles(): {
 /** 库里这个范围审查的比较项记录,按记录先后:发起那条永远在,推进被拒时不该多一条。 */
 async function comparisons(h: PanelHarness, rangeReviewId: number): Promise<{ sha: string; recordedBy: string }[]> {
   const store = openStore(h.db.url);
-  try {
-    return (await store
-      .listRangeReviewComparisons(rangeReviewId))
-      .map(({ sha, recordedBy }) => ({ sha, recordedBy }));
-  } finally {
-    await store.close();
-  }
+  return (await store
+    .listRangeReviewComparisons(rangeReviewId))
+    .map(({ sha, recordedBy }) => ({ sha, recordedBy }));
 }
 
 test("删掉承载全部未处置历史的文件:只复核推进 409,比较项、来源、推进人、容器 PR 的 head 与轮次数都不动(issue #251)", async () => {
@@ -638,7 +621,6 @@ test("删掉承载全部未处置历史的文件:只复核推进 409,比较项�
   ]);
   const store = openStore(h.db.url);
   const record = (await store.getRangeReview(rangeReview.id))!;
-  await store.close();
   assert.equal(record.comparisonSha, h.repo.headSha);
   assert.deepEqual(record.comparisonSource, source);
 
@@ -733,28 +715,20 @@ async function stageFindings(
   rangeReviewId: number,
 ): Promise<{ file: string; disposition: string; note: string | null }[]> {
   const store = openStore(h.db.url);
-  try {
-    return (await store
-      .stageHistory({ rangeReviewId }))
-      .map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null }))
-      .sort((left, right) => left.file.localeCompare(right.file));
-  } finally {
-    await store.close();
-  }
+  return (await store
+    .stageHistory({ rangeReviewId }))
+    .map(({ file, disposition, note }) => ({ file, disposition, note: note ?? null }))
+    .sort((left, right) => left.file.localeCompare(right.file));
 }
 
 /** 这个范围审查最近那一轮的轮次级轨迹档位。 */
 async function lastRunTraceKinds(h: PanelHarness, rangeReviewId: number): Promise<string[]> {
   const store = openStore(h.db.url);
-  try {
-    const runId = (await store.listRuns({ limit: 1, rangeReviewId }))[0]!.id;
-    return (await store
-      .listTrace(runId))
-      .filter((event) => event.scope === "run")
-      .map((event) => event.kind);
-  } finally {
-    await store.close();
-  }
+  const runId = (await store.listRuns({ limit: 1, rangeReviewId }))[0]!.id;
+  return (await store
+    .listTrace(runId))
+    .filter((event) => event.scope === "run")
+    .map((event) => event.kind);
 }
 
 test("未处置历史全落在回退文件上:只复核推进先自动处置再 409,文案带条数(issue #276)", async () => {
@@ -790,7 +764,6 @@ test("未处置历史全落在回退文件上:只复核推进先自动处置再 
   assert.deepEqual(await modes(h, rangeReview.id), ["full"]);
   const store = openStore(h.db.url);
   assert.equal((await store.getRangeReview(rangeReview.id))!.comparisonSha, h.repo.headSha);
-  await store.close();
 });
 
 test("一部分历史落在回退文件上:只复核推进 202,开跑那一步不再重复处置(issue #276)", async () => {

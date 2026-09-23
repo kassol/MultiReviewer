@@ -22,7 +22,6 @@ test("两个连接同时取走同一会话的排队消息时,每条只被取走�
   const db = await makeTestDatabase();
   cleanups.push(() => db.cleanup());
   const store = openStore(db.url);
-  cleanups.push(() => store.close());
 
   const role = await store.createPanelRole({
     name: "拆需求的人",

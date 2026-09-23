@@ -59,7 +59,7 @@ export async function setup() {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING])],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   };
 
   return { repo, db, forge, deps };
@@ -94,19 +94,15 @@ export async function disposeInPanel(
   note?: string,
 ): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    await store.recordDisposition({
-      owner: EVENT.owner,
-      repo: EVENT.repo,
-      commentId,
-      disposition,
-      disposedBy: "kassol",
-      disposedAt: DISPOSED_AT,
-      ...(note === undefined ? {} : { note }),
-    });
-  } finally {
-    await store.close();
-  }
+  await store.recordDisposition({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    commentId,
+    disposition,
+    disposedBy: "kassol",
+    disposedAt: DISPOSED_AT,
+    ...(note === undefined ? {} : { note }),
+  });
 }
 
 /** 本轮落库的 disposition。第二次 Review Run 的记录 id 更大。 */

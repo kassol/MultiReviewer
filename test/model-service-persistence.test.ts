@@ -126,7 +126,6 @@ test("自动目录快照往返稀疏可信字段", async () => {
     1,
   );
 
-  await store.close();
   const reopened = openStore(db.url);
   assert.deepEqual((await reopened.getModelService("corp-gateway"))!.automaticModels, [
     {
@@ -165,7 +164,6 @@ test("自动目录快照往返稀疏可信字段", async () => {
       },
     },
   ]);
-  await reopened.close();
   await withTestDb(db.url, async (sql) => {
     const [idOnly] = await sql(
       `SELECT name, api, base_url, input_json, reasoning, context_window, max_tokens
@@ -293,7 +291,6 @@ test("模型服务当前版本把目标、凭据证据、目录与补录作为�
       },
     ],
   });
-  await store.close();
 });
 
 test("旧版本候选不写入，匹配版本时整份快照推进并替换目录来源", async () => {
@@ -402,7 +399,6 @@ test("旧版本候选不写入，匹配版本时整份快照推进并替换目�
     },
   ]);
   assert.deepEqual(current.supplements.map((entry) => entry.model), ["new-model"]);
-  await store.close();
 });
 
 test("模型引用按完整身份列出全局、显式覆盖与跟随全局位置", async () => {
@@ -484,7 +480,6 @@ test("模型引用按完整身份列出全局、显式覆盖与跟随全局位�
       ],
     },
   ]);
-  await store.close();
 });
 
 test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源补录", async () => {
@@ -545,7 +540,6 @@ test("只被辅助模型引用的模型照样拦下删服务与摘唯一来源�
   );
   assert.equal(await store.commitModelServiceVersion(1, dropSupplement), 2);
   assert.equal(await store.removeCustomModelService(provider, 2), true);
-  await store.close();
 });
 
 test("冲突自定义 provider 改名原子迁移服务、全局组合与全部仓库覆盖，历史记录不动", async () => {
@@ -577,7 +571,6 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
     key: "second-key",
     reviewersJson: JSON.stringify([{ provider: "openai", model: "global-model" }]),
   }), true);
-  await store.close();
 
   const historyBefore = await withTestDb(db.url, async (sql) => {
     const [run] = await sql(
@@ -647,7 +640,6 @@ test("冲突自定义 provider 改名原子迁移服务、全局组合与全部�
   assert.deepEqual(JSON.parse((await reopened.getRepo(42))!.reviewersJson!), [
     { provider: "corp-openai", model: "global-model" },
   ]);
-  await reopened.close();
 
   await withTestDb(db.url, async (sql) => {
     assert.deepEqual({
@@ -704,7 +696,6 @@ test("冲突 provider 改名遇到缺失引用或旧版本时完整回滚", asyn
     { status: "invalid-provider" },
   );
   assert.equal(await store.getModelService("corp-openai"), undefined);
-  await store.close();
 });
 
 test("Review Run 启动快照只读生效组合引用的服务密文,后续读取才看见新版本", async () => {
@@ -780,7 +771,6 @@ test("Review Run 启动快照只读生效组合引用的服务密文,后续读�
   assert.equal(second.modelServices[0]!.credential.apiKeyEncrypted, "ciphertext-used-v2");
 
   assert.equal(second.maxChangedLinesPerBatch, 999);
-  await store.close();
 });
 
 test("两个 Store handle 交错时组合写与服务来源删除互相原子阻断", async () => {
@@ -854,8 +844,6 @@ test("两个 Store handle 交错时组合写与服务来源删除互相原子阻
     assert.equal(await second.removeCustomModelService("race", 2), false);
     assert.equal((await second.getModelService("race"))!.version, 2);
   } finally {
-    await second.close();
-    await first.close();
   }
 });
 
@@ -919,5 +907,4 @@ test("Review Run 审计只持久化服务版本与运行模型,不落凭据、�
   assert.equal(projected.thinkingLevel, "high");
   assert.equal(projected.runtimeModel?.sources.contextWindow, "runtime-baseline");
   assert.equal(JSON.stringify(projected).includes("plaintext-reviewer-secret"), false);
-  await store.close();
 });

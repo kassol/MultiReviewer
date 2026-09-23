@@ -103,7 +103,6 @@ test("辅助模型变了:落一条系统消息、用新模型重建,上下文照
       }),
       true,
     );
-    await store.close();
 
     assert.equal((await send(h, cookie, sessionId, "c2", "接着说")).status, 202);
     await messagesAtLeast(h.db.url, sessionId, 4);

@@ -19,7 +19,6 @@ async function store(): Promise<Store> {
   const db = await makeTestDatabase();
   cleanups.push(() => db.cleanup());
   const opened = openStore(db.url);
-  cleanups.push(() => opened.close());
   return opened;
 }
 
@@ -113,11 +112,11 @@ test("tracker 的读写走同一段判定,返回 Promise", async () => {
   assert.equal((await opened.getProductSpec(specId))?.state, "closed");
 });
 
-test("startRuleTrace 的 withStore 是异步的,整条链路跟着返回 Promise", async () => {
+test("startRuleTrace 收的 store 是异步的,整条链路跟着返回 Promise", async () => {
   const opened = (await store());
   await opened.registerRepo({ repoId: 7, owner: "acme", repo: "widgets", generation: 1, key: "k" });
   const recorder = await startRuleTrace(
-    (use) => use(opened),
+    opened,
     7,
     "baseline-exploration",
     { model: "test:m" },

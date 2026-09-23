@@ -118,11 +118,7 @@ async function setGlobalAuxiliaryModel(
   spec: { provider: string; model: string; thinkingLevel?: string },
 ): Promise<void> {
   const store = openStore(h.db.url);
-  try {
-    assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(spec) }), true);
-  } finally {
-    await store.close();
-  }
+  assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify(spec) }), true);
 }
 
 async function inlineFindings(h: PanelHarness): Promise<RunFinding[]> {
@@ -182,19 +178,15 @@ test("带备注的处置排一次反哺:agent 拿到备注与 Finding 上下文,
   // 现集里先有一条:反哺提的是对照它的变更,agent 因此要看得到它。
   const store = openStore(h.db.url);
   let ruleId: number;
-  try {
-    assert.notEqual(
-      (await seedReviewRule(h.db.url, GITEA_REPO.id, {
-        type: "rule",
-        scope: "",
-        statement: "入参要在边界上校验",
-      })),
-      undefined,
-    );
-    ruleId = (await store.getRuleSet(GITEA_REPO.id))!.rules[0]!.id;
-  } finally {
-    await store.close();
-  }
+  assert.notEqual(
+    (await seedReviewRule(h.db.url, GITEA_REPO.id, {
+      type: "rule",
+      scope: "",
+      statement: "入参要在边界上校验",
+    })),
+    undefined,
+  );
+  ruleId = (await store.getRuleSet(GITEA_REPO.id))!.rules[0]!.id;
   items = [
     { type: "rule", scope: "src/**", statement: "边界上一次判空", reason: "  越界在三处都有  " },
     {
@@ -286,20 +278,16 @@ test("描述性备注蒸馏为事实提案,采纳后进知识集并注入下一�
     200,
   );
   const store = openStore(h.db.url);
-  try {
-    assert.deepEqual(
-      (await store.getRuleSet(GITEA_REPO.id))!.rules.map((entry) => [entry.type, entry.origin]),
-      [["fact", "disposition-feedback"]],
-    );
-    const snapshot = await store.getReviewRunSnapshot(GITEA_REPO.id);
-    assert.deepEqual(snapshot.rules, []);
-    assert.deepEqual(
-      snapshot.facts.map((fact) => [fact.scope, fact.statement]),
-      [["src/api/**", "全局拦截器覆盖 /api 下的全部路由"]],
-    );
-  } finally {
-    await store.close();
-  }
+  assert.deepEqual(
+    (await store.getRuleSet(GITEA_REPO.id))!.rules.map((entry) => [entry.type, entry.origin]),
+    [["fact", "disposition-feedback"]],
+  );
+  const snapshot = await store.getReviewRunSnapshot(GITEA_REPO.id);
+  assert.deepEqual(snapshot.rules, []);
+  assert.deepEqual(
+    snapshot.facts.map((fact) => [fact.scope, fact.statement]),
+    [["src/api/**", "全局拦截器覆盖 /api 下的全部路由"]],
+  );
 });
 
 test("反哺跑完即释放那一份一次性工作树", async () => {
@@ -349,19 +337,15 @@ test("反哺用这个仓库生效的辅助模型,探索记录里的模型不再�
   // 探索记录里的模型只作历史(issue #304):最近一次探索用的是另一家,两处配置都没设的
   // 反哺仍走解析的退路——这个仓库生效组合的第一个(ADR 0029)。
   const store = openStore(h.db.url);
-  try {
-    assert.equal(
-      await store.startRuleExploration(GITEA_REPO.id, {
-        baselineSha: h.repo.baseSha,
-        model: "second:other-model",
-        startedAt: "2026-08-29T00:00:00.000Z",
-      }),
-      true,
-    );
-    await store.finishRuleExploration(GITEA_REPO.id, [], "2026-08-29T00:00:00.000Z");
-  } finally {
-    await store.close();
-  }
+  assert.equal(
+    await store.startRuleExploration(GITEA_REPO.id, {
+      baselineSha: h.repo.baseSha,
+      model: "second:other-model",
+      startedAt: "2026-08-29T00:00:00.000Z",
+    }),
+    true,
+  );
+  await store.finishRuleExploration(GITEA_REPO.id, [], "2026-08-29T00:00:00.000Z");
 
   assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(1);
@@ -386,13 +370,9 @@ test("选不出辅助模型时:跳过解读留一行原因,零提案", async () 
   const findings = await inlineFindings(h);
 
   const store = openStore(h.db.url);
-  try {
-    // 清成没配走夹具入口:面板写链在配过非空之后不再收空组合(spec #300),而「全局组合
-    // 为空」是这条用例要的局面。
-    assert.equal(await putGlobalSettings(store, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
-  } finally {
-    await store.close();
-  }
+  // 清成没配走夹具入口:面板写链在配过非空之后不再收空组合(spec #300),而「全局组合
+  // 为空」是这条用例要的局面。
+  assert.equal(await putGlobalSettings(store, { reviewersJson: null, maxChangedLinesPerBatch: null }), true);
 
   assert.equal((await dispose(h, findings[0]!.id, NOTE)).status, 200);
   await h.dispositionFeedbackAtLeast(1);
@@ -529,32 +509,28 @@ test("认出队列里已有的一件事即并入那一条:队列仍一条,陈述
 
   // 并入后的提案在下一次重探索中留下:它的附注不全是基点探索(issue #281)。
   const store = openStore(h.db.url);
-  try {
-    await store.finishRuleExplorationAsProposals(
-      GITEA_REPO.id,
-      [
-        {
-          type: "rule",
-          change: "add",
-          targetRuleIds: [],
-          scope: "",
-          statement: "新一轮探索提的",
-          sources: [
-            {
-              origin: "baseline-exploration",
-              note: null,
-              evidence: null,
-              findingId: null,
-              traceTaskId: null,
-            },
-          ],
-        },
-      ],
-      "2026-09-08T00:00:00.000Z",
-    );
-  } finally {
-    await store.close();
-  }
+  await store.finishRuleExplorationAsProposals(
+    GITEA_REPO.id,
+    [
+      {
+        type: "rule",
+        change: "add",
+        targetRuleIds: [],
+        scope: "",
+        statement: "新一轮探索提的",
+        sources: [
+          {
+            origin: "baseline-exploration",
+            note: null,
+            evidence: null,
+            findingId: null,
+            traceTaskId: null,
+          },
+        ],
+      },
+    ],
+    "2026-09-08T00:00:00.000Z",
+  );
   assert.deepEqual(
     (await proposals(h)).map((entry) => entry.statement),
     ["越界与判空都在边界上一次判掉", "新一轮探索提的"],
@@ -730,21 +706,17 @@ test("重试失败的处置反哺:仍停在那条 Finding 报出时的 head,附�
 
   // 同一条 Finding 上另有一条在跑:finding 那一档不查互斥,与处置时同一个例外(issue #316)。
   const store = openStore(h.db.url);
-  try {
-    assert.notEqual(
-      await store.startRuleIntent(GITEA_REPO.id, {
-        text: "同一条 Finding 上的另一条备注",
-        submittedBy: PANEL_ADMIN_USERNAME,
-        targetKind: "finding",
-        targetId: target!.id,
-        model: "test:global-model",
-        startedAt: "2026-09-11T00:00:00.000Z",
-      }),
-      undefined,
-    );
-  } finally {
-    await store.close();
-  }
+  assert.notEqual(
+    await store.startRuleIntent(GITEA_REPO.id, {
+      text: "同一条 Finding 上的另一条备注",
+      submittedBy: PANEL_ADMIN_USERNAME,
+      targetKind: "finding",
+      targetId: target!.id,
+      model: "test:global-model",
+      startedAt: "2026-09-11T00:00:00.000Z",
+    }),
+    undefined,
+  );
 
   const response = await h.api(
     "POST",

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import { openStore } from "../src/review/store/index.ts";
 import { createWebhookServer } from "../src/webhook/server.ts";
 import { makeCacheDir, makeTestDatabase, testCleanups } from "./support/git-fixture.ts";
 
@@ -41,7 +42,7 @@ async function startPages(options: { withDist?: boolean } = {}) {
     forges: {},
     buildReviewers: () => [],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     dataDir: db.dataDir,
     bootstrapSecret: "pages-bootstrap",
     baseUrl: "https://reviewer.example.test",

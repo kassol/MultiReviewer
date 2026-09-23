@@ -89,5 +89,4 @@ test("审查配置未就绪时注册在任何 Gitea 调用、Key 生成和落库
   assert.deepEqual(await (await h.api("GET", "/repos")).json(), []);
   const store = openStore(h.db.url);
   assert.deepEqual(await store.listRepoKeys(GITEA_REPO.id), []);
-  await store.close();
 });

@@ -135,13 +135,8 @@ async function ruleSet(h: PanelHarness, cookie: string): Promise<RuleSetResponse
  * 落几条生效条目。写入口只剩裁决与草案确认(issue #299),用例要的现集条目因此直接落库。
  */
 async function seedActiveEntries(h: PanelHarness, entries: readonly ReviewRuleInput[]): Promise<void> {
-  const store = openStore(h.db.url);
-  try {
-    for (const entry of entries) {
-      assert.notEqual((await seedReviewRule(h.db.url, GITEA_REPO.id, entry)), undefined);
-    }
-  } finally {
-    await store.close();
+  for (const entry of entries) {
+    assert.notEqual((await seedReviewRule(h.db.url, GITEA_REPO.id, entry)), undefined);
   }
 }
 
@@ -211,13 +206,9 @@ async function consolidatingHarnessWithFindings(
 /** 往队列里排几条提案。返回它们的标识,按排入顺序。 */
 async function seedProposals(databaseUrl: string, inputs: readonly RuleProposalInput[]): Promise<number[]> {
   const store = openStore(databaseUrl);
-  try {
-    const ids: number[] = [];
-    for (const input of inputs) ids.push((await store.addRuleProposal(GITEA_REPO.id, input))!);
-    return ids;
-  } finally {
-    await store.close();
-  }
+  const ids: number[] = [];
+  for (const input of inputs) ids.push((await store.addRuleProposal(GITEA_REPO.id, input))!);
+  return ids;
 }
 
 /** 发起一次整理。请求体是空对象:用哪个模型由服务端解析(issue #303)。 */
@@ -229,153 +220,137 @@ test("合并落地:保留 id 最小的一行,其余删除、附注全部并入�
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({ repoId: 90, owner: "acme", repo: "tidied", generation: 1, key: "k" });
-    const first = (await store.addRuleProposal(90, proposal({
-      statement: "越界要在边界上判",
-      sources: [source({ note: "第一条备注" })],
-    })))!;
-    const second = (await store.addRuleProposal(90, proposal({
-      statement: "越界判在边界",
-      sources: [source({ note: "第二条备注" })],
-    })))!;
-    const third = (await store.addRuleProposal(90, proposal({
-      statement: "边界上判越界",
-      sources: [source({ note: "第三条备注" })],
-    })))!;
+  await store.registerRepo({ repoId: 90, owner: "acme", repo: "tidied", generation: 1, key: "k" });
+  const first = (await store.addRuleProposal(90, proposal({
+    statement: "越界要在边界上判",
+    sources: [source({ note: "第一条备注" })],
+  })))!;
+  const second = (await store.addRuleProposal(90, proposal({
+    statement: "越界判在边界",
+    sources: [source({ note: "第二条备注" })],
+  })))!;
+  const third = (await store.addRuleProposal(90, proposal({
+    statement: "边界上判越界",
+    sources: [source({ note: "第三条备注" })],
+  })))!;
 
-    // 保留哪一行不看给的顺序:落地一律留 id 最小的那一条。
-    assert.equal(await store.mergeRuleProposals(90, [third, second, first], "越界一律在边界上一次判掉"), true);
-    const queue = await store.getRuleProposals(90);
-    assert.deepEqual(queue.map((row) => row.id), [first]);
-    assert.equal(queue[0]!.statement, "越界一律在边界上一次判掉");
-    assert.deepEqual(
-      queue[0]!.sources.map((row) => row.note),
-      ["第一条备注", "第二条备注", "第三条备注"],
-    );
-  } finally {
-    await store.close();
-  }
+  // 保留哪一行不看给的顺序:落地一律留 id 最小的那一条。
+  assert.equal(await store.mergeRuleProposals(90, [third, second, first], "越界一律在边界上一次判掉"), true);
+  const queue = await store.getRuleProposals(90);
+  assert.deepEqual(queue.map((row) => row.id), [first]);
+  assert.equal(queue[0]!.statement, "越界一律在边界上一次判掉");
+  assert.deepEqual(
+    queue[0]!.sources.map((row) => row.note),
+    ["第一条备注", "第二条备注", "第三条备注"],
+  );
 });
 
 test("合并的守门:少于两条、空陈述、已裁决的一条、以及不是同一件事的几条一律不合", async () => {
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({ repoId: 91, owner: "acme", repo: "guarded", generation: 1, key: "k" });
-    const rule = (await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "已经生效的一条" }))!;
-    const add = (await store.addRuleProposal(91, proposal({ statement: "新增一条" })))!;
-    const other = (await store.addRuleProposal(91, proposal({ statement: "新增另一条" })))!;
-    const retire = (await store.addRuleProposal(91, proposal({
-      change: "retire",
-      targetRuleIds: [rule],
-      statement: "废止那一条",
-    })))!;
-    const decided = (await store.addRuleProposal(91, proposal({ statement: "会被驳回的那条" })))!;
+  await store.registerRepo({ repoId: 91, owner: "acme", repo: "guarded", generation: 1, key: "k" });
+  const rule = (await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "已经生效的一条" }))!;
+  const add = (await store.addRuleProposal(91, proposal({ statement: "新增一条" })))!;
+  const other = (await store.addRuleProposal(91, proposal({ statement: "新增另一条" })))!;
+  const retire = (await store.addRuleProposal(91, proposal({
+    change: "retire",
+    targetRuleIds: [rule],
+    statement: "废止那一条",
+  })))!;
+  const decided = (await store.addRuleProposal(91, proposal({ statement: "会被驳回的那条" })))!;
 
-    assert.equal(await store.mergeRuleProposals(91, [add], "只有一条"), false);
-    assert.equal(await store.mergeRuleProposals(91, [add, other], "   "), false);
-    // 变更类型不同的不是重复:合并会把一条废止连同它的出处一起删掉。
-    assert.equal(await store.mergeRuleProposals(91, [add, retire], "混起来的一句"), false);
+  assert.equal(await store.mergeRuleProposals(91, [add], "只有一条"), false);
+  assert.equal(await store.mergeRuleProposals(91, [add, other], "   "), false);
+  // 变更类型不同的不是重复:合并会把一条废止连同它的出处一起删掉。
+  assert.equal(await store.mergeRuleProposals(91, [add, retire], "混起来的一句"), false);
 
-    // 整理期间人照常裁决:被并的一条已经不在待裁决队列里,那一次合并整个跳过。
-    assert.equal(await store.rejectRuleProposal(91, decided), true);
-    assert.equal(await store.mergeRuleProposals(91, [add, decided], "合不了的一句"), false);
-    assert.deepEqual(
-      (await store.getRuleProposals(91)).map((row) => row.id),
-      [add, other, retire, decided],
-    );
-    assert.equal((await store.getRuleProposals(91))[0]!.statement, "新增一条");
-  } finally {
-    await store.close();
-  }
+  // 整理期间人照常裁决:被并的一条已经不在待裁决队列里,那一次合并整个跳过。
+  assert.equal(await store.rejectRuleProposal(91, decided), true);
+  assert.equal(await store.mergeRuleProposals(91, [add, decided], "合不了的一句"), false);
+  assert.deepEqual(
+    (await store.getRuleProposals(91)).map((row) => row.id),
+    [add, other, retire, decided],
+  );
+  assert.equal((await store.getRuleProposals(91))[0]!.statement, "新增一条");
 });
 
 test("改写为修改型:指向那条生效条目;目标不生效、不同型、不是新增型的一律丢弃", async () => {
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({ repoId: 92, owner: "acme", repo: "retargeted", generation: 1, key: "k" });
-    const rule = (await seedReviewRule(db.url, 92, { type: "rule", scope: "", statement: "已经生效的规则" }))!;
-    const fact = (await seedReviewRule(db.url, 92, { type: "fact", scope: "", statement: "已经生效的事实" }))!;
-    const add = (await store.addRuleProposal(92, proposal({ statement: "现集已经有的那条" })))!;
-    const factAdd = (await store.addRuleProposal(92, proposal({ type: "fact", statement: "另一条事实" })))!;
+  await store.registerRepo({ repoId: 92, owner: "acme", repo: "retargeted", generation: 1, key: "k" });
+  const rule = (await seedReviewRule(db.url, 92, { type: "rule", scope: "", statement: "已经生效的规则" }))!;
+  const fact = (await seedReviewRule(db.url, 92, { type: "fact", scope: "", statement: "已经生效的事实" }))!;
+  const add = (await store.addRuleProposal(92, proposal({ statement: "现集已经有的那条" })))!;
+  const factAdd = (await store.addRuleProposal(92, proposal({ type: "fact", statement: "另一条事实" })))!;
 
-    // 两者不同型时改写丢掉:不同型的修改采纳不了,改出来只剩一条裁不掉的。
-    assert.equal(await store.retargetRuleProposal(92, add, fact), false);
-    // 目标不生效同样丢掉。
-    assert.equal(await store.retargetRuleProposal(92, add, 4242), false);
+  // 两者不同型时改写丢掉:不同型的修改采纳不了,改出来只剩一条裁不掉的。
+  assert.equal(await store.retargetRuleProposal(92, add, fact), false);
+  // 目标不生效同样丢掉。
+  assert.equal(await store.retargetRuleProposal(92, add, 4242), false);
 
-    assert.equal(await store.retargetRuleProposal(92, add, rule), true);
-    const retargeted = (await store.getRuleProposals(92)).find((row) => row.id === add)!;
-    assert.equal(retargeted.change, "modify");
-    assert.deepEqual(retargeted.targetRuleIds, [rule]);
-    assert.equal(retargeted.statement, "现集已经有的那条");
-    // 已经是修改型的改不了第二次:改写只对新增型成立。
-    assert.equal(await store.retargetRuleProposal(92, add, rule), false);
+  assert.equal(await store.retargetRuleProposal(92, add, rule), true);
+  const retargeted = (await store.getRuleProposals(92)).find((row) => row.id === add)!;
+  assert.equal(retargeted.change, "modify");
+  assert.deepEqual(retargeted.targetRuleIds, [rule]);
+  assert.equal(retargeted.statement, "现集已经有的那条");
+  // 已经是修改型的改不了第二次:改写只对新增型成立。
+  assert.equal(await store.retargetRuleProposal(92, add, rule), false);
 
-    // 目标被人废止之后,这一条改写丢掉。
-    assert.notEqual(await store.retireReviewRule(92, fact), undefined);
-    assert.equal(await store.retargetRuleProposal(92, factAdd, fact), false);
-  } finally {
-    await store.close();
-  }
+  // 目标被人废止之后,这一条改写丢掉。
+  assert.notEqual(await store.retireReviewRule(92, fact), undefined);
+  assert.equal(await store.retargetRuleProposal(92, factAdd, fact), false);
 });
 
 test("整理与探索共用同仓库同时只跑一个,重启改判失败,移除仓库把整理一并摘掉", async () => {
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({ repoId: 93, owner: "acme", repo: "exclusive", generation: 1, key: "k" });
-    assert.equal(await store.getRuleConsolidation(93), null);
-    // 没注册的仓库发起不了。
-    assert.equal(await store.startRuleConsolidation(999, { model: "test:m", startedAt: AT }), false);
+  await store.registerRepo({ repoId: 93, owner: "acme", repo: "exclusive", generation: 1, key: "k" });
+  assert.equal(await store.getRuleConsolidation(93), null);
+  // 没注册的仓库发起不了。
+  assert.equal(await store.startRuleConsolidation(999, { model: "test:m", startedAt: AT }), false);
 
-    assert.equal(await store.startRuleConsolidation(93, { model: "test:m", startedAt: AT }), true);
-    assert.equal((await store.getRuleConsolidation(93))?.state, "running");
-    // 整理在跑:整理与探索都发起不了。
-    assert.equal(await store.startRuleConsolidation(93, { model: "test:m", startedAt: AT }), false);
-    assert.equal(
-      await store.startRuleExploration(93, { baselineSha: "abc1234", model: "test:m", startedAt: AT }),
-      false,
-    );
+  assert.equal(await store.startRuleConsolidation(93, { model: "test:m", startedAt: AT }), true);
+  assert.equal((await store.getRuleConsolidation(93))?.state, "running");
+  // 整理在跑:整理与探索都发起不了。
+  assert.equal(await store.startRuleConsolidation(93, { model: "test:m", startedAt: AT }), false);
+  assert.equal(
+    await store.startRuleExploration(93, { baselineSha: "abc1234", model: "test:m", startedAt: AT }),
+    false,
+  );
 
-    await store.finishRuleConsolidation(93, { merged: 2, retargeted: 1, proposed: 3 }, AT);
-    const done = (await store.getRuleConsolidation(93))!;
-    assert.equal(done.state, "completed");
-    assert.equal(done.merged, 2);
-    assert.equal(done.retargeted, 1);
-    assert.equal(done.proposed, 3);
+  await store.finishRuleConsolidation(93, { merged: 2, retargeted: 1, proposed: 3 }, AT);
+  const done = (await store.getRuleConsolidation(93))!;
+  assert.equal(done.state, "completed");
+  assert.equal(done.merged, 2);
+  assert.equal(done.retargeted, 1);
+  assert.equal(done.proposed, 3);
 
-    // 反过来也拦:探索在跑时整理发起不了。
-    assert.equal(
-      await store.startRuleExploration(93, { baselineSha: "abc1234", model: "test:m", startedAt: AT }),
-      true,
-    );
-    assert.equal(await store.startRuleConsolidation(93, { model: "test:m", startedAt: AT }), false);
-    await store.finishRuleExploration(93, [], AT);
+  // 反过来也拦:探索在跑时整理发起不了。
+  assert.equal(
+    await store.startRuleExploration(93, { baselineSha: "abc1234", model: "test:m", startedAt: AT }),
+    true,
+  );
+  assert.equal(await store.startRuleConsolidation(93, { model: "test:m", startedAt: AT }), false);
+  await store.finishRuleExploration(93, [], AT);
 
-    // 重启改判失败,面板因此给得出重试入口;摘要清回没跑完的样子。
-    assert.equal(
-      await store.startRuleConsolidation(93, { model: "test:m", thinkingLevel: "high", startedAt: AT }),
-      true,
-    );
-    assert.equal((await store.getRuleConsolidation(93))?.merged, null);
-    assert.equal((await store.getRuleConsolidation(93))?.proposed, null);
-    await store.failInterruptedRuleConsolidations("服务重启,上一次整理没跑完", AT);
-    const failed = (await store.getRuleConsolidation(93))!;
-    assert.equal(failed.state, "failed");
-    assert.equal(failed.failure, "服务重启,上一次整理没跑完");
-    assert.equal(failed.thinkingLevel, "high");
+  // 重启改判失败,面板因此给得出重试入口;摘要清回没跑完的样子。
+  assert.equal(
+    await store.startRuleConsolidation(93, { model: "test:m", thinkingLevel: "high", startedAt: AT }),
+    true,
+  );
+  assert.equal((await store.getRuleConsolidation(93))?.merged, null);
+  assert.equal((await store.getRuleConsolidation(93))?.proposed, null);
+  await store.failInterruptedRuleConsolidations("服务重启,上一次整理没跑完", AT);
+  const failed = (await store.getRuleConsolidation(93))!;
+  assert.equal(failed.state, "failed");
+  assert.equal(failed.failure, "服务重启,上一次整理没跑完");
+  assert.equal(failed.thinkingLevel, "high");
 
-    await store.removeRepo(93);
-    assert.equal(await store.getRuleConsolidation(93), null);
-  } finally {
-    await store.close();
-  }
+  await store.removeRepo(93);
+  assert.equal(await store.getRuleConsolidation(93), null);
 });
 
 test("面板发起知识整理:agent 拿到现集与待裁决队列,合并与改写落地,摘要可见", async () => {

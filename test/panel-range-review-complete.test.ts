@@ -195,7 +195,6 @@ test("Forge 步骤失败:记下失败原因,状态不变,改好之后重试成�
   assert.equal(failed.status, 502);
   const store = openStore(h.db.url);
   const record = (await store.getRangeReview(rangeReview.id))!;
-  await store.close();
   assert.equal(record.state, "in-progress");
   assert.equal(record.completedAt, null);
   assert.match(record.lastForgeFailure!, /没有权限/);
@@ -234,7 +233,6 @@ test("没有 review:complete 的用户标记不了审查完成", async () => {
     isSystemAdmin: false,
     roleId: role.id,
   });
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
@@ -278,7 +276,6 @@ test("持有旧格 finding:dispose 但没有 review:complete:标记不了审查�
     isSystemAdmin: false,
     roleId: role.id,
   });
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",

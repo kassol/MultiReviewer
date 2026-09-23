@@ -52,55 +52,51 @@ const reportingReviewers: NonNullable<
  */
 async function seedBodyFinding(databaseUrl: string): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = await store.startRun({
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      pullNumber: HARNESS_PR.number,
-      headSha: "legacy-head",
-      startedAt: "2026-08-01T00:00:00.000Z",
-      changedFiles: 1,
-      changedLines: 1,
-      batchCount: 1,
-      reviewerPins: [],
-    });
-    await store.finishRun(runId, {
-      finishedAt: "2026-08-01T00:00:01.000Z",
-      durationMs: 1,
-      failed: false,
-      outcomes: [],
-      findings: [
-        {
-          file: "src/answer.ts",
-          line: 99,
-          title: "diff 之外的那条",
-          severity: "P2",
-          category: "design",
-          description: "diff 之外的那条",
-          impact: "",
-          suggestion: "",
-          attributions: [
-            {
-              model: HARNESS_SPEC.model,
-              severity: "P2",
-              category: "design",
-              description: "diff 之外的那条",
-              impact: "",
-              suggestion: "",
-            },
-          ],
-          groupIndex: 0,
-          disposition: "unknown",
-          placement: "body",
-          fingerprint: "legacy-fingerprint",
-        },
-      ],
-      verdicts: [],
-    });
-    return runId;
-  } finally {
-    await store.close();
-  }
+  const runId = await store.startRun({
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+    headSha: "legacy-head",
+    startedAt: "2026-08-01T00:00:00.000Z",
+    changedFiles: 1,
+    changedLines: 1,
+    batchCount: 1,
+    reviewerPins: [],
+  });
+  await store.finishRun(runId, {
+    finishedAt: "2026-08-01T00:00:01.000Z",
+    durationMs: 1,
+    failed: false,
+    outcomes: [],
+    findings: [
+      {
+        file: "src/answer.ts",
+        line: 99,
+        title: "diff 之外的那条",
+        severity: "P2",
+        category: "design",
+        description: "diff 之外的那条",
+        impact: "",
+        suggestion: "",
+        attributions: [
+          {
+            model: HARNESS_SPEC.model,
+            severity: "P2",
+            category: "design",
+            description: "diff 之外的那条",
+            impact: "",
+            suggestion: "",
+          },
+        ],
+        groupIndex: 0,
+        disposition: "unknown",
+        placement: "body",
+        fingerprint: "legacy-fingerprint",
+      },
+    ],
+    verdicts: [],
+  });
+  return runId;
 }
 
 /** 一个已注册仓库,跑完一轮,并把三条 Finding 落库。 */
@@ -235,7 +231,6 @@ test("没有 finding:dispose 的用户处置被拒,新权限格不落到已有�
     isSystemAdmin: false,
     roleId: legacy.id,
   });
-  await store.close();
 
   const login = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",

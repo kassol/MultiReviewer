@@ -32,49 +32,45 @@ async function commitRunService(
   const provider = options.provider ?? "test";
   const at = `2026-08-20T12:0${expectedVersion ?? 0}:00.000Z`;
   const store = openStore(h.db.url);
-  try {
-    const version = await store.commitModelServiceVersion(expectedVersion, {
-      provider,
-      type: "custom",
-      baseUrl: options.baseUrl,
-      api: options.api,
-      targetFingerprint: modelServiceTargetFingerprint(options.baseUrl, options.api),
-      disabledReason: options.disabledReason ?? null,
-      createdAt: at,
-      updatedAt: at,
-      credential: {
-        state: options.credential === null ? "unconfigured" : "verified",
-        apiKeyEncrypted:
-          options.credential === null
-            ? null
-            : encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, options.credential),
-        updatedAt: options.credential === null ? null : at,
-        verifiedAt: options.credential === null ? null : at,
-        validationModel: options.credential === null ? null : `${provider}:${options.model}`,
-        verificationSource: options.credential === null ? null : "inference",
+  const version = await store.commitModelServiceVersion(expectedVersion, {
+    provider,
+    type: "custom",
+    baseUrl: options.baseUrl,
+    api: options.api,
+    targetFingerprint: modelServiceTargetFingerprint(options.baseUrl, options.api),
+    disabledReason: options.disabledReason ?? null,
+    createdAt: at,
+    updatedAt: at,
+    credential: {
+      state: options.credential === null ? "unconfigured" : "verified",
+      apiKeyEncrypted:
+        options.credential === null
+          ? null
+          : encryptCredential(PANEL_CREDENTIAL_MASTER_KEY, options.credential),
+      updatedAt: options.credential === null ? null : at,
+      verifiedAt: options.credential === null ? null : at,
+      validationModel: options.credential === null ? null : `${provider}:${options.model}`,
+      verificationSource: options.credential === null ? null : "inference",
+    },
+    directory: {
+      state: "available",
+      lastAttemptAt: at,
+      lastSuccessAt: at,
+      failure: null,
+      ignoredModelCount: 0,
+    },
+    automaticModels: [
+      {
+        identity: `${provider}:${options.model}`,
+        provider,
+        id: options.model,
+        fields: options.fields ?? {},
       },
-      directory: {
-        state: "available",
-        lastAttemptAt: at,
-        lastSuccessAt: at,
-        failure: null,
-        ignoredModelCount: 0,
-      },
-      automaticModels: [
-        {
-          identity: `${provider}:${options.model}`,
-          provider,
-          id: options.model,
-          fields: options.fields ?? {},
-        },
-      ],
-      supplements: [],
-    });
-    assert.ok(version !== undefined, "模型服务版本提交失败");
-    return version;
-  } finally {
-    await store.close();
-  }
+    ],
+    supplements: [],
+  });
+  assert.ok(version !== undefined, "模型服务版本提交失败");
+  return version;
 }
 
 test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计", async () => {
@@ -95,7 +91,6 @@ test("凭据未配置时只失败该 Reviewer 并留下固定服务版本审计"
   assert.equal(h.settled[0]!.error, undefined);
   const store = openStore(h.db.url);
   const run = (await store.listRuns({ limit: 1 }))[0]!;
-  await store.close();
   assert.equal(run.failed, true);
   assert.match(run.models[0]!.failure ?? "", /没有配置 test 的模型凭据/);
   assert.equal(run.reviewerPins[0]!.modelServiceVersion, 1);
@@ -143,7 +138,6 @@ test("旧版内置目标证明不了时不解密凭据，也不生成可执行 R
     }],
     supplements: [],
   }), 1);
-  await store.close();
 
   assert.equal((await h.deliverViaHook("sha-builtin-target-drift", historicalHook)).status, 200);
   await h.settledAtLeast(1);
@@ -212,7 +206,6 @@ test("模型来源消失只失败该 Reviewer,同轮可用同伴照常完成", a
   await h.settledAtLeast(1);
   const store = openStore(h.db.url);
   const run = (await store.listRuns({ limit: 1 }))[0]!;
-  await store.close();
   assert.equal(run.failed, false);
   assert.equal(run.models.find((row) => row.model === modelIdentity(available))?.failure, null);
   assert.match(
@@ -294,7 +287,6 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: 1,
   });
-  await settings.close();
 
   assert.equal((await h.deliverViaHook("sha-v1", historicalHook)).status, 200);
   await entered.promise;
@@ -314,7 +306,6 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
     reviewersJson: JSON.stringify([{ provider: "test", model: "global-model" }]),
     maxChangedLinesPerBatch: 999,
   });
-  await changedSettings.close();
   release.resolve();
   await h.settledAtLeast(1);
 
@@ -341,7 +332,6 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
 
   const firstStored = openStore(h.db.url);
   const firstRun = (await firstStored.listRuns({ limit: 1 }))[0]!;
-  await firstStored.close();
   assert.equal(firstRun.reviewerPins[0]!.modelServiceVersion, 1);
   assert.equal(firstRun.reviewerPins[0]!.runtimeModel?.baseUrl, "https://service-v1.example.test/v1");
   assert.equal(JSON.stringify(firstRun.reviewerPins).includes("key-one"), false);

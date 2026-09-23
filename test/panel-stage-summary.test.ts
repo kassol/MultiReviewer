@@ -131,100 +131,96 @@ async function findingId(store: Store, runId: number, fingerprint: string): Prom
  */
 async function seedStage(databaseUrl: string): Promise<{ rangeReviewId: number; runs: number[] }> {
   const store = openStore(databaseUrl);
-  try {
-    // 注册表里要有这个仓库:普通用户的可见范围由「分配的 repo id」经注册表认出来。
-    await store.registerRepo({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      generation: 1,
-      key: "stage-summary-key",
-    });
-    const rangeReviewId = await store.createRangeReview({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      title: "阶段汇总夹具",
-      baseSha: "base-sha",
-      comparisonSha: "sha-1",
-      createdBy: "operator",
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    const container = { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 900 };
+  // 注册表里要有这个仓库:普通用户的可见范围由「分配的 repo id」经注册表认出来。
+  await store.registerRepo({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    generation: 1,
+    key: "stage-summary-key",
+  });
+  const rangeReviewId = await store.createRangeReview({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    title: "阶段汇总夹具",
+    baseSha: "base-sha",
+    comparisonSha: "sha-1",
+    createdBy: "operator",
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  const container = { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 900 };
 
-    const run1 = await seedRun(
-      store,
-      { ...container, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z", rangeReviewId },
-      [
-        { file: "src/a.ts", line: 5, fingerprint: "fp-a", commentId: "c1", models: ["model-a", "model-b"] },
-        { file: "src/b.ts", line: 9, fingerprint: "fp-b", commentId: "c2" },
-        { file: "src/c.ts", line: 3, fingerprint: "fp-c", commentId: "c3" },
-      ],
-    );
-    const aRun1 = await findingId(store, run1, "fp-a");
-    const bRun1 = await findingId(store, run1, "fp-b");
-    const cRun1 = await findingId(store, run1, "fp-c");
+  const run1 = await seedRun(
+    store,
+    { ...container, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z", rangeReviewId },
+    [
+      { file: "src/a.ts", line: 5, fingerprint: "fp-a", commentId: "c1", models: ["model-a", "model-b"] },
+      { file: "src/b.ts", line: 9, fingerprint: "fp-b", commentId: "c2" },
+      { file: "src/c.ts", line: 3, fingerprint: "fp-c", commentId: "c3" },
+    ],
+  );
+  const aRun1 = await findingId(store, run1, "fp-a");
+  const bRun1 = await findingId(store, run1, "fp-b");
+  const cRun1 = await findingId(store, run1, "fp-c");
 
-    // 第二轮:a 折叠、d 新报出、c2 承接 c 的位置;b 由复核判已修自动处置。
-    const run2 = await seedRun(
-      store,
-      { ...container, headSha: "sha-2", startedAt: "2026-08-20T02:00:00.000Z", rangeReviewId },
-      [
-        { file: "src/a.ts", line: 5, fingerprint: "fp-a", commentId: "c1", models: ["model-a", "model-b"] },
-        { file: "src/c.ts", line: 20, fingerprint: "fp-c2", commentId: "c4" },
-        { file: "src/d.ts", line: 1, fingerprint: "fp-d", commentId: "c5" },
-      ],
-      [
-        // b:两个模型都判已修 → 自动处置。
-        { model: "model-a", findingId: bRun1, verdict: "fixed" },
-        { model: "model-b", findingId: bRun1, verdict: "fixed" },
-        // c:任一判仍在即仍在 → 走延续。
-        { model: "model-a", findingId: cRun1, verdict: "present" },
-        { model: "model-b", findingId: cRun1, verdict: "unclear", missing: true },
-        // a:漏复核不构成证据,原样留着。
-        { model: "model-a", findingId: aRun1, verdict: "unclear", missing: true },
-        { model: "model-b", findingId: aRun1, verdict: "unclear" },
-      ],
-    );
-    await store.recordAutoDisposition(
-      container.owner,
-      container.repo,
-      container.pullNumber,
-      { findingId: bRun1, commentId: "c2" },
-      "2026-08-20T02:05:00.000Z",
-    );
-    const [continuation] = await store.continuationCandidates([cRun1]);
-    assert.notEqual(continuation, undefined, "c 应当还能被延续");
-    await store.recordContinuation({
-      ...container,
-      runId: run2,
-      // fp-c2 是这一轮的第二个合并组。
-      groupIndex: 1,
-      candidate: continuation!,
-      handoffPending: false,
-    });
+  // 第二轮:a 折叠、d 新报出、c2 承接 c 的位置;b 由复核判已修自动处置。
+  const run2 = await seedRun(
+    store,
+    { ...container, headSha: "sha-2", startedAt: "2026-08-20T02:00:00.000Z", rangeReviewId },
+    [
+      { file: "src/a.ts", line: 5, fingerprint: "fp-a", commentId: "c1", models: ["model-a", "model-b"] },
+      { file: "src/c.ts", line: 20, fingerprint: "fp-c2", commentId: "c4" },
+      { file: "src/d.ts", line: 1, fingerprint: "fp-d", commentId: "c5" },
+    ],
+    [
+      // b:两个模型都判已修 → 自动处置。
+      { model: "model-a", findingId: bRun1, verdict: "fixed" },
+      { model: "model-b", findingId: bRun1, verdict: "fixed" },
+      // c:任一判仍在即仍在 → 走延续。
+      { model: "model-a", findingId: cRun1, verdict: "present" },
+      { model: "model-b", findingId: cRun1, verdict: "unclear", missing: true },
+      // a:漏复核不构成证据,原样留着。
+      { model: "model-a", findingId: aRun1, verdict: "unclear", missing: true },
+      { model: "model-b", findingId: aRun1, verdict: "unclear" },
+    ],
+  );
+  await store.recordAutoDisposition(
+    container.owner,
+    container.repo,
+    container.pullNumber,
+    { findingId: bRun1, commentId: "c2" },
+    "2026-08-20T02:05:00.000Z",
+  );
+  const [continuation] = await store.continuationCandidates([cRun1]);
+  assert.notEqual(continuation, undefined, "c 应当还能被延续");
+  await store.recordContinuation({
+    ...container,
+    runId: run2,
+    // fp-c2 是这一轮的第二个合并组。
+    groupIndex: 1,
+    candidate: continuation!,
+    handoffPending: false,
+  });
 
-    // 第三轮:三条都折叠,a 被人在面板上处置。
-    const run3 = await seedRun(
-      store,
-      { ...container, headSha: "sha-3", startedAt: "2026-08-20T03:00:00.000Z", rangeReviewId },
-      [
-        {
-          file: "src/a.ts",
-          line: 5,
-          fingerprint: "fp-a",
-          commentId: "c1",
-          models: ["model-a", "model-b"],
-          disposition: "resolved",
-        },
-        { file: "src/c.ts", line: 20, fingerprint: "fp-c2", commentId: "c4" },
-        { file: "src/d.ts", line: 1, fingerprint: "fp-d", commentId: "c5" },
-      ],
-    );
-    return { rangeReviewId, runs: [run1, run2, run3] };
-  } finally {
-    await store.close();
-  }
+  // 第三轮:三条都折叠,a 被人在面板上处置。
+  const run3 = await seedRun(
+    store,
+    { ...container, headSha: "sha-3", startedAt: "2026-08-20T03:00:00.000Z", rangeReviewId },
+    [
+      {
+        file: "src/a.ts",
+        line: 5,
+        fingerprint: "fp-a",
+        commentId: "c1",
+        models: ["model-a", "model-b"],
+        disposition: "resolved",
+      },
+      { file: "src/c.ts", line: 20, fingerprint: "fp-c2", commentId: "c4" },
+      { file: "src/d.ts", line: 1, fingerprint: "fp-d", commentId: "c5" },
+    ],
+  );
+  return { rangeReviewId, runs: [run1, run2, run3] };
 }
 
 async function summaryOf(h: PanelHarness, query: string): Promise<SummaryBody> {
@@ -318,7 +314,6 @@ test("阶段汇总:位置跟到重定位的那一轮,没重定位的停在报出
   await store.recordFindingRelocations(run2, [
     { findingId: await findingId(store, run1, "fp-moved"), line: 16 },
   ]);
-  await store.close();
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
 
@@ -352,44 +347,40 @@ test("阶段汇总逐归属带影响与建议,升级前落的行读回 null(issu
   const store = openStore(h.db.url);
   let rangeReviewId: number;
   let legacyId: number;
-  try {
-    await store.registerRepo({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      generation: 1,
-      key: "stage-summary-key",
-    });
-    rangeReviewId = await store.createRangeReview({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      title: "归属两段夹具",
-      baseSha: "base-sha",
-      comparisonSha: "sha-1",
-      createdBy: "operator",
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    const runId = await seedRun(
-      store,
-      { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 900, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z", rangeReviewId },
-      [
-        {
-          file: "src/a.ts",
-          line: 5,
-          fingerprint: "fp-said",
-          commentId: "c1",
-          models: ["model-a", "model-b"],
-          impact: "所有调用方拿到的差值都错",
-          suggestion: "去掉多余的 - 1",
-        },
-        { file: "src/b.ts", line: 9, fingerprint: "fp-legacy", commentId: "c2" },
-      ],
-    );
-    legacyId = await findingId(store, runId, "fp-legacy");
-  } finally {
-    await store.close();
-  }
+  await store.registerRepo({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    generation: 1,
+    key: "stage-summary-key",
+  });
+  rangeReviewId = await store.createRangeReview({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    title: "归属两段夹具",
+    baseSha: "base-sha",
+    comparisonSha: "sha-1",
+    createdBy: "operator",
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  const runId = await seedRun(
+    store,
+    { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 900, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z", rangeReviewId },
+    [
+      {
+        file: "src/a.ts",
+        line: 5,
+        fingerprint: "fp-said",
+        commentId: "c1",
+        models: ["model-a", "model-b"],
+        impact: "所有调用方拿到的差值都错",
+        suggestion: "去掉多余的 - 1",
+      },
+      { file: "src/b.ts", line: 9, fingerprint: "fp-legacy", commentId: "c2" },
+    ],
+  );
+  legacyId = await findingId(store, runId, "fp-legacy");
   // 升级前落的归属行两列是 NULL:当时没存,与模型没给的空串分开。
   await withTestDb(h.db.url, async (sql) => {
     await sql(
@@ -439,84 +430,80 @@ test("阶段汇总带代表段的影响与建议,升级前落的行按规则现�
       suggestion: "去掉多余的 - 1",
     },
   ];
-  try {
-    await store.registerRepo({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      generation: 1,
-      key: "stage-summary-representative-key",
-    });
-    rangeReviewId = await store.createRangeReview({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      title: "代表段夹具",
-      baseSha: "base-sha",
-      comparisonSha: "sha-1",
-      createdBy: "operator",
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    const runId = await store.startRun({
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      pullNumber: 901,
-      headSha: "sha-1",
-      startedAt: "2026-08-20T01:00:00.000Z",
-      rangeReviewId,
-      changedFiles: 1,
-      changedLines: 1,
-      batchCount: 1,
-      reviewerPins: [],
-    });
-    await store.finishRun(runId, {
-      finishedAt: "2026-08-20T01:10:00.000Z",
-      durationMs: 1,
-      failed: false,
-      outcomes: [],
-      findings: [
-        {
-          file: "src/a.ts",
-          line: 5,
-          title: "sub 多减了 1",
-          severity: "P1",
-          category: "bug",
-          // 落库的代表段就是描述最长那条归属的四段(issue #278)。
-          description: "正文 fp-new,少减一次导致返回值偏小",
-          impact: "所有调用方拿到的差值都错",
-          suggestion: "去掉多余的 - 1",
-          attributions: attributions("fp-new"),
-          fingerprint: "fp-new",
-          groupIndex: 0,
-          disposition: "unknown",
-          placement: "inline",
-          commentId: "c1",
-          commentHtmlUrl: "https://gitea.example.test/comments/c1",
-        },
-        {
-          file: "src/b.ts",
-          line: 9,
-          title: "sub 多减了 1",
-          severity: "P1",
-          category: "bug",
-          description: "正文 fp-legacy",
-          impact: "余额会算错",
-          suggestion: "改成 a - b",
-          attributions: attributions("fp-legacy"),
-          fingerprint: "fp-legacy",
-          groupIndex: 1,
-          disposition: "unknown",
-          placement: "inline",
-          commentId: "c2",
-          commentHtmlUrl: "https://gitea.example.test/comments/c2",
-        },
-      ],
-      verdicts: [],
-    });
-    legacyId = await findingId(store, runId, "fp-legacy");
-  } finally {
-    await store.close();
-  }
+  await store.registerRepo({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    generation: 1,
+    key: "stage-summary-representative-key",
+  });
+  rangeReviewId = await store.createRangeReview({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    title: "代表段夹具",
+    baseSha: "base-sha",
+    comparisonSha: "sha-1",
+    createdBy: "operator",
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  const runId = await store.startRun({
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: 901,
+    headSha: "sha-1",
+    startedAt: "2026-08-20T01:00:00.000Z",
+    rangeReviewId,
+    changedFiles: 1,
+    changedLines: 1,
+    batchCount: 1,
+    reviewerPins: [],
+  });
+  await store.finishRun(runId, {
+    finishedAt: "2026-08-20T01:10:00.000Z",
+    durationMs: 1,
+    failed: false,
+    outcomes: [],
+    findings: [
+      {
+        file: "src/a.ts",
+        line: 5,
+        title: "sub 多减了 1",
+        severity: "P1",
+        category: "bug",
+        // 落库的代表段就是描述最长那条归属的四段(issue #278)。
+        description: "正文 fp-new,少减一次导致返回值偏小",
+        impact: "所有调用方拿到的差值都错",
+        suggestion: "去掉多余的 - 1",
+        attributions: attributions("fp-new"),
+        fingerprint: "fp-new",
+        groupIndex: 0,
+        disposition: "unknown",
+        placement: "inline",
+        commentId: "c1",
+        commentHtmlUrl: "https://gitea.example.test/comments/c1",
+      },
+      {
+        file: "src/b.ts",
+        line: 9,
+        title: "sub 多减了 1",
+        severity: "P1",
+        category: "bug",
+        description: "正文 fp-legacy",
+        impact: "余额会算错",
+        suggestion: "改成 a - b",
+        attributions: attributions("fp-legacy"),
+        fingerprint: "fp-legacy",
+        groupIndex: 1,
+        disposition: "unknown",
+        placement: "inline",
+        commentId: "c2",
+        commentHtmlUrl: "https://gitea.example.test/comments/c2",
+      },
+    ],
+    verdicts: [],
+  });
+  legacyId = await findingId(store, runId, "fp-legacy");
   // 升级前落的行:两列是 NULL,前两段还是按旧规则(严重度最高那条)存下来的那份。
   await withTestDb(h.db.url, async (sql) => {
     await sql("UPDATE finding SET impact = NULL, suggestion = NULL WHERE id = $1", legacyId);
@@ -542,56 +529,52 @@ test("阶段汇总带出延续承接来的历史说法,head 按来源轮次补(i
   const store = openStore(h.db.url);
   let rangeReviewId: number;
   let originRunId: number;
-  try {
-    await store.registerRepo({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      generation: 1,
-      key: "stage-summary-key",
-    });
-    rangeReviewId = await store.createRangeReview({
-      repoId: GITEA_REPO.id,
-      owner: HARNESS_PR.owner,
-      repo: HARNESS_PR.repo,
-      title: "历史说法夹具",
-      baseSha: "base-sha",
-      comparisonSha: "sha-2",
-      createdBy: "operator",
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    const container = { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 901, rangeReviewId };
-    // 第一轮说出问题;第二轮合成的延续把那段说法带到新位置,出处是第一轮。
-    originRunId = await seedRun(
-      store,
-      { ...container, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z" },
-      [{ file: "src/a.ts", line: 5, fingerprint: "fp-origin", commentId: "c1" }],
-    );
-    await seedRun(
-      store,
-      { ...container, headSha: "sha-2", startedAt: "2026-08-21T01:00:00.000Z" },
-      [
-        {
-          file: "src/a.ts",
-          line: 9,
-          fingerprint: "fp-continued",
-          commentId: "c2",
-          models: ["model-c"],
-          carried: [
-            {
-              model: "model-a",
-              runId: originRunId,
-              description: "正文 fp-origin",
-              impact: "所有调用方拿到的差值都错",
-              suggestion: "去掉多余的 - 1",
-            },
-          ],
-        },
-      ],
-    );
-  } finally {
-    await store.close();
-  }
+  await store.registerRepo({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    generation: 1,
+    key: "stage-summary-key",
+  });
+  rangeReviewId = await store.createRangeReview({
+    repoId: GITEA_REPO.id,
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    title: "历史说法夹具",
+    baseSha: "base-sha",
+    comparisonSha: "sha-2",
+    createdBy: "operator",
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  const container = { owner: HARNESS_PR.owner, repo: HARNESS_PR.repo, pullNumber: 901, rangeReviewId };
+  // 第一轮说出问题;第二轮合成的延续把那段说法带到新位置,出处是第一轮。
+  originRunId = await seedRun(
+    store,
+    { ...container, headSha: "sha-1", startedAt: "2026-08-20T01:00:00.000Z" },
+    [{ file: "src/a.ts", line: 5, fingerprint: "fp-origin", commentId: "c1" }],
+  );
+  await seedRun(
+    store,
+    { ...container, headSha: "sha-2", startedAt: "2026-08-21T01:00:00.000Z" },
+    [
+      {
+        file: "src/a.ts",
+        line: 9,
+        fingerprint: "fp-continued",
+        commentId: "c2",
+        models: ["model-c"],
+        carried: [
+          {
+            model: "model-a",
+            runId: originRunId,
+            description: "正文 fp-origin",
+            impact: "所有调用方拿到的差值都错",
+            suggestion: "去掉多余的 - 1",
+          },
+        ],
+      },
+    ],
+  );
 
   const body = await summaryOf(h, `rangeReviewId=${rangeReviewId}`);
 
@@ -647,21 +630,17 @@ test("阶段汇总按 pull request 取范围:容器 PR 的轮次不混进 PR 链
   const h = await startPanelHarness();
   await seedStage(h.db.url);
   const store = openStore(h.db.url);
-  try {
-    await seedRun(
-      store,
-      {
-        owner: HARNESS_PR.owner,
-        repo: HARNESS_PR.repo,
-        pullNumber: HARNESS_PR.number,
-        headSha: "pr-sha-1",
-        startedAt: "2026-08-21T01:00:00.000Z",
-      },
-      [{ file: "src/pr.ts", line: 2, fingerprint: "fp-pr", commentId: "p1" }],
-    );
-  } finally {
-    await store.close();
-  }
+  await seedRun(
+    store,
+    {
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      pullNumber: HARNESS_PR.number,
+      headSha: "pr-sha-1",
+      startedAt: "2026-08-21T01:00:00.000Z",
+    },
+    [{ file: "src/pr.ts", line: 2, fingerprint: "fp-pr", commentId: "p1" }],
+  );
 
   const body = await summaryOf(
     h,
@@ -678,38 +657,34 @@ test("阶段汇总按 pull request 取范围:容器 PR 的轮次不混进 PR 链
 test("阶段汇总每条 Finding 带行作者,未判定的那条是 null", async () => {
   const h = await startPanelHarness();
   const store = openStore(h.db.url);
-  try {
-    await seedRun(
-      store,
+  await seedRun(
+    store,
+    {
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      pullNumber: HARNESS_PR.number,
+      headSha: "pr-sha-1",
+      startedAt: "2026-08-21T01:00:00.000Z",
+    },
+    [
       {
-        owner: HARNESS_PR.owner,
-        repo: HARNESS_PR.repo,
-        pullNumber: HARNESS_PR.number,
-        headSha: "pr-sha-1",
-        startedAt: "2026-08-21T01:00:00.000Z",
-      },
-      [
-        {
-          file: "src/pr.ts",
-          line: 2,
-          fingerprint: "fp-authored",
-          commentId: "p1",
-          lineAuthor: {
-            sha: "0123456789abcdef0123456789abcdef01234567",
-            name: "Alice Lin",
-            email: "alice@example.invalid",
-            authoredAt: "2026-08-21T00:30:00.000Z",
-            // 相邻改动标记随行作者一起投影出去(issue #241)。
-            adjacent: true,
-          },
+        file: "src/pr.ts",
+        line: 2,
+        fingerprint: "fp-authored",
+        commentId: "p1",
+        lineAuthor: {
+          sha: "0123456789abcdef0123456789abcdef01234567",
+          name: "Alice Lin",
+          email: "alice@example.invalid",
+          authoredAt: "2026-08-21T00:30:00.000Z",
+          // 相邻改动标记随行作者一起投影出去(issue #241)。
+          adjacent: true,
         },
-        // 四列同 NULL 即未判定:侧滑显示「无法追溯」,读路径按 null 给。
-        { file: "src/pr.ts", line: 9, fingerprint: "fp-unknown", commentId: "p2" },
-      ],
-    );
-  } finally {
-    await store.close();
-  }
+      },
+      // 四列同 NULL 即未判定:侧滑显示「无法追溯」,读路径按 null 给。
+      { file: "src/pr.ts", line: 9, fingerprint: "fp-unknown", commentId: "p2" },
+    ],
+  );
 
   const body = await summaryOf(
     h,
@@ -768,22 +743,18 @@ test("阶段汇总给升级前的 Finding 补录行作者并写回,之后不再�
   const cached = cloneRepoCache(h);
 
   const store = openStore(h.db.url);
-  try {
-    // 行作者四列全空:这条是升级前落的。
-    await seedRun(
-      store,
-      {
-        owner: HARNESS_PR.owner,
-        repo: HARNESS_PR.repo,
-        pullNumber: HARNESS_PR.number,
-        headSha,
-        startedAt: "2026-08-21T01:00:00.000Z",
-      },
-      [{ file: "src/answer.ts", line: 1, fingerprint: "fp-old", commentId: "p1" }],
-    );
-  } finally {
-    await store.close();
-  }
+  // 行作者四列全空:这条是升级前落的。
+  await seedRun(
+    store,
+    {
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      pullNumber: HARNESS_PR.number,
+      headSha,
+      startedAt: "2026-08-21T01:00:00.000Z",
+    },
+    [{ file: "src/answer.ts", line: 1, fingerprint: "fp-old", commentId: "p1" }],
+  );
 
   const body = await summaryOf(h, PR_QUERY);
   assert.equal(body.findings.length, 1);
@@ -815,22 +786,18 @@ test("阶段汇总补录不了行作者时照常 200,那几条留空等下次读
   cloneRepoCache(h);
 
   const store = openStore(h.db.url);
-  try {
-    // 这一轮的 head 在缓存副本里不可达:评审失败提前退出、没跑过钉住那一步的旧轮次。
-    await seedRun(
-      store,
-      {
-        owner: HARNESS_PR.owner,
-        repo: HARNESS_PR.repo,
-        pullNumber: HARNESS_PR.number,
-        headSha: "0000000000000000000000000000000000000000",
-        startedAt: "2026-08-21T01:00:00.000Z",
-      },
-      [{ file: "src/answer.ts", line: 1, fingerprint: "fp-unreachable", commentId: "p1" }],
-    );
-  } finally {
-    await store.close();
-  }
+  // 这一轮的 head 在缓存副本里不可达:评审失败提前退出、没跑过钉住那一步的旧轮次。
+  await seedRun(
+    store,
+    {
+      owner: HARNESS_PR.owner,
+      repo: HARNESS_PR.repo,
+      pullNumber: HARNESS_PR.number,
+      headSha: "0000000000000000000000000000000000000000",
+      startedAt: "2026-08-21T01:00:00.000Z",
+    },
+    [{ file: "src/answer.ts", line: 1, fingerprint: "fp-unreachable", commentId: "p1" }],
+  );
 
   const body = await summaryOf(h, PR_QUERY);
   assert.equal(body.findings[0]!.lineAuthor, null);
@@ -868,24 +835,20 @@ async function userCookie(
   permissions: readonly PanelPermission[],
 ): Promise<string> {
   const store = openStore(h.db.url);
-  try {
-    const role = await store.createPanelRole({
-      name: `role-${username}`,
-      permissions,
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    await store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: HASH,
-      mustChangePassword: false,
-      createdAt: "2026-08-20T00:00:00.000Z",
-      isSystemAdmin: false,
-      roleId: role.id,
-    });
-    await store.setPanelUserAssignment(username, [GITEA_REPO.id]);
-  } finally {
-    await store.close();
-  }
+  const role = await store.createPanelRole({
+    name: `role-${username}`,
+    permissions,
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  await store.createPanelUser({
+    username,
+    displayName: null,
+    passwordHash: HASH,
+    mustChangePassword: false,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: role.id,
+  });
+  await store.setPanelUserAssignment(username, [GITEA_REPO.id]);
   return userCookieRow(h.serverUrl, username, PASSWORD);
 }

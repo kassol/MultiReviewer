@@ -435,7 +435,6 @@ for (const c of CASES) {
         assert.deepEqual(await store.modelParticipation(from, to), c.participation);
       }
     } finally {
-      await store.close();
       await db.cleanup();
     }
   });
@@ -488,7 +487,6 @@ test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一�
     const seed = openStore(db.url);
     await seedWithModel(seed, "old-model", T1);
     await seedWithModel(seed, "acme:old-model", T2);
-    await seed.close();
 
     const reopened = openStore(db.url);
     assert.deepEqual(await models(reopened), {
@@ -497,7 +495,6 @@ test("迁移不改写历史行:裸 model id 原样留着,与新标识各成一�
     });
     // 主维度是仓库,两条落在同一格里;它们没有互相折叠这件事由分母的 2 说了算。
     assert.equal((await reopened.dispositionStats(...WIDE))[0]?.unknownOpen, 2, "两条各自独立");
-    await reopened.close();
   } finally {
     await db.cleanup();
   }

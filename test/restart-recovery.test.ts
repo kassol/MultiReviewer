@@ -56,22 +56,18 @@ async function startRunning(
   models: readonly string[] = ["a", "b"],
 ): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    return await store.startRun({
-      owner: "acme",
-      repo: "widgets",
-      pullNumber,
-      headSha: "deadbee",
-      title: "把登录超时改回三十秒",
-      startedAt: "2026-09-03T23:00:00.000Z",
-      changedFiles: 1,
-      changedLines: 2,
-      batchCount: 1,
-      reviewerPins: models.map(pin),
-    });
-  } finally {
-    await store.close();
-  }
+  return await store.startRun({
+    owner: "acme",
+    repo: "widgets",
+    pullNumber,
+    headSha: "deadbee",
+    title: "把登录超时改回三十秒",
+    startedAt: "2026-09-03T23:00:00.000Z",
+    changedFiles: 1,
+    changedLines: 2,
+    batchCount: 1,
+    reviewerPins: models.map(pin),
+  });
 }
 
 /** 只认撤反应的 Forge:调用逐次记下来,别的方法一律不该被碰。 */
@@ -112,7 +108,7 @@ async function boot(databaseUrl: string, dataDir: string, forge: Forge): Promise
   await createWebhookServer({
     forges: { gitea: forge },
     cacheDir: cache.dir,
-    databaseUrl,
+    store: openStore(databaseUrl),
     dataDir,
     baseUrl: "https://reviewer.example.test",
     panelDist: "web/dist",
@@ -135,22 +131,18 @@ test("续跑不成立时把停在运行中的轮次改判失败,并撤掉 PR 上
   ]);
 
   const store = openStore(db.url);
-  try {
-    const [run] = await store.listRuns({ limit: 10, id: runId });
-    assert.equal(run?.failed, true);
-    assert.equal(run?.finishedAt, AT);
-    // 失败原因在面板上看得到:这一轮已落库的 Reviewer 指定各留一行,与其他失败一轮
-    // 同一条展示路径。
-    assert.deepEqual(
-      run?.models.map((entry) => [entry.model, entry.failure]),
-      [
-        ["test:a", UNREGISTERED],
-        ["test:b", UNREGISTERED],
-      ],
-    );
-  } finally {
-    await store.close();
-  }
+  const [run] = await store.listRuns({ limit: 10, id: runId });
+  assert.equal(run?.failed, true);
+  assert.equal(run?.finishedAt, AT);
+  // 失败原因在面板上看得到:这一轮已落库的 Reviewer 指定各留一行,与其他失败一轮
+  // 同一条展示路径。
+  assert.deepEqual(
+    run?.models.map((entry) => [entry.model, entry.failure]),
+    [
+      ["test:a", UNREGISTERED],
+      ["test:b", UNREGISTERED],
+    ],
+  );
 });
 
 test("撤反应抛错:服务照常起来,改判照样落库", { timeout: WAIT_MS }, async () => {
@@ -165,13 +157,9 @@ test("撤反应抛错:服务照常起来,改判照样落库", { timeout: WAIT_MS
   await delay(0);
 
   const store = openStore(db.url);
-  try {
-    const [run] = await store.listRuns({ limit: 10, id: runId });
-    assert.equal(run?.failed, true);
-    assert.equal(run?.finishedAt, AT);
-  } finally {
-    await store.close();
-  }
+  const [run] = await store.listRuns({ limit: 10, id: runId });
+  assert.equal(run?.failed, true);
+  assert.equal(run?.finishedAt, AT);
 });
 
 test("已结束与已失败的轮次重启后一行不动,也不去碰 Forge", async () => {
@@ -180,34 +168,30 @@ test("已结束与已失败的轮次重启后一行不动,也不去碰 Forge", a
   const doneId = await startRunning(db.url, 9, ["a"]);
   const failedId = await startRunning(db.url, 10, ["a"]);
   const seed = openStore(db.url);
-  try {
-    await seed.finishRun(doneId, {
-      finishedAt: "2026-09-03T23:30:00.000Z",
-      durationMs: 1_800_000,
-      failed: false,
-      outcomes: [],
-      findings: [],
-    });
-    await seed.finishRun(failedId, {
-      finishedAt: "2026-09-03T23:40:00.000Z",
-      durationMs: 2_400_000,
-      failed: true,
-      outcomes: [
-        {
-          model: "test:a",
-          failure: "模型挂了",
-          findingCount: 0,
-          anomalyCount: 0,
-          rejectedToolCalls: 0,
-          anchorRejections: 0,
-          durationMs: 1,
-        },
-      ],
-      findings: [],
-    });
-  } finally {
-    await seed.close();
-  }
+  await seed.finishRun(doneId, {
+    finishedAt: "2026-09-03T23:30:00.000Z",
+    durationMs: 1_800_000,
+    failed: false,
+    outcomes: [],
+    findings: [],
+  });
+  await seed.finishRun(failedId, {
+    finishedAt: "2026-09-03T23:40:00.000Z",
+    durationMs: 2_400_000,
+    failed: true,
+    outcomes: [
+      {
+        model: "test:a",
+        failure: "模型挂了",
+        findingCount: 0,
+        anomalyCount: 0,
+        rejectedToolCalls: 0,
+        anchorRejections: 0,
+        durationMs: 1,
+      },
+    ],
+    findings: [],
+  });
   const gitea = recordingForge();
 
   await boot(db.url, db.dataDir, gitea.forge);
@@ -215,20 +199,16 @@ test("已结束与已失败的轮次重启后一行不动,也不去碰 Forge", a
 
   assert.deepEqual(gitea.removed, []);
   const store = openStore(db.url);
-  try {
-    const [done] = await store.listRuns({ limit: 10, id: doneId });
-    assert.equal(done?.finishedAt, "2026-09-03T23:30:00.000Z");
-    assert.equal(done?.failed, false);
-    assert.deepEqual(done?.models, []);
-    const [failed] = await store.listRuns({ limit: 10, id: failedId });
-    assert.equal(failed?.finishedAt, "2026-09-03T23:40:00.000Z");
-    assert.deepEqual(
-      failed?.models.map((entry) => [entry.model, entry.failure]),
-      [["test:a", "模型挂了"]],
-    );
-  } finally {
-    await store.close();
-  }
+  const [done] = await store.listRuns({ limit: 10, id: doneId });
+  assert.equal(done?.finishedAt, "2026-09-03T23:30:00.000Z");
+  assert.equal(done?.failed, false);
+  assert.deepEqual(done?.models, []);
+  const [failed] = await store.listRuns({ limit: 10, id: failedId });
+  assert.equal(failed?.finishedAt, "2026-09-03T23:40:00.000Z");
+  assert.deepEqual(
+    failed?.models.map((entry) => [entry.model, entry.failure]),
+    [["test:a", "模型挂了"]],
+  );
 });
 
 test("改判后的轮次在面板上是失败带原因,轨迹流连上即结束", async () => {
@@ -238,11 +218,7 @@ test("改判后的轮次在面板上是失败带原因,轨迹流连上即结束"
   const h = await startPanelHarness();
   const runId = await startRunning(h.db.url, 7);
   const store = openStore(h.db.url);
-  try {
-    await store.failInterruptedRuns(INTERRUPTED, AT);
-  } finally {
-    await store.close();
-  }
+  await store.failInterruptedRuns(INTERRUPTED, AT);
 
   const body = (await (await h.api("GET", "/runs")).json()) as {
     runs: { id: number; failed: boolean; finishedAt: string | null; models: {
@@ -286,29 +262,25 @@ test("改判写轮次级失败原因并记 run_failed 事件,零 pin 的轮次�
   await gitea.removedAtLeast(2);
 
   const store = openStore(db.url);
-  try {
-    for (const runId of [pinned, bare]) {
-      const [run] = await store.listRuns({ limit: 10, id: runId });
-      assert.equal(run?.failed, true);
-      assert.equal(run?.failure, UNREGISTERED);
-      // 轨迹上多一条 Run 级事件,带与列内相同的一句原因。
-      assert.deepEqual(
-        (await store
-          .listTrace(runId))
-          .filter((event) => event.kind === "run_failed")
-          .map((event) => [event.scope, event.payload]),
-        [["run", { reason: UNREGISTERED }]],
-      );
-    }
-    // 逐 pin 的 outcome 行照旧:有 pin 的那一轮仍每个 Reviewer 一行,零 pin 的一行都没有。
+  for (const runId of [pinned, bare]) {
+    const [run] = await store.listRuns({ limit: 10, id: runId });
+    assert.equal(run?.failed, true);
+    assert.equal(run?.failure, UNREGISTERED);
+    // 轨迹上多一条 Run 级事件,带与列内相同的一句原因。
     assert.deepEqual(
-      (await store.listRuns({ limit: 10, id: pinned }))[0]?.models.map((entry) => entry.failure),
-      [UNREGISTERED, UNREGISTERED],
+      (await store
+        .listTrace(runId))
+        .filter((event) => event.kind === "run_failed")
+        .map((event) => [event.scope, event.payload]),
+      [["run", { reason: UNREGISTERED }]],
     );
-    assert.deepEqual((await store.listRuns({ limit: 10, id: bare }))[0]?.models, []);
-  } finally {
-    await store.close();
   }
+  // 逐 pin 的 outcome 行照旧:有 pin 的那一轮仍每个 Reviewer 一行,零 pin 的一行都没有。
+  assert.deepEqual(
+    (await store.listRuns({ limit: 10, id: pinned }))[0]?.models.map((entry) => entry.failure),
+    [UNREGISTERED, UNREGISTERED],
+  );
+  assert.deepEqual((await store.listRuns({ limit: 10, id: bare }))[0]?.models, []);
 });
 
 test("改判时通篇空白的原因:轮次那一列与逐模型失败行是同一句兜底文本", async () => {
@@ -319,19 +291,15 @@ test("改判时通篇空白的原因:轮次那一列与逐模型失败行是同�
   cleanups.push(db.cleanup);
   const runId = await startRunning(db.url, 13);
   const store = openStore(db.url);
-  try {
-    await store.failInterruptedRuns(" \n\t ", AT);
-    const expected = runFailureText(" \n\t ");
-    assert.equal(expected, "未记录原因");
-    const [run] = await store.listRuns({ limit: 10, id: runId });
-    assert.equal(run?.failure, expected);
-    assert.deepEqual(
-      run?.models.map((entry) => entry.failure),
-      [expected, expected],
-    );
-  } finally {
-    await store.close();
-  }
+  await store.failInterruptedRuns(" \n\t ", AT);
+  const expected = runFailureText(" \n\t ");
+  assert.equal(expected, "未记录原因");
+  const [run] = await store.listRuns({ limit: 10, id: runId });
+  assert.equal(run?.failure, expected);
+  assert.deepEqual(
+    run?.models.map((entry) => entry.failure),
+    [expected, expected],
+  );
 });
 
 test("改判后列表、详情与阶段时间线都读得到轮次级失败原因", async () => {
@@ -339,11 +307,7 @@ test("改判后列表、详情与阶段时间线都读得到轮次级失败原�
   const pinned = await startRunning(h.db.url, 7);
   const bare = await startRunning(h.db.url, 8, []);
   const store = openStore(h.db.url);
-  try {
-    await store.failInterruptedRuns(INTERRUPTED, AT);
-  } finally {
-    await store.close();
-  }
+  await store.failInterruptedRuns(INTERRUPTED, AT);
 
   const list = (await (await h.api("GET", "/runs")).json()) as {
     runs: { id: number; failed: boolean; failure: string | null; models: unknown[] }[];
@@ -445,19 +409,15 @@ async function interruptedRun(options: {
   cleanups.push(repo.cleanup, cache.cleanup, db.cleanup);
 
   const store = openStore(db.url);
-  try {
-    await store.registerRepo({
-      repoId: 4242,
-      owner: "acme",
-      repo: "widgets",
-      generation: 1,
-      key: "unused",
-    });
-    // 分批上限是全局设置,重启后的续跑按它重新切批:与开跑那次相同才切得出同样的批次。
-    assert.equal(await putGlobalSettings(store, options.limits), true);
-  } finally {
-    await store.close();
-  }
+  await store.registerRepo({
+    repoId: 4242,
+    owner: "acme",
+    repo: "widgets",
+    generation: 1,
+    key: "unused",
+  });
+  // 分批上限是全局设置,重启后的续跑按它重新切批:与开跑那次相同才切得出同样的批次。
+  assert.equal(await putGlobalSettings(store, options.limits), true);
 
   const memory = memoryForge({
     pullRequest: {
@@ -479,7 +439,7 @@ async function interruptedRun(options: {
           forge: memory.forge,
           reviewers: [resumeReviewer({ throwOnCall: options.throwOnCall })],
           cacheDir: cache.dir,
-          databaseUrl: db.url,
+          store: openStore(db.url),
           // 失败原因逐 Reviewer 各记一份,给了指定才有那几行(issue #247);轮次级那一份
           // 不靠它(issue #256)。
           reviewerPins: [pin("a")],
@@ -491,13 +451,9 @@ async function interruptedRun(options: {
   );
 
   const seeded = openStore(db.url);
-  try {
-    const [run] = await seeded.listRuns({ limit: 10 });
-    assert.equal(run?.finishedAt, null);
-    return { db, memory, runId: run!.id };
-  } finally {
-    await seeded.close();
-  }
+  const [run] = await seeded.listRuns({ limit: 10 });
+  assert.equal(run?.finishedAt, null);
+  return { db, memory, runId: run!.id };
 }
 
 /** 三个文件各一批,停在第三批。 */
@@ -519,7 +475,7 @@ test("重启后只补缺的那一批,这一轮沿用原编号正常结束", { ti
     await createWebhookServer({
       forges: { gitea: memory.forge },
       cacheDir: cache.dir,
-      databaseUrl: db.url,
+      store: openStore(db.url),
       dataDir: db.dataDir,
       baseUrl: "https://reviewer.example.test",
       panelDist: "web/dist",
@@ -538,13 +494,9 @@ test("重启后只补缺的那一批,这一轮沿用原编号正常结束", { ti
   assert.deepEqual(reviewer.files, [["src/c.ts"]]);
 
   const store = openStore(db.url);
-  try {
-    const [run] = await store.listRuns({ limit: 10, id: runId });
-    assert.equal(run?.failed, false);
-    assert.notEqual(run?.finishedAt, null);
-  } finally {
-    await store.close();
-  }
+  const [run] = await store.listRuns({ limit: 10, id: runId });
+  assert.equal(run?.failed, false);
+  assert.notEqual(run?.finishedAt, null);
   // 一轮只发一次 review,三条行级评论——与不中断时一致。
   assert.equal(memory.createdReviews.length, 1);
   assert.deepEqual(
@@ -565,7 +517,7 @@ test("工作副本准备失败:改判失败、原因可见,下一次启动不再
     await createWebhookServer({
       forges: { gitea: memory.forge },
       cacheDir: cache.dir,
-      databaseUrl: db.url,
+      store: openStore(db.url),
       dataDir: db.dataDir,
       baseUrl: "https://reviewer.example.test",
       panelDist: "web/dist",
@@ -583,24 +535,20 @@ test("工作副本准备失败:改判失败、原因可见,下一次启动不再
   assert.equal(resumed[0]?.runId, runId);
 
   const store = openStore(db.url);
-  try {
-    const [run] = await store.listRuns({ limit: 10, id: runId });
-    assert.equal(run?.failed, true);
-    assert.equal(run?.finishedAt, AT);
-    // 原因在面板上看得到:这一轮已落库的 Reviewer 指定那一行带着它。
-    const failure = run?.models[0]?.failure ?? "";
-    assert.ok(failure.startsWith(INTERRUPTED), failure);
-    assert.notEqual(failure, INTERRUPTED);
-  } finally {
-    await store.close();
-  }
+  const [run] = await store.listRuns({ limit: 10, id: runId });
+  assert.equal(run?.failed, true);
+  assert.equal(run?.finishedAt, AT);
+  // 原因在面板上看得到:这一轮已落库的 Reviewer 指定那一行带着它。
+  const failure = run?.models[0]?.failure ?? "";
+  assert.ok(failure.startsWith(INTERRUPTED), failure);
+  assert.notEqual(failure, INTERRUPTED);
 
   // 第二次启动:这一轮已经有结束时间,不再被拿去续跑。
   const second: number[] = [];
   await createWebhookServer({
     forges: { gitea: memory.forge },
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
     dataDir: db.dataDir,
     baseUrl: "https://reviewer.example.test",
     panelDist: "web/dist",
@@ -624,7 +572,7 @@ function bootAndSettle(
     await createWebhookServer({
       forges: { gitea: memory.forge },
       cacheDir: cache.dir,
-      databaseUrl: db.url,
+      store: openStore(db.url),
       dataDir: db.dataDir,
       baseUrl: "https://reviewer.example.test",
       panelDist: "web/dist",
@@ -668,14 +616,10 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
   );
   // 停机期间改了分批上限。
   const admin = openStore(db.url);
-  try {
-    assert.equal(
-      await putGlobalSettings(admin, { maxChangedLinesPerBatch: 100, maxFilesPerBatch: 3 }),
-      true,
-    );
-  } finally {
-    await admin.close();
-  }
+  assert.equal(
+    await putGlobalSettings(admin, { maxChangedLinesPerBatch: 100, maxFilesPerBatch: 3 }),
+    true,
+  );
 
   const reviewer = resumeReviewer();
   const settled = await bootAndSettle(db, memory, reviewer);
@@ -684,21 +628,17 @@ test("总批数与已完成首批相同、未完成分组不同:续跑不成立,
   assert.deepEqual(settled, { runId, failure: "续跑不成立:第 2 批的分组与冻结计划不符" });
   assert.deepEqual(reviewer.files, []);
   const store = openStore(db.url);
-  try {
-    const [run] = await store.listRuns({ limit: 10, id: runId });
-    assert.equal(run?.failed, true);
-    assert.equal(run?.finishedAt, AT);
-    assert.equal(run?.failure, reason);
-    assert.deepEqual(
-      (await store
-        .listTrace(runId))
-        .filter((event) => event.kind === "run_failed")
-        .map((event) => event.payload),
-      [{ reason }],
-    );
-  } finally {
-    await store.close();
-  }
+  const [run] = await store.listRuns({ limit: 10, id: runId });
+  assert.equal(run?.failed, true);
+  assert.equal(run?.finishedAt, AT);
+  assert.equal(run?.failure, reason);
+  assert.deepEqual(
+    (await store
+      .listTrace(runId))
+      .filter((event) => event.kind === "run_failed")
+      .map((event) => event.payload),
+    [{ reason }],
+  );
   // 改变后的分组没有混进原轮次:冻结的计划原样保留,中间态随改判清掉。
   assert.deepEqual(
     (await query(db.url, "SELECT batch_plan_json FROM review_run")).map((row) =>
@@ -721,13 +661,9 @@ test("升级前没有批次计划的中断轮次:启动改判并写原因,不调
   assert.deepEqual(settled, { runId, failure });
   assert.deepEqual(reviewer.files, []);
   const store = openStore(db.url);
-  try {
-    const [run] = await store.listRuns({ limit: 10, id: runId });
-    assert.equal(run?.failed, true);
-    assert.equal(run?.finishedAt, AT);
-    assert.equal(run?.failure, `${INTERRUPTED};${failure}`);
-  } finally {
-    await store.close();
-  }
+  const [run] = await store.listRuns({ limit: 10, id: runId });
+  assert.equal(run?.failed, true);
+  assert.equal(run?.finishedAt, AT);
+  assert.equal(run?.failure, `${INTERRUPTED};${failure}`);
   assert.equal(memory.createdReviews.length, 0);
 });

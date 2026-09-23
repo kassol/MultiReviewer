@@ -156,19 +156,15 @@ async function runsOf(
   rangeReviewId: number,
 ): Promise<{ headSha: string; mode: string; triggerSource: string; triggeredBy: string | null }[]> {
   const store = openStore(h.db.url);
-  try {
-    return (await store
-      .listRuns({ limit: 30, rangeReviewId }))
-      .map((run) => ({
-        headSha: run.headSha,
-        mode: run.mode,
-        triggerSource: run.triggerSource,
-        triggeredBy: run.triggeredBy,
-      }))
-      .reverse();
-  } finally {
-    await store.close();
-  }
+  return (await store
+    .listRuns({ limit: 30, rangeReviewId }))
+    .map((run) => ({
+      headSha: run.headSha,
+      mode: run.mode,
+      triggerSource: run.triggerSource,
+      triggeredBy: run.triggeredBy,
+    }))
+    .reverse();
 }
 
 /** 等过几个 tick。用来断言「什么都没发生」:没有回调可等的那些用例只能等时间。 */
@@ -211,7 +207,6 @@ test("到点推进:head 跟着分支走,那一轮来源是定时、范围是 bas
   // 历次比较项那一行没有记录人:面板据此显示「定时检查」。
   const store = openStore(h.db.url);
   const comparisons = await store.listRangeReviewComparisons(rangeReview.id);
-  await store.close();
   assert.deepEqual(
     comparisons.map((entry) => entry.recordedBy),
     [PANEL_ADMIN_USERNAME, ""],
@@ -382,7 +377,6 @@ test("这个范围审查有轮次在跑:跳过并记原因", async () => {
     batchCount: 1,
     reviewerPins: [],
   });
-  await store.close();
 
   clock.set(clock.at + DAY_MS);
   await h.scheduledChecksAtLeast(1);

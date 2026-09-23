@@ -66,26 +66,22 @@ async function seedTracker(
   title: string,
 ): Promise<{ specId: number; ticketId: number }> {
   const store = openStore(databaseUrl);
-  try {
-    const spec = await store.createProductSpec({
-      productId,
-      title,
-      body: `## Problem Statement\n\n${title}`,
-      sessionId,
-      at: AT,
-    });
-    const ticket = await store.createProductTicket({
-      specId: spec.id,
-      title: `${title} · 第一张票`,
-      body: "第一步",
-      label: "ready-for-agent",
-      sessionId,
-      at: AT,
-    });
-    return { specId: spec.id, ticketId: ticket.id };
-  } finally {
-    await store.close();
-  }
+  const spec = await store.createProductSpec({
+    productId,
+    title,
+    body: `## Problem Statement\n\n${title}`,
+    sessionId,
+    at: AT,
+  });
+  const ticket = await store.createProductTicket({
+    specId: spec.id,
+    title: `${title} · 第一张票`,
+    body: "第一步",
+    label: "ready-for-agent",
+    sessionId,
+    at: AT,
+  });
+  return { specId: spec.id, ticketId: ticket.id };
 }
 
 test("读会话回得出它写的 spec 与票:别的会话写的、没有会话写的都不算", async () => {

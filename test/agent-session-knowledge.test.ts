@@ -72,22 +72,18 @@ async function attachRepo(
   repo: { id: number; owner: string; repo: string },
 ): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    assert.equal(
-      await store.registerRepo({
-        repoId: repo.id,
-        owner: repo.owner,
-        repo: repo.repo,
-        generation: 1,
-        key: `key-${repo.id}`,
-      }),
-      true,
-    );
-    assert.equal(await store.attachProductRepo(productId, repo.id, AT), "attached");
-    return repo.id;
-  } finally {
-    await store.close();
-  }
+  assert.equal(
+    await store.registerRepo({
+      repoId: repo.id,
+      owner: repo.owner,
+      repo: repo.repo,
+      generation: 1,
+      key: `key-${repo.id}`,
+    }),
+    true,
+  );
+  assert.equal(await store.attachProductRepo(productId, repo.id, AT), "attached");
+  return repo.id;
 }
 
 /** 落一条产品知识(CONTEXT.md 产品知识,issue #360)。 */
@@ -97,23 +93,19 @@ async function seedProductKnowledge(
   record: { kind: "term" | "relationship" | "decision"; name?: string; body: string },
 ): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    return (await store.writeProductKnowledge({
-      productId,
-      kind: record.kind,
-      name: record.name ?? "",
-      body: record.body,
-      topic: null,
-      avoided: [],
-      options: null,
-      consequences: null,
-      annotations: [],
-      at: AT,
-      sessionId: null,
-    }))!.id;
-  } finally {
-    await store.close();
-  }
+  return (await store.writeProductKnowledge({
+    productId,
+    kind: record.kind,
+    name: record.name ?? "",
+    body: record.body,
+    topic: null,
+    avoided: [],
+    options: null,
+    consequences: null,
+    annotations: [],
+    at: AT,
+    sessionId: null,
+  }))!.id;
 }
 
 /**
@@ -304,25 +296,21 @@ async function storeWithProduct(): Promise<{ databaseUrl: string; productId: num
   const store = openStore(db.url);
   let productId = 0;
   const repoIds: number[] = [];
-  try {
-    productId = (await store.createProduct({ name: "订单系统", createdAt: AT })).id;
-    for (const [index, name] of ["widgets", "orders", "console", "docs"].entries()) {
-      const repoId = 6000 + index;
-      assert.equal(
-        await store.registerRepo({
-          repoId,
-          owner: "acme",
-          repo: name,
-          generation: 1,
-          key: `key-${repoId}`,
-        }),
-        true,
-      );
-      assert.equal(await store.attachProductRepo(productId, repoId, AT), "attached");
-      repoIds.push(repoId);
-    }
-  } finally {
-    await store.close();
+  productId = (await store.createProduct({ name: "订单系统", createdAt: AT })).id;
+  for (const [index, name] of ["widgets", "orders", "console", "docs"].entries()) {
+    const repoId = 6000 + index;
+    assert.equal(
+      await store.registerRepo({
+        repoId,
+        owner: "acme",
+        repo: name,
+        generation: 1,
+        key: `key-${repoId}`,
+      }),
+      true,
+    );
+    assert.equal(await store.attachProductRepo(productId, repoId, AT), "attached");
+    repoIds.push(repoId);
   }
   return { databaseUrl: db.url, productId, repoIds };
 }
@@ -330,11 +318,7 @@ async function storeWithProduct(): Promise<{ databaseUrl: string; productId: num
 /** 这个产品的仓库归属行,`sessionKnowledge` 按它把名字换成 id。 */
 async function productRepos(databaseUrl: string, productId: number) {
   const store = openStore(databaseUrl);
-  try {
-    return (await store.getProduct(productId))!.repos;
-  } finally {
-    await store.close();
-  }
+  return (await store.getProduct(productId))!.repos;
 }
 
 test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库关系取,glob 不碰产品条目", async () => {
@@ -355,7 +339,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   (await seedReviewRule(databaseUrl, orders, { type: "rule", scope: "", statement: OTHER_REPO_RULE }));
   const repos = await productRepos(databaseUrl, productId);
 
-  const both = await sessionKnowledge(databaseUrl, productId, repos, {
+  const both = await sessionKnowledge(openStore(databaseUrl), productId, repos, {
     repos: ["acme/widgets", "acme/orders"],
     names: ["订单"],
     relationships: true,
@@ -374,7 +358,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   );
 
   // 只问一个仓库、不问产品层:产品条目一条不回,只有它自己的规则。
-  const one = await sessionKnowledge(databaseUrl, productId, repos, { repos: ["acme/widgets"] });
+  const one = await sessionKnowledge(openStore(databaseUrl), productId, repos, { repos: ["acme/widgets"] });
   assert.deepEqual(one.product, []);
   assert.deepEqual(
     one.repo.map((entry) => entry.statement),
@@ -382,7 +366,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   );
 
   // 只问名字、不问仓库:产品层回整条,仓库层空着。
-  const named = await sessionKnowledge(databaseUrl, productId, repos, { names: ["签名统一在一处"] });
+  const named = await sessionKnowledge(openStore(databaseUrl), productId, repos, { names: ["签名统一在一处"] });
   assert.deepEqual(
     named.product.map((entry) => [entry.kind, entry.body]),
     [["decision", PRODUCT_DECISION]],
@@ -390,7 +374,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
   assert.deepEqual(named.repo, []);
 
   // 路径 glob:重叠不上的仓库条目被收掉,产品条目不受它影响。
-  const narrowed = await sessionKnowledge(databaseUrl, productId, repos, {
+  const narrowed = await sessionKnowledge(openStore(databaseUrl), productId, repos, {
     repos: ["acme/widgets", "acme/orders"],
     pathGlob: "src/finance/rate.ts",
     relationships: true,
@@ -404,7 +388,7 @@ test("问两个仓库:两边的规则与事实都回,产品层按名字与仓库
     narrowed.repo.map((entry) => entry.statement),
     [FINANCE_RULE, OTHER_REPO_RULE],
   );
-  const elsewhere = await sessionKnowledge(databaseUrl, productId, repos, {
+  const elsewhere = await sessionKnowledge(openStore(databaseUrl), productId, repos, {
     repos: ["acme/widgets"],
     pathGlob: "web/**",
   });
@@ -424,7 +408,7 @@ test("仓库层封顶在历史 Finding 查询那一个常量,产品层按名字�
       body: `第 ${index} 条定义`,
     });
   }
-  const entries = await sessionKnowledge(databaseUrl, productId, await productRepos(databaseUrl, productId), {
+  const entries = await sessionKnowledge(openStore(databaseUrl), productId, await productRepos(databaseUrl, productId), {
     repos: ["acme/widgets"],
     names,
   });

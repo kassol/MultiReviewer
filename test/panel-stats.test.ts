@@ -155,7 +155,6 @@ test("统计 API:折叠后的矩阵、默认窗口与库体量", async () => {
     ],
     findings: [],
   });
-  await seed.close();
 
   const response = await h.api(
     "GET",

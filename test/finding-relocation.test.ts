@@ -30,11 +30,7 @@ const SCOPE: StageScope = { owner: EVENT.owner, repo: EVENT.repo, pullNumber: EV
 
 async function summaryOf(databaseUrl: string): Promise<StageSummary> {
   const store = openStore(databaseUrl);
-  try {
-    return await store.stageSummary(SCOPE);
-  } finally {
-    await store.close();
-  }
+  return await store.stageSummary(SCOPE);
 }
 
 /** 落库的两列重定位结果,按行 id 升序。 */
@@ -80,21 +76,17 @@ function findingRow(line: number, fingerprint: string, commentId: string) {
 /** 两轮各落一行、同属一条 Identity 的阶段。返回两轮的 id。 */
 async function seedTwoRounds(databaseUrl: string): Promise<{ first: number; second: number }> {
   const store = openStore(databaseUrl);
-  try {
-    const first = await seedRun(
-      store,
-      { ...EVENT, pullNumber: EVENT.number, headSha: "a".repeat(40), startedAt: "2026-09-18T00:00:00.000Z" },
-      [findingRow(6, "f".repeat(64), "c-1")],
-    );
-    const second = await seedRun(
-      store,
-      { ...EVENT, pullNumber: EVENT.number, headSha: "b".repeat(40), startedAt: "2026-09-18T01:00:00.000Z" },
-      [findingRow(6, "f".repeat(64), "c-1")],
-    );
-    return { first, second };
-  } finally {
-    await store.close();
-  }
+  const first = await seedRun(
+    store,
+    { ...EVENT, pullNumber: EVENT.number, headSha: "a".repeat(40), startedAt: "2026-09-18T00:00:00.000Z" },
+    [findingRow(6, "f".repeat(64), "c-1")],
+  );
+  const second = await seedRun(
+    store,
+    { ...EVENT, pullNumber: EVENT.number, headSha: "b".repeat(40), startedAt: "2026-09-18T01:00:00.000Z" },
+    [findingRow(6, "f".repeat(64), "c-1")],
+  );
+  return { first, second };
 }
 
 test("重定位候选只有每条 Identity 的最新一行,已处置的照样在里面", async () => {
@@ -106,7 +98,6 @@ test("重定位候选只有每条 Identity 的最新一行,已处置的照样在
 
   const store = openStore(db.url);
   const candidates = await store.relocationCandidates(SCOPE);
-  await store.close();
 
   const rows = (await query(db.url, "SELECT id, run_id FROM finding ORDER BY id"));
   assert.equal(rows.length, 2);
@@ -137,7 +128,6 @@ test("重定位只写 placed_line / placed_run_id,报出位置、归属与评论
 
   const store = openStore(db.url);
   await store.recordFindingRelocations(second, [{ findingId: latestId, line: 16 }]);
-  await store.close();
 
   // 报出位置、所属轮次与评论载体逐字不动:归属、首次报出与指纹窗口都按那一份算。
   assert.deepEqual(

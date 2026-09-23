@@ -50,12 +50,8 @@ async function productWithTwoRepos(h: PanelHarness): Promise<Product> {
   const { product } = JSON.parse(text) as { product: Product };
   // 归属行直接落库:走归入端点会自己开一场梳理(issue #347),而这几例压的是条目本身。
   const store = openStore(h.db.url);
-  try {
-    for (const repoId of [GITEA_REPO.id, ALPHA]) {
-      assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
-    }
-  } finally {
-    await store.close();
+  for (const repoId of [GITEA_REPO.id, ALPHA]) {
+    assert.equal(await store.attachProductRepo(product.id, repoId, AT), "attached");
   }
   return product;
 }
@@ -93,25 +89,21 @@ async function write(
   },
 ): Promise<number | undefined> {
   const store = openStore(h.db.url);
-  try {
-    return (await store.writeProductKnowledge({
-      productId,
-      kind: record.kind,
-      name: record.name ?? "",
-      body: record.body,
-      topic: record.topic ?? null,
-      avoided: record.avoided ?? [],
-      options: record.options ?? null,
-      consequences: record.consequences ?? null,
-      annotations: record.annotations ?? [],
-      at: AT,
-      sessionId: null,
-      ...(record.id === undefined ? {} : { id: record.id }),
-      ...(record.supersedes === undefined ? {} : { supersedes: record.supersedes }),
-    }))?.id;
-  } finally {
-    await store.close();
-  }
+  return (await store.writeProductKnowledge({
+    productId,
+    kind: record.kind,
+    name: record.name ?? "",
+    body: record.body,
+    topic: record.topic ?? null,
+    avoided: record.avoided ?? [],
+    options: record.options ?? null,
+    consequences: record.consequences ?? null,
+    annotations: record.annotations ?? [],
+    at: AT,
+    sessionId: null,
+    ...(record.id === undefined ? {} : { id: record.id }),
+    ...(record.supersedes === undefined ? {} : { supersedes: record.supersedes }),
+  }))?.id;
 }
 
 test("产品页读到三种条目:术语带分组与避免词、关系一句、决策带状态,附注都在", async () => {
@@ -202,12 +194,8 @@ test("库层的写与撤回:改写落在同一条上、取代记在旧那条上�
 
   // 撤回:删行,第二遍不算成功;指着它的「被取代」跟着松开。
   const store = openStore(h.db.url);
-  try {
-    assert.equal(await store.withdrawProductKnowledge(product.id, second), true);
-    assert.equal(await store.withdrawProductKnowledge(product.id, second), false);
-  } finally {
-    await store.close();
-  }
+  assert.equal(await store.withdrawProductKnowledge(product.id, second), true);
+  assert.equal(await store.withdrawProductKnowledge(product.id, second), false);
   const left = (await detail(h, product.id)).knowledge;
   assert.equal(left.some((row) => row.id === second), false);
   assert.equal(left.find((row) => row.id === first)!.supersededBy, null);

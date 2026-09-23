@@ -38,18 +38,14 @@ async function freshlyRegistered(): Promise<PanelHarness> {
  */
 async function confirmRules(h: PanelHarness): Promise<void> {
   const store = openStore(h.db.url);
-  try {
-    assert.equal(
-      (await store.appendRuleDraftItems(
-        GITEA_REPO.id,
-        [{ type: "rule", scope: "", statement: "公开函数要有类型标注" }],
-        "2026-09-08T00:00:00.000Z",
-      )).length,
-      1,
-    );
-  } finally {
-    await store.close();
-  }
+  assert.equal(
+    (await store.appendRuleDraftItems(
+      GITEA_REPO.id,
+      [{ type: "rule", scope: "", statement: "公开函数要有类型标注" }],
+      "2026-09-08T00:00:00.000Z",
+    )).length,
+    1,
+  );
   const confirmed = await h.api("POST", `/repos/${GITEA_REPO.id}/rule-draft/confirm`);
   assert.equal(confirmed.status, 200);
   assert.deepEqual(await confirmed.json(), { version: 1 });
@@ -73,7 +69,6 @@ test("知识集未确认时手动重跑回 409,知识确认后同一个入口放
   // 挡在开跑之前:一行 Review Run 都没落。
   const store = openStore(h.db.url);
   assert.equal((await store.listRuns({ limit: 30 })).length, 0);
-  await store.close();
 
   await confirmRules(h);
 
@@ -128,7 +123,6 @@ test("零条目的知识确认:未确认的仓库确认空知识集之后,同一
 
   const store = openStore(h.db.url);
   const ruleSet = (await store.getRuleSet(GITEA_REPO.id))!;
-  await store.close();
   assert.equal(ruleSet.version, 1);
   assert.deepEqual(ruleSet.rules, []);
 

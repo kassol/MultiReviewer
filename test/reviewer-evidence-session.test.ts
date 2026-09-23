@@ -253,7 +253,7 @@ test("经 runReview 落库后,用量进所属 Reviewer 那一行与本轮总量"
     const reviewer = createPiReviewer({ runtimeModel: runtimeModel(stub.baseUrl), apiKey: "stub-key" });
     const result = await runReview(
       { owner: "acme", repo: "widgets", number: 7 },
-      { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, databaseUrl: db.url },
+      { forge: forge.forge, reviewers: [reviewer], cacheDir: cache.dir, store: openStore(db.url) },
     );
     assert.equal(result.failed, false);
     assert.equal(result.outcomes[0]!.failure, undefined, `Reviewer 失败: ${result.outcomes[0]!.failure}`);
@@ -265,16 +265,12 @@ test("经 runReview 落库后,用量进所属 Reviewer 那一行与本轮总量"
   // 面板轮次详情读的就是这份投影(`GET /api/runs/{id}`):Reviewer 那一行与本轮总量
   // 都是 84,只有一个 Reviewer、没有合并 agent 时两者相等。
   const store = openStore(db.url);
-  try {
-    const [run] = await store.listRuns({ limit: 1 });
-    assert.ok(run);
-    assert.equal(run.models.length, 1);
-    assert.equal(run.models[0]!.model, "stub:stub-model");
-    assert.deepEqual(run.models[0]!.usage, sum(PLAIN_USAGE));
-    assert.deepEqual(run.usage, sum(PLAIN_USAGE));
-  } finally {
-    await store.close();
-  }
+  const [run] = await store.listRuns({ limit: 1 });
+  assert.ok(run);
+  assert.equal(run.models.length, 1);
+  assert.equal(run.models[0]!.model, "stub:stub-model");
+  assert.deepEqual(run.models[0]!.usage, sum(PLAIN_USAGE));
+  assert.deepEqual(run.usage, sum(PLAIN_USAGE));
 });
 
 /** 同一批里连派两次取证:第一次的四段响应,第二次只多父会话再派与子会话两段,最后父会话收尾。 */

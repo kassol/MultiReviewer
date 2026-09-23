@@ -49,11 +49,7 @@ async function product(h: PanelHarness): Promise<Product> {
   assert.equal(response.status, 201, text);
   const created = (JSON.parse(text) as { product: Product }).product;
   const store = openStore(h.db.url);
-  try {
-    assert.equal(await store.attachProductRepo(created.id, GITEA_REPO.id, AT), "attached");
-  } finally {
-    await store.close();
-  }
+  assert.equal(await store.attachProductRepo(created.id, GITEA_REPO.id, AT), "attached");
   return created;
 }
 
@@ -69,33 +65,29 @@ async function seedSpec(
   blocks: readonly [number, number][] = [],
 ): Promise<{ specId: number; ticketIds: number[] }> {
   const store = openStore(h.db.url);
-  try {
-    const written = await store.createProductSpec({
-      productId,
-      title: spec.title,
-      body: spec.body,
+  const written = await store.createProductSpec({
+    productId,
+    title: spec.title,
+    body: spec.body,
+    sessionId: null,
+    at: AT,
+  });
+  const ticketIds: number[] = [];
+  for (const ticket of tickets) {
+    const written1 = await store.createProductTicket({
+      specId: written.id,
+      title: ticket.title,
+      body: ticket.body,
+      label: ticket.label ?? "needs-triage",
       sessionId: null,
       at: AT,
     });
-    const ticketIds: number[] = [];
-    for (const ticket of tickets) {
-      const written1 = await store.createProductTicket({
-        specId: written.id,
-        title: ticket.title,
-        body: ticket.body,
-        label: ticket.label ?? "needs-triage",
-        sessionId: null,
-        at: AT,
-      });
-      ticketIds.push(written1.id);
-    }
-    for (const [blocked, blocker] of blocks) {
-      await store.addProductTicketBlock(ticketIds[blocked]!, ticketIds[blocker]!);
-    }
-    return { specId: written.id, ticketIds };
-  } finally {
-    await store.close();
+    ticketIds.push(written1.id);
   }
+  for (const [blocked, blocker] of blocks) {
+    await store.addProductTicketBlock(ticketIds[blocked]!, ticketIds[blocker]!);
+  }
+  return { specId: written.id, ticketIds };
 }
 
 async function detail(
@@ -127,11 +119,7 @@ test("产品页读到 spec 连它的票:标签、状态、认领人与阻塞者�
     [[1, 0]],
   );
   const store = openStore(h.db.url);
-  try {
-    assert.equal(await store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
-  } finally {
-    await store.close();
-  }
+  assert.equal(await store.setProductTicketState(ticketIds[0]!, "closed", AT), true);
 
   const { tracker } = await detail(h, created.id);
   assert.equal(tracker.specs.length, 1);
@@ -168,17 +156,13 @@ test("一条 spec 打得开全文:正文、票的正文与评论都在", async (
     [{ title: "撤回接口", body: "PATCH /expenses/{id}\n\n验收:重复撤回回 409。" }],
   );
   const store = openStore(h.db.url);
-  try {
-    await store.addProductTicketComment({
-      ticketId: ticketIds[0]!,
-      author: null,
-      sessionId: 7,
-      body: "财务确认了只有草稿态能撤回。",
-      at: AT,
-    });
-  } finally {
-    await store.close();
-  }
+  await store.addProductTicketComment({
+    ticketId: ticketIds[0]!,
+    author: null,
+    sessionId: 7,
+    body: "财务确认了只有草稿态能撤回。",
+    at: AT,
+  });
 
   const response = await h.api("GET", `/products/${created.id}/specs/${specId}`);
   const text = await response.text();

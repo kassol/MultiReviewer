@@ -59,7 +59,7 @@ async function setup() {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [FINDING])],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   };
 
   return { repo, db, forge, deps };
@@ -101,20 +101,12 @@ async function runRows(databaseUrl: string): Promise<{ failed: number; failure: 
 
 async function traceKinds(databaseUrl: string, runId: number): Promise<TraceEvent[]> {
   const store = openStore(databaseUrl);
-  try {
-    return (await store.listTrace(runId)).filter((event) => event.scope === "run");
-  } finally {
-    await store.close();
-  }
+  return (await store.listTrace(runId)).filter((event) => event.scope === "run");
 }
 
 async function interruptedRunIds(databaseUrl: string): Promise<number[]> {
   const store = openStore(databaseUrl);
-  try {
-    return (await store.interruptedRuns()).map((run) => run.runId);
-  } finally {
-    await store.close();
-  }
+  return (await store.interruptedRuns()).map((run) => run.runId);
 }
 
 /**
@@ -244,7 +236,6 @@ test("发布成功而 resolve 旧评论失败:仍记延续并标「交接未完�
   const store = openStore(db.url);
   const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
   const [firstRun, secondRun] = (await store.listRuns({ limit: 2 })).sort((a, b) => a.id - b.id);
-  await store.close();
   assert.equal(summary.findings.length, 1);
   assert.equal(summary.findings[0]!.handoffPending, true);
   assert.equal(summary.findings[0]!.continuedFrom, old.htmlUrl);
@@ -276,7 +267,6 @@ test("交接未完成的旧评论由下一轮 Review Run 收尾时重试 resolve
   assert.equal(rows[0]!.handoffPending, null, "交接完成后标记该清掉");
   const store = openStore(db.url);
   const summary = await store.stageSummary({ owner: EVENT.owner, repo: EVENT.repo, pullNumber: 7 });
-  await store.close();
   assert.equal(summary.findings[0]!.handoffPending, false);
 });
 

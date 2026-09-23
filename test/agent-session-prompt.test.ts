@@ -106,6 +106,13 @@ test("没有一个仓库写过职责时,不写那句说破折号的话", () => {
   assert.doesNotMatch(prompt, /The note after the dash/);
 });
 
+test("挂着几个仓库时写明「这个仓库」指不清就先问或逐个答,只挂一个时不写", () => {
+  const sentence =
+    /^When the person says "this repository" and the conversation does not make clear which one they mean, ask which one, or answer for each repository separately\.$/m;
+  assert.match(sessionSystemPrompt(REQUEST), sentence);
+  assert.doesNotMatch(sessionSystemPrompt({ ...REQUEST, repos: REQUEST.repos.slice(0, 1) }), sentence);
+});
+
 test("知识目录是定位一句加两串名字,一条规则或事实的正文都不在提示里", () => {
   const prompt = sessionSystemPrompt(REQUEST);
 

@@ -139,25 +139,21 @@ async function seedFinishedRun(
  */
 async function seedFillerStages(databaseUrl: string, progress: Progress, count: number): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    for (let index = 0; index < count; index += 1) {
-      const pullNumber = 100_000 + index;
-      await store.startRun({
-        owner: OWNER,
-        repo: REPO,
-        pullNumber,
-        headSha: `head-filler-${pullNumber}`,
-        title: `垫底 ${pullNumber}`,
-        startedAt: at((progress.minute += 1)),
-        changedFiles: 1,
-        changedLines: 1,
-        batchCount: 1,
-        reviewerPins: [],
-      });
-      progress.stageIds.push(`pr:${OWNER}/${REPO}/${pullNumber}`);
-    }
-  } finally {
-    await store.close();
+  for (let index = 0; index < count; index += 1) {
+    const pullNumber = 100_000 + index;
+    await store.startRun({
+      owner: OWNER,
+      repo: REPO,
+      pullNumber,
+      headSha: `head-filler-${pullNumber}`,
+      title: `垫底 ${pullNumber}`,
+      startedAt: at((progress.minute += 1)),
+      changedFiles: 1,
+      changedLines: 1,
+      batchCount: 1,
+      reviewerPins: [],
+    });
+    progress.stageIds.push(`pr:${OWNER}/${REPO}/${pullNumber}`);
   }
 }
 
@@ -167,79 +163,71 @@ async function seedFillerStages(databaseUrl: string, progress: Progress, count: 
  */
 async function seedRichStages(databaseUrl: string, progress: Progress): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    for (let index = 0; index < RICH_STAGES; index += 1) {
-      // 每五个里的第五个是范围审查。
-      if (index % 5 === 4) {
-        const comparisonSha = `comparison-${index}`;
-        const rangeReviewId = await store.createRangeReview({
-          repoId: 1,
-          owner: OWNER,
-          repo: REPO,
-          title: `范围审查 ${index}`,
-          baseSha: `base-${index}`,
-          comparisonSha,
-          createdBy: "seed",
-          createdAt: at(progress.minute),
-        });
-        const containerPullNumber = 9000 + index;
-        await seedFinishedRun(store, {
+  for (let index = 0; index < RICH_STAGES; index += 1) {
+    // 每五个里的第五个是范围审查。
+    if (index % 5 === 4) {
+      const comparisonSha = `comparison-${index}`;
+      const rangeReviewId = await store.createRangeReview({
+        repoId: 1,
+        owner: OWNER,
+        repo: REPO,
+        title: `范围审查 ${index}`,
+        baseSha: `base-${index}`,
+        comparisonSha,
+        createdBy: "seed",
+        createdAt: at(progress.minute),
+      });
+      const containerPullNumber = 9000 + index;
+      await seedFinishedRun(store, {
+        pullNumber: containerPullNumber,
+        headSha: comparisonSha,
+        startedAt: at((progress.minute += 1)),
+        rangeReviewId,
+      });
+      await seedFinishedRun(
+        store,
+        {
           pullNumber: containerPullNumber,
           headSha: comparisonSha,
           startedAt: at((progress.minute += 1)),
           rangeReviewId,
-        });
-        await seedFinishedRun(
-          store,
-          {
-            pullNumber: containerPullNumber,
-            headSha: comparisonSha,
-            startedAt: at((progress.minute += 1)),
-            rangeReviewId,
-          },
-          `fingerprint-range-${index}`,
-        );
-        progress.stageIds.push(`range:${rangeReviewId}`);
-        continue;
-      }
-      const pullNumber = index + 1;
-      const headSha = `head-pull-${pullNumber}`;
-      const title = `pull request ${pullNumber}`;
-      await seedFinishedRun(store, {
-        pullNumber,
-        headSha,
-        startedAt: at((progress.minute += 1)),
-        title,
-      });
-      await seedFinishedRun(
-        store,
-        { pullNumber, headSha, startedAt: at((progress.minute += 1)), title },
-        `fingerprint-pull-${index}`,
+        },
+        `fingerprint-range-${index}`,
       );
-      progress.stageIds.push(`pr:${OWNER}/${REPO}/${pullNumber}`);
+      progress.stageIds.push(`range:${rangeReviewId}`);
+      continue;
     }
-  } finally {
-    await store.close();
+    const pullNumber = index + 1;
+    const headSha = `head-pull-${pullNumber}`;
+    const title = `pull request ${pullNumber}`;
+    await seedFinishedRun(store, {
+      pullNumber,
+      headSha,
+      startedAt: at((progress.minute += 1)),
+      title,
+    });
+    await seedFinishedRun(
+      store,
+      { pullNumber, headSha, startedAt: at((progress.minute += 1)), title },
+      `fingerprint-pull-${index}`,
+    );
+    progress.stageIds.push(`pr:${OWNER}/${REPO}/${pullNumber}`);
   }
 }
 
 /** 另一个仓库的几个阶段,最先播因此时刻最旧,只在仓库过滤那一档露面。 */
 async function seedOtherRepoStages(databaseUrl: string, progress: Progress): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    for (let index = 0; index < OTHER_STAGES; index += 1) {
-      const pullNumber = index + 1;
-      await seedFinishedRun(store, {
-        owner: OTHER_OWNER,
-        repo: OTHER_REPO,
-        pullNumber,
-        headSha: `head-other-${pullNumber}`,
-        startedAt: at((progress.minute += 1)),
-        title: `另一个仓库 ${pullNumber}`,
-      });
-    }
-  } finally {
-    await store.close();
+  for (let index = 0; index < OTHER_STAGES; index += 1) {
+    const pullNumber = index + 1;
+    await seedFinishedRun(store, {
+      owner: OTHER_OWNER,
+      repo: OTHER_REPO,
+      pullNumber,
+      headSha: `head-other-${pullNumber}`,
+      startedAt: at((progress.minute += 1)),
+      title: `另一个仓库 ${pullNumber}`,
+    });
   }
 }
 

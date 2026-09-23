@@ -59,52 +59,48 @@ async function seedFindings(
   findings: readonly SeedFinding[],
 ): Promise<void> {
   const store = openStore(databaseUrl);
-  try {
-    const runId = await store.startRun({
-      owner: ref.owner,
-      repo: ref.repo,
-      pullNumber: 11,
-      headSha: "seeded-head",
-      startedAt: AT,
-      changedFiles: findings.length,
-      changedLines: findings.length,
-      batchCount: 1,
-      reviewerPins: [],
-    });
-    await store.finishRun(runId, {
-      finishedAt: AT,
-      durationMs: 1,
-      failed: false,
-      outcomes: [],
-      findings: findings.map((finding, index) => ({
-        file: finding.file,
-        line: finding.line,
-        title: finding.title,
-        severity: finding.severity,
-        category: "bug" as const,
-        description: finding.description,
-        impact: finding.impact,
-        suggestion: finding.suggestion,
-        attributions: [
-          {
-            model: HARNESS_SPEC.model,
-            severity: finding.severity,
-            category: "bug" as const,
-            description: finding.description,
-            impact: finding.impact,
-            suggestion: finding.suggestion,
-          },
-        ],
-        groupIndex: 0,
-        disposition: finding.disposition,
-        placement: "inline" as const,
-        fingerprint: `seeded-${ref.repo}-${index}`,
-      })),
-      verdicts: [],
-    });
-  } finally {
-    await store.close();
-  }
+  const runId = await store.startRun({
+    owner: ref.owner,
+    repo: ref.repo,
+    pullNumber: 11,
+    headSha: "seeded-head",
+    startedAt: AT,
+    changedFiles: findings.length,
+    changedLines: findings.length,
+    batchCount: 1,
+    reviewerPins: [],
+  });
+  await store.finishRun(runId, {
+    finishedAt: AT,
+    durationMs: 1,
+    failed: false,
+    outcomes: [],
+    findings: findings.map((finding, index) => ({
+      file: finding.file,
+      line: finding.line,
+      title: finding.title,
+      severity: finding.severity,
+      category: "bug" as const,
+      description: finding.description,
+      impact: finding.impact,
+      suggestion: finding.suggestion,
+      attributions: [
+        {
+          model: HARNESS_SPEC.model,
+          severity: finding.severity,
+          category: "bug" as const,
+          description: finding.description,
+          impact: finding.impact,
+          suggestion: finding.suggestion,
+        },
+      ],
+      groupIndex: 0,
+      disposition: finding.disposition,
+      placement: "inline" as const,
+      fingerprint: `seeded-${ref.repo}-${index}`,
+    })),
+    verdicts: [],
+  });
 }
 
 /**

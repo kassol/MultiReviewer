@@ -64,7 +64,7 @@ test("同一轮两个模型报同一处:一条评论、一份代表段加归属�
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 1, "同一处该合成一条 Finding");
@@ -83,15 +83,11 @@ test("同一轮两个模型报同一处:一条评论、一份代表段加归属�
 
   // 库里是一条 Finding 加两条归属,各带自己的严重度、分类与表述。
   const store = openStore(db.url);
-  try {
-    const findings = (await store.listRuns({ limit: 1 }))[0]!.findings;
-    assert.equal(findings.length, 1);
-    assert.deepEqual(findings[0]!.models, ["model-a", "model-b"]);
-    assert.equal(findings[0]!.severity, "P0");
-    assert.equal(findings[0]!.category, "design");
-  } finally {
-    await store.close();
-  }
+  const findings = (await store.listRuns({ limit: 1 }))[0]!.findings;
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0]!.models, ["model-a", "model-b"]);
+  assert.equal(findings[0]!.severity, "P0");
+  assert.equal(findings[0]!.category, "design");
 });
 
 test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
@@ -108,7 +104,7 @@ test("行号相差在阈值内视为同一处,超出阈值分开", async () => {
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 2);
@@ -143,7 +139,7 @@ test("同一个模型分开报的两条相邻 Finding 不合并,标题共享套�
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 2);
@@ -183,7 +179,7 @@ test("同模型同一行的两条不同内容合并后归属全保留,重复内�
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 1);
@@ -221,7 +217,7 @@ test("相距 3 行但内容明显不同的两条 Finding 不合并", async () =>
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 2);
@@ -257,7 +253,7 @@ test("同一缺陷的不同表述相距 2 行仍合并为一条", async () => {
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 1);
@@ -280,7 +276,7 @@ test("标题为空时改用描述判断,描述讲的不是一回事就不合并"
       ]),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.findings.length, 2);
@@ -318,7 +314,7 @@ test("不同文件的同一行号不合并", async () => {
         scriptedReviewer("model-a", [AT_LINE_2, { ...AT_LINE_2, file: "src/n.js" }]),
       ],
       cacheDir: cache.dir,
-      databaseUrl: db.url,
+      store: openStore(db.url),
     },
   );
 
@@ -335,7 +331,7 @@ test("一个 Reviewer 失败时其余结果照常发布,正文列出缺席的模
       scriptedReviewer("model-b", [], { failure: "402 dead credential" }),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.failed, false);
@@ -356,7 +352,7 @@ test("全部 Reviewer 失败时记录为失败,且不发布空的 review", async
       scriptedReviewer("model-b", [], { failure: "402" }),
     ],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.failed, true);
@@ -370,7 +366,7 @@ test("零 Finding 但 Reviewer 都成功时,不算失败", async () => {
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [])],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.failed, false);
@@ -402,7 +398,7 @@ test("撞名的 provider 留下失败记录,其余 Reviewer 照常跑完,整轮�
     forge: forge.forge,
     reviewers: [scriptedReviewer("model-a", [AT_LINE_2]), conflicting!],
     cacheDir: cache.dir,
-    databaseUrl: db.url,
+    store: openStore(db.url),
   });
 
   assert.equal(result.failed, false, "一个模型撞名把整轮 Run 判成失败了");
@@ -410,12 +406,8 @@ test("撞名的 provider 留下失败记录,其余 Reviewer 照常跑完,整轮�
   assert.equal(forge.createdReviews[0]!.comments.length, 1, "其余 Reviewer 的 Finding 没发出去");
 
   const store = openStore(db.url);
-  try {
-    const models = (await store.listRuns({ limit: 1 }))[0]!.models;
-    const failed = models.find((row) => row.model === "corp-gateway:corp-qwen3-max");
-    assert.match(failed?.failure ?? "", /名字/, "失败记录没写明是名字冲突");
-    assert.equal(models.find((row) => row.model === "model-a")?.failure, null);
-  } finally {
-    await store.close();
-  }
+  const models = (await store.listRuns({ limit: 1 }))[0]!.models;
+  const failed = models.find((row) => row.model === "corp-gateway:corp-qwen3-max");
+  assert.match(failed?.failure ?? "", /名字/, "失败记录没写明是名字冲突");
+  assert.equal(models.find((row) => row.model === "model-a")?.failure, null);
 });

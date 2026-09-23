@@ -26,6 +26,7 @@ import { assertSupportedVersion, createGiteaForge } from "../src/forge/gitea.ts"
 import { prepareWorktree, readRangeDiff } from "../src/git/worktree.ts";
 import { parseDiffRanges } from "../src/review/position.ts";
 import { runReview } from "../src/review/run.ts";
+import { openStore } from "../src/review/store/index.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { scriptedReviewer } from "./support/memory-forge.ts";
 
@@ -98,7 +99,7 @@ test("Gitea 实现对真实 pull request 完成整条发布与处置链路", { s
     forge,
     reviewers: [reviewer],
     cacheDir,
-    databaseUrl: join(cacheDir, "multireviewer.db"),
+    store: openStore(join(cacheDir, "multireviewer.db")),
   });
   assert.equal(result.inlineCount, 1);
 

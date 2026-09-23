@@ -22,21 +22,17 @@ const cleanups = testCleanups();
 /** 这一轮的三个数:时间线上一轮要说清没给结论的那些各自是怎么来的。 */
 async function verdictCounts(databaseUrl: string) {
   const store = openStore(databaseUrl);
-  try {
-    const timeline = (await store.stageSummary({
-      owner: EVENT.owner,
-      repo: EVENT.repo,
-      pullNumber: EVENT.number,
-    })).timeline;
-    const latest = timeline[timeline.length - 1]!;
-    return {
-      missedVerdicts: latest.missedVerdicts,
-      batchFailedVerdicts: latest.batchFailedVerdicts,
-      uncoveredVerdicts: latest.uncoveredVerdicts,
-    };
-  } finally {
-    await store.close();
-  }
+  const timeline = (await store.stageSummary({
+    owner: EVENT.owner,
+    repo: EVENT.repo,
+    pullNumber: EVENT.number,
+  })).timeline;
+  const latest = timeline[timeline.length - 1]!;
+  return {
+    missedVerdicts: latest.missedVerdicts,
+    batchFailedVerdicts: latest.batchFailedVerdicts,
+    uncoveredVerdicts: latest.uncoveredVerdicts,
+  };
 }
 
 /** 库里这一轮每种由来各几行。给了结论的那些不在这份结果里。 */
@@ -73,7 +69,7 @@ test("跑了没给、批次跑不成与本轮没审到,三种由来各自记账"
   const common = {
     forge: fixture.forge.forge,
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   };
@@ -84,7 +80,6 @@ test("跑了没给、批次跑不成与本轮没审到,三种由来各自记账"
 
   const store = openStore(fixture.db.url);
   const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-  await store.close();
 
   assert.deepEqual((await reasons(fixture.db.url, runId)), {
     "no-verdict": 1,
@@ -104,7 +99,7 @@ test("文件不在本轮任何批次里的那条历史记「没有批次覆盖�
   const common = {
     forge: fixture.forge.forge,
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   };
@@ -125,7 +120,6 @@ test("文件不在本轮任何批次里的那条历史记「没有批次覆盖�
 
   const store = openStore(fixture.db.url);
   const runId = (await store.listRuns({ limit: 1 }))[0]!.id;
-  await store.close();
 
   assert.deepEqual((await reasons(fixture.db.url, runId)), { "no-batch": 1 });
   assert.deepEqual(await verdictCounts(fixture.db.url), {
@@ -140,7 +134,7 @@ function perFileBatches(fixture: Awaited<ReturnType<typeof setupRepo>>) {
   return {
     forge: fixture.forge.forge,
     cacheDir: fixture.cache.dir,
-    databaseUrl: fixture.db.url,
+    store: openStore(fixture.db.url),
     maxChangedLinesPerBatch: 100,
     maxFilesPerBatch: 1,
   };
@@ -179,11 +173,7 @@ function failingBatchReviewer(model: string, verdict: "fixed" | "present", line?
 /** 这一轮的 run id。 */
 async function latestRunId(databaseUrl: string): Promise<number> {
   const store = openStore(databaseUrl);
-  try {
-    return (await store.listRuns({ limit: 1 }))[0]!.id;
-  } finally {
-    await store.close();
-  }
+  return (await store.listRuns({ limit: 1 }))[0]!.id;
 }
 
 /** 库里每条 Finding 的处置与延续来源,按文件。`pg` 的行是空原型,逐格抄出来再比。 */

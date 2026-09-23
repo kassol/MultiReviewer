@@ -104,12 +104,8 @@ async function seedActiveRule(
   entry: { type: "rule" | "fact"; scope: string; statement: string },
 ): Promise<number> {
   const store = openStore(h.db.url);
-  try {
-    assert.notEqual((await seedReviewRule(h.db.url, repoId, entry)), undefined);
-    return (await store.getRuleSet(repoId))!.rules.at(-1)!.id;
-  } finally {
-    await store.close();
-  }
+  assert.notEqual((await seedReviewRule(h.db.url, repoId, entry)), undefined);
+  return (await store.getRuleSet(repoId))!.rules.at(-1)!.id;
 }
 
 async function scopedUser(
@@ -118,20 +114,16 @@ async function scopedUser(
   repoIds: readonly number[],
 ): Promise<string> {
   const store = openStore(h.db.url);
-  try {
-    await store.createPanelUser({
-      username,
-      displayName: null,
-      passwordHash: await hashTestPassword(PASSWORD),
-      mustChangePassword: false,
-      createdAt: "2026-08-20T00:00:00.000Z",
-      isSystemAdmin: false,
-      roleId: null,
-    });
-    await store.setPanelUserAssignment(username, repoIds);
-  } finally {
-    await store.close();
-  }
+  await store.createPanelUser({
+    username,
+    displayName: null,
+    passwordHash: await hashTestPassword(PASSWORD),
+    mustChangePassword: false,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    isSystemAdmin: false,
+    roleId: null,
+  });
+  await store.setPanelUserAssignment(username, repoIds);
   const response = await fetch(`${h.serverUrl}/api/session`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -167,23 +159,19 @@ async function ruleWriterCookie(
 ): Promise<string> {
   const cookie = await scopedUser(h, username, repoIds);
   const store = openStore(h.db.url);
-  try {
-    const role = await store.createPanelRole({
-      name: `role-${username}`,
-      permissions: ["knowledge:write"],
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    assert.equal(
-      await store.updatePanelUser(username, {
-        displayName: null,
-        roleId: role.id,
-        isSystemAdmin: false,
-      }),
-      "updated",
-    );
-  } finally {
-    await store.close();
-  }
+  const role = await store.createPanelRole({
+    name: `role-${username}`,
+    permissions: ["knowledge:write"],
+    createdAt: "2026-08-20T00:00:00.000Z",
+  });
+  assert.equal(
+    await store.updatePanelUser(username, {
+      displayName: null,
+      roleId: role.id,
+      isSystemAdmin: false,
+    }),
+    "updated",
+  );
   return cookie;
 }
 
@@ -191,21 +179,17 @@ test("新注册的仓库知识集未确认,移除仓库连规则一起摘掉", a
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    assert.equal(
-      await store.registerRepo({ repoId: 88, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
-      true,
-    );
-    // 门禁分代(issue #206):注册不再落版本,知识确认才落第一版。
-    assert.deepEqual(await store.getRuleSet(88), { version: null, rules: [], retired: [] });
-    // 没注册的仓库没有知识集可读。
-    assert.equal(await store.getRuleSet(999), undefined);
+  assert.equal(
+    await store.registerRepo({ repoId: 88, owner: "acme", repo: "fresh", generation: 1, key: "k" }),
+    true,
+  );
+  // 门禁分代(issue #206):注册不再落版本,知识确认才落第一版。
+  assert.deepEqual(await store.getRuleSet(88), { version: null, rules: [], retired: [] });
+  // 没注册的仓库没有知识集可读。
+  assert.equal(await store.getRuleSet(999), undefined);
 
-    await store.removeRepo(88);
-    assert.equal(await store.getRuleSet(88), undefined);
-  } finally {
-    await store.close();
-  }
+  await store.removeRepo(88);
+  assert.equal(await store.getRuleSet(88), undefined);
 });
 
 test("知识集只给当前生效的规则,废止的那条不在集内", async () => {
@@ -216,7 +200,6 @@ test("知识集只给当前生效的规则,废止的那条不在集内", async (
     await store.registerRepo({ repoId: 90, owner: "acme", repo: "layered", generation: 1, key: "k" }),
     true,
   );
-  await store.close();
 
   await seedRule(db.url, { repoId: 90, scope: "", statement: "公开函数要有类型标注" });
   await seedRule(db.url, {
@@ -232,20 +215,16 @@ test("知识集只给当前生效的规则,废止的那条不在集内", async (
   });
 
   const reopened = openStore(db.url);
-  try {
-    const ruleSet = await reopened.getRuleSet(90);
-    assert.equal(ruleSet?.version, 1);
-    assert.deepEqual(
-      // 存量行带着退役的层标签值,条目照常读得出,读投影里不再有它。
-      ruleSet?.rules.map((rule) => [rule.scope, rule.statement]),
-      [
-        ["", "公开函数要有类型标注"],
-        ["src/api/**", "入参要在边界上校验"],
-      ],
-    );
-  } finally {
-    await reopened.close();
-  }
+  const ruleSet = await reopened.getRuleSet(90);
+  assert.equal(ruleSet?.version, 1);
+  assert.deepEqual(
+    // 存量行带着退役的层标签值,条目照常读得出,读投影里不再有它。
+    ruleSet?.rules.map((rule) => [rule.scope, rule.statement]),
+    [
+      ["", "公开函数要有类型标注"],
+      ["src/api/**", "入参要在边界上校验"],
+    ],
+  );
 });
 
 test("面板按仓库读知识集:分配内可读,未确认的仓库版本为 null", async () => {
@@ -321,34 +300,30 @@ test("直接废止推进一版,历史版本的快照仍取到废止前那一组"
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    assert.equal(
-      await store.registerRepo({ repoId: 91, owner: "acme", repo: "edited", generation: 1, key: "k" }),
-      true,
-    );
-    // 注册不落版本(issue #206),第一条条目落库就是这个仓库的第一版。
-    assert.equal(
-      (await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "公开函数要有类型标注" })),
-      1,
-    );
-    const added = (await store.getRuleSet(91))!;
-    assert.equal(added.version, 1);
-    const ruleId = added.rules[0]!.id;
+  assert.equal(
+    await store.registerRepo({ repoId: 91, owner: "acme", repo: "edited", generation: 1, key: "k" }),
+    true,
+  );
+  // 注册不落版本(issue #206),第一条条目落库就是这个仓库的第一版。
+  assert.equal(
+    (await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "公开函数要有类型标注" })),
+    1,
+  );
+  const added = (await store.getRuleSet(91))!;
+  assert.equal(added.version, 1);
+  const ruleId = added.rules[0]!.id;
 
-    // 不在这个仓库生效规则里的标识废止不动,一版都不推进。
-    assert.equal(await store.retireReviewRule(91, 4242), undefined);
+  // 不在这个仓库生效规则里的标识废止不动,一版都不推进。
+  assert.equal(await store.retireReviewRule(91, 4242), undefined);
 
-    assert.equal(await store.retireReviewRule(91, ruleId), 2);
-    const retired = (await store.getRuleSet(91))!;
-    assert.equal(retired.version, 2);
-    assert.deepEqual(retired.rules, []);
-    // 废止的不再生效但可查。
-    assert.deepEqual(retired.retired.map((rule) => rule.statement), ["公开函数要有类型标注"]);
-    // 废止不了第二次。
-    assert.equal(await store.retireReviewRule(91, ruleId), undefined);
-  } finally {
-    await store.close();
-  }
+  assert.equal(await store.retireReviewRule(91, ruleId), 2);
+  const retired = (await store.getRuleSet(91))!;
+  assert.equal(retired.version, 2);
+  assert.deepEqual(retired.rules, []);
+  // 废止的不再生效但可查。
+  assert.deepEqual(retired.retired.map((rule) => rule.statement), ["公开函数要有类型标注"]);
+  // 废止不了第二次。
+  assert.equal(await store.retireReviewRule(91, ruleId), undefined);
 
   // 快照回溯:知识集版本 V 的那一组按 effective_version <= V 且未在 V 之前废止取。
   await withTestDb(db.url, async (sql) => {
@@ -434,78 +409,70 @@ test("Review Run 的启动快照冻结知识集版本与当时那组规则,之�
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    assert.equal(
-      await store.registerRepo({ repoId: 91, owner: "acme", repo: "frozen", generation: 1, key: "k" }),
-      true,
-    );
-    assert.equal(
-      (await seedReviewRule(db.url, 91, { type: "rule", scope: "src/**", statement: "src 下不写 any" })),
-      1,
-    );
+  assert.equal(
+    await store.registerRepo({ repoId: 91, owner: "acme", repo: "frozen", generation: 1, key: "k" }),
+    true,
+  );
+  assert.equal(
+    (await seedReviewRule(db.url, 91, { type: "rule", scope: "src/**", statement: "src 下不写 any" })),
+    1,
+  );
 
-    const snapshot = await store.getReviewRunSnapshot(91);
-    assert.equal(snapshot.ruleSetVersion, 1);
-    assert.deepEqual(
-      snapshot.rules.map((rule) => [rule.scope, rule.statement]),
-      [["src/**", "src 下不写 any"]],
-    );
+  const snapshot = await store.getReviewRunSnapshot(91);
+  assert.equal(snapshot.ruleSetVersion, 1);
+  assert.deepEqual(
+    snapshot.rules.map((rule) => [rule.scope, rule.statement]),
+    [["src/**", "src 下不写 any"]],
+  );
 
-    // 已开跑的那一轮拿着上面这份快照跑完,知识集在它跑的过程中变了也不跟。
-    assert.equal((await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "新规则" })), 2);
-    assert.equal(snapshot.ruleSetVersion, 1);
-    assert.equal(snapshot.rules.length, 1);
+  // 已开跑的那一轮拿着上面这份快照跑完,知识集在它跑的过程中变了也不跟。
+  assert.equal((await seedReviewRule(db.url, 91, { type: "rule", scope: "", statement: "新规则" })), 2);
+  assert.equal(snapshot.ruleSetVersion, 1);
+  assert.equal(snapshot.rules.length, 1);
 
-    const next = await store.getReviewRunSnapshot(91);
-    assert.equal(next.ruleSetVersion, 2);
-    assert.equal(next.rules.length, 2);
-  } finally {
-    await store.close();
-  }
+  const next = await store.getReviewRunSnapshot(91);
+  assert.equal(next.ruleSetVersion, 2);
+  assert.equal(next.rules.length, 2);
 });
 
 test("启动快照按 type 把两型分开,同一个知识集版本一起冻结", async () => {
   const db = await makeTestDatabase();
   cleanups.push(db.cleanup);
   const store = openStore(db.url);
-  try {
-    assert.equal(
-      await store.registerRepo({ repoId: 92, owner: "acme", repo: "typed", generation: 1, key: "k" }),
-      true,
-    );
-    assert.equal(
-      (await seedReviewRule(db.url, 92, {
-        type: "rule",
-        scope: "src/**",
-        statement: "src 下不写 any",
-      })),
-      1,
-    );
-    assert.equal(
-      (await seedReviewRule(db.url, 92, {
-        type: "fact",
-        scope: "",
-        statement: "全局拦截器覆盖全部路由",
-      })),
-      2,
-    );
+  assert.equal(
+    await store.registerRepo({ repoId: 92, owner: "acme", repo: "typed", generation: 1, key: "k" }),
+    true,
+  );
+  assert.equal(
+    (await seedReviewRule(db.url, 92, {
+      type: "rule",
+      scope: "src/**",
+      statement: "src 下不写 any",
+    })),
+    1,
+  );
+  assert.equal(
+    (await seedReviewRule(db.url, 92, {
+      type: "fact",
+      scope: "",
+      statement: "全局拦截器覆盖全部路由",
+    })),
+    2,
+  );
 
-    const snapshot = await store.getReviewRunSnapshot(92);
-    // 一个版本,两份注入:规则带标识(模型自报命中的凭据),事实同样带标识但不进 prompt。
-    assert.equal(snapshot.ruleSetVersion, 2);
-    assert.deepEqual(
-      snapshot.rules.map((rule) => [rule.scope, rule.statement]),
-      [["src/**", "src 下不写 any"]],
-    );
-    assert.deepEqual(
-      snapshot.facts.map((fact) => [fact.scope, fact.statement]),
-      [["", "全局拦截器覆盖全部路由"]],
-    );
+  const snapshot = await store.getReviewRunSnapshot(92);
+  // 一个版本,两份注入:规则带标识(模型自报命中的凭据),事实同样带标识但不进 prompt。
+  assert.equal(snapshot.ruleSetVersion, 2);
+  assert.deepEqual(
+    snapshot.rules.map((rule) => [rule.scope, rule.statement]),
+    [["src/**", "src 下不写 any"]],
+  );
+  assert.deepEqual(
+    snapshot.facts.map((fact) => [fact.scope, fact.statement]),
+    [["", "全局拦截器覆盖全部路由"]],
+  );
 
-    // 纯规则集的事实那一份是空数组,行为与升级前逐字一致。
-    assert.equal(await store.retireReviewRule(92, snapshot.facts[0]!.id), 3);
-    assert.deepEqual((await store.getReviewRunSnapshot(92)).facts, []);
-  } finally {
-    await store.close();
-  }
+  // 纯规则集的事实那一份是空数组,行为与升级前逐字一致。
+  assert.equal(await store.retireReviewRule(92, snapshot.facts[0]!.id), 3);
+  assert.deepEqual((await store.getReviewRunSnapshot(92)).facts, []);
 });

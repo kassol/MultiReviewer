@@ -209,7 +209,6 @@ async function addPermissionUser(
     isSystemAdmin: false,
     roleId: role.id,
   });
-  await store.close();
 }
 
 async function userCookie(serverUrl: string, username: string): Promise<string> {
@@ -230,7 +229,6 @@ test("角色权限每请求现读:改角色后不用重登立即生效", async (
     isSystemAdmin: false,
     roleId: none.id,
   });
-  await store.close();
 
   const cookie = await userCookie(h.serverUrl, "reader");
   const request = (): Promise<Response> =>
@@ -241,7 +239,6 @@ test("角色权限每请求现读:改角色后不用重登立即生效", async (
     await update.updatePanelUser("reader", { displayName: null, roleId: reader.id, isSystemAdmin: false }),
     "updated",
   );
-  await update.close();
   assert.equal((await request()).status, 200);
 });
 
@@ -333,7 +330,6 @@ test("普通用户不能调用系统管理员端点", async () => {
     isSystemAdmin: false,
     roleId: null,
   });
-  await store.close();
   const cookie = await userCookie(h.serverUrl, "ordinary");
   const response = await fetch(`${h.serverUrl}/api/roles`, { headers: { cookie } });
   assert.equal(response.status, 403);
@@ -377,7 +373,6 @@ test("无角色的普通用户登录即可读仓库、评审记录与处置率",
     isSystemAdmin: false,
     roleId: null,
   });
-  await store.close();
   const cookie = await userCookie(h.serverUrl, "plain");
   for (const path of ["/repos", "/stages", "/runs", "/stats"]) {
     const response = await fetch(`${h.serverUrl}/api${path}`, {
@@ -527,7 +522,6 @@ test("人动产品 tracker 要 agent:chat 加这个产品里的仓库分配,缺�
     at,
   })).id;
   assert.equal(await store.attachProductRepo(productId, GITEA_REPO.id, at), "attached");
-  await store.close();
 
   // 两样齐了的那个人;有仓库分配、缺权限格的那个人;有权限格、这个产品里一个仓库都没
   // 分到的那个人。
