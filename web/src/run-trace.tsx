@@ -96,6 +96,21 @@ function members(payload: Record<string, unknown>): MergedMember[] {
 }
 
 /**
+ * 判据的呈现。短判据(同一行、指纹仍在、相距几行)是一枚胶囊;合并 agent 那一档是一整句
+ * 理由,装进胶囊会折成两三行的圆角色块,改成独占一行的正文,读起来就是一句话。
+ */
+function Criteria({ payload, text }: { payload: Record<string, unknown>; text: string }) {
+  if (str(record(payload, "criteria") ?? {}, "kind") === "agent") {
+    return <span className="basis-full text-sm break-words text-text-secondary">{text}</span>;
+  }
+  return (
+    <Badge color="gray" variant="soft" radius="full">
+      {text}
+    </Badge>
+  );
+}
+
+/**
  * 合并判据(ADR 0022):`agent` 档是合并 agent 给的那句理由,合并由它判时就是这一档。
  * 另两档是回退到算法合并时的判据(ADR 0015):行号相同是硬证据,其余按行距加标题
  * 相似度。相似度是 0–1 的 Jaccard,按百分比读——阈值 0.05 在界面上就是 5%。
@@ -431,9 +446,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
                   `white-space: nowrap` 加 `flex-shrink: 0`,窄屏上它按整句撑开,被里程碑
                   那张卡的 `overflow-hidden` 直接裁掉。放开折行并允许收缩(issue #379)。 */}
               {criteria === null ? null : (
-                <Badge color="gray" variant="soft" radius="full" className="shrink whitespace-normal break-words">
-                  {criteria}
-                </Badge>
+                <Criteria payload={payload} text={criteria} />
               )}
             </span>
             {list.length === 0 ? null : (
@@ -580,9 +593,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
                 </span>
               )}
               {criteria === null ? null : (
-                <Badge color="gray" variant="soft" radius="full" className="shrink whitespace-normal break-words">
-                  {criteria}
-                </Badge>
+                <Criteria payload={payload} text={criteria} />
               )}
             </span>
             {title === null || title === "" ? null : (

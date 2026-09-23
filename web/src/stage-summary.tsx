@@ -53,7 +53,7 @@ import type { StageSummaryFinding as StageFinding } from "../../src/contracts/st
 export type { StageFinding, StageTimelineEntry, TriggerSource };
 
 /** 时间线上每一轮的来源标签。三档都标:只标其中一档,另外两档就得靠人猜。 */
-const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
+export const TRIGGER_SOURCE_LABEL: Record<TriggerSource, string> = {
   delivery: "投递",
   panel: "面板",
   scheduled: "定时检查",

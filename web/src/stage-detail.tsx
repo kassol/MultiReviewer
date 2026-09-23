@@ -79,6 +79,7 @@ import {
   type StageFinding,
   type StageTab,
   type StageTimelineEntry,
+  TRIGGER_SOURCE_LABEL,
 } from "./stage-summary.tsx";
 
 /** 阶段详情的响应契约,与服务端投影是同一个符号(issue #426)。 */
@@ -1318,12 +1319,12 @@ function RunPill({ run }: { run: RunItem }) {
 }
 
 /**
- * 侧滑头部那一格:这一轮是谁开出来的。定时那一档没有调用者,按来源说「定时检查」——
- * 说成「自动触发」会与投递带来的那一轮混在一起(issue #314)。
+ * 侧滑头部那一格:这一轮是谁开出来的。叫法与时间线那枚来源标签同一套(投递 / 面板 /
+ * 定时检查):同一轮在两处不该有两个名字。人点的那一轮再带上是谁。
  */
 function triggerLabel(run: RunItem): string {
-  if (run.triggerSource === "scheduled") return "定时检查";
-  return run.triggeredBy === null ? "自动触发" : `手动 · ${run.triggeredBy}`;
+  const source = TRIGGER_SOURCE_LABEL[run.triggerSource];
+  return run.triggeredBy === null ? source : `${source} · ${run.triggeredBy}`;
 }
 
 /**
