@@ -29,7 +29,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -53,6 +53,7 @@ import {
   currentProduct,
   filterKnowledge,
   groupedTerms,
+  isTrackerFiltering,
   matchesTrackerFilter,
   NO_TRACKER_FILTER,
   openTicketIds,
@@ -73,6 +74,7 @@ import {
   type TicketStatus,
   type TrackerCloseTarget,
   type TrackerFilter,
+  type TrackerTicket,
   type TrackerSpec,
   type TrackerState,
 } from "@/lib/products";
@@ -1060,6 +1062,73 @@ function TicketStatusIcon({ status, className }: { status: TicketStatus; classNa
   );
 }
 
+/**
+ * 一处阻塞边的另一头(issue #363 的阻塞边):票号可点,点了打开它所在的 spec 并展开那一张——
+ * 挡着它的票常挂在另一条 spec 下,只写个号人还得自己去翻。
+ */
+function BlockerLink({ id, onJump }: { id: number; onJump: (ticketId: number) => void }) {
+  return (
+    <button
+      type="button"
+      className="rounded-sm font-mono text-primary tabular-nums hover:underline focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
+      onClick={() => onJump(id)}
+    >
+      #{id}
+    </button>
+  );
+}
+
+/**
+ * 票行标题下那一行小字:`#id · 已关 · 谁认领 · 等 #n · 可开工`。与 `ticketNotes` 同一套
+ * 取舍(只列还开着的阻塞),只是把阻塞的票号做成可点的——看板卡片整张是一颗键,里面不能
+ * 再套键,那一处仍用 `ticketNotes` 的纯文字。
+ */
+function TicketMeta({
+  ticket,
+  openTickets,
+  pickable,
+  onJump,
+  className,
+}: {
+  ticket: TrackerTicket;
+  openTickets: ReadonlySet<number>;
+  pickable: boolean;
+  onJump: (ticketId: number) => void;
+  className?: string | undefined;
+}) {
+  const blockers = ticket.blockedBy.filter((id) => openTickets.has(id));
+  return (
+    <span className={cn("text-sm text-text-muted", className)}>
+      <span className="font-mono tabular-nums">#{ticket.id}</span>
+      {ticket.state === "closed" ? " · 已关" : null}
+      {ticket.claimedBy === null ? null : ` · ${ticket.claimedBy} 认领`}
+      {blockers.length === 0 ? null : (
+        <>
+          {" · 等 "}
+          {blockers.map((id, index) => (
+            <Fragment key={id}>
+              {index === 0 ? null : "、"}
+              <BlockerLink id={id} onJump={onJump} />
+            </Fragment>
+          ))}
+        </>
+      )}
+      {pickable ? (
+        <>
+          {" · "}
+          <span className="font-medium text-primary">可开工</span>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * 弹窗要展开并滚到的那一张票。`at` 是点下去的时刻:同一张票再跳一次时它变了,滚动照样再做
+ * 一次——只比票号的话,人滚走之后再点同一个 #n 什么都不会发生。
+ */
+type TicketFocus = { ticketId: number; at: number };
+
 /** tracker 两种视图(issue 式列表与看板)。缺省是列表,不写进地址。 */
 export type TrackerView = "list" | "board";
 
@@ -1110,12 +1179,12 @@ function TrackerSection({
   const [filter, setFilter] = useState<TrackerFilter>(NO_TRACKER_FILTER);
   const [showAllClosed, setShowAllClosed] = useState(false);
   /** 从一张票点进来时弹窗里展开并滚到这一张;点 spec 标题进来时为 null。 */
-  const [focusTicketId, setFocusTicketId] = useState<number | null>(null);
+  const [focus, setFocus] = useState<TicketFocus | null>(null);
   /** 弹窗是受控的,没有 `Dialog.Trigger`,焦点得自己送回打开它的那颗键;关掉后列表重取、
    *  那颗键被换掉时,按票号或 spec id 找回新渲染的同一颗。带着 `?spec=` 进来的那一次没有
    *  点过任何键,同样照 spec id 找。 */
   const lastTrigger = useRef<string | null>(null);
-  if (openSpecId !== null && focusTicketId === null) {
+  if (openSpecId !== null && focus === null) {
     lastTrigger.current = `[data-spec-trigger="${openSpecId}"]`;
   }
   const returnFocus = useDialogReturnFocus(useCallback(
@@ -1126,20 +1195,28 @@ function TrackerSection({
   const openTickets = openTicketIds(specs);
   const pickable = pickableTickets(specs);
   const tickets = specs.flatMap((spec) => spec.tickets.map((ticket) => ({ spec, ticket })));
-  const matching = tickets.filter(({ ticket }) => matchesTrackerFilter(ticket, filter));
-  const filtering = filter.label !== null || filter.claimer !== undefined;
+  const matching = tickets.filter(({ spec, ticket }) => matchesTrackerFilter(ticket, spec.title, filter));
+  const filtering = isTrackerFiltering(filter);
+  const specOfTicket = new Map(tickets.map(({ spec, ticket }) => [ticket.id, spec.id]));
   const claimers = [...new Set(tickets.map(({ ticket }) => ticket.claimedBy).filter((one) => one !== null))].sort();
 
   const openFromSpec = (event: MouseEvent<HTMLElement>, specId: number): void => {
     returnFocus.captureTrigger(event);
     lastTrigger.current = `[data-spec-trigger="${specId}"]`;
-    setFocusTicketId(null);
+    setFocus(null);
     onOpenSpec(specId);
   };
   const openFromTicket = (event: MouseEvent<HTMLElement>, specId: number, ticketId: number): void => {
     returnFocus.captureTrigger(event);
     lastTrigger.current = `[data-ticket-trigger="${ticketId}"]`;
-    setFocusTicketId(ticketId);
+    setFocus({ ticketId, at: Date.now() });
+    onOpenSpec(specId);
+  };
+  /** 跟着一处阻塞边跳到那张票:同一条 spec 里就地展开,别的 spec 就换过去。 */
+  const jumpTo = (ticketId: number): void => {
+    const specId = specOfTicket.get(ticketId);
+    if (specId === undefined) return;
+    setFocus({ ticketId, at: Date.now() });
     onOpenSpec(specId);
   };
 
@@ -1181,7 +1258,24 @@ function TrackerSection({
           <span className="font-mono tabular-nums">{matching.length}</span> 张票
         </span>
       )}
+      {/* 说明挂在左边这一组的末尾:窄屏上右边那组整行折下去,挂在它后面会单独落一行。 */}
+      <HelpTooltip
+        label="产品 tracker 说明"
+        content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
+      />
       <div className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto max-sm:w-full">
+        <TextField.Root
+          size={{ initial: "3", sm: "1" }}
+          className="min-w-[10rem] max-sm:basis-full sm:w-44"
+          aria-label="按标题搜索票"
+          placeholder="搜索票或 spec 标题"
+          value={filter.query}
+          onChange={(event) => setFilter((prev) => ({ ...prev, query: event.target.value }))}
+        >
+          <TextField.Slot side="left">
+            <MagnifyingGlassIcon aria-hidden />
+          </TextField.Slot>
+        </TextField.Root>
         <Select.Root
           size={{ initial: "3", sm: "1" }}
           value={filter.label ?? "all"}
@@ -1225,10 +1319,6 @@ function TrackerSection({
           <SegmentedControl.Item value="list" className="max-sm:flex-1">列表</SegmentedControl.Item>
           <SegmentedControl.Item value="board" className="max-sm:flex-1">看板</SegmentedControl.Item>
         </SegmentedControl.Root>
-        <HelpTooltip
-          label="产品 tracker 说明"
-          content="需求拆分会话谈定之后把 spec 写进来,再拆成带阻塞边的票。正文只由会话写;认领、改标签、开关与评论打开一条 spec 就能做。"
-        />
       </div>
     </div>
   );
@@ -1299,7 +1389,6 @@ function TrackerSection({
               ) : (
                 <ul>
                   {rows.map((ticket) => {
-                    const notes = ticketNotes(ticket, openTickets);
                     const status = statuses.get(ticket.id) ?? "ready";
                     return (
                       <li
@@ -1324,10 +1413,12 @@ function TrackerSection({
                               {ticket.label}
                             </Badge>
                           </div>
-                          <span className="text-sm text-text-muted">
-                            <span className="font-mono tabular-nums">#{ticket.id}</span>
-                            {notes === "" ? null : ` · ${notes}`}
-                          </span>
+                          <TicketMeta
+                            ticket={ticket}
+                            openTickets={openTickets}
+                            pickable={false}
+                            onJump={jumpTo}
+                          />
                         </div>
                         {pickable.has(ticket.id) ? <PickableMark /> : null}
                       </li>
@@ -1436,9 +1527,10 @@ function TrackerSection({
         pickable={pickable}
         openTickets={openTickets}
         statuses={statuses}
-        focusTicketId={focusTicketId}
+        focus={focus}
+        onJump={jumpTo}
         onClose={() => {
-          setFocusTicketId(null);
+          setFocus(null);
           onOpenSpec(null);
         }}
         onCloseAutoFocus={returnFocus.onCloseAutoFocus}
@@ -1527,7 +1619,8 @@ function SpecDialog({
   pickable,
   openTickets,
   statuses,
-  focusTicketId,
+  focus,
+  onJump,
   onClose,
   onCloseAutoFocus,
 }: {
@@ -1541,8 +1634,10 @@ function SpecDialog({
   openTickets: ReadonlySet<number>;
   /** 每张票落在看板哪一列,与产品页那一份同一份。 */
   statuses: ReadonlyMap<number, TicketStatus>;
-  /** 从一张票点进来时展开并滚到这一张。 */
-  focusTicketId: number | null;
+  /** 从一张票点进来、或跟着阻塞边跳过来时,展开并滚到这一张。 */
+  focus: TicketFocus | null;
+  /** 跟着一处阻塞边跳到那张票(可能在另一条 spec 下)。 */
+  onJump: (ticketId: number) => void;
   onClose: () => void;
   /** 关闭后把焦点送回打开它的那颗 spec 标题键。 */
   onCloseAutoFocus: (event: Event) => void;
@@ -1595,14 +1690,22 @@ function SpecDialog({
     [],
   ));
   const closeConfirm = shownClosing === null ? null : trackerCloseConfirm(shownClosing);
-  /** 从一张票点进来:内容一到就把那一行滚进视野(它在折叠行里已按 `defaultOpen` 展开)。 */
-  const loaded = detail.data !== undefined;
+  /** 展开着的票。关掉弹窗即清空,下一次打开从全收起开始。 */
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
+  /** 要去的那一张:内容一到就展开它、把那一行滚进视野。换了 spec 时等新的那一份读到再滚。 */
+  const loadedSpecId = detail.data?.spec.id;
   useEffect(() => {
-    if (!loaded || focusTicketId === null) return;
-    document
-      .querySelector(`[data-ticket-row="${focusTicketId}"]`)
-      ?.scrollIntoView({ block: "start" });
-  }, [loaded, focusTicketId]);
+    if (focus === null || loadedSpecId !== spec?.id) return;
+    setExpanded((prev) => new Set(prev).add(focus.ticketId));
+    requestAnimationFrame(() =>
+      document
+        .querySelector(`[data-ticket-row="${focus.ticketId}"]`)
+        ?.scrollIntoView({
+          block: "start",
+          behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        }),
+    );
+  }, [focus, loadedSpecId, spec?.id]);
 
   return (
     <Dialog.Root
@@ -1610,6 +1713,7 @@ function SpecDialog({
       onOpenChange={(next) => {
         if (!next) {
           setFailure(null);
+          setExpanded(new Set());
           onClose();
         }
       }}
@@ -1698,7 +1802,7 @@ function SpecDialog({
                           </div>
                           <span className="text-text-secondary">
                             <span className="font-mono tabular-nums">
-                              {done} / {total}
+                              {done}/{total}
                             </span>{" "}
                             张已关
                           </span>
@@ -1724,6 +1828,32 @@ function SpecDialog({
                     </ul>
                   </SidebarBlock>
                 )}
+                {(() => {
+                  // 这条 spec 里被挡过的票,连同挡着它的每一张(关了的也列,划掉)。宽屏才画:
+                  // 窄屏侧栏排在正文前,票行上那句「等 #n」已经点得到。
+                  const blocked = detail.data.tickets.filter((ticket) => ticket.blockedBy.length > 0);
+                  return blocked.length === 0 ? null : (
+                    <SidebarBlock title="依赖" className="max-md:hidden">
+                      <ul className="flex flex-col gap-1.5">
+                        {blocked.map((ticket) => (
+                          <li key={ticket.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                            <BlockerLink id={ticket.id} onJump={onJump} />
+                            <span className="text-text-muted">等</span>
+                            {ticket.blockedBy.map((id) => (
+                              <span
+                                key={id}
+                                className={cn(!openTickets.has(id) && "line-through decoration-text-muted")}
+                                title={openTickets.has(id) ? undefined : `#${id} 已关`}
+                              >
+                                <BlockerLink id={id} onJump={onJump} />
+                              </span>
+                            ))}
+                          </li>
+                        ))}
+                      </ul>
+                    </SidebarBlock>
+                  );
+                })()}
                 <SidebarBlock title="操作">
                   <div className="flex flex-wrap gap-2 md:flex-col md:items-start">
                     <Button asChild variant="soft" color="gray" size="1" className="pointer-coarse:min-h-11">
@@ -1783,7 +1913,6 @@ function SpecDialog({
                   <div className="min-w-0 overflow-hidden rounded-[var(--v8-radius-control)] border border-card-line">
                     {detail.data.tickets.map((ticket) => {
                       const status = statuses.get(ticket.id) ?? "ready";
-                      const notes = ticketNotes(ticket, openTickets);
                       return (
                         <section
                           key={ticket.id}
@@ -1791,10 +1920,19 @@ function SpecDialog({
                           className="flex min-w-0 scroll-mt-2 flex-col border-t border-line first:border-t-0"
                         >
                           <Collapsible.Root
-                            defaultOpen={ticket.id === focusTicketId}
+                            open={expanded.has(ticket.id)}
+                            onOpenChange={(open) =>
+                              setExpanded((prev) => {
+                                const next = new Set(prev);
+                                if (open) next.add(ticket.id);
+                                else next.delete(ticket.id);
+                                return next;
+                              })
+                            }
                             className="group/ticket flex min-w-0 flex-col"
                           >
-                            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 group-data-[state=open]/ticket:bg-sunken">
+                            <div className="flex min-w-0 flex-col gap-0.5 px-3 py-2 group-data-[state=open]/ticket:bg-sunken">
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                               <Collapsible.Trigger asChild>
                                 {/* 原生 button,触控高度自己给(DESIGN.md 6.1 触控):coarse 块只发给
                                     Radix 类名。 */}
@@ -1807,33 +1945,21 @@ function SpecDialog({
                                     className="mt-0.5 shrink-0 text-text-muted transition-transform group-data-[state=open]/ticket:rotate-90"
                                   />
                                   <TicketStatusIcon status={status} className="mt-0.5" />
-                                  <span className="flex min-w-0 flex-col gap-0.5">
-                                    <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                      <Text
-                                        as="span"
-                                        size="3"
-                                        weight="medium"
-                                        className={cn(
-                                          "min-w-0 break-words hover:underline",
-                                          ticket.state === "closed" && "text-text-secondary",
-                                        )}
-                                      >
-                                        {ticket.title}
-                                      </Text>
-                                      <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
-                                        {ticket.label}
-                                      </Badge>
-                                    </span>
-                                    <span className="text-sm text-text-muted">
-                                      <span className="font-mono tabular-nums">#{ticket.id}</span>
-                                      {notes === "" ? null : ` · ${notes}`}
-                                      {pickable.has(ticket.id) ? (
-                                        <>
-                                          {" · "}
-                                          <span className="font-medium text-primary">可开工</span>
-                                        </>
-                                      ) : null}
-                                    </span>
+                                  <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                    <Text
+                                      as="span"
+                                      size="3"
+                                      weight="medium"
+                                      className={cn(
+                                        "min-w-0 break-words",
+                                        ticket.state === "closed" && "text-text-secondary",
+                                      )}
+                                    >
+                                      {ticket.title}
+                                    </Text>
+                                    <Badge color={LABEL_COLOR[ticket.label]} variant="soft" size="1">
+                                      {ticket.label}
+                                    </Badge>
                                   </span>
                                 </button>
                               </Collapsible.Trigger>
@@ -1886,6 +2012,16 @@ function SpecDialog({
                                   </Button>
                                 </div>
                               ) : null}
+                            </div>
+                            {/* 标题下那一行放在展开键之外:阻塞的票号要能单独点,键里不能再套键。
+                                左缩进让开 chevron 与状态图标两格,与标题的字对齐。 */}
+                            <TicketMeta
+                              ticket={ticket}
+                              openTickets={openTickets}
+                              pickable={pickable.has(ticket.id)}
+                              onJump={onJump}
+                              className="pl-[47px]"
+                            />
                             </div>
                             <Collapsible.Content className="collapsible-motion">
                               {/* 正文缩进到标题的字下面(让开 chevron 与状态图标两格)。 */}

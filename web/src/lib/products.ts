@@ -145,23 +145,38 @@ export function pickableTickets(specs: readonly TrackerSpec[]): Set<number> {
 
 /**
  * tracker 的筛选(列表与看板共用)。`label` 为 null 即不筛标签;`claimer` 为 undefined 即
- * 不筛认领人,为 null 即只看没人认领的。
+ * 不筛认领人,为 null 即只看没人认领的;`query` 按票标题或它所在 spec 的标题找,不分大小写,
+ * 去掉首尾空白后为空即不筛——人记得的常常是 spec 的名字,找的却是它下面的某张票。
  */
-export type TrackerFilter = { label: TicketLabel | null; claimer: string | null | undefined };
+export type TrackerFilter = {
+  label: TicketLabel | null;
+  claimer: string | null | undefined;
+  query: string;
+};
 
-export const NO_TRACKER_FILTER: TrackerFilter = { label: null, claimer: undefined };
+export const NO_TRACKER_FILTER: TrackerFilter = { label: null, claimer: undefined, query: "" };
 
-export function matchesTrackerFilter(ticket: TrackerTicket, filter: TrackerFilter): boolean {
+export function isTrackerFiltering(filter: TrackerFilter): boolean {
+  return filter.label !== null || filter.claimer !== undefined || filter.query.trim() !== "";
+}
+
+export function matchesTrackerFilter(
+  ticket: TrackerTicket,
+  specTitle: string,
+  filter: TrackerFilter,
+): boolean {
+  const needle = filter.query.trim().toLowerCase();
   return (
     (filter.label === null || ticket.label === filter.label) &&
-    (filter.claimer === undefined || ticket.claimedBy === filter.claimer)
+    (filter.claimer === undefined || ticket.claimedBy === filter.claimer) &&
+    (needle === "" || [ticket.title, specTitle].some((text) => text.toLowerCase().includes(needle)))
   );
 }
 
 /**
  * 列表视图的分组:一条 spec 一组,组里是它那几张落在所选状态(开着 / 已关)且过了筛选的票。
  *
- * 哪些组出现:有票入选的组一律出现;一张票都没入选的组,只有在没设标签与认领人筛选、且
+ * 哪些组出现:有票入选的组一律出现;一张票都没入选的组,只有在没设任何筛选、且
  * spec 自己的状态就是所选状态时才出现——一条刚写下还没拆票的 spec 仍要看得见,而人筛着
  * 某个标签时,一个空组只是噪音。
  */
@@ -170,12 +185,12 @@ export function trackerListGroups(
   state: TrackerState,
   filter: TrackerFilter,
 ): { spec: TrackerSpec; tickets: TrackerTicket[] }[] {
-  const filtering = filter.label !== null || filter.claimer !== undefined;
+  const filtering = isTrackerFiltering(filter);
   return specs
     .map((spec) => ({
       spec,
       tickets: spec.tickets.filter(
-        (ticket) => ticket.state === state && matchesTrackerFilter(ticket, filter),
+        (ticket) => ticket.state === state && matchesTrackerFilter(ticket, spec.title, filter),
       ),
     }))
     .filter(({ spec, tickets }) => tickets.length > 0 || (!filtering && spec.state === state));

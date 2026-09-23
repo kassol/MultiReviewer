@@ -284,13 +284,21 @@ test("列表分组:按所选状态与筛选取票,空组只在不筛时为同状
   ]);
   // 筛着标签时空组不画。
   assert.deepEqual(
-    shape(trackerListGroups(specs, "closed", { label: "wontfix", claimer: undefined })),
+    shape(trackerListGroups(specs, "closed", { ...NO_TRACKER_FILTER, label: "wontfix" })),
     [[3, [3]]],
   );
   // claimer 为 null 即只看没人认领的。
   specs[0]!.tickets[0]!.claimedBy = "wang";
-  assert.deepEqual(shape(trackerListGroups(specs, "open", { label: null, claimer: null })), []);
-  assert.deepEqual(shape(trackerListGroups(specs, "open", { label: null, claimer: "wang" })), [
+  assert.deepEqual(shape(trackerListGroups(specs, "open", { ...NO_TRACKER_FILTER, claimer: null })), []);
+  assert.deepEqual(shape(trackerListGroups(specs, "open", { ...NO_TRACKER_FILTER, claimer: "wang" })), [
     [1, [1]],
   ]);
+  // 关键字按票标题或 spec 标题找,不分大小写;搜着时空组同样不画。
+  assert.deepEqual(shape(trackerListGroups(specs, "open", { ...NO_TRACKER_FILTER, query: " 票 1 " })), [
+    [1, [1]],
+  ]);
+  assert.deepEqual(shape(trackerListGroups(specs, "closed", { ...NO_TRACKER_FILTER, query: "C" })), [
+    [3, [3]],
+  ]);
+  assert.deepEqual(shape(trackerListGroups(specs, "open", { ...NO_TRACKER_FILTER, query: "没有" })), []);
 });
