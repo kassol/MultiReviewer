@@ -1148,7 +1148,7 @@ function TrackerSection({
       <h2 className="sr-only">产品 tracker</h2>
       {view === "list" ? (
         // 与 GitHub issue 列表同一形状:两个带数的开关,当前那一个字重压实。数跟着筛选走。
-        <div role="group" aria-label="按开关筛选" className="flex items-center gap-1">
+        <div role="group" aria-label="按开关筛选" className="flex items-center gap-4">
           {(["open", "closed"] as const).map((state) => {
             const count = matching.filter(({ ticket }) => ticket.state === state).length;
             const current = listState === state;
@@ -1448,9 +1448,22 @@ function TrackerSection({
 }
 
 /** spec 弹窗侧栏里的一段:小标题加内容,段与段之间一道发丝线。 */
-function SidebarBlock({ title, children }: { title: string; children: ReactNode }) {
+function SidebarBlock({
+  title,
+  className,
+  children,
+}: {
+  title: string;
+  className?: string;
+  children: ReactNode;
+}) {
   return (
-    <section className="flex min-w-0 flex-col gap-2 border-t border-line pt-3 first:border-t-0 first:pt-0">
+    <section
+      className={cn(
+        "flex min-w-0 flex-col gap-2 border-t border-line pt-3 first:border-t-0 first:pt-0",
+        className,
+      )}
+    >
       <h3 className="text-sm font-semibold text-text-muted">{title}</h3>
       {children}
     </section>
@@ -1695,7 +1708,8 @@ function SpecDialog({
                   </SidebarBlock>
                 )}
                 {detail.data.tickets.length === 0 ? null : (
-                  <SidebarBlock title="票的状态">
+                  // `md` 以下侧栏排在正文之前,这一段让位:四个数在票行的图标上都读得到。
+                  <SidebarBlock title="票的状态" className="max-md:hidden">
                     <ul className="flex flex-col gap-1">
                       {TICKET_STATUSES.map(({ status, title }) => {
                         const count = detail.data.tickets.filter((ticket) => statuses.get(ticket.id) === status).length;
