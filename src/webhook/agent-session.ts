@@ -693,6 +693,13 @@ async function reclaim(sessionId: number, entry: RuntimeEntry, persist = true): 
   // 失败由 `persistQueue` 自己记日志,不往外抛。
   if (persist) await persistQueue(sessionId, entry);
   killChild(entry.child);
+  if (!persist) {
+    // 删会话那一条路(issue #462):已经排上链的条目落完再让调用方删行,管道里还没读出来的那几批
+    // 不再收——否则它们落在删行之后,外键拦下整笔删除。Pi 0.87 在模型请求发出之后才回传这一回合
+    // 的头几条条目,删会话于是常撞上它们还在落库。
+    entry.child?.removeAllListeners("message");
+    await entry.recording;
+  }
   void letGo(entry).catch((error: unknown) => {
     console.error(
       `[agent-session] 会话 ${sessionId} 的会话根没清干净:`,
