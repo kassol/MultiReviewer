@@ -462,6 +462,9 @@ test("提问轮次条目投成选择卡片,三态由它后面第一条用户消�
   ]);
   assert.equal(expired[0]!.kind === "round" ? expired[0]!.expired : undefined, true);
   assert.equal(expired[0]!.kind === "round" ? expired[0]!.answers : "x", undefined);
+  // 卡片过期,后来那条答案仍画成「题 → 答」;顶掉它的那句话不是答案。
+  assert.equal(expired[1]!.kind === "user" ? expired[1]!.answering : "x", undefined);
+  assert.deepEqual(expired[2]!.kind === "user" ? expired[2]!.answering?.answers : undefined, [["月末统一"]]);
 
   // 形状不对的那一条认不出来:跳过,不在对话流里摊出一段 JSON。
   assert.deepEqual(

@@ -482,10 +482,20 @@ function settleRounds(items: ConversationItem[]): void {
       .find((one): one is Extract<ConversationItem, { kind: "user" }> => one.kind === "user");
     if (next === undefined) continue;
     const answers = roundAnswersFrom(next.text, item.round);
-    if (answers === undefined) item.expired = true;
-    else {
+    if (answers !== undefined) {
       item.answers = answers;
       next.answering = { round: item.round, answers };
+      continue;
+    }
+    item.expired = true;
+    // 卡片过期了,答案却可能照样交了上去(执行中排队的消息先投、把卡片顶掉,issue #406 之前
+    // 的会话里有):那条消息仍是这一轮的答案,气泡照样画成「题 → 答」,卡片不因此复活。
+    for (const later of items.slice(index + 1)) {
+      if (later.kind !== "user" || later.answering !== undefined) continue;
+      const late = roundAnswersFrom(later.text, item.round);
+      if (late === undefined) continue;
+      later.answering = { round: item.round, answers: late };
+      break;
     }
   }
 }
