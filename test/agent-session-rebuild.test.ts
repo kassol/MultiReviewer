@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
+import pg from "pg";
+
 import type { ReviewerUsage } from "../src/review/finding.ts";
 import { openStore } from "../src/review/store/index.ts";
 import {
@@ -530,6 +532,93 @@ test("冷启动时子进程起不来:留存的与这一轮的消息落回库里,
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
     assert.deepEqual(await pendingOf(store, sessionId), expected);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+/**
+ * 冷启动时登记与开跑之间那一段(评审复核):`startRun` 之前还要收拢旧子进程、从库里取留存,
+ * 这段时间里到的消息只该进镜像,由开跑那一刻排在留存与触发那一条之后发出。
+ *
+ * 闸是库里会话那一行上的行锁:取留存那一步先 `FOR UPDATE` 锁它,测试先拿着 `FOR NO KEY
+ * UPDATE` 就把它挂住;受理消息那一步插的是外键引用(`FOR KEY SHARE`),不与这把锁冲突。
+ */
+async function holdPendingTake(
+  databaseUrl: string,
+  sessionId: number,
+): Promise<() => Promise<void>> {
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  await client.query("BEGIN");
+  await client.query("SELECT 1 FROM agent_session WHERE id = $1 FOR NO KEY UPDATE", [sessionId]);
+  return async () => {
+    await client.query("COMMIT");
+    await client.end();
+  };
+}
+
+/** 记录里用户消息各是哪一句(按这三句认)。 */
+function userTexts(landed: readonly Awaited<ReturnType<typeof records>>[number][]): string[] {
+  return landed
+    .filter((record) => record.type === "message" && record.entry.message?.role === "user")
+    .map((record) => {
+      const content = JSON.stringify(record.entry.message!.content);
+      return [RETAINED, MESSAGE, DURING_BOOT].find((text) => content.includes(text)) ?? content;
+    });
+}
+
+test("冷启动开跑之前排进来的消息只投一次,排在留存与触发那一条之后", async () => {
+  const { h, cookie, sessionId, close } = await startSessionHarness([
+    { text: "第一轮", usage: { input: 1, output: 1 } },
+    { text: "第二轮", usage: { input: 1, output: 1 } },
+    { text: "第三轮", usage: { input: 1, output: 1 } },
+  ]);
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [{ mode: "followUp", text: RETAINED }]);
+    const release = await holdPendingTake(h.db.url, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    assert.equal((await send(h, cookie, sessionId, "c2", DURING_BOOT)).status, 202);
+    await release();
+
+    await messagesAtLeast(h.db.url, sessionId, 6);
+    await idle(h, cookie, sessionId);
+    assert.deepEqual(userTexts(await records(h, cookie, sessionId)), [
+      RETAINED,
+      MESSAGE,
+      DURING_BOOT,
+    ]);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("冷启动开跑之前排空:留存的、触发启动的与这段里排进来的按顺序落库,子进程不再起", async () => {
+  const { h, cookie, sessionId, close } = await startSessionHarness([
+    { text: "用不到", usage: { input: 1, output: 1 } },
+  ]);
+  try {
+    const store = openStore(h.db.url);
+    await store.putAgentSessionPendingMessages(sessionId, [
+      { mode: "followUp", text: RETAINED, images: RETAINED_IMAGES },
+    ]);
+    const release = await holdPendingTake(h.db.url, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    assert.equal((await send(h, cookie, sessionId, "c2", DURING_BOOT)).status, 202);
+
+    const disposing = disposeAgentSessions();
+    await release();
+    await disposing;
+
+    assert.deepEqual(await pendingOf(store, sessionId), [
+      { mode: "followUp", text: RETAINED, images: JSON.parse(RETAINED_IMAGES) },
+      { mode: "followUp", text: MESSAGE },
+      { mode: "followUp", text: DURING_BOOT },
+    ]);
+    assert.equal(agentSessionStatus(sessionId), "idle");
   } finally {
     await disposeAgentSessions();
     await close();

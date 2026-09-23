@@ -205,6 +205,12 @@ type RuntimeEntry = {
    * 会撞在一个还没有会话的进程上;排空也不必给它下 `drain`——它手上没有可中止的回合。
    */
   opened: boolean;
+  /**
+   * 这个会话已经开跑过(`startRun` 跑过一次)。冷启动那一条在登记与开跑之间隔着收拢旧子进程与
+   * 取留存那两次 `await`:这段时间里到的消息只进镜像、不发指令,由 `startRun` 排在留存与触发
+   * 那一条之后一并发出——两边各记一份的话,同一条会投给子进程两次,还抢在触发那一条前面开跑。
+   */
+  started: boolean;
   /** 子进程的 Pi 会话建好之前攒下的指令。建好之后按顺序补发,一条都不丢。 */
   pending: SessionCommand[];
   /**
@@ -591,8 +597,9 @@ function touch(sessionId: number, entry: RuntimeEntry): void {
  * prompt**:`startRun` 已经把留存的那几条与触发启动的这一条从镜像里摘走、攒进了 `pending`,
  * 只看镜像的话它们一条都落不了库——留存的那几条此前已经从库里取出即删,于是静默丢失。
  *
- * 建好之前不叠镜像:启动期间来的新消息(`queueAgentSessionMessage`)镜像与 `pending` 各记一份,
- * 两边都取就落两行。
+ * 建好之前不叠镜像:开跑之后、建好之前来的新消息(`queueAgentSessionMessage`)镜像与 `pending`
+ * 各记一份,两边都取就落两行。开跑之前 `pending` 是空的,这里落不下任何东西——那一段由
+ * `deliverAgentSessionMessage` 的启动链自己落(它才知道从库里取回了哪几条留存)。
  *
  * `pending` 按子进程收到之后的效果回放:第一条 prompt 直接开跑,之后的进 Pi 的队列;
  * `clear-queue` 清的只是队列,开跑那一条不动——清掉的那几条不落库,不然人刚点的清空会被
@@ -1333,21 +1340,29 @@ async function boot(
  * 立刻开跑、后面的进 Pi 的队列,顺序因此就是人当初写下它们的顺序。留存的那几条交出去之后
  * 从镜像里摘掉——排着的定义是「还没投出去」;进了 Pi 队列的那些由它的 `queue_update` 报回来。
  *
+ * `retained` 是镜像前面有几条是留存。冷启动那一条的镜像是「从库里取回的留存 + 启动期间新来
+ * 的」,新来的排在这一条之后;已有子进程那一条的镜像全是留存,不传即全部。
+ *
  * `first` 是提问轮次的答案那一档(issue #406):它排在留存的那几条**前面**。这一轮以提问卡
  * 收尾时留存的消息还排着,让它先投等于用一条更新的用户消息把这张卡片顶成过期——而人紧接着
- * 交上来的答案随后照样送达,卡片上的话与事实相反。留存的那几条仍按原顺序跟在答案后面。
+ * 交上来的答案随后照样送达,卡片上的话与事实相反。留存的那几条仍按原顺序跟在答案后面,
+ * 启动期间新来的仍在最后。
  */
 function startRun(
   sessionId: number,
   entry: RuntimeEntry,
   last: AgentSessionQueuedMessage,
   first = false,
+  retained = entry.queue.length,
 ): void {
   entry.status = "running";
+  entry.started = true;
   // 闸换档:这一刻起计的是执行中的连续静默(issue #335)。
   touch(sessionId, entry);
-  const retained = entry.queue.splice(0, entry.queue.length);
-  for (const message of first ? [last, ...retained] : [...retained, last]) {
+  const queued = entry.queue.splice(0, entry.queue.length);
+  const held = queued.slice(0, retained);
+  const arrived = queued.slice(retained);
+  for (const message of first ? [last, ...held, ...arrived] : [...held, last, ...arrived]) {
     sendCommand(entry, {
       kind: "prompt",
       text: message.text,
@@ -1364,8 +1379,9 @@ function startRun(
  * 在这一刻就看得到它在跑——登记晚一拍,两条消息就会同时开跑。
  *
  * 子进程还没起来的那一次连带把它起出来(回收过、判死过与服务刚重启都走这一条,issue #335):
- * 起的那段时间里到的消息先攒着(`sendCommand`),建好之后按顺序补发;上一次回收或排空时落库
- * 的排队消息先回到镜像里,跟着这一条一起投出去。空闲时两种模式都等同直接开跑,`mode` 只在
+ * 开跑之前到的消息只进镜像,由 `startRun` 排在这一条之后;开跑之后、建好之前到的先攒着
+ * (`sendCommand`),建好之后按顺序补发。上一次回收或排空时落库的排队消息先回到镜像里,
+ * 排在这一条之前一并投出去。空闲时两种模式都等同直接开跑,`mode` 只在
  * 执行中才有分别(spec #329)。
  *
  * 辅助模型每次开跑都取当前值(ADR 0029):与子进程此刻用的那一个不同时,落一条系统消息、
@@ -1425,6 +1441,7 @@ export function deliverAgentSessionMessage(
     queue: [],
     queueSeq: 0,
     opened: false,
+    started: false,
     pending: [],
     imageRefs: [],
     disposed: false,
@@ -1438,10 +1455,17 @@ export function deliverAgentSessionMessage(
   const booting = (async () => {
     await switched;
     // 上一次回收或排空时落库的那几条:它们排在这一条之前,顺序就是人当初写下的顺序。
-    // `unshift` 而不是整列赋值——万一这一个微任务里有谁往镜像里加了消息,不把它抹掉。
+    // `unshift` 而不是整列赋值——上面两次 `await` 里到的消息已经在镜像里,不把它们抹掉。
     const pendingQueue = await takePendingQueue(deps, session.id);
     entry.queue.unshift(...pendingQueue);
-    startRun(session.id, entry, message, first);
+    startRun(session.id, entry, message, first, pendingQueue.length);
+    // 上面两次 `await` 里被收拢了:收拢那一路落库时 `pending` 还是空的,什么都没写(写了反倒会
+    // 把库里还没取的留存整批覆盖掉)。留存、这一条与新来的此刻都在 `pending` 里,由这里落回去,
+    // 子进程不再起。排空的 `letGo` 等的正是这条链,落完它才往下走。
+    if (entry.disposed) {
+      await persistQueue(session.id, entry);
+      throw new Error("会话已经收拢");
+    }
     return boot(deps, session, model, repos, entry);
   })();
   entry.booting = booting;
@@ -1503,6 +1527,8 @@ export function queueAgentSessionMessage(
   } else {
     entry.queue.push({ mode, text, ...attached });
   }
+  // 还没开跑:只记镜像,`startRun` 连同留存与触发那一条按顺序发出、图片引用也由它按发送顺序记。
+  if (!entry.started) return;
   sendCommand(entry, { kind: "prompt", text, mode, ...attached, seq: ++entry.queueSeq });
   entry.imageRefs.push(...images);
 }
