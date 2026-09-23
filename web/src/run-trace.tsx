@@ -7,7 +7,7 @@ import { Badge, Callout, Skeleton } from "@radix-ui/themes";
 import { CommitChip } from "@/components/commit-chip";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge, type StatusTone } from "@/components/status-badge";
-import { num, str } from "@/lib/payload";
+import { num, reason as reasonOf, str } from "@/lib/payload";
 import { localSecond } from "@/lib/time";
 
 import { apiUrl, fetchJson } from "./api.ts";
@@ -476,7 +476,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
           <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
             <span className="text-warning">本轮合并退回算法档</span>
             <span className="min-w-0 text-sm break-words text-text-secondary">
-              {str(payload, "reason") ?? "未记录原因"}
+              {reasonOf(payload, "reason")}
             </span>
           </span>
         );
@@ -491,7 +491,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
               组没有综合说明,正文取原文最完整的一段
             </span>
             <span className="min-w-0 text-sm break-words text-text-secondary">
-              {str(payload, "reason") ?? "未记录原因"}
+              {reasonOf(payload, "reason")}
             </span>
           </span>
         );
@@ -504,7 +504,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
         return (
           <span className="flex flex-wrap items-baseline gap-x-2 text-base text-text">
             <span className="text-warning">
-              同根因组提议被丢弃:{str(payload, "reason") ?? "未记录原因"}
+              同根因组提议被丢弃:{reasonOf(payload, "reason")}
             </span>
             <span className="min-w-0 text-sm break-words text-text-secondary">
               {groups.length === 0
@@ -671,7 +671,7 @@ function RunMilestone({ event }: { event: TraceEvent }) {
       case "run_failed":
         return (
           <span className="text-base text-danger">
-            本轮失败:{str(payload, "reason")?.trim() || "未记录原因"}
+            本轮失败:{reasonOf(payload, "reason")}
           </span>
         );
       case "run_finished":
@@ -814,7 +814,7 @@ function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
       <Callout.Root role="alert" color="red" size="1">
         <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
         <Callout.Text>
-          本批运行失败：{str(payload, "failure") ?? "未记录原因"}
+          本批运行失败：{reasonOf(payload, "failure")}
           {exitCode === null ? null : `（退出码 ${exitCode}）`}
           {/* 倒下之前给出的结论一律丢掉(issue #420),这一批的历史在阶段时间线上记成
               「批次没跑成」;这里的条数是运行事实。两处对不上不说清会被当成算错。 */}
@@ -889,7 +889,7 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>
             <Callout.Text>
-              Reviewer 运行失败：{str(payload, "failure") ?? "未记录原因"}
+              Reviewer 运行失败：{reasonOf(payload, "failure")}
               {exitCode === null ? null : `（退出码 ${exitCode}）`}
             </Callout.Text>
           </Callout.Root>

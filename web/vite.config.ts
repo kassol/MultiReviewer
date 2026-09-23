@@ -16,6 +16,16 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          // 发版之间几乎不变的 React 与 TanStack 拆成 vendor 块吃长缓存(issue #443)。
+          // ponytail: 只收这四个包;@radix-ui/themes 是 barrel,放进来会把懒加载页面才用的
+          // Select 一并拖进首屏(实测 +17 kB gzip),要更大的 vendor 得按导出绑定判可达性。
+          manualChunks: { vendor: ["react", "react-dom", "@tanstack/react-query", "@tanstack/react-router"] },
+        },
+      },
+    },
     server: {
       // dev 走 proxy 把 `/api` 转到本机后端:浏览器视角同源同路径,cookie 正常携带、
       // 无 CORS。webhook 不进 proxy。后端没起时 502 即为答案,不做兜底。
