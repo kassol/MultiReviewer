@@ -47,7 +47,7 @@ import type {
   StageRowEntry,
   Store,
 } from "./index.ts";
-import { UNRECORDED_RUN_FAILURE } from "./runs.ts";
+import { runFailureText, UNRECORDED_RUN_FAILURE } from "./runs.ts";
 import {
   carriedAttribution,
   identityKey,
@@ -698,7 +698,9 @@ export function stagesMethods({ orm, transaction, store }: StoreContext): Stages
             startedAt: run.started_at,
             finishedAt: run.finished_at,
             failed: Number(run.failed ?? 0) === 1,
-            failure: run.failure,
+            // 读取侧过同一道回落(backlog #443):写入侧收口(issue #432)之前落下的旧行可能
+            // 是整篇空白。
+            failure: run.failure === null ? null : runFailureText(run.failure),
             // 时间线上要分得出哪一轮是只复核:看到「新报 0」时那不是审查空跑。
             mode: run.mode === "verdict-only" ? "verdict-only" : "full",
             // 时间线上要分得出哪一轮是自己跑起来的(issue #312)。

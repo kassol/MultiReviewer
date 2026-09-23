@@ -1061,6 +1061,12 @@ async function startRun(
   triggerSource: ReviewTriggerSource = "delivery",
 ): Promise<void> {
   const settled = deps.onRunSettled ?? logFailure;
+  // 投递那一档的「开始审查」由 `handle` 经 `onDelivery` 记;面板与定时开的轮次(范围审查、
+  // 重跑、增量评审)在这里补上同形的一行,与 `logFailure` 那句「审查结束」同一个去处
+  // (backlog #443)。
+  if (triggerSource !== "delivery" && deps.onRunSettled === undefined) {
+    console.log(`[webhook] ${describe(event)} — 开始审查`);
+  }
   // 排空要等的就是这一段(issue #249):这一轮到达可退出点之前进程不退出。
   const reachedExitPoint = drainTracked(deps, describe(event));
   try {

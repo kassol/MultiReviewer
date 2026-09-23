@@ -155,6 +155,14 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
           "",
         ]
       : []),
+    // 挂着几个仓库时「这个仓库」有歧义(backlog #443):线上会话问「这个仓库有几个文件」,
+    // agent 挑了其中一个作答。判不出指哪个就先问,或者逐个仓库作答。
+    ...(request.repos.length > 1
+      ? [
+          'When the person says "this repository" and the conversation does not make clear which one they mean, ask which one, or answer for each repository separately.',
+          "",
+        ]
+      : []),
     "Every path you pass to read, grep, find and ls stays inside the session root — an absolute path outside it, or a path that climbs out with .., is refused. The git tool reads one repository per call: every path argument starts with the <owner>/<repo>/ prefix, and that prefix picks the repository.",
     "",
     "You cannot edit files, write files or run shell commands: nothing you do changes the code. Read the code before you claim anything about it: the repositories above are the evidence.",

@@ -18,6 +18,7 @@ import {
   startReadyPanelHarness,
   type PanelHarness,
 } from "./support/panel-harness.ts";
+import { query } from "./support/batch-run.ts";
 import { confirmEmptyRuleSet, seedRun as seedRunRow } from "./support/git-fixture.ts";
 
 /*
@@ -709,4 +710,40 @@ test("阶段列表:收尾失败的原因取头一行有内容的,整篇空白才
   assert.equal(reasons.get(7), "发布 review 失败:Gitea 回了 500");
   assert.equal(reasons.get(8), "未记录原因");
   assert.equal(reasons.get(9), "未记录原因");
+});
+
+// 写入侧收口(issue #432)之前落下的旧行可能是整篇空白:阶段汇总的时间线读出来时过同一道
+// 回落,正常原因原样读回(backlog #443)。
+test("阶段汇总:时间线上整篇空白的旧失败原因读回「未记录原因」,正常原因原样", async () => {
+  const h = await startPanelHarness();
+  const old = await seedRun(
+    h.db.url,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
+    [{ fingerprint: "fp-1" }],
+  );
+  // 绕过写入侧那道收口,造一条旧行。
+  await query(h.db.url, "UPDATE review_run SET failure = $1 WHERE id = $2", "   \n  ", old);
+  await seedRun(
+    h.db.url,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-02T00:00:00.000Z" },
+    [],
+    { closingFailure: "发布 review 失败:Gitea 回了 500" },
+  );
+  await seedRun(
+    h.db.url,
+    { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-03T00:00:00.000Z" },
+    [],
+  );
+
+  const summary = (await (
+    await h.api("GET", "/stage-summary?owner=acme&repo=widgets&pullNumber=7")
+  ).json()) as { timeline: { startedAt: string; failure: string | null }[] };
+  assert.deepEqual(
+    summary.timeline.map((entry) => [entry.startedAt, entry.failure]).sort(),
+    [
+      ["2026-08-01T00:00:00.000Z", "未记录原因"],
+      ["2026-08-02T00:00:00.000Z", "发布 review 失败:Gitea 回了 500"],
+      ["2026-08-03T00:00:00.000Z", null],
+    ],
+  );
 });
