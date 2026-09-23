@@ -2189,6 +2189,14 @@ function CatalogControls({
         maxHeight="calc(100dvh - 2rem)"
         size={{ initial: "2", sm: "3" }}
         className="flex flex-col overflow-hidden"
+        // 默认焦点会落在标题旁的说明图标上,把它的提示气泡顶出来;改落输入框,
+        // 输入框禁用时落浮层本身。
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          const input = document.getElementById(inputId);
+          if (input instanceof HTMLInputElement && !input.disabled) input.focus();
+          else (event.currentTarget as HTMLElement).focus();
+        }}
       >
       <div className="flex shrink-0 items-start justify-between gap-3">
         <Dialog.Title size="4" mb="1" className="flex min-w-0 items-center gap-1.5">
