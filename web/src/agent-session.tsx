@@ -116,60 +116,79 @@ async function uploadImage(sessionId: number, file: File): Promise<string> {
   return ((await response.json()) as { image: { imageId: string } }).image.imageId;
 }
 
+/** 输入区里的一张附件。`uploading` 为真时 `src` 是本地预览,传完即换成已落库的那一张。 */
+type Attachment = { key: string; src: string; uploading: boolean };
+
 /**
- * 输入区的图片按钮与缩略图预览(原型 A 的输入区,issue #336)。
- *
- * `imageInput` 为假即当前辅助模型看不了图:按钮置灰,鼠标悬停说清去换模型——人不会以为
- * 它看了图。满四张时同样置灰。
+ * 输入框顶部那一排附件(原型 A 的输入区,issue #336)。选图或粘贴的那一刻就用本地预览占位,
+ * 压一层淡白与 Spinner 表示在传;传完去掉那一层,移除键才出现——没落库的那张没有 id 可移。
+ * 移除键嵌在缩略图右上角里面,不压出图外。
  */
-function ImageComposer({
-  sessionId,
-  images,
+function AttachmentStrip({
+  attachments,
+  onRemove,
+}: {
+  attachments: readonly Attachment[];
+  onRemove: (key: string) => void;
+}) {
+  if (attachments.length === 0) return null;
+  return (
+    <ul className="flex flex-wrap gap-2 px-3 pt-3" aria-label="待发送的图片">
+      {attachments.map((item) => (
+        <li
+          key={item.key}
+          className="group relative size-14 overflow-hidden rounded-md border border-card-line bg-sunken"
+          aria-busy={item.uploading}
+        >
+          <img
+            src={item.src}
+            alt={item.uploading ? "上传中的图片" : "待发送的图片"}
+            className={`size-full object-cover transition-opacity ${item.uploading ? "opacity-50" : ""}`}
+          />
+          {item.uploading ? (
+            <span className="absolute inset-0 grid place-items-center" role="status" aria-label="上传中">
+              <Spinner size="2" />
+            </span>
+          ) : (
+            <button
+              type="button"
+              aria-label="移除这张图片"
+              className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm transition-opacity hover:bg-black/75 outline-none focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-7 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100"
+              onClick={() => onRemove(item.key)}
+            >
+              <Cross2Icon aria-hidden className="size-3" />
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * 输入区下沿的图片按钮(issue #336)。`imageInput` 为假即当前辅助模型看不了图:按钮置灰,
+ * 鼠标悬停说清去换模型——人不会以为它看了图。满四张(含在传的)时同样置灰。
+ */
+function ImageButton({
+  count,
   imageInput,
   busy,
   onPick,
-  onRemove,
 }: {
-  sessionId: number;
-  images: readonly string[];
+  count: number;
   imageInput: boolean;
   busy: boolean;
   onPick: (files: readonly File[]) => void;
-  onRemove: (imageId: string) => void;
 }) {
   const picker = useRef<HTMLInputElement>(null);
-  const full = images.length >= MAX_SESSION_IMAGES;
+  const full = count >= MAX_SESSION_IMAGES;
   const hint = !imageInput
     ? NO_IMAGE_INPUT_HINT
     : full
       ? `一条消息最多带 ${MAX_SESSION_IMAGES} 张图`
-      : `加图片(最多 ${MAX_SESSION_IMAGES} 张)`;
+      : `加图片(最多 ${MAX_SESSION_IMAGES} 张,也可以直接粘贴)`;
   return (
     <>
-      {images.length === 0 ? null : (
-        <ul className="flex basis-full flex-wrap gap-2 pb-1" aria-label="待发送的图片">
-          {images.map((imageId) => (
-            <li key={imageId} className="relative">
-              <img
-                src={imageSrc(sessionId, imageId)}
-                alt="待发送的图片"
-                className="size-16 rounded-lg border border-line object-cover"
-              />
-              <IconButton
-                type="button"
-                size="1"
-                variant="solid"
-                color="gray"
-                aria-label="移除这张图片"
-                className="absolute -right-1.5 -top-1.5"
-                onClick={() => onRemove(imageId)}
-              >
-                <Cross2Icon aria-hidden />
-              </IconButton>
-            </li>
-          ))}
-        </ul>
-      )}
       <input
         ref={picker}
         type="file"
@@ -177,10 +196,7 @@ function ImageComposer({
         multiple
         hidden
         onChange={(event) => {
-          const files = [...(event.target.files ?? [])].slice(
-            0,
-            MAX_SESSION_IMAGES - images.length,
-          );
+          const files = [...(event.target.files ?? [])].slice(0, MAX_SESSION_IMAGES - count);
           // 同一个文件再选一次也要触发 change:值不清的话第二次选它什么都不会发生。
           event.target.value = "";
           if (files.length > 0) onPick(files);
@@ -1292,16 +1308,14 @@ function WrotePanel({ productId, wrote }: { productId: number; wrote: SessionWro
  * 回车发送,Shift+回车换行;中文输入法选词那一下 `isComposing` 为真,不发。
  */
 function Composer({
-  sessionId,
   running,
   mode,
   onMode,
   draft,
   onDraft,
-  images,
+  attachments,
   imageInput,
   sending,
-  attaching,
   stopping,
   onSend,
   onStop,
@@ -1309,21 +1323,19 @@ function Composer({
   onRemove,
   onPasteImages,
 }: {
-  sessionId: number;
   running: boolean;
   mode: QueuedMessage["mode"];
   onMode: (mode: QueuedMessage["mode"]) => void;
   draft: string;
   onDraft: (draft: string) => void;
-  images: readonly string[];
+  attachments: readonly Attachment[];
   imageInput: boolean;
   sending: boolean;
-  attaching: boolean;
   stopping: boolean;
   onSend: () => void;
   onStop: () => void;
   onPick: (files: readonly File[]) => void;
-  onRemove: (imageId: string) => void;
+  onRemove: (key: string) => void;
   /** 粘贴进输入框的图片。文字照常落进输入框,这里只收图片那一份;收不下时回一句原因。 */
   onPasteImages: (files: readonly File[]) => string | null;
 }) {
@@ -1336,8 +1348,16 @@ function Composer({
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   }, [draft]);
-  const canSend = !sending && draft.trim() !== "";
-  const sendLabel = sending ? "发送中" : running ? MODE_LABEL[mode] : "发送";
+  // 图还在传时不让发:发出去的那条会悄悄少掉这张图。
+  const uploading = attachments.some((item) => item.uploading);
+  const canSend = !sending && !uploading && draft.trim() !== "";
+  const sendLabel = sending
+    ? "发送中"
+    : uploading
+      ? "图片上传中"
+      : running
+        ? MODE_LABEL[mode]
+        : "发送";
 
   return (
     <form
@@ -1348,6 +1368,7 @@ function Composer({
       }}
     >
       <div className="flex flex-col rounded-lg border border-input bg-surface shadow-control transition-shadow focus-within:[box-shadow:var(--v8-shadow-focus)]">
+        <AttachmentStrip attachments={attachments} onRemove={onRemove} />
         <textarea
           ref={area}
           aria-label="发消息"
@@ -1373,13 +1394,11 @@ function Composer({
           }}
         />
         <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-          <ImageComposer
-            sessionId={sessionId}
-            images={images}
+          <ImageButton
+            count={attachments.length}
             imageInput={imageInput}
-            busy={sending || attaching}
+            busy={sending}
             onPick={onPick}
-            onRemove={onRemove}
           />
           {running ? (
             <SegmentedControl.Root
@@ -1674,6 +1693,15 @@ export function AgentSessionPage({
   const [mode, setMode] = useState<QueuedMessage["mode"]>("followUp");
   /** 这一条消息带的图片 id(issue #336)。发出去就清空;移除只是不带它,文件留在会话里。 */
   const [images, setImages] = useState<string[]>([]);
+  /** 正在传的图:选中或粘贴那一刻就用本地预览占位,传完挪进 `images`。 */
+  const [pending, setPending] = useState<{ key: string; src: string }[]>([]);
+  /** 已传完的图沿用上传时的本地预览,换成服务端地址会重新取一遍、闪一下。 */
+  const previews = useRef(new Map<string, string>());
+  const dropPreview = (imageId: string): void => {
+    const url = previews.current.get(imageId);
+    if (url !== undefined) URL.revokeObjectURL(url);
+    previews.current.delete(imageId);
+  };
   /** `xl` 以下中栏放对话还是这个会话写下的 spec 与票。 */
   const [pane, setPane] = useState<"chat" | "wrote">("chat");
   /** `sm` 以下头部那几行元信息是否摊开(issue #384)。`sm` 起这一位不起作用,元信息常显。 */
@@ -1734,6 +1762,7 @@ export function AgentSessionPage({
       }),
     onSuccess: async () => {
       setDraft("");
+      images.forEach(dropPreview);
       setImages([]);
       setFeedback(null);
       await refresh();
@@ -1762,19 +1791,41 @@ export function AgentSessionPage({
       setFeedback({ text: (error as Error).message, error: true });
     }
   };
-  /** 选中的图片逐张上传(issue #336)。一张失败就停:剩下的由人再选一次。 */
-  const attach = useMutation({
-    mutationFn: async (files: readonly File[]) => {
-      const ids: string[] = [];
-      for (const file of files) ids.push(await uploadImage(sessionId, file));
-      return ids;
-    },
-    onSuccess: (ids) => {
-      setFeedback(null);
-      setImages((current) => [...current, ...ids].slice(0, MAX_SESSION_IMAGES));
-    },
-    onError: (error: Error) => setFeedback({ text: error.message, error: true }),
-  });
+  /**
+   * 选中或粘贴的图片逐张上传(issue #336)。每张先以本地预览占位,传完即换成已落库的那一张;
+   * 一张失败就停,还没传的那几张一并撤掉,由人再选一次。
+   */
+  const attach = async (files: readonly File[]): Promise<void> => {
+    const items = files.map((file) => ({
+      key: crypto.randomUUID(),
+      src: URL.createObjectURL(file),
+      file,
+    }));
+    setPending((current) => [...current, ...items.map(({ key, src }) => ({ key, src }))]);
+    for (const [index, item] of items.entries()) {
+      try {
+        const imageId = await uploadImage(sessionId, item.file);
+        previews.current.set(imageId, item.src);
+        setImages((current) => [...current, imageId]);
+        setFeedback(null);
+        setPending((current) => current.filter((p) => p.key !== item.key));
+      } catch (error) {
+        const rest = items.slice(index);
+        for (const r of rest) URL.revokeObjectURL(r.src);
+        setPending((current) => current.filter((p) => !rest.some((r) => r.key === p.key)));
+        setFeedback({ text: (error as Error).message, error: true });
+        return;
+      }
+    }
+  };
+  const attachments: Attachment[] = [
+    ...images.map((imageId) => ({
+      key: imageId,
+      src: previews.current.get(imageId) ?? imageSrc(sessionId, imageId),
+      uploading: false,
+    })),
+    ...pending.map((item) => ({ ...item, uploading: true })),
+  ];
   const stop = useMutation({
     mutationFn: () => send(`/agent-sessions/${sessionId}/stop`, "POST"),
     onSuccess: async () => {
@@ -2065,31 +2116,29 @@ export function AgentSessionPage({
                     </div>
                   )}
                   <Composer
-                    sessionId={sessionId}
                     running={running}
                     mode={mode}
                     onMode={setMode}
                     draft={draft}
                     onDraft={setDraft}
-                    images={images}
+                    attachments={attachments}
                     imageInput={imageInput}
                     sending={post.isPending}
-                    attaching={attach.isPending}
                     stopping={stop.isPending}
                     onSend={() => post.mutate(draft.trim())}
                     onStop={() => stop.mutate()}
-                    onPick={(files) => attach.mutate(files)}
+                    onPick={(files) => void attach(files)}
                     onPasteImages={(files) => {
                       if (!imageInput) return NO_IMAGE_INPUT_HINT;
-                      if (images.length >= MAX_SESSION_IMAGES)
+                      if (attachments.length >= MAX_SESSION_IMAGES)
                         return `一条消息最多带 ${MAX_SESSION_IMAGES} 张图`;
-                      if (!attach.isPending)
-                        attach.mutate(files.slice(0, MAX_SESSION_IMAGES - images.length));
+                      void attach(files.slice(0, MAX_SESSION_IMAGES - attachments.length));
                       return null;
                     }}
-                    onRemove={(imageId) =>
-                      setImages((current) => current.filter((id) => id !== imageId))
-                    }
+                    onRemove={(imageId) => {
+                      dropPreview(imageId);
+                      setImages((current) => current.filter((id) => id !== imageId));
+                    }}
                   />
                 </div>
               ) : (
