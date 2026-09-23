@@ -3,7 +3,7 @@ import type { HLJSApi } from "highlight.js";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { CheckCircledIcon, ChevronDownIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
-import { Badge, Skeleton, TextField, Tooltip } from "@radix-ui/themes";
+import { Badge, Skeleton, TextArea, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
@@ -412,7 +412,8 @@ export function FindingRow({
           )}
           {finding.note === null ? null : (
             <MetaRow label="备注">
-              <span className="rounded-lg bg-fill px-2.5 py-1.5 break-words">{finding.note}</span>
+              {/* 普通正文:套一层圆角底色时它看着像一颗能点的按钮。 */}
+              <span className="break-words text-text">{finding.note}</span>
             </MetaRow>
           )}
 
@@ -424,7 +425,10 @@ export function FindingRow({
           ) : (
             <div className="flex flex-col gap-2 pt-1">
               {canDispose && composing ? (
-                <TextField.Root
+                // 多行框:右栏只有三分之一张卡宽,单行框里这句提示读到一半就被截掉。
+                <TextArea
+                  size="1"
+                  rows={2}
                   value={note}
                   onChange={(event) => setNote(event.target.value)}
                   maxLength={500}

@@ -385,14 +385,17 @@ function RootCauseGroupCard({
               </span>
             </span>
           </Collapsible.Trigger>
+          {/* 窄屏上按钮另起一行、对齐到标题下:并排时一句根因说明被挤成五六行的窄条。 */}
           {canDisposeBatch ? (
-            <DisposeRootCauseGroupAction
-              scope={scope}
-              groupId={group.id}
-              memberCount={group.memberCount}
-              pending={pending}
-              onFeedback={onFeedback}
-            />
+            <div className="max-sm:basis-full max-sm:pl-5.5">
+              <DisposeRootCauseGroupAction
+                scope={scope}
+                groupId={group.id}
+                memberCount={group.memberCount}
+                pending={pending}
+                onFeedback={onFeedback}
+              />
+            </div>
           ) : null}
         </div>
         <Collapsible.Content className="flex flex-col gap-2 px-2 pb-2">
