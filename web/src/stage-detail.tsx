@@ -473,9 +473,10 @@ function StageActions({
   const frozen = stage.source === "range-review" && rangeReview?.state !== "in-progress";
 
   return (
-    // 窄屏上动作排成两列等宽的格子(每日增量占整行):按各自文字宽度折行时是三排参差的
-    // 按钮。`sm` 起这层是 `contents`,按钮照旧是页头那条 flex 的直接子项。
-    <div className="contents max-sm:grid max-sm:w-full max-sm:grid-cols-2 max-sm:gap-2 max-sm:[&>button]:w-full">
+    // 窄屏上动作两个一行、等宽(每日增量占整行):按各自文字宽度折行时是三排参差的按钮。
+    // 用会撑满的 flex 而不是两列 grid:落单的那一颗(只有重跑、或排在每日增量前面)撑满
+    // 整行,不留半行空格。`sm` 起这层是 `contents`,按钮照旧是页头那条 flex 的直接子项。
+    <div className="contents max-sm:flex max-sm:w-full max-sm:flex-wrap max-sm:gap-2 max-sm:[&>button]:grow max-sm:[&>button]:basis-[calc(50%-0.25rem)]">
       {/* 一条低等级项都没有时不摆一颗点不动的按钮:它只在阈值抬高后留下旧条目时才有事做。 */}
       {canDisposeBatch && minReportSeverity !== "P2" ? (
         <DisposeBelowThresholdAction

@@ -223,7 +223,7 @@ export function DailyIncrementAction({ rangeReview }: { rangeReview: RangeReview
           highContrast
           size={{ initial: "3", sm: "2" }}
           title={lastScheduledCheck(rangeReview)}
-          className="max-sm:col-span-2"
+          className="max-sm:basis-full!"
         >
           每日增量
           {/* 绿只承载运行状态(DESIGN.md §4.3):开着就是有人在替这个阶段盯着。 */}
