@@ -679,27 +679,31 @@ test("阶段列表:只有更早那轮没跑全时最新一轮干净,行上没有
  */
 test("阶段列表:收尾失败的原因取头一行有内容的,整篇空白才回落成未记录原因", async () => {
   const h = await startPanelHarness();
+  // 写入侧已收口(issue #432),经 recordRunFailure 播种测不到读取侧:绕过它直写原文。
   // 以换行开头:第一行是空的。
-  await seedRun(
+  const run7 = await seedRun(
     h.db.url,
     { owner: "acme", repo: "widgets", pullNumber: 7, startedAt: "2026-08-01T00:00:00.000Z" },
     [{ fingerprint: "fp-1" }],
-    { closingFailure: "\n发布 review 失败:Gitea 回了 500" },
+    { closingFailure: "占位" },
   );
+  await query(h.db.url, "UPDATE review_run SET failure = $1 WHERE id = $2", "\n发布 review 失败:Gitea 回了 500", run7);
   // 通篇只有空白。
-  await seedRun(
+  const run8 = await seedRun(
     h.db.url,
     { owner: "acme", repo: "widgets", pullNumber: 8, startedAt: "2026-08-02T00:00:00.000Z" },
     [{ fingerprint: "fp-2" }],
-    { closingFailure: "   \n  " },
+    { closingFailure: "占位" },
   );
+  await query(h.db.url, "UPDATE review_run SET failure = $1 WHERE id = $2", "   \n  ", run8);
   // 空串。
-  await seedRun(
+  const run9 = await seedRun(
     h.db.url,
     { owner: "acme", repo: "widgets", pullNumber: 9, startedAt: "2026-08-03T00:00:00.000Z" },
     [{ fingerprint: "fp-3" }],
-    { closingFailure: "" },
+    { closingFailure: "占位" },
   );
+  await query(h.db.url, "UPDATE review_run SET failure = $1 WHERE id = $2", "", run9);
 
   const body = await stages(h);
   assert.equal(body.stages.length, 3);
