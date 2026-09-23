@@ -583,8 +583,9 @@ function DisposeBelowThresholdAction({
       onOpenChange={setOpen}
       trigger={
         <Button
-          variant="soft"
+          variant="outline"
           color="gray"
+          highContrast
           size={{ initial: "3", sm: "2" }}
           disabled={targets.length === 0 || dispose.isPending}
         >
@@ -687,7 +688,7 @@ function RerunAction({
   return (
     <ThemedDialog.Root open={open} onOpenChange={setOpen}>
       <ThemedDialog.Trigger>
-        <Button variant="soft" color="gray" size={{ initial: "3", sm: "2" }} disabled={disabled}>
+        <Button variant="outline" color="gray" highContrast size={{ initial: "3", sm: "2" }} disabled={disabled}>
           重跑
         </Button>
       </ThemedDialog.Trigger>
@@ -1095,10 +1096,9 @@ function FindingDrawer({
               <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                 <FilePath file={finding.file} line={finding.line} className="text-base" />
                 {source?.stale == null ? null : (
-                  <span className="flex flex-wrap items-center gap-1 text-sm text-warning">
-                    已过期 · 代码差异基于第 {source.stale.round} 轮
-                    <CommitChip sha={source.stale.headSha} />
-                    ，
+                  // 行内排而不是 flex:flex 的 gap 会在 sha 与全角逗号之间多塞一个空格。
+                  <span className="text-sm text-warning">
+                    已过期 · 代码差异基于第 {source.stale.round} 轮 <CommitChip sha={source.stale.headSha} />，
                     {scope.kind === "pull-request" ? "pull request 已推进" : "比较项已推进"}
                   </span>
                 )}
@@ -1193,7 +1193,7 @@ function RoundDrawer({
               className="rounded-lg bg-sunken px-3 py-2 text-base text-text"
             >
               <span className="text-sm text-text-secondary">本轮模式</span>
-              <p className="mt-0.5">只复核:只复核历史 Finding,这一轮不新报</p>
+              <p className="mt-0.5">只复核：只复核历史 Finding，这一轮不新报</p>
             </section>
           )}
           {/* 发起这一轮时附的本轮指令(issue #225):这一轮为什么这么跑,答案只在这里。 */}
@@ -1276,13 +1276,16 @@ function RunHeadline({ run }: { run: RunItem }) {
       <RunPill run={run} />
       <CommitChip sha={run.headSha} />
       <span className="break-all">{triggerLabel(run)}</span>
-      <span aria-hidden>·</span>
-      <span className="tabular-nums">{localDay(run.startedAt)} {localClock(run.startedAt)}</span>
+      {/* 分隔点与它后面那一项同一个 span:窄屏折行时点跟着下一项走,不悬在行尾。 */}
+      <span className="tabular-nums">
+        <span aria-hidden className="mr-2">·</span>
+        {localDay(run.startedAt)} {localClock(run.startedAt)}
+      </span>
       {duration === null ? null : (
-        <>
-          <span aria-hidden>·</span>
-          <span>耗时 {duration}</span>
-        </>
+        <span>
+          <span aria-hidden className="mr-2">·</span>
+          耗时 {duration}
+        </span>
       )}
     </span>
   );

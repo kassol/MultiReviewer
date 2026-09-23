@@ -310,9 +310,9 @@ function ContextCompacted({ payload }: { payload: Record<string, unknown> }) {
       )}
       {before === null && after === null ? null : (
         <span className="text-sm text-text-secondary">
-          <span className="font-mono tabular-nums">{before ?? "?"}</span> →{" "}
+          <span className="font-mono tabular-nums">{before?.toLocaleString("zh-CN") ?? "?"}</span> →{" "}
           {after === null ? null : "约 "}
-          <span className="font-mono tabular-nums">{after ?? "?"}</span> tokens
+          <span className="font-mono tabular-nums">{after?.toLocaleString("zh-CN") ?? "?"}</span> tokens
         </span>
       )}
       {error === null ? null : (
@@ -477,8 +477,8 @@ function RunMilestone({ event }: { event: TraceEvent }) {
             </span>
             {input === null && output === null ? null : (
               <span className="text-sm text-text-secondary">
-                用量 输入 <span className="font-mono tabular-nums">{input ?? 0}</span> · 输出{" "}
-                <span className="font-mono tabular-nums">{output ?? 0}</span> tokens
+                用量 输入 <span className="font-mono tabular-nums">{(input ?? 0).toLocaleString("zh-CN")}</span> · 输出{" "}
+                <span className="font-mono tabular-nums">{(output ?? 0).toLocaleString("zh-CN")}</span> tokens
               </span>
             )}
           </span>
@@ -869,7 +869,7 @@ function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
         {total === null ? null : (
           <>
             {" · "}
-            <span className="font-mono tabular-nums">{total}</span> tokens
+            <span className="font-mono tabular-nums">{total.toLocaleString("zh-CN")}</span> tokens
           </>
         )}
         {durationMs === null ? null : (
@@ -926,8 +926,8 @@ function ReviewerEvent({ event }: { event: TraceEvent }) {
             )}
             {input === null && output === null ? null : (
               <span className="text-sm text-text-secondary">
-                用量 输入 <span className="font-mono tabular-nums">{input ?? 0}</span> · 输出{" "}
-                <span className="font-mono tabular-nums">{output ?? 0}</span> tokens
+                用量 输入 <span className="font-mono tabular-nums">{(input ?? 0).toLocaleString("zh-CN")}</span> · 输出{" "}
+                <span className="font-mono tabular-nums">{(output ?? 0).toLocaleString("zh-CN")}</span> tokens
               </span>
             )}
           </span>
@@ -1052,7 +1052,7 @@ function ClosingSummary({
     ),
     total === null ? null : (
       <>
-        <span className="font-mono tabular-nums">{total}</span> tokens
+        <span className="font-mono tabular-nums">{total.toLocaleString("zh-CN")}</span> tokens
       </>
     ),
   ].filter((item): item is React.ReactElement => item !== null);
