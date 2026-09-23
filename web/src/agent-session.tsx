@@ -68,6 +68,7 @@ import {
   type ToolStep,
   type ConversationGroup,
 } from "@/lib/agent-session-records";
+import { lastSeq, pendingView, type PendingMessage } from "@/lib/pending-message";
 import { productQueryKey } from "@/lib/products";
 import { roundAnswerText } from "@/lib/session-question-round";
 import {
@@ -239,6 +240,9 @@ const FOLLOW_THRESHOLD = 80;
  */
 const CHAT_TRACK = "mx-auto w-full max-w-[920px]";
 
+/** 对话流那份查询缓存的键。页面取它读发送那一刻的最后一个 seq(待上屏的配对起点)。 */
+const recordsQueryKey = (sessionId: number) => ["agent-session-records", sessionId];
+
 /**
  * 中栏的对话流(issue #333、#334)。记录打开时一次取全,之后经 SSE 追加——两条来源写同一份
  * 查询缓存,与审查轨迹同一套路(`useTrace`)。记录行是 Pi 的条目原样 JSON,投影成对话的那
@@ -256,9 +260,12 @@ function Conversation({
   onAnswerRound,
   canSend,
   hasBaselines,
+  pending,
 }: {
   sessionId: number;
   running: boolean;
+  /** 待上屏的那条(乐观显示):真实用户记录到了即由它接替,见 `lib/pending-message.ts`。 */
+  pending: PendingMessage | null;
   /** 交一轮提问的答案(issue #359):合成的那条用户消息走与输入区同一条发消息路径。 */
   onAnswerRound: (text: string, roundSeq: number) => Promise<void>;
   /** 空态教学文案只对发得出消息的人说;发不了的人看到的是一句陈述。答不答得了提问也按它。 */
@@ -277,7 +284,7 @@ function Conversation({
       return next;
     });
   };
-  const recordsKey = ["agent-session-records", sessionId];
+  const recordsKey = recordsQueryKey(sessionId);
   const { events, hasMore, query, stream } = useTrace<AgentSessionRecord>({
     queryKey: recordsKey,
     path: `/agent-sessions/${sessionId}/records`,
@@ -309,6 +316,7 @@ function Conversation({
     },
   });
   const groups = groupConversation(conversation(events));
+  const pendingState = pendingView(pending, events, running);
   // 落库条目到了就把临时块清掉:它说的那段话已经在对话流里。
   useEffect(() => setLive(null), [events.length]);
 
@@ -329,7 +337,7 @@ function Conversation({
       return;
     }
     if (!away) toBottom();
-  }, [events.length, live?.text, live?.tool, away]);
+  }, [events.length, live?.text, live?.tool, away, pendingState]);
 
   const lastGroup = groups.at(-1);
   const liveTool = running ? live?.tool : undefined;
@@ -386,7 +394,7 @@ function Conversation({
               <Skeleton key={slot} aria-hidden className="h-16" />
             ))}
           </div>
-        ) : groups.length === 0 && live === null ? (
+        ) : groups.length === 0 && live === null && pendingState === "hidden" ? (
           <div className="flex flex-1 items-center justify-center">
             <EmptyState
               align="center"
@@ -431,6 +439,16 @@ function Conversation({
           </ol>
         )}
 
+        {/* 待上屏的那条:与真实用户消息同一个气泡、同一道轮间距,落库那一条到了就原位接替。 */}
+        {pending === null || pendingState === "hidden" ? null : (
+          <div className={groups.length > 0 ? "mt-3 min-w-0" : "min-w-0"}>
+            <UserMessage
+              item={{ kind: "user", seq: 0, at: "", text: pending.text, images: pending.images }}
+              sessionId={sessionId}
+              pendingLabel={pending.accepted ? "已发出" : "发送中…"}
+            />
+          </div>
+        )}
         {/* 正在跑的工具还没有落库的组可挂:自己成一组。 */}
         {liveTool === undefined || lastGroup?.kind === "tools" ? null : (
           <ToolGroup calls={[]} liveTool={liveTool} open />
@@ -447,12 +465,13 @@ function Conversation({
             />
           </div>
         )}
-        {running ? (
-          // 「在跑」与流的连接状态并成一行:两行小字上下叠着像两条互不相干的提示。
+        {running || pendingState === "preparing" ? (
+          // 「在跑」与流的连接状态并成一行:两行小字上下叠着像两条互不相干的提示。空闲时发出
+          // 的那条还没有任何记录回来时,服务端在备工作树、起子进程,这一行先说这件事。
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <p className="flex items-center gap-1.5 px-1 text-sm text-text-muted" aria-live="polite">
               <Spinner size="1" />
-              agent 在跑
+              {pendingState === "preparing" ? "正在准备工作树…" : "agent 在跑"}
             </p>
             <StreamStatus stream={stream} />
           </div>
@@ -861,15 +880,23 @@ function AssistantReply({
 function UserMessage({
   item,
   sessionId,
+  pendingLabel,
 }: {
   item: Extract<ConversationGroup, { kind: "user" }>;
   sessionId: number;
+  /** 待上屏(还没落库)时气泡下那一行小字,取代时刻;气泡本身压淡。 */
+  pendingLabel?: string;
 }) {
   const long = isLongReply(item.text);
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="group flex flex-col items-end gap-1">
-      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent-tint px-4 py-2.5">
+      <div
+        className={cn(
+          "max-w-[80%] rounded-2xl rounded-br-md bg-accent-tint px-4 py-2.5",
+          pendingLabel === undefined ? null : "opacity-60",
+        )}
+      >
         <p
           className={cn(
             "min-w-0 break-words whitespace-pre-wrap text-lg",
@@ -911,7 +938,11 @@ function UserMessage({
             {expanded ? "收起" : "展开"}
           </Button>
         ) : null}
-        <MessageTime at={item.at} />
+        {pendingLabel === undefined ? (
+          <MessageTime at={item.at} />
+        ) : (
+          <span className="text-sm text-text-muted">{pendingLabel}</span>
+        )}
       </div>
     </div>
   );
@@ -1751,8 +1782,30 @@ export function AgentSessionPage({
   const hasWrote = wrote.specs.length + wrote.tickets.length > 0;
   const refresh = (): Promise<void> =>
     queryClient.invalidateQueries({ queryKey: agentSessionQueryKey(sessionId) });
+  /**
+   * 待上屏的那一条(乐观显示,`lib/pending-message.ts`)。只在会话空闲时发出的消息上有:
+   * 执行中的那条进排队块,已经看得见。
+   */
+  const [pendingMessage, setPendingMessage] = useState<PendingMessage | null>(null);
+  useEffect(() => setPendingMessage(null), [sessionId]);
+  const showPending = (text: string, images: string[]): void =>
+    setPendingMessage({
+      text,
+      images,
+      afterSeq: lastSeq(
+        queryClient.getQueryData<{ events: AgentSessionRecord[] }>(recordsQueryKey(sessionId))
+          ?.events ?? [],
+      ),
+      accepted: false,
+    });
+  const acceptPending = (): void =>
+    setPendingMessage((current) => (current === null ? null : { ...current, accepted: true }));
+  /**
+   * 空闲时发的那条点下去就上屏(`optimistic`):草稿与图片当场清掉、待定气泡顶上;失败再把
+   * 两样放回输入区。执行中发的照旧等 202 再清,那一条由排队块接住。
+   */
   const post = useMutation({
-    mutationFn: (text: string) =>
+    mutationFn: ({ text, images }: { text: string; images: string[]; optimistic: boolean }) =>
       send(`/agent-sessions/${sessionId}/messages`, "POST", {
         // 一次发送一个 id:同一个 id 重发服务端不会再入队,回的是第一次的受理结果。
         clientMessageId: crypto.randomUUID(),
@@ -1760,14 +1813,31 @@ export function AgentSessionPage({
         mode,
         images,
       }),
-    onSuccess: async () => {
+    onMutate: ({ text, images, optimistic }) => {
+      if (!optimistic) return;
+      showPending(text, images);
       setDraft("");
-      images.forEach(dropPreview);
       setImages([]);
+    },
+    onSuccess: async (_data, { images: sent, optimistic }) => {
+      // 乐观那一路草稿早清了,人在等 202 时新打的字不该被这一下抹掉。
+      if (!optimistic) {
+        setDraft("");
+        setImages([]);
+      }
+      sent.forEach(dropPreview);
       setFeedback(null);
       await refresh();
+      if (optimistic) acceptPending();
     },
-    onError: (error: Error) => setFeedback({ text: error.message, error: true }),
+    onError: (error: Error, { text, images: sent, optimistic }) => {
+      if (optimistic) {
+        setPendingMessage(null);
+        setDraft(text);
+        setImages(sent);
+      }
+      setFeedback({ text: error.message, error: true });
+    },
   });
   /**
    * 交一轮提问的答案(issue #359)。走与输入区同一个端点,但不经 `post`:那一份会把草稿与
@@ -1777,6 +1847,8 @@ export function AgentSessionPage({
    * 答案排在留存的排队消息前面,卡片因此不会被自己那几条旧消息顶成过期。
    */
   const answerRound = async (text: string, roundSeq: number): Promise<void> => {
+    const optimistic = !running;
+    if (optimistic) showPending(text.trim(), []);
     try {
       await send(`/agent-sessions/${sessionId}/messages`, "POST", {
         clientMessageId: crypto.randomUUID(),
@@ -1787,7 +1859,9 @@ export function AgentSessionPage({
       });
       setFeedback(null);
       await refresh();
+      if (optimistic) acceptPending();
     } catch (error) {
+      if (optimistic) setPendingMessage(null);
       setFeedback({ text: (error as Error).message, error: true });
     }
   };
@@ -2101,6 +2175,7 @@ export function AgentSessionPage({
                   canSend={session.createdBy === username}
                   hasBaselines={session.baselines.length > 0}
                   onAnswerRound={answerRound}
+                  pending={pendingMessage}
                 />
               </div>
               {/* 发消息只有创建者能做:别人读得到这个会话,发不了。 */}
@@ -2125,7 +2200,9 @@ export function AgentSessionPage({
                     imageInput={imageInput}
                     sending={post.isPending}
                     stopping={stop.isPending}
-                    onSend={() => post.mutate(draft.trim())}
+                    onSend={() =>
+                      post.mutate({ text: draft.trim(), images, optimistic: !running })
+                    }
                     onStop={() => stop.mutate()}
                     onPick={(files) => void attach(files)}
                     onPasteImages={(files) => {
