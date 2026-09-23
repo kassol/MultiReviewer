@@ -261,7 +261,7 @@ function MonoValue({ value }: { value: string | null | undefined }) {
   return value === null || value === undefined ? (
     <span className="text-text-muted">未提供</span>
   ) : (
-    <span className="wrap-anywhere font-mono text-base">{value}</span>
+    <span className="wrap-anywhere font-mono text-md">{value}</span>
   );
 }
 
@@ -1510,7 +1510,7 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
               <InfoField label="尾 4 位">
                 {service.credential.last4 === null || service.credential.last4 === undefined
                   ? <span className="text-text-muted">未提供</span>
-                  : <span className="font-mono text-base tabular-nums">{service.credential.last4}</span>}
+                  : <span className="font-mono text-md tabular-nums">{service.credential.last4}</span>}
               </InfoField>
               {/* 时间戳走比例字:等宽把「2026-08-24 08:15」拉成一条比 model id 还长的格栅。 */}
               <InfoField label="更新"><span className="tabular-nums">{localMinuteOrMissing(service.credential.updatedAt)}</span></InfoField>
@@ -2146,8 +2146,13 @@ function CatalogControls({
         )}
       </> : null}
 
-      {section === "models" ? <><form
-        className="flex flex-col gap-1.5 px-4 pt-3.5 pb-4 sm:px-5"
+      {section === "models" ? <><CardHeader
+        id={`catalog-actions-${service.provider}`}
+        title="手动添加模型"
+        help={<HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、上下文窗口和能力信息由目录或运行基线提供。" />}
+      />
+      <form
+        className="flex flex-col gap-1.5 border-t border-line px-4 pt-3.5 pb-4 sm:px-5"
         onSubmit={(event) => {
           event.preventDefault();
           const submittedModel = model.trim();
@@ -2156,11 +2161,7 @@ function CatalogControls({
           addSupplement.mutate(submittedModel);
         }}
       >
-        <div className="flex items-center gap-1.5">
-          {/* label 兼作这张卡的可访问名称:models 分支没有卡头,壳上的 aria-labelledby 指向它。 */}
-          <Text as="label" id={`catalog-actions-${service.provider}`} htmlFor={inputId} size="2" weight="medium">手动添加模型</Text>
-          <HelpTooltip label="手动添加模型说明" content="只需填写模型 ID。显示名、上下文窗口和能力信息由目录或运行基线提供。" />
-        </div>
+        <Text as="label" htmlFor={inputId} className="sr-only">model id</Text>
         <div className="flex flex-col gap-2.5 sm:flex-row">
           <TextField.Root
             id={inputId}
@@ -2189,20 +2190,13 @@ function CatalogControls({
         )}
       </form>
 
-      <CardSection className="py-0">
-        <p className="py-3.5 text-base font-medium text-text-muted">
-          当前手动来源 · {service.models === undefined ? (
-            "按模型读权限隐藏"
-          ) : (
-            <span className="font-mono tabular-nums">{supplementalModels.length}</span>
-          )}
-        </p>
+      <CardSection>
         {service.models === undefined ? (
-          <p className="pb-3.5 text-text-muted">已有来源清单不可见；手动添加和刷新仍由服务端校验。</p>
+          <p className="text-base text-text-muted">已有来源清单按模型读权限隐藏；手动添加和刷新仍由服务端校验。</p>
         ) : supplementalModels.length === 0 ? (
-          <p className="pb-3.5 text-base text-text-muted">没有手动添加或迁移保留的模型来源。</p>
+          <p className="text-base text-text-muted">没有手动添加或迁移保留的模型来源。</p>
         ) : (
-          <ul className="mb-3.5 flex flex-col overflow-hidden rounded-md border border-card-line">
+          <ul className="flex flex-col overflow-hidden rounded-md border border-card-line">
             {supplementalModels.map((entry) => {
               const source = entry.sources.includes("manual") ? "manual" : "migration-retention";
               return (
@@ -2216,7 +2210,7 @@ function CatalogControls({
                     type="button"
                     variant="outline"
                     color="gray"
-                    size={{ initial: "4", sm: "1" }}
+                    size={{ initial: "3", sm: "1" }}
                     disabled={busy}
                     onClick={(event) => {
                       deleteFocus.captureTrigger(event);
@@ -2456,7 +2450,7 @@ function ModelsTable({
               type="button"
               variant="outline"
               color="gray"
-              size={{ initial: "4", sm: "1" }}
+              size={{ initial: "3", sm: "1" }}
               disabled={selectedIds.size === 0 || updateState.isPending}
               onClick={() => updateState.mutate(true)}
             >
@@ -2466,7 +2460,7 @@ function ModelsTable({
               type="button"
               variant="outline"
               color="gray"
-              size={{ initial: "4", sm: "1" }}
+              size={{ initial: "3", sm: "1" }}
               disabled={selectedIds.size === 0 || updateState.isPending}
               onClick={() => updateState.mutate(false)}
             >
@@ -2538,7 +2532,7 @@ function ModelsTable({
                   </Text>
                 ) : null}
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <p className="break-words font-medium">
+                  <p className={cn("break-words font-medium", model.unavailableReason === "model-disabled" && "text-text-secondary")}>
                     {model.discovery.name ?? "未提供显示名"}
                   </p>
                   <p className="max-w-full wrap-anywhere font-mono text-base text-text-muted">
@@ -2571,7 +2565,7 @@ function ModelsTable({
                 type="button"
                 variant="outline"
                 color="gray"
-                size={{ initial: "4", sm: "1" }}
+                size={{ initial: "3", sm: "1" }}
                 onClick={() => setVisibleCount((current) => current + MODEL_ROWS_PAGE_SIZE)}
               >
                 再显示 {Math.min(MODEL_ROWS_PAGE_SIZE, remainingModels)} 个
