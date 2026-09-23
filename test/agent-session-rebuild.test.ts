@@ -5,7 +5,7 @@
  * (issue #399),不真等满门槛。空闲回收与名额那一组在 `agent-session-reclaim.test.ts`。
  */
 import assert from "node:assert/strict";
-import { fork } from "node:child_process";
+import { execFileSync, fork } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,7 +18,7 @@ import {
   killChild,
 } from "../src/webhook/agent-session.ts";
 import { withTestDb } from "./support/git-fixture.ts";
-import { HARNESS_SPEC } from "./support/panel-harness.ts";
+import { GITEA_REPO, HARNESS_SPEC } from "./support/panel-harness.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 import { type StubTurn } from "./support/model-stub.ts";
 import {
@@ -281,6 +281,46 @@ test("子进程起不来:记录里留一条系统消息说明原因", async () =
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
     assert.fail("等了 30 秒,记录里还没有那条系统消息");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("多个仓库里一个备不出来:已建出的工作树照样收掉,记录里留一条启动失败", async () => {
+  // 各仓库并行准备:坏的那个当场失败,好的那个还在检出。一齐等到全部落定再判成败——提前抛出
+  // 的话,之后才建出来的那棵工作树没人收,缓存副本上会留一条悬着的 worktree 登记。
+  const broken = { repoId: 909, owner: "acme", repo: "broken" };
+  const { h, cookie, sessionId, close } = await startSessionHarness(
+    [{ text: "用不到", usage: { input: 1, output: 1 } }],
+    {
+      extraRepo: broken,
+      wrapForge: (forge) => ({
+        ...forge,
+        getRepository: async (ref) => {
+          if (ref.repo === broken.repo) throw new Error("这个仓库取不回来");
+          return forge.getRepository(ref);
+        },
+      }),
+    },
+  );
+  try {
+    // 会话读的是产品仓库与创建者分配的交集:两个都分给他,会话才挂两个仓库。
+    await openStore(h.db.url).setPanelUserAssignment("member", [GITEA_REPO.id, broken.repoId]);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+    await systemMessageMatching(h, cookie, sessionId, /会话子进程启动失败:这个仓库取不回来/);
+    await idle(h, cookie, sessionId);
+
+    // 好的那个仓库的缓存副本上,这次会话的那棵工作树放掉了(放掉是异步的,轮询等它)。
+    const clone = join(h.cacheDir, GITEA_REPO.owner, GITEA_REPO.repo);
+    for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
+      const listed = execFileSync("git", ["-C", clone, "worktree", "list", "--porcelain"], {
+        encoding: "utf8",
+      });
+      if (!listed.includes("multireviewer-session-root-")) return;
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+    assert.fail("等了 30 秒,会话的工作树还挂在缓存副本上");
   } finally {
     await disposeAgentSessions();
     await close();

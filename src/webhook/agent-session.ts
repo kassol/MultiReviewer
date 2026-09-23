@@ -156,7 +156,10 @@ const BOOT_FAILED = "会话子进程启动失败:";
 /** 被排空中止那一条系统消息(spec #329 的部署人员那几条)。 */
 const DRAIN_ABORTED = "服务在发版排空,这一轮被中止。下次发消息时会从记录重建,接着这里续谈。";
 
-/** 登记表上的一个会话。`child` 在准备会话根与工作树那段时间里还没 fork。 */
+/**
+ * 登记表上的一个会话。`child` 在建出会话根之后当场 fork,与准备工作树并行;`open` 做成之前
+ * 它还不认指令,`opened` 为假时指令一律先攒在 `pending` 里。
+ */
 type RuntimeEntry = {
   /**
    * 这个子进程当初是用哪份依赖起的。回收、判死与排空都要落库与记日志,而它们由计时器与
@@ -197,7 +200,12 @@ type RuntimeEntry = {
    * 那一条就从镜像与 Pi 两边一起丢了。
    */
   queueSeq: number;
-  /** 子进程还没 fork 出来时攒下的指令。建好之后按顺序补发,一条都不丢。 */
+  /**
+   * 子进程的 Pi 会话建好了(`open` 做成)。在那之前子进程虽已 fork,发给它的 `prompt` / `stop`
+   * 会撞在一个还没有会话的进程上;排空也不必给它下 `drain`——它手上没有可中止的回合。
+   */
+  opened: boolean;
+  /** 子进程的 Pi 会话建好之前攒下的指令。建好之后按顺序补发,一条都不丢。 */
   pending: SessionCommand[];
   /**
    * 已经投出去、还没在镜像回来的条目里认领的那几张图(issue #336)。顺序即投递顺序:镜像
@@ -206,9 +214,8 @@ type RuntimeEntry = {
    */
   imageRefs: AgentSessionImageRef[];
   /**
-   * 已经收拢过。`disposeAgentSessions` 可能正赶上这个会话在备工作树:那时还没 fork,杀不到
-   * 子进程,而备完之后照样会 fork 出一个——它的 IPC 通道会让进程再也退不出去。这一格让那一下
-   * fork 之后当场收掉。
+   * 已经收拢过。`disposeAgentSessions` 可能正赶上这个会话在备工作树:子进程已经 fork、收拢
+   * 当场杀掉它,而 boot 还在等工作树备完——这一格让它备完之后不再往下发 `open`、直接收场。
    */
   disposed: boolean;
   /**
@@ -475,7 +482,7 @@ function syncQueue(
 
 /** 投一条指令给子进程。它还没 fork 出来时先攒着,建好之后按顺序补发。 */
 function sendCommand(entry: RuntimeEntry, command: SessionCommand): void {
-  if (entry.child === undefined) entry.pending.push(command);
+  if (!entry.opened || entry.child === undefined) entry.pending.push(command);
   else entry.child.send(command);
 }
 
@@ -995,7 +1002,7 @@ async function configuredDefaultBranch(store: Store, repoId: number): Promise<st
   return (await store.getRepo(repoId))?.defaultBranch ?? null;
 }
 
-/** 一个仓库在 `prepareSessionRoot` 里各段的耗时(临时诊断,冷启动计时)。 */
+/** 一个仓库在 `prepareSessionRepos` 里各段的耗时(临时诊断,冷启动计时)。 */
 type RepoPrepareTiming = {
   name: string;
   forgeMs: number;
@@ -1005,34 +1012,34 @@ type RepoPrepareTiming = {
 };
 
 /**
- * 备好会话根:一个临时目录,下面按 `<owner>/<repo>` 各挂一棵一次性工作树。位置即工具面的
- * 判据——路径前缀就是仓库,圈根就是圈这个目录。
+ * 在会话根下按 `<owner>/<repo>` 各挂一棵一次性工作树。位置即工具面的判据——路径前缀就是
+ * 仓库,圈根就是圈这个目录。会话根本身由 `boot` 先建:子进程拿它作 cwd,与这里并行起。
  *
  * 停在哪个 commit 由会话自己记的那一份说(issue #352):建会话时人按仓库选过基点,那一份
  * 就是这里检出的目标,空闲回收后重备因此停在同一个 commit 上,面板头部显示的与 agent 读的
  * 是同一份。会话上没记过的仓库(这一票之前建的会话)读生效的默认分支最新
  * (issue #350),读完一并记下来(issue #351):人与 agent 因此指得出读的是哪一份代码。
+ *
+ * **各仓库并行准备,等全部落定再判成败**(`allSettled` 而不是 `all`):一个仓库先失败时其余
+ * 几棵可能还在检出,`all` 提前抛出之后才建出来的那几棵就没人收了。每棵建出来当场登记进
+ * `entry.worktrees`,失败那条路上的 `letGo` 等 boot 落定之后一并放掉。
  */
-async function prepareSessionRoot(
+async function prepareSessionRepos(
   deps: AgentSessionRuntimeDeps,
   session: AgentSessionRecord,
   repos: readonly ProductRepoRecord[],
   entry: RuntimeEntry,
+  sessionRoot: string,
 ): Promise<{
-  sessionRoot: string;
   repos: SessionRepoInput[];
   repoTimings: RepoPrepareTiming[];
+  reposMs: number;
   baselineMs: number;
 }> {
-  const sessionRoot = mkdtempSync(join(tmpdir(), "multireviewer-session-root-"));
-  entry.sessionRoot = sessionRoot;
-  const prepared: SessionRepoInput[] = [];
-  const baselines: AgentSessionBaseline[] = [];
-  const repoTimings: RepoPrepareTiming[] = [];
   const recorded = new Map(
     session.baselines.map((one) => [`${one.owner}/${one.repo}`, one] as const),
   );
-  for (const repo of repos) {
+  const prepareOne = async (repo: ProductRepoRecord) => {
     const ref = { owner: repo.owner, repo: repo.repo };
     const forgeStart = performance.now();
     const [repository, credentials] = await Promise.all([
@@ -1075,21 +1082,40 @@ async function prepareSessionRoot(
     });
     const worktreeMs = performance.now() - worktreeStart;
     entry.worktrees.push(worktree);
-    prepared.push({
-      ...ref,
-      role: repo.role,
-      headSha,
-      ...(await repoKnowledgeCounts(deps.store, repo.repoId)),
-    });
-    baselines.push({ ...ref, sha: headSha, branch, kind });
-    repoTimings.push({ name: `${repo.owner}/${repo.repo}`, forgeMs, headMs, worktreeMs });
+    return {
+      input: {
+        ...ref,
+        role: repo.role,
+        headSha,
+        ...(await repoKnowledgeCounts(deps.store, repo.repoId)),
+      } satisfies SessionRepoInput,
+      baseline: { ...ref, sha: headSha, branch, kind } satisfies AgentSessionBaseline,
+      timing: { name: `${repo.owner}/${repo.repo}`, forgeMs, headMs, worktreeMs },
+    };
+  };
+  const reposStart = performance.now();
+  const settled = await Promise.allSettled(repos.map(prepareOne));
+  const reposMs = performance.now() - reposStart;
+  // 按输入顺序收:系统提示里的仓库清单顺序不变,报的是排在最前的那个失败原因。
+  const done: Awaited<ReturnType<typeof prepareOne>>[] = [];
+  for (const one of settled) {
+    if (one.status === "rejected") throw one.reason;
+    done.push(one.value);
   }
   // 整列一次写完:备到一半失败的那一次不落半份清单,下一条消息重试时从头再备一遍。
   const store = deps.store;
   const baselineStart = performance.now();
-  await store.setAgentSessionBaselines(session.id, baselines);
+  await store.setAgentSessionBaselines(
+    session.id,
+    done.map((one) => one.baseline),
+  );
   const baselineMs = performance.now() - baselineStart;
-  return { sessionRoot, repos: prepared, repoTimings, baselineMs };
+  return {
+    repos: done.map((one) => one.input),
+    repoTimings: done.map((one) => one.timing),
+    reposMs,
+    baselineMs,
+  };
 }
 
 /**
@@ -1119,28 +1145,22 @@ async function boot(
   /** 冷启动链的计时(临时诊断,见收尾那一行日志),不影响协议与行为。 */
   timing: { deliveredAt: number; queueMs: number; queueCount: number; promptSentAt: number },
 ): Promise<ChildProcess> {
-  const prepared = await prepareSessionRoot(deps, session, repos, entry);
+  // 会话根先建、随即 fork:子进程加载 Pi 模块的那两秒与下面准备仓库的那几秒重叠。子进程在
+  // 收到 `open` 之前什么都不做(不读 cwd),而 IPC 消息在它挂上监听之前由 Node 缓着,`open`
+  // 等仓库备好再发不会丢。
+  const sessionRoot = mkdtempSync(join(tmpdir(), "multireviewer-session-root-"));
+  entry.sessionRoot = sessionRoot;
   const forkStart = performance.now();
   const child = fork(WORKER_PATH, {
     // cwd 是会话根。只设 Pi 的 cwd 不够:模型会拼出相对于编排进程目录的路径。
-    cwd: prepared.sessionRoot,
+    cwd: sessionRoot,
     env: reviewerEnv(process.env, { [MODEL_API_KEY_ENV]: model.credential }),
     // 不继承父进程的 execArgv:worker 是普通脚本,在 `node --test` 下会被当成测试文件启动。
     execArgv: [],
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
+  // 当场登记:准备仓库那几秒里收拢(删会话、排空、抢名额)要杀得到它。
   entry.child = child;
-  // 备工作树那段时间里这个会话被收拢了:这一个子进程没人再用得上。
-  if (entry.disposed) {
-    // spawn 可能已经失败(cwd 在 fork 之前被收拢删掉):Node 异步抛 `error`,没人听就是
-    // 整个编排进程的 uncaughtException。这个子进程不要了,失败原因也不要。
-    child.on("error", () => {});
-    killChild(child);
-    // 那一次收拢放掉的是它当时看到的会话根;这一份是在那之后才备出来的,登记表上重新指上
-    // 它,失败那条路上的 `letGo` 才收得到(不然这个目录没人再来收)。
-    entry.sessionRoot = prepared.sessionRoot;
-    throw new Error("会话已经收拢");
-  }
 
   let ready: (() => void) | undefined;
   let failed: ((error: Error) => void) | undefined;
@@ -1148,6 +1168,9 @@ async function boot(
     ready = resolve;
     failed = reject;
   });
+  // 准备仓库那几秒里子进程就可能退出或 spawn 失败:那时还没人 await 它,不接住就是 unhandled
+  // rejection。失败原因不丢——下面的 `await opened` 照样拿到它。
+  opened.catch(() => {});
   // 首条 entries 回传只打一次(临时诊断):从 `startRun` 投出 prompt 到这里的间隔。
   let firstEntryLogged = false;
 
@@ -1281,6 +1304,14 @@ async function boot(
     );
   });
 
+  const prepared = await prepareSessionRepos(deps, session, repos, entry, sessionRoot);
+  // 备工作树那段时间里这个会话被收拢了:这一个子进程没人再用得上。会话根与工作树由收拢那一路
+  // 的 `letGo` 放掉(它等 boot 落定再动手)。监听早已挂上,`error` 不会成 uncaughtException。
+  if (entry.disposed) {
+    killChild(child);
+    throw new Error("会话已经收拢");
+  }
+
   // 重建:整段记录原样喂回去(issue #335)。新会话那一次是空数组,与不给等价。
   const storedStart = performance.now();
   const stored = await storedSession(deps.store, session.id);
@@ -1294,7 +1325,7 @@ async function boot(
   const command: SessionCommand = {
     kind: "open",
     request: {
-      sessionRoot: prepared.sessionRoot,
+      sessionRoot,
       productName,
       purpose: session.purpose,
       repos: prepared.repos,
@@ -1317,7 +1348,7 @@ async function boot(
   console.log(
     `[agent-session] 会话 ${session.id} 启动耗时 总计=${totalMs.toFixed(0)}ms ` +
       `取队列=${timing.queueMs.toFixed(0)}ms(${timing.queueCount} 条) ` +
-      `仓库=[${repoParts.join("; ")}] ` +
+      `仓库=${prepared.reposMs.toFixed(0)}ms[${repoParts.join("; ")}] ` +
       `基点落库=${prepared.baselineMs.toFixed(0)}ms ` +
       `子进程就绪=${readyMs.toFixed(0)}ms ` +
       `读记录=${storedMs.toFixed(0)}ms(${stored.entries.length} 条)`,
@@ -1426,6 +1457,7 @@ export function deliverAgentSessionMessage(
     // 留存的那几条在下面那条链里补进来(取它要读库)。
     queue: [],
     queueSeq: 0,
+    opened: false,
     pending: [],
     imageRefs: [],
     disposed: false,
@@ -1456,6 +1488,7 @@ export function deliverAgentSessionMessage(
   entry.booting = booting;
   void booting
     .then((child) => {
+      entry.opened = true;
       const pending = entry.pending.splice(0, entry.pending.length);
       for (const command of pending) child.send(command);
     })
@@ -1580,7 +1613,8 @@ export async function disposeAgentSessions(): Promise<void> {
     clearTimers(entry);
     await persistQueue(sessionId, entry);
     const child = entry.child;
-    if (entry.status === "running" && child !== undefined) {
+    // 还没 `open` 的子进程手上没有回合可中止,直接强杀(与它还没 fork 时的收拢同一结局)。
+    if (entry.status === "running" && entry.opened && child !== undefined) {
       child.send({ kind: "drain" } satisfies SessionCommand, () => {
         // 通道已经断了:下面的强杀兜住它。
       });
