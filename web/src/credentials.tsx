@@ -1560,10 +1560,13 @@ function CredentialControls({
   target,
   dialog = false,
   onClose,
+  headerAction,
 }: {
   target: CredentialTarget;
   dialog?: boolean;
   onClose?: () => void;
+  /** 内置服务的「轮换凭据」:与删除同放卡头,和「服务配置」卡的 [修改配置][删除服务] 同形。 */
+  headerAction?: ReactNode;
 }) {
   const queryClient = useQueryClient();
   const validationPrefix = `${target.provider}:`;
@@ -1627,6 +1630,24 @@ function CredentialControls({
     },
   });
 
+  const deleteButton = (
+    <Button
+      type="button"
+      variant="soft"
+      color="red"
+      size={{ initial: "3", sm: "2" }}
+      disabled={reverify.isPending}
+      onClick={(event) => {
+        deleteFocus.captureTrigger(event);
+        setFeedback(null);
+        removeCredential.reset();
+        setConfirmingDelete(true);
+      }}
+    >
+      <TrashIcon />删除凭据
+    </Button>
+  );
+
   const maintenanceForm = (
     <form
       className={cn("flex flex-col gap-2.5", !dialog && "border-t border-line px-4 pt-3.5 pb-4 sm:px-5")}
@@ -1654,21 +1675,7 @@ function CredentialControls({
         <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={reverify.isPending || validationModel.trim() === ""}>
           {reverify.isPending ? "正在验证…" : "重新验证"}
         </Button>
-        <Button
-          type="button"
-          variant="soft"
-          color="red"
-          size={{ initial: "4", sm: "2" }}
-          disabled={reverify.isPending}
-          onClick={(event) => {
-            deleteFocus.captureTrigger(event);
-            setFeedback(null);
-            removeCredential.reset();
-            setConfirmingDelete(true);
-          }}
-        >
-          <TrashIcon />删除凭据
-        </Button>
+        {dialog ? deleteButton : null}
       </div>
       <p className="text-base text-text-muted">可从自动发现的模型中选择，也可手填目录外的 model id；提交时会重新发现目录并执行一次最小真实推理。</p>
       {feedback === null ? null : (
@@ -1769,8 +1776,16 @@ function CredentialControls({
     <CardShell className="overflow-hidden" aria-labelledby={`credential-actions-${target.provider}`}>
       <CardHeader
         id={`credential-actions-${target.provider}`}
-        title="凭据维护"
-        help={<HelpTooltip label="凭据维护说明" content="重新验证会使用已保存的凭据，凭据不会回到浏览器。" />}
+        title="模型凭据"
+        help={
+          <HelpTooltip
+            label="模型凭据说明"
+            content={headerAction === undefined
+              ? "重新验证会使用已保存的凭据，凭据不会回到浏览器。"
+              : "重新验证会使用已保存的凭据，凭据不会回到浏览器。轮换的新凭据完成目录发现和真实推理后，才会替换当前版本。"}
+          />
+        }
+        action={<div className="flex flex-wrap gap-2.5">{headerAction}{deleteButton}</div>}
       />
       {maintenanceForm}
       {deleteConfirmDialog}
@@ -1902,7 +1917,7 @@ function CustomServiceControls({
                 type="button"
                 variant="outline"
                 color="gray"
-                size={{ initial: "4", sm: "2" }}
+                size={{ initial: "3", sm: "2" }}
                 onClick={(event) => {
                   renameFocus.captureTrigger(event);
                   openRename();
@@ -1917,7 +1932,7 @@ function CustomServiceControls({
                 type="button"
                 variant="outline"
                 color="gray"
-                size={{ initial: "4", sm: "2" }}
+                size={{ initial: "3", sm: "2" }}
                 onClick={onModify}
               >
                 修改配置
@@ -1927,7 +1942,7 @@ function CustomServiceControls({
               type="button"
               variant="soft"
               color="red"
-              size={{ initial: "4", sm: "2" }}
+              size={{ initial: "3", sm: "2" }}
               onClick={(event) => {
                 deleteFocus.captureTrigger(event);
                 setConfirmingDelete(true);
@@ -2124,7 +2139,7 @@ function CatalogControls({
               type="button"
               variant="outline"
               color="gray"
-              size={{ initial: "4", sm: "2" }}
+              size={{ initial: "3", sm: "2" }}
               disabled={busy || !canValidate}
               onClick={() => {
                 addSupplement.reset();
@@ -2180,7 +2195,7 @@ function CatalogControls({
         {!canValidate ? (
           <p className="text-base text-warning">请先恢复正常 provider 并验证模型凭据。</p>
         ) : (
-          <p className="text-base text-text-muted">窗口、显示名与能力不能手工填写。</p>
+          <p className="text-base text-text-muted">上下文窗口、显示名与能力不能手工填写。</p>
         )}
         {operationError === null ? null : (
           <Callout.Root role="alert" color="red" size="1" className="mt-1.5">
@@ -2396,9 +2411,9 @@ function ModelsTable({
     );
   }
   return (
+    // 不加 overflow-hidden:它会把下面那排吸顶列头关在卡里。行底色的圆角改由末行自己收。
     <CardShell
       aria-label="模型列表"
-      className="overflow-hidden"
       aria-busy={updateState.isPending}
     >
       <CardHeader
@@ -2496,10 +2511,10 @@ function ModelsTable({
         // 不给模型清单开自己的滚动条:这一页整页跟外壳滚,再套一层内滚就是两条滚动条
         // 并存——外壳滚到底了,清单里还剩一大半没露出来。清单上面就是筛选框,长清单
         // 靠筛,不靠一个 640px 的窗口。
-        <div className="flex flex-col">
+        <div className="flex flex-col [&>:last-child]:rounded-b-xl sm:[&>:last-child]:rounded-b-lg">
           {/* 表头只在三列真正并排时出现:窄屏行内是纵向堆叠,一排列名对不上任何一列。 */}
           <div className={cn(
-            "sticky top-0 z-10 hidden gap-3 border-t border-line bg-sunken px-5 py-2 text-sm font-bold text-text-muted xl:grid",
+            "sticky top-[var(--v8-top-chrome)] z-10 hidden gap-3 border-t border-line bg-surface bg-linear-to-b from-sunken to-sunken px-5 py-2 text-sm font-bold text-text-muted xl:grid",
             MODEL_ROW_COLUMNS,
           )}>
             <div>模型</div>
@@ -2765,6 +2780,18 @@ function ServiceDetail({
   onConfigureBuiltin: () => void;
   onConfigureCustom: () => void;
 }) {
+  const configureBuiltinButton = (
+    <Button
+      id={`configure-builtin-${service.provider}`}
+      type="button"
+      variant="outline"
+      color="gray"
+      size={{ initial: "3", sm: "2" }}
+      onClick={onConfigureBuiltin}
+    >
+      {service.credential.state === "unconfigured" ? "配置凭据" : "轮换凭据"}
+    </Button>
+  );
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -2845,26 +2872,16 @@ function ServiceDetail({
             validationModel: service.credential.validationModel,
             models: service.models,
           }}
+          headerAction={service.type === "builtin" ? configureBuiltinButton : undefined}
         />
       ) : null}
 
-      {tab === "maintenance" && canWriteCredential && service.type === "builtin" ? (
+      {tab === "maintenance" && canWriteCredential && service.type === "builtin" && service.credential.state === "unconfigured" ? (
         <CardShell>
           <CardHeader
             title="模型凭据"
             help={<HelpTooltip label="模型凭据说明" content="新凭据完成目录发现和真实推理后，才会替换当前版本。" />}
-            action={
-              <Button
-                id={`configure-builtin-${service.provider}`}
-                type="button"
-                variant="outline"
-                color="gray"
-                size={{ initial: "4", sm: "2" }}
-                onClick={onConfigureBuiltin}
-              >
-                {service.credential.state === "unconfigured" ? "配置凭据" : "轮换凭据"}
-              </Button>
-            }
+            action={configureBuiltinButton}
           />
         </CardShell>
       ) : null}
