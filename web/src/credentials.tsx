@@ -217,8 +217,9 @@ function CardHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 pt-3.5 pb-[11px] sm:px-5">
-      <div className="flex min-w-0 items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 pt-3.5 pb-[11px] sm:px-5">
+      {/* 标题一组吃掉余宽:计数与动作一起靠右,三样东西不再被 justify-between 摊成左中右。 */}
+      <div className="mr-auto flex min-w-0 items-center gap-1.5">
         <h3 id={id} className="min-w-0 text-2xl font-bold tracking-[-0.015em]">{title}</h3>
         {help}
       </div>
@@ -1655,7 +1656,7 @@ function CredentialControls({
         </Button>
         <Button
           type="button"
-          variant="solid"
+          variant="soft"
           color="red"
           size={{ initial: "4", sm: "2" }}
           disabled={reverify.isPending}
@@ -1924,7 +1925,7 @@ function CustomServiceControls({
             )}
             <Button
               type="button"
-              variant="solid"
+              variant="soft"
               color="red"
               size={{ initial: "4", sm: "2" }}
               onClick={(event) => {
@@ -2199,7 +2200,7 @@ function CatalogControls({
         {service.models === undefined ? (
           <p className="pb-3.5 text-text-muted">已有来源清单不可见；手动添加和刷新仍由服务端校验。</p>
         ) : supplementalModels.length === 0 ? (
-          <EmptyState title="没有手动添加或迁移保留的模型来源" className="pt-0 pb-3.5" />
+          <p className="pb-3.5 text-base text-text-muted">没有手动添加或迁移保留的模型来源。</p>
         ) : (
           <ul className="mb-3.5 flex flex-col overflow-hidden rounded-md border border-card-line">
             {supplementalModels.map((entry) => {
@@ -2408,6 +2409,7 @@ function ModelsTable({
     >
       <CardHeader
         title="模型目录"
+        help={<HelpTooltip label="模型状态说明" content="已停用的模型不会出现在审查策略的模型选择中。" />}
         meta={
           <span aria-live="polite">
             {normalizedSearch === "" ? (
@@ -2626,10 +2628,7 @@ function ModelRuntimeFacts({ model }: { model: ModelServiceModel }) {
 function ModelAvailability({ model }: { model: ModelServiceModel }) {
   if (model.available) return <StatusBadge tone="success">可用</StatusBadge>;
   return model.unavailableReason === "model-disabled" ? (
-    <div className="flex flex-col gap-1">
-      <StatusBadge tone="neutral" icon={MinusCircledIcon}>已停用</StatusBadge>
-      <p className="max-w-64 break-words text-base text-text-muted">不会出现在审查策略的模型选择中</p>
-    </div>
+    <StatusBadge tone="neutral" icon={MinusCircledIcon}>已停用</StatusBadge>
   ) : (
     <div className="flex flex-col gap-1">
       <StatusBadge tone="error">不可用</StatusBadge>
@@ -2721,7 +2720,7 @@ function ReferenceOverview({ references }: { references: readonly ModelReference
       />
       <CardSection>
         {references.length === 0 ? (
-          <EmptyState title="模型组合、辅助模型与仓库覆盖均未引用该服务" className="py-0" />
+          <p className="text-base text-text-muted">模型组合、辅助模型与仓库覆盖均未引用该服务。</p>
         ) : (
           <ul className="flex flex-col overflow-hidden rounded-md border border-card-line">
             {references.map((reference) => (
@@ -2777,7 +2776,8 @@ function ServiceDetail({
       <div className="flex min-w-0 flex-col gap-0.5">
         <h2 className="min-w-0 text-3xl font-extrabold tracking-[-0.02em]">{service.name}</h2>
         <p className="text-base text-text-muted">
-          <span className="font-mono">{service.provider}</span> · {service.type === "custom" ? "自定义 provider" : "内置 provider"}
+          {service.name === service.provider ? null : <><span className="font-mono">{service.provider}</span> · </>}
+          {service.type === "custom" ? "自定义 provider" : "内置 provider"}
         </p>
       </div>
 
@@ -2953,26 +2953,31 @@ export function ModelServicesPage({
     [provider, services],
   );
 
+  const addButton = canWriteCredential ? (
+    <Button
+      id="add-model-service-trigger"
+      type="button"
+      variant="solid"
+      size={{ initial: "4", sm: "2" }}
+      onClick={() => void navigate({
+        to: "/credentials/add",
+        search: modelServiceReturnSearch(provider, tab, "add-service"),
+      })}
+    >
+      添加模型服务
+    </Button>
+  ) : undefined;
+  // 有服务列表时「添加」挂在左栏栏头(与评审记录首页的「注册仓库」同位),页头不再单独
+  // 占一行;列表出不来的那几档(空、无读权限、加载失败)它退回页头。
+  const railVisible = canReadServices && query.isSuccess && services.length > 0;
+
   return (
     // 整页跟着壳里的 main 一起滚:列表与详情不再各自开滚动区,回到这一页时要恢复的
     // 位置也只剩 panel-main-scroll 一个,`restoreScroll` 的回落分支正是为此留的。
     <PageBody className="gap-4 sm:gap-[18px]">
       <PageHeader
         title="模型服务"
-        actions={canWriteCredential ? (
-          <Button
-            id="add-model-service-trigger"
-            type="button"
-            variant="solid"
-            size={{ initial: "4", sm: "2" }}
-            onClick={() => void navigate({
-              to: "/credentials/add",
-              search: modelServiceReturnSearch(provider, tab, "add-service"),
-            })}
-          >
-            添加模型服务
-          </Button>
-        ) : undefined}
+        actions={railVisible || (canReadServices && query.isPending) ? undefined : addButton}
       />
       {!canReadServices ? (
         <CardShell className="max-w-[760px] gap-1.5 px-4 py-4 sm:px-5">
@@ -3019,58 +3024,61 @@ export function ModelServicesPage({
         </CardShell>
       ) : (
         <div className={cn("grid min-w-0 gap-4", MASTER_DETAIL_COLUMNS)}>
-          <CardShell
-            className={cn("overflow-hidden", provider === undefined ? "flex" : "hidden lg:flex")}
-          >
-            <CardHeader
-              title="已配置服务"
-              meta={<><span className="font-mono tabular-nums">{services.length}</span> 项</>}
-            />
-            {services.map((service) => {
-              const isSelected = service.provider === selected?.provider;
-              // 名字冲突的服务整行压灰:它在列表里的语义是「停用」,状态点单独变灰压不住
-              // 一行黑字的服务名。
-              const dimmed = service.providerState === "name-conflict";
-              return (
-                <MasterListItem
-                  key={service.provider}
-                  asChild
-                  selected={isSelected}
-                  className="block border-t border-line px-4 py-3"
-                >
-                  <Link to="/credentials/$provider" params={{ provider: service.provider }}>
-                    <div className="flex min-w-0 items-center justify-between gap-2.5">
-                      <div className="flex min-w-0 flex-col">
-                        <Tooltip content={service.name}>
-                          <span
-                            tabIndex={0}
-                            className={cn(
-                              "min-w-0 truncate rounded-chip outline-none focus-visible:ring-2 focus-visible:ring-[var(--master-list-focus)] focus-visible:ring-offset-1 focus-visible:ring-offset-surface",
-                              isSelected ? null : "font-medium",
-                              service.name === service.provider && "font-mono",
-                              dimmed && "text-text-disabled",
-                            )}
-                          >
-                            {service.name}
-                          </span>
-                        </Tooltip>
-                        <MasterListItemText asChild>
-                          <span className={cn("min-w-0 truncate text-sm", dimmed && "text-text-disabled")}>
-                            {service.name === service.provider ? null : <>{service.provider} · </>}
-                            {service.type === "custom" ? "自定义" : "内置"}
-                            {service.models === undefined || service.directory === undefined
-                              ? " · 模型数量与发现时间按权限隐藏"
-                              : <> · <span className="font-mono tabular-nums">{service.models.length}</span> 个模型</>}
-                          </span>
-                        </MasterListItemText>
+          <div className={cn("min-w-0 flex-col gap-2.5", provider === undefined ? "flex" : "hidden lg:flex")}>
+            <div className="flex min-h-8 items-center justify-between gap-2 pl-1">
+              <h2 className="text-md font-semibold text-text-secondary">
+                已配置服务
+                <span className="ml-1.5 font-normal tabular-nums text-text-muted">{services.length}</span>
+              </h2>
+              {addButton}
+            </div>
+            <CardShell className="flex overflow-hidden">
+              {services.map((service) => {
+                const isSelected = service.provider === selected?.provider;
+                // 名字冲突的服务整行压灰:它在列表里的语义是「停用」,状态点单独变灰压不住
+                // 一行黑字的服务名。
+                const dimmed = service.providerState === "name-conflict";
+                return (
+                  <MasterListItem
+                    key={service.provider}
+                    asChild
+                    selected={isSelected}
+                    className="block border-t border-line px-4 py-3 first:border-t-0"
+                  >
+                    <Link to="/credentials/$provider" params={{ provider: service.provider }}>
+                      <div className="flex min-w-0 items-center justify-between gap-2.5">
+                        <div className="flex min-w-0 flex-col">
+                          <Tooltip content={service.name}>
+                            <span
+                              tabIndex={0}
+                              className={cn(
+                                "min-w-0 truncate rounded-chip outline-none focus-visible:ring-2 focus-visible:ring-[var(--master-list-focus)] focus-visible:ring-offset-1 focus-visible:ring-offset-surface",
+                                isSelected ? null : "font-medium",
+                                service.name === service.provider && "font-mono",
+                                dimmed && "text-text-disabled",
+                              )}
+                            >
+                              {service.name}
+                            </span>
+                          </Tooltip>
+                          <MasterListItemText asChild>
+                            <span className={cn("min-w-0 truncate text-sm", dimmed && "text-text-disabled")}>
+                              {service.name === service.provider ? null : <>{service.provider} · </>}
+                              {service.type === "custom" ? "自定义" : "内置"}
+                              {service.models === undefined || service.directory === undefined
+                                ? " · 模型数量与发现时间按权限隐藏"
+                                : <> · <span className="font-mono tabular-nums">{service.models.length}</span> 个模型</>}
+                            </span>
+                          </MasterListItemText>
+                        </div>
+                        <ServiceStatus service={service} />
                       </div>
-                      <ServiceStatus service={service} />
-                    </div>
-                  </Link>
-                </MasterListItem>
-              );
-            })}
-          </CardShell>
+                    </Link>
+                  </MasterListItem>
+                );
+              })}
+            </CardShell>
+          </div>
           <div className={cn("min-w-0", provider === undefined ? "hidden lg:block" : "block")}>
             {provider === undefined ? null : (
               <Button variant="ghost" color="gray" size="3" className="mb-3 w-fit lg:hidden" asChild>
