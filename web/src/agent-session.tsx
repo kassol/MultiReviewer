@@ -52,6 +52,8 @@ import { EmptyState } from "@/components/empty-state";
 import { Markdown } from "@/components/markdown";
 import { PageBody } from "@/components/page-body";
 import { ReplyReader } from "@/components/reply-reader";
+import { TurnRail } from "@/components/turn-rail";
+import { turnOutline } from "@/lib/turn-outline";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { useDialogReturnFocus } from "@/components/use-dialog-return-focus";
@@ -323,6 +325,26 @@ function Conversation({
   const scroller = useRef<HTMLDivElement | null>(null);
   const { earlier, loadingEarlier } = useEarlierRecords(sessionId, recordsKey, events, scroller);
   const [away, setAway] = useState(false);
+  /** 轮次导航的当前轮:起头那条用户消息已经滚过视口上三分之一的最后一轮;到底了就是最后一轮。 */
+  const [activeTurn, setActiveTurn] = useState(0);
+  const trackTurn = (): void => {
+    const el = scroller.current;
+    if (el === null) return;
+    const marks = el.querySelectorAll<HTMLElement>("[data-turn]");
+    let current = 0;
+    marks.forEach((mark, index) => {
+      if (mark.offsetTop <= el.scrollTop + el.clientHeight / 3) current = index;
+    });
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 4) current = marks.length - 1;
+    setActiveTurn(Math.max(0, current));
+  };
+  const jumpToTurn = (seq: number): void => {
+    const el = scroller.current;
+    const mark = el?.querySelector<HTMLElement>(`[data-turn="${seq}"]`);
+    if (el === null || el === undefined || mark === null || mark === undefined) return;
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollTo({ top: mark.offsetTop - 12, behavior: still ? "auto" : "smooth" });
+  };
   const toBottom = (): void => {
     const el = scroller.current;
     if (el !== null) el.scrollTop = el.scrollHeight;
@@ -338,13 +360,16 @@ function Conversation({
     }
     if (!away) toBottom();
   }, [events.length, live?.text, live?.tool, away, pendingState]);
+  useEffect(trackTurn, [groups.length]);
+  const turns = turnOutline(groups);
 
   const lastGroup = groups.at(-1);
   const liveTool = running ? live?.tool : undefined;
   const liveSubagents = running ? live?.subagent : undefined;
 
   return (
-    <div className="relative min-h-0 flex-1">
+    // `@container`:轮次导航按这一格的宽度决定出不出现(对话列两侧要留得出空白)。
+    <div className="@container relative min-h-0 flex-1">
       <div
         ref={scroller}
         // relative:行里的 sr-only 是绝对定位,容器不定位的话它会落到容器外,把整页撑出一段滚动。
@@ -356,6 +381,7 @@ function Conversation({
         onScroll={(event) => {
           const el = event.currentTarget;
           setAway(el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_THRESHOLD);
+          trackTurn();
         }}
       >
         <div className={`flex min-h-full flex-col gap-3 ${CHAT_TRACK}`}>
@@ -415,6 +441,7 @@ function Conversation({
               // 二三十条消息连着排时,看不出一次提问带出的那几条回复到哪里为止。
               <li
                 key={`${item.seq}-${item.kind}`}
+                data-turn={item.kind === "user" ? item.seq : undefined}
                 className={item.kind === "user" && index > 0 ? "mt-3 min-w-0" : "min-w-0"}
               >
                 <ConversationRow
@@ -479,6 +506,9 @@ function Conversation({
         ) : null}
         </div>
       </div>
+      {turns.length < 2 ? null : (
+        <TurnRail turns={turns} active={Math.min(activeTurn, turns.length - 1)} onJump={jumpToTurn} />
+      )}
       {away ? (
         <button
           type="button"
@@ -1599,7 +1629,7 @@ function BaselinesSummary({
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger>
         {/* ghost 键的负外边距会让它在 flex 列里居中,钉回左边与元信息行对齐。 */}
-        <Button type="button" variant="ghost" color="gray" size="1" className="self-start">
+        <Button type="button" variant="ghost" color="gray" size="1" className="self-start lg:self-center">
           <CommitIcon aria-hidden />
           {baselineLabel(baselines)}
         </Button>
@@ -2046,9 +2076,9 @@ export function AgentSessionPage({
           {/* 分隔线占满中栏,里面的标题与动作收进对话流那一列(`CHAT_TRACK`):没有右栏时对话流
               居中,标题原先贴着中栏左沿、「更多操作」贴着右沿,与下面的消息错开近 90px。 */}
           <div className="shrink-0 border-b border-line pb-2 sm:pb-3">
-          <div className={`${CHAT_TRACK} flex flex-wrap items-start justify-between gap-x-3 gap-y-2`}>
+          <div className={`${CHAT_TRACK} flex flex-wrap items-start justify-between gap-x-3 gap-y-2 lg:items-center`}>
             {/* 标题块占满剩余宽度,动作组才留在同一行;窄屏上动作只剩图标,文字给读屏。 */}
-            <div className="flex min-w-0 flex-1 items-start gap-1.5">
+            <div className="flex min-w-0 flex-1 items-start gap-1.5 lg:items-center">
               {product === undefined ? (
                 <Skeleton aria-hidden className="h-4 w-24 shrink-0 lg:hidden" />
               ) : (
@@ -2070,21 +2100,22 @@ export function AgentSessionPage({
                   </Link>
                 </Button>
               )}
-              {/* sm 以下元信息收进 disclosure:时刻、建立人、用量与基点摊开吃掉三行,390px 上
-                  对话流只剩 57% 的屏(issue #384)。sm 起照常摊开,开关不出现。 */}
+              {/* 头部只占一行。lg 以下元信息收进 disclosure:时刻、建立人、用量与基点摊开吃掉
+                  三行,390px 上对话流只剩 57% 的屏(issue #384);lg 起标题、元信息与基点排成
+                  一行,开关不出现。 */}
               <Collapsible.Root
                 open={metaOpen}
                 onOpenChange={setMetaOpen}
-                className="group/meta flex min-w-0 flex-1 flex-col gap-0.5"
+                className="group/meta flex min-w-0 flex-1 flex-col gap-0.5 lg:flex-row lg:items-center lg:gap-4"
               >
-                {/* sm 以下这一行不许折:标题、徽章与开关一旦换行,折叠态头部就从 44px
-                    涨到 100px 上下。标题让位截断,徽章与开关保持整颗(issue #384)。 */}
-                <div className="flex flex-wrap items-center gap-2 max-sm:flex-nowrap">
+                {/* 这一行不许折:标题、徽章与开关一旦换行,头部就从一行涨到两三行。标题让位
+                    截断,徽章与开关保持整颗(issue #384)。 */}
+                <div className="flex min-w-0 flex-nowrap items-center gap-2 lg:flex-1">
                   {/* 标题优先说这个会话在聊什么(`title`,服务端从首条用户消息派生);没有
-                      标题的旧会话与开放对话退回用途名。sm 以下单行截断,sm 起两行封顶,
-                      `title=` 补全文——标题区不再吃掉三行高度,屏幕留给对话流。 */}
+                      标题的旧会话与开放对话退回用途名。单行截断,`title=` 补全文——头部
+                      只占一行,屏幕留给对话流。 */}
                   <h1
-                    className="min-w-0 line-clamp-1 break-words text-2xl font-bold tracking-[-0.015em] sm:line-clamp-2"
+                    className="min-w-0 truncate text-2xl font-bold tracking-[-0.015em]"
                     title={
                       session === undefined
                         ? undefined
@@ -2105,7 +2136,7 @@ export function AgentSessionPage({
                         variant="ghost"
                         color="gray"
                         size="3"
-                        className="shrink-0 sm:hidden"
+                        className="shrink-0 lg:hidden"
                         aria-label="会话信息"
                       >
                         <ChevronDownIcon
@@ -2116,14 +2147,14 @@ export function AgentSessionPage({
                     </Collapsible.Trigger>
                   )}
                 </div>
-                {/* `forceMount` 让这一段一直挂着,显隐交给断点:sm 起不管开合都摊开,sm 以下
-                    才听上面那颗开关。用 JS 按屏宽算开合的话,转屏那一下还要再算一次。 */}
+                {/* `forceMount` 让这一段一直挂着,显隐交给断点:lg 起不管开合都摊开在标题右侧,
+                    lg 以下才听上面那颗开关。用 JS 按屏宽算开合的话,转屏那一下还要再算一次。 */}
                 <Collapsible.Content
                   forceMount
-                  className="flex min-w-0 flex-col gap-0.5 max-sm:data-[state=closed]:hidden"
+                  className="flex min-w-0 flex-col gap-0.5 max-lg:data-[state=closed]:hidden lg:shrink-0 lg:flex-row lg:items-center lg:gap-3"
                 >
                   {session === undefined ? null : (
-                    <p className="text-sm text-text-muted">
+                    <p className="text-sm text-text-muted lg:whitespace-nowrap">
                       {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。
                           克制成一行素文字,不再用 Badge 强调用途——三行封顶,用途只是其中一项元信息。 */}
                       {/* 日志、数据库与 API 都按会话的全局 id 索引,口头排障报的号要在
