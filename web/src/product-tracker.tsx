@@ -362,7 +362,7 @@ function TicketActions({
             variant="ghost"
             color="gray"
             size="3"
-            className="sm:hidden pointer-coarse:size-11"
+            className="sm:hidden"
             disabled={busy}
             aria-label={`票 #${ticket.id} 的操作`}
           >

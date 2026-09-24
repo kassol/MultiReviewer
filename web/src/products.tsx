@@ -300,7 +300,6 @@ export function ProductsPage({
                   variant="ghost"
                   color="gray"
                   size={{ initial: "3", sm: "2" }}
-                  className="pointer-coarse:size-11"
                   disabled={busy}
                   aria-label="产品操作"
                 >
