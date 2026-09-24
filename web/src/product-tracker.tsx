@@ -5,6 +5,7 @@ import {
   ChevronRightIcon,
   Cross2Icon,
   CrossCircledIcon,
+  DotsHorizontalIcon,
   MagnifyingGlassIcon,
   RadiobuttonIcon,
 } from "@radix-ui/react-icons";
@@ -198,6 +199,219 @@ const claimerFromValue = (value: string): string | null | undefined =>
 /** 看板「已关」那一列默认只画这么多张:它只会越攒越多,而人来看板找的是还开着的。 */
 const CLOSED_COLUMN_LIMIT = 8;
 
+/** 一张票上的一个写动作:认领、改标签或开关,给哪一格就动哪一格。 */
+type TicketPayload = { claimed?: boolean; label?: TicketLabel; state?: TrackerState };
+
+/** 能拿来还焦点的那颗键。按钮的点击事件与菜单项手里那颗「…」都是这个形状。 */
+type FocusTrigger = { currentTarget: HTMLElement };
+
+/**
+ * 产品 tracker 上人的那几个写动作(CONTEXT.md 认领、票,issue #363):认领、改标签、开关票与
+ * spec、在票上评论。列表行与 spec 弹窗共用这一份——一个 mutation、一条回绝、一道关前确认,
+ * 两处不各写一套。
+ *
+ * 做完只失效产品详情那一份:`productQueryKey` 是 `specQueryKey` 的前缀,弹窗里那条 spec 的
+ * 全文跟着重读,列表那一列的认领人与状态也跟着变。关要先问一句(issue #389),重新打开照旧
+ * 点完就写——它把状态放回去,误触没有代价。确认框(`confirm`)由调用方放:弹窗开着时放进
+ * 弹窗里,关着时放在列表旁,同一时刻只挂一处。
+ */
+function useTrackerActions(productId: number) {
+  const queryClient = useQueryClient();
+  const [failure, setFailure] = useState<string | null>(null);
+  /** 等人点头才写的那一下:null 即此刻没有要关的东西。 */
+  const [closing, setClosing] = useState<TrackerCloseTarget | null>(null);
+  const act = useMutation({
+    mutationFn: (input: { path: string; method: string; payload: unknown }) =>
+      send(input.path, input.method, input.payload),
+    onSuccess: async () => {
+      setFailure(null);
+      await queryClient.invalidateQueries({ queryKey: productQueryKey(productId) });
+    },
+    onError: (error: Error) => setFailure(error.message),
+  });
+  const ticket = (ticketId: number, payload: TicketPayload): void =>
+    act.mutate({ path: `/products/${productId}/tickets/${ticketId}`, method: "PUT", payload });
+  const spec = (specId: number, state: TrackerState): void =>
+    act.mutate({ path: `/products/${productId}/specs/${specId}`, method: "PUT", payload: { state } });
+  const comment = (ticketId: number, text: string): void =>
+    act.mutate({ path: `/products/${productId}/tickets/${ticketId}/comments`, method: "POST", payload: { text } });
+  /**
+   * 确认弹窗关闭带退场动画,`closing` 一清空,还在淡出的那一帧就会渲染出「关掉票 #undefined」
+   * (issue #382 在权限页踩过同一脚)。记住最后一个非空值,退场期间照它渲染;点了做什么仍读
+   * `closing`。
+   */
+  const lastClosing = useRef(closing);
+  if (closing !== null) lastClosing.current = closing;
+  const shownClosing = closing ?? lastClosing.current;
+  /** 确认弹窗关掉后焦点回到按下的那颗「关掉」;它被换掉时退到 spec 弹窗的关闭键。 */
+  const confirmFocus = useDialogReturnFocus(useCallback(
+    () => document.querySelector<HTMLElement>('[role="dialog"] [aria-label="关闭"]'),
+    [],
+  ));
+  const closeConfirm = shownClosing === null ? null : trackerCloseConfirm(shownClosing);
+  const confirm = (
+    <ConfirmDialog
+      open={closing !== null}
+      onOpenChange={(open) => {
+        if (!open) setClosing(null);
+      }}
+      onCloseAutoFocus={confirmFocus.onCloseAutoFocus}
+      maxWidth="440px"
+      title={closeConfirm?.title ?? ""}
+      titleSize="4"
+      titleMb="2"
+      description={closeConfirm?.description ?? ""}
+      descriptionClassName="break-words"
+      direction={{ initial: "column-reverse", sm: "row" }}
+      cancelLabel="取消"
+      cancelVariant="outline"
+      confirm={{
+        label: "关掉",
+        color: "gray",
+        highContrast: true,
+        closesDialog: true,
+        onClick: () => {
+          if (closing === null) return;
+          if (closing.kind === "ticket") ticket(closing.id, { state: "closed" });
+          else spec(closing.id, "closed");
+        },
+      }}
+    />
+  );
+  return {
+    busy: act.isPending,
+    failure,
+    clearFailure: () => setFailure(null),
+    ticket,
+    spec,
+    comment,
+    /** 先问一句再关:记下按下的那颗键,确认框关掉后焦点回到它。 */
+    requestClose: (trigger: FocusTrigger, target: TrackerCloseTarget): void => {
+      confirmFocus.captureTrigger(trigger);
+      setClosing(target);
+    },
+    confirm,
+  };
+}
+
+type TrackerActions = ReturnType<typeof useTrackerActions>;
+
+/**
+ * 一张票上的那几个动作:认领 / 取消认领、改标签、关掉 / 重新打开。列表行与 spec 弹窗里的票行
+ * 共用。`sm` 起是一排 ghost 键;`sm` 以下收成一颗「…」菜单——三颗键挤进 390px 的一行会把
+ * 标题压成一行几个字,折到下一行又让每张票多占一行高。
+ */
+function TicketActions({
+  ticket,
+  actions,
+  className,
+}: {
+  ticket: TrackerTicket;
+  actions: TrackerActions;
+  className?: string | undefined;
+}) {
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+  const busy = actions.busy;
+  const claimLabel = ticket.claimedBy === null ? "认领" : "取消认领";
+  const stateLabel = ticket.state === "open" ? "关掉" : "重新打开";
+  const toggleState = (trigger: FocusTrigger): void =>
+    ticket.state === "open"
+      ? actions.requestClose(trigger, { kind: "ticket", id: ticket.id, title: ticket.title })
+      : actions.ticket(ticket.id, { state: "open" });
+
+  return (
+    <div className={cn("flex shrink-0 items-center", className)}>
+      <div className="flex flex-wrap items-center gap-4 max-sm:hidden">
+        <Button
+          size="1"
+          className="pointer-coarse:min-h-11"
+          variant="ghost"
+          color="gray"
+          disabled={busy}
+          onClick={() => actions.ticket(ticket.id, { claimed: ticket.claimedBy === null })}
+        >
+          {claimLabel}
+        </Button>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger>
+            <Button size="1" variant="ghost" color="gray" disabled={busy} className="pointer-coarse:min-h-11">
+              改标签
+              <ChevronDownIcon aria-hidden />
+            </Button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end">
+            {TICKET_LABELS.map((label) => (
+              <DropdownMenu.Item
+                key={label}
+                disabled={label === ticket.label}
+                onSelect={() => actions.ticket(ticket.id, { label })}
+              >
+                {label}
+              </DropdownMenu.Item>
+            ))}
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+        <Button
+          size="1"
+          className="pointer-coarse:min-h-11"
+          variant="ghost"
+          color="gray"
+          disabled={busy}
+          onClick={toggleState}
+        >
+          {stateLabel}
+        </Button>
+      </div>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger>
+          <IconButton
+            ref={menuTrigger}
+            type="button"
+            variant="ghost"
+            color="gray"
+            size="3"
+            className="sm:hidden"
+            disabled={busy}
+            aria-label={`票 #${ticket.id} 的操作`}
+          >
+            <DotsHorizontalIcon aria-hidden />
+          </IconButton>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content align="end">
+          <DropdownMenu.Item
+            onSelect={() => actions.ticket(ticket.id, { claimed: ticket.claimedBy === null })}
+          >
+            {claimLabel}
+          </DropdownMenu.Item>
+          <DropdownMenu.Sub>
+            <DropdownMenu.SubTrigger>改标签</DropdownMenu.SubTrigger>
+            <DropdownMenu.SubContent>
+              {TICKET_LABELS.map((label) => (
+                <DropdownMenu.Item
+                  key={label}
+                  disabled={label === ticket.label}
+                  onSelect={() => actions.ticket(ticket.id, { label })}
+                >
+                  {label}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.SubContent>
+          </DropdownMenu.Sub>
+          <DropdownMenu.Separator />
+          <DropdownMenu.Item
+            onSelect={() => {
+              // 菜单项随菜单卸载,焦点还给「…」那颗键。
+              if (menuTrigger.current !== null) toggleState({ currentTarget: menuTrigger.current });
+            }}
+          >
+            {stateLabel}
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+    </div>
+  );
+}
+
 /**
  * 产品页右栏的产品 tracker 区(CONTEXT.md 产品 tracker,issue #361、#363)。
  *
@@ -206,8 +420,9 @@ const CLOSED_COLUMN_LIMIT = 8;
  * 已认领 / 已关),回答「现在能接哪一张」。筛选两种视图共用,视图记在地址的 `?view=` 上。
  *
  * **正文只读**:spec 与票的正文只由会话经工具写。人在这里读、导出,并做认领、改标签、开关
- * 与评论——那几个动作在 spec 全文弹窗里,一张票的上下文全在那儿;点一张票打开它所在的 spec
- * 并展开这一张。读随产品可见性,动作按 `agent:chat` 显隐。
+ * 与评论:认领、改标签、开关票在列表的票行上就做得了(`TicketActions`),与 spec 全文弹窗里
+ * 同一套;评论与开关 spec 在弹窗里,一张票的上下文全在那儿。点一张票打开它所在的 spec 并展开
+ * 这一张。读随产品可见性,动作按 `agent:chat` 显隐。
  */
 export function TrackerSection({
   product,
@@ -254,14 +469,17 @@ export function TrackerSection({
   const filtering = isTrackerFiltering(filter);
   const specOfTicket = new Map(tickets.map(({ spec, ticket }) => [ticket.id, spec.id]));
   const claimers = [...new Set(tickets.map(({ ticket }) => ticket.claimedBy).filter((one) => one !== null))].sort();
+  const actions = useTrackerActions(product.id);
 
   const openFromSpec = (event: MouseEvent<HTMLElement>, specId: number): void => {
+    actions.clearFailure();
     returnFocus.captureTrigger(event);
     lastTrigger.current = `[data-spec-trigger="${specId}"]`;
     setFocus(null);
     onOpenSpec(specId);
   };
   const openFromTicket = (event: MouseEvent<HTMLElement>, specId: number, ticketId: number): void => {
+    actions.clearFailure();
     returnFocus.captureTrigger(event);
     lastTrigger.current = `[data-ticket-trigger="${ticketId}"]`;
     setFocus({ ticketId, at: Date.now() });
@@ -448,7 +666,7 @@ export function TrackerSection({
                     return (
                       <li
                         key={ticket.id}
-                        className="flex min-w-0 items-start gap-2.5 border-t border-line px-4 py-2.5 transition-colors hover:bg-sunken"
+                        className="group/ticket-row flex min-w-0 items-start gap-2.5 border-t border-line px-4 py-2.5 transition-colors hover:bg-sunken"
                       >
                         <TicketStatusIcon status={status} className="mt-0.5" />
                         <div className="flex min-w-0 grow flex-col gap-0.5">
@@ -476,6 +694,15 @@ export function TrackerSection({
                           />
                         </div>
                         {pickable.has(ticket.id) ? <PickableMark /> : null}
+                        {canChat ? (
+                          // 细指针的宽屏上指到这一行(或焦点进来、菜单开着)才现:一列几十行
+                          // 每行三颗键是噪音。触屏常显,窄屏收成「…」。
+                          <TicketActions
+                            ticket={ticket}
+                            actions={actions}
+                            className="transition-opacity pointer-fine:md:opacity-0 pointer-fine:md:group-hover/ticket-row:opacity-100 pointer-fine:md:group-focus-within/ticket-row:opacity-100 pointer-fine:md:has-[[data-state=open]]:opacity-100"
+                          />
+                        ) : null}
                       </li>
                     );
                   })}
@@ -556,6 +783,15 @@ export function TrackerSection({
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
+      {/* 列表行上的动作被回绝时报在这里;弹窗开着时报在弹窗里,人眼睛在哪就报在哪。 */}
+      {openSpec !== null || actions.failure === null ? null : (
+        <Callout.Root role="alert" color="red" size="1">
+          <Callout.Icon>
+            <CrossCircledIcon aria-hidden />
+          </Callout.Icon>
+          <Callout.Text>{actions.failure}</Callout.Text>
+        </Callout.Root>
+      )}
       {pending ? (
         <Skeleton aria-hidden className="h-24" />
       ) : specs.length === 0 ? (
@@ -572,10 +808,12 @@ export function TrackerSection({
           {view === "list" ? listBody : boardBody}
         </>
       )}
+      {openSpec === null ? actions.confirm : null}
       <SpecDialog
         productId={product.id}
         spec={openSpec}
         canChat={canChat}
+        actions={actions}
         pickable={pickable}
         openTickets={openTickets}
         statuses={statuses}
@@ -661,8 +899,8 @@ function CommentBox({
  * `GET /products/{id}/specs/{specId}`——产品详情那一份只带列表要显示的那几格。
  *
  * 人的那几个动作也在这里(issue #363):开关这条 spec,认领、改标签、开关一张票,在票上
- * 评论。正文与标题没有入口——它们只由会话经工具写(ADR 0035)。做完重读这一份与产品详情:
- * 认领人与状态在产品页那一列上也要跟着变。
+ * 评论——走的是 `TrackerSection` 那一份 `useTrackerActions`,与列表行同一个 mutation。正文与
+ * 标题没有入口——它们只由会话经工具写(ADR 0035)。
  */
 function SpecDialog({
   productId,
@@ -675,11 +913,14 @@ function SpecDialog({
   onJump,
   onClose,
   onCloseAutoFocus,
+  actions,
 }: {
   productId: number;
   spec: TrackerSpec | null;
   /** 有 `agent:chat` 且分到了这个产品里的仓库时才显示那几个控件。 */
   canChat: boolean;
+  /** 写动作、回绝与关前确认,与列表行共用一份。 */
+  actions: TrackerActions;
   /** 可开工的票号,与产品页那一列同一份。 */
   pickable: ReadonlySet<number>;
   /** 开着的票号:「等 #n」只列还挡着的那几张。 */
@@ -694,54 +935,12 @@ function SpecDialog({
   /** 关闭后把焦点送回打开它的那颗 spec 标题键。 */
   onCloseAutoFocus: (event: Event) => void;
 }) {
-  const queryClient = useQueryClient();
-  const [failure, setFailure] = useState<string | null>(null);
-  /** 等人点头才写的那一下(issue #389):null 即此刻没有要关的东西。 */
-  const [closing, setClosing] = useState<TrackerCloseTarget | null>(null);
   const detail = useQuery({
     queryKey: specQueryKey(productId, spec?.id),
     queryFn: () => fetchJson<SpecDetail>(`/products/${productId}/specs/${spec!.id}`),
     enabled: spec !== null,
   });
-
-  /** 动作做完重读两份:这一条 spec 的全文,与产品详情里的那一列。 */
-  const reread = async (): Promise<void> => {
-    setFailure(null);
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: specQueryKey(productId, spec?.id) }),
-      queryClient.invalidateQueries({ queryKey: productQueryKey(productId) }),
-    ]);
-  };
-  const failed = (error: Error): void => setFailure(error.message);
-
-  const act = useMutation({
-    mutationFn: (input: { path: string; method: string; payload: unknown }) =>
-      send(input.path, input.method, input.payload),
-    onSuccess: reread,
-    onError: failed,
-  });
-  const busy = act.isPending;
-  /** 一张票上的一个动作:认领、改标签或开关,给哪一格就动哪一格。 */
-  const ticketAction = (
-    ticketId: number,
-    payload: { claimed?: boolean; label?: TicketLabel; state?: TrackerState },
-  ): void => {
-    act.mutate({ path: `/products/${productId}/tickets/${ticketId}`, method: "PUT", payload });
-  };
-  /**
-   * 确认弹窗关闭带退场动画,`closing` 一清空,还在淡出的那一帧就会渲染出「关掉票 #undefined」
-   * (issue #382 在权限页踩过同一脚)。记住最后一个非空值,退场期间照它渲染;点了做什么仍读
-   * `closing`。
-   */
-  const lastClosing = useRef(closing);
-  if (closing !== null) lastClosing.current = closing;
-  const shownClosing = closing ?? lastClosing.current;
-  /** 确认弹窗关掉后焦点回到按下的那颗「关掉」;它被换掉时退到本弹窗的关闭键。 */
-  const confirmFocus = useDialogReturnFocus(useCallback(
-    () => document.querySelector<HTMLElement>('[role="dialog"] [aria-label="关闭"]'),
-    [],
-  ));
-  const closeConfirm = shownClosing === null ? null : trackerCloseConfirm(shownClosing);
+  const busy = actions.busy;
   /** 展开着的票。关掉弹窗即清空,下一次打开从全收起开始。 */
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
   /** 要去的那一张:内容一到就展开它、把那一行滚进视野。换了 spec 时等新的那一份读到再滚。 */
@@ -764,7 +963,7 @@ function SpecDialog({
       open={spec !== null}
       onOpenChange={(next) => {
         if (!next) {
-          setFailure(null);
+          actions.clearFailure();
           setExpanded(new Set());
           onClose();
         }
@@ -813,12 +1012,12 @@ function SpecDialog({
               </span>
             )}
         </Dialog.Description>
-        {failure === null ? null : (
+        {actions.failure === null ? null : (
           <Callout.Root role="alert" color="red" size="1" mb="3">
             <Callout.Icon>
               <CrossCircledIcon aria-hidden />
             </Callout.Icon>
-            <Callout.Text>{failure}</Callout.Text>
+            <Callout.Text>{actions.failure}</Callout.Text>
           </Callout.Root>
         )}
         {detail.isPending ? (
@@ -920,16 +1119,12 @@ function SpecDialog({
                         onClick={(event) =>
                           // 关要先问一句(issue #389);重新打开照旧点完就写——它把状态放回去,误触没有代价。
                           detail.data.spec.state === "open"
-                            ? (confirmFocus.captureTrigger(event), setClosing({
+                            ? actions.requestClose(event, {
                                 kind: "spec",
                                 id: detail.data.spec.id,
                                 title: detail.data.spec.title,
-                              }))
-                            : act.mutate({
-                                path: `/products/${productId}/specs/${detail.data.spec.id}`,
-                                method: "PUT",
-                                payload: { state: "open" },
                               })
+                            : actions.spec(detail.data.spec.id, "open")
                         }
                       >
                         {detail.data.spec.state === "open" ? "关掉这条 spec" : "重新打开这条 spec"}
@@ -984,7 +1179,7 @@ function SpecDialog({
                                     Radix 类名。 */}
                                 <button
                                   type="button"
-                                  className="flex min-w-[12rem] grow basis-full items-start gap-2 rounded-md py-0.5 text-left transition-colors pointer-coarse:min-h-11 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none sm:basis-0"
+                                  className="flex min-w-[12rem] grow basis-0 items-start gap-2 rounded-md py-0.5 text-left transition-colors pointer-coarse:min-h-11 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
                                 >
                                   <ChevronRightIcon
                                     aria-hidden
@@ -1009,55 +1204,7 @@ function SpecDialog({
                                   </span>
                                 </button>
                               </Collapsible.Trigger>
-                              {canChat ? (
-                                <div className="flex flex-wrap items-center gap-4 pl-1 max-sm:pl-12">
-                                  <Button
-                                    size="1"
-                                    className="pointer-coarse:min-h-11"
-                                    variant="ghost"
-                                    color="gray"
-                                    disabled={busy}
-                                    onClick={() =>
-                                      ticketAction(ticket.id, { claimed: ticket.claimedBy === null })
-                                    }
-                                  >
-                                    {ticket.claimedBy === null ? "认领" : "取消认领"}
-                                  </Button>
-                                  <DropdownMenu.Root>
-                                    <DropdownMenu.Trigger>
-                                      <Button size="1" variant="ghost" color="gray" disabled={busy} className="pointer-coarse:min-h-11">
-                                        改标签
-                                        <ChevronDownIcon aria-hidden />
-                                      </Button>
-                                    </DropdownMenu.Trigger>
-                                    <DropdownMenu.Content align="end">
-                                      {TICKET_LABELS.map((label) => (
-                                        <DropdownMenu.Item
-                                          key={label}
-                                          disabled={label === ticket.label}
-                                          onSelect={() => ticketAction(ticket.id, { label })}
-                                        >
-                                          {label}
-                                        </DropdownMenu.Item>
-                                      ))}
-                                    </DropdownMenu.Content>
-                                  </DropdownMenu.Root>
-                                  <Button
-                                    size="1"
-                                    className="pointer-coarse:min-h-11"
-                                    variant="ghost"
-                                    color="gray"
-                                    disabled={busy}
-                                    onClick={(event) =>
-                                      ticket.state === "open"
-                                        ? (confirmFocus.captureTrigger(event), setClosing({ kind: "ticket", id: ticket.id, title: ticket.title }))
-                                        : ticketAction(ticket.id, { state: "open" })
-                                    }
-                                  >
-                                    {ticket.state === "open" ? "关掉" : "重新打开"}
-                                  </Button>
-                                </div>
-                              ) : null}
+                              {canChat ? <TicketActions ticket={ticket} actions={actions} className="pl-1" /> : null}
                             </div>
                             {/* 标题下那一行放在展开键之外:阻塞的票号要能单独点,键里不能再套键。
                                 左缩进让开 chevron 与状态图标两格,与标题的字对齐。 */}
@@ -1091,16 +1238,7 @@ function SpecDialog({
                                   </ul>
                                 )}
                                 {canChat ? (
-                                  <CommentBox
-                                    busy={busy}
-                                    onSend={(text) =>
-                                      act.mutate({
-                                        path: `/products/${productId}/tickets/${ticket.id}/comments`,
-                                        method: "POST",
-                                        payload: { text },
-                                      })
-                                    }
-                                  />
+                                  <CommentBox busy={busy} onSend={(text) => actions.comment(ticket.id, text)} />
                                 ) : null}
                               </div>
                             </Collapsible.Content>
@@ -1114,39 +1252,7 @@ function SpecDialog({
             </div>
           </div>
         )}
-        <ConfirmDialog
-          open={closing !== null}
-          onOpenChange={(open) => {
-            if (!open) setClosing(null);
-          }}
-          onCloseAutoFocus={confirmFocus.onCloseAutoFocus}
-          maxWidth="440px"
-          title={closeConfirm?.title ?? ""}
-          titleSize="4"
-          titleMb="2"
-          description={closeConfirm?.description ?? ""}
-          descriptionClassName="break-words"
-          direction={{ initial: "column-reverse", sm: "row" }}
-          cancelLabel="取消"
-          cancelVariant="outline"
-          confirm={{
-            label: "关掉",
-            color: "gray",
-            highContrast: true,
-            closesDialog: true,
-            onClick: () => {
-              if (closing === null) return;
-              if (closing.kind === "ticket") ticketAction(closing.id, { state: "closed" });
-              else {
-                act.mutate({
-                  path: `/products/${productId}/specs/${closing.id}`,
-                  method: "PUT",
-                  payload: { state: "closed" },
-                });
-              }
-            },
-          }}
-        />
+        {actions.confirm}
       </Dialog.Content>
     </Dialog.Root>
   );
