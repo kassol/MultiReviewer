@@ -757,7 +757,7 @@ function isLongReply(text: string): boolean {
 
 /**
  * agent 一条完整回复的卡片(仿 Craft Agents 的 TurnCard)。长回复默认收进 320px 高、底部
- * 渐隐;「展开」摊开到全高,「阅读」开单独的阅读视图(`ReplyReader`,字号更大、限宽 45rem),
+ * 渐隐;「展开」摊开到全高,「阅读」开单独的阅读视图(`ReplyReader`,字号更大、1200px 宽),
  * 「复制 Markdown」拿走原文(2 秒后 label 复位,失败照样在这张卡上方弹一条 Callout)。收起时
  * 把卡片顶部滚回可见处:展开是内容变高,不是新消息,不该让人对着一段突然消失在视口上方的
  * 文字发懵。

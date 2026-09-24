@@ -16,9 +16,9 @@ import { cn } from "@/lib/utils";
 
 /**
  * 长回复的阅读视图(模仿 Craft Agents 的 `DocumentFormattedMarkdownOverlay`)。
- * 对话卡片里 320px 收着的长回复点「阅读」在这里摊开成一篇文章:字号上提一档、行宽收到
- * 45rem(`Markdown` 的 `size="article"`,约 45 个汉字一行),弹窗宽 800px 正好装下这一栏加
- * 两侧 40px 边距;头部钉住标题与动作,滚的只是正文,滚动条因此不贯穿头部。
+ * 对话卡片里 320px 收着的长回复点「阅读」在这里摊开成一篇文章:字号上提一档(`Markdown`
+ * 的 `size="article"`),弹窗 1200px 宽、正文铺满,尽量用宽度;头部钉住标题与动作,滚的只是
+ * 正文,滚动条因此不贯穿头部。
  *
  * `open`/`onOpenChange` 受控:「阅读」按钮在对话卡片里,这个组件不渲染触发它的那个按钮;
  * 焦点归位交给调用方的 `useDialogReturnFocus`(`onCloseAutoFocus` 由调用方传入)。
@@ -92,11 +92,11 @@ export function ReplyReader({
       <Dialog.Content
         {...(portalHost === null ? {} : { container: portalHost })}
         width="100%"
-        maxWidth="min(800px, calc(100vw - 32px))"
+        maxWidth="min(1200px, calc(100vw - 32px))"
         className="flex max-h-[calc(100dvh-64px)] flex-col overflow-hidden rounded-3xl bg-surface p-0 shadow-modal"
         {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
       >
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-10">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-8">
           <div className="min-w-0 flex-1">
             <div className={cn("flex min-w-0 gap-2", titleOpen ? "items-start" : "items-center")}>
               {/* 摊开的长问题限高自己滚,不把正文挤出视口。 */}
@@ -149,7 +149,7 @@ export function ReplyReader({
             </Dialog.Close>
           </div>
         </div>
-        <div className="min-h-0 overflow-y-auto px-4 py-5 sm:px-10 sm:py-6">
+        <div className="min-h-0 overflow-y-auto px-4 py-5 sm:px-8 sm:py-6">
           <Markdown text={text} size="article" />
         </div>
       </Dialog.Content>
