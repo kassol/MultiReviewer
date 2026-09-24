@@ -429,6 +429,7 @@ function Conversation({
                   // 长回复的展开状态按 `seq` 记在 `Conversation` 里,折叠/展开不重挂这一行。
                   {...(item.kind === "assistant"
                     ? {
+                        question: questionBefore(groups, index),
                         expanded: expandedReplies.has(item.seq),
                         onToggleExpand: () => toggleReplyExpanded(item.seq),
                       }
@@ -502,6 +503,7 @@ function ConversationRow({
   open = false,
   expanded = false,
   onToggleExpand,
+  question,
 }: {
   item: ConversationGroup;
   sessionId: number;
@@ -513,6 +515,8 @@ function ConversationRow({
   /** 长回复此刻是摊开还是收着,只对 `kind === "assistant"` 有意义(`Conversation` 按 `seq` 记)。 */
   expanded?: boolean;
   onToggleExpand?: () => void;
+  /** 这条回复答的问题,只对 `kind === "assistant"` 有意义,阅读视图拿它当标题。 */
+  question?: string | undefined;
 }) {
   if (item.kind === "tools") {
     return <ToolGroup calls={item.calls} liveTool={liveTool} open={open} />;
@@ -537,7 +541,23 @@ function ConversationRow({
   if (item.kind === "user") {
     return <UserMessage item={item} sessionId={sessionId} />;
   }
-  return <AssistantReply item={item} expanded={expanded} onToggleExpand={onToggleExpand!} />;
+  return (
+    <AssistantReply
+      item={item}
+      question={question}
+      expanded={expanded}
+      onToggleExpand={onToggleExpand!}
+    />
+  );
+}
+
+/** 第 `index` 条之前最近的一条用户消息:一轮里 agent 的回复答的就是它。 */
+function questionBefore(groups: readonly ConversationGroup[], index: number): string | undefined {
+  for (let at = index - 1; at >= 0; at -= 1) {
+    const group = groups[at]!;
+    if (group.kind === "user") return group.text;
+  }
+  return undefined;
 }
 
 /**
@@ -744,10 +764,12 @@ function isLongReply(text: string): boolean {
  */
 function AssistantReply({
   item,
+  question,
   expanded,
   onToggleExpand,
 }: {
   item: Extract<ConversationGroup, { kind: "assistant" }>;
+  question: string | undefined;
   expanded: boolean;
   onToggleExpand: () => void;
 }) {
@@ -865,6 +887,7 @@ function AssistantReply({
           open={reading}
           onOpenChange={setReading}
           text={item.text}
+          question={question}
           at={item.at}
           onCloseAutoFocus={returnFocus.onCloseAutoFocus}
         />

@@ -1,21 +1,17 @@
-import { CheckCircledIcon, CopyIcon, Cross2Icon } from "@radix-ui/react-icons";
+import {
+  CheckCircledIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  Cross2Icon,
+  DownloadIcon,
+} from "@radix-ui/react-icons";
 import { Dialog, IconButton, Text } from "@radix-ui/themes";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/theme-button";
+import { replyFileName, replyTitle } from "@/lib/reply-title";
 import { localSecond } from "@/lib/time";
-
-/** 正文第一行 Markdown 标题,去掉 `#`,当阅读视图的标题(Craft Agents 的
-    `DocumentFormattedMarkdownOverlay`)。模型的长回复通常开头就是一个标题;没有标题的
-    回复退回一句通用的说法,不留空标题。 */
-function firstHeading(text: string): string {
-  for (const rawLine of text.split("\n")) {
-    const match = /^#{1,6}\s+(.+)/.exec(rawLine.trim());
-    if (match !== undefined && match !== null) return match[1]!.trim();
-  }
-  return "agent 回复";
-}
 
 /**
  * 长回复的阅读视图(模仿 Craft Agents 的 `DocumentFormattedMarkdownOverlay`)。
@@ -29,12 +25,15 @@ export function ReplyReader({
   open,
   onOpenChange,
   text,
+  question,
   at,
   onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   text: string;
+  /** 这一轮里这条回复之前最近的一条用户消息;没有即 undefined。 */
+  question: string | undefined;
   at: string;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
@@ -49,6 +48,28 @@ export function ReplyReader({
   useEffect(() => {
     setPortalHost(document.getElementById("panel-portal"));
   }, []);
+  const title = replyTitle(question, text);
+  /** 标题一行放不下(`truncate` 截掉了)才给「展开」:短问题不该多一颗点了没反应的键。 */
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const [clipped, setClipped] = useState(false);
+  const [titleOpen, setTitleOpen] = useState(false);
+  useEffect(() => {
+    const element = titleRef.current;
+    if (!open || titleOpen || element === null) return;
+    const check = (): void => setClipped(element.scrollWidth > element.clientWidth);
+    check();
+    const observer = new ResizeObserver(check);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [open, titleOpen, title]);
+  const download = (): void => {
+    const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = replyFileName(title, at);
+    link.click();
+    URL.revokeObjectURL(url);
+  };
   const copy = async (): Promise<void> => {
     try {
       await navigator.clipboard.writeText(text);
@@ -71,20 +92,51 @@ export function ReplyReader({
         className="max-h-[calc(100dvh-64px)] overflow-y-auto rounded-3xl bg-surface p-0 shadow-modal"
         {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-overlay-line bg-surface px-6 py-3">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-overlay-line bg-surface px-6 py-3">
           <div className="min-w-0 flex-1">
-            <Dialog.Title size="4" mb="0" className="truncate">
-              {firstHeading(text)}
-            </Dialog.Title>
+            <div className="flex min-w-0 items-start gap-2">
+              {/* 摊开的长问题限高自己滚,不把正文挤出视口。 */}
+              <Dialog.Title
+                size="4"
+                mb="0"
+                className={
+                  titleOpen
+                    ? "max-h-[40dvh] min-w-0 overflow-y-auto whitespace-pre-wrap break-words"
+                    : "min-w-0"
+                }
+              >
+                <span ref={titleRef} className={titleOpen ? undefined : "block truncate"}>
+                  {title}
+                </span>
+              </Dialog.Title>
+              {clipped || titleOpen ? (
+                <IconButton
+                  type="button"
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  className="mt-1 shrink-0"
+                  aria-expanded={titleOpen}
+                  aria-label={titleOpen ? "收起问题" : "展开问题全文"}
+                  onClick={() => setTitleOpen((was) => !was)}
+                >
+                  <ChevronDownIcon aria-hidden className={titleOpen ? "rotate-180" : undefined} />
+                </IconButton>
+              ) : null}
+            </div>
             <Text as="p" size="1" color="gray">
               {localSecond(at)}
             </Text>
           </div>
           {/* ghost 键的 hover 底向四周撑出 8px,相邻两颗留 gap-5 才不叠。 */}
-          <div className="flex shrink-0 items-center gap-5">
+          <div className="flex shrink-0 items-center gap-5 max-sm:gap-3">
             <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
               {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
-              {copied ? "已复制" : "复制 Markdown"}
+              <span className="max-sm:sr-only">{copied ? "已复制" : "复制 Markdown"}</span>
+            </Button>
+            <Button type="button" variant="ghost" color="gray" size="1" onClick={download}>
+              <DownloadIcon aria-hidden />
+              <span className="max-sm:sr-only">下载 .md</span>
             </Button>
             <Dialog.Close>
               <IconButton type="button" variant="ghost" color="gray" size="2" aria-label="关闭">
