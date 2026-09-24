@@ -188,6 +188,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-24: **产品页与会话页的写动作各归其位**(纯前端,服务端无改动,细节见 `web/AGENTS.md` 同日条目)。票的认领、改标签与开关在 tracker 列表的票行上就做得了;spec 弹窗去掉右侧侧栏,导出只留列表组头一处;左栏仓库卡只读,归入、改职责与移出搬进产品页「…」下的「管理仓库」弹窗,会话页上不再出现;左栏「会话」卡默认只列 5 条;左栏写动作在跑时页头动作一并禁用。另把产品 tracker 拆成 `web/src/product-tracker.tsx`,产品与会话的四份查询收进 `web/src/lib/product-queries.ts`。
 - 2026-09-23: **backlog #463 清空**:Agent 会话冷启动开跑之前那段窗口里的三处边角修掉——删会话不再往已删的会话落排队消息、取留存失败时触发那一条照样投出去、开跑之前点清空连留存一起清;测试夹具的假模型服务改为起来即进收尾队列,harness 建到一半失败不再让测试进程挂死;开发机临时目录里残留的会话根来自被外部强杀的测试进程,正常收尾不漏,已手动清掉。无 schema 变更,细节见 `src/AGENTS.md`。
 - 2026-09-23: 地图 [#386](https://github.com/kassol/MultiReviewer/issues/386) 改方向(未开工):平台本期不自建执行环境,产品 tracker 的票交给开发者本机的 coding agent 消费,平台负责 spec / 票与 PR 上的多模型审查两头并接上交接(本机 agent 接入 tracker、票与 PR 关联、合并关票、审查拿票当规格)。原目的地「实现会话用途」与 grill 第一轮四题作废;认领与 `ready-for-agent` / `ready-for-human` 眼下仍只是标记。
 - 2026-09-23: **镜像版本 tag 从短 sha 换成 `YYYY.MM.DD-N`**。sha 看不出哪天发的、谁新谁旧,回滚时要回开发机翻 git log 才对得上。`scripts/build-push.sh` 改推日期加当天序号(序号查 registry 递增,查询出错即中止而不当空号),提交 sha 挪到镜像 label `org.opencontainers.image.revision`。00-test 正在跑的 `:1055a48` 用 `imagetools create` 补打成 `:2026.09.23-1`(里面是同一个镜像 digest),部署目录 `.env` 已改指它。旧的 sha tag 留在 registry 里,改 `.env` 回滚到它们照样可行。
