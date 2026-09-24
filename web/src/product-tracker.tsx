@@ -230,9 +230,14 @@ function useTrackerActions(productId: number) {
   const lastClosing = useRef(closing);
   if (closing !== null) lastClosing.current = closing;
   const shownClosing = closing ?? lastClosing.current;
-  /** 确认弹窗关掉后焦点回到按下的那颗「关掉」;它被换掉时退到 spec 弹窗的关闭键。 */
+  /**
+   * 确认弹窗关掉后焦点回到按下的那颗「关掉」;它被换掉时退到 spec 弹窗的关闭键。从列表行关的
+   * 那一张会随「开着」筛选一起消失、也没有 spec 弹窗,再退到工具条上当前那颗开关计数。
+   */
   const confirmFocus = useDialogReturnFocus(useCallback(
-    () => document.querySelector<HTMLElement>('[role="dialog"] [aria-label="关闭"]'),
+    () =>
+      document.querySelector<HTMLElement>('[role="dialog"] [aria-label="关闭"]')
+      ?? document.querySelector<HTMLElement>('[aria-label="按开关筛选"] [aria-pressed="true"]'),
     [],
   ));
   const closeConfirm = shownClosing === null ? null : trackerCloseConfirm(shownClosing);
