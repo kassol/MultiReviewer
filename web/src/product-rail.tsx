@@ -28,6 +28,8 @@ import { Button } from "@/components/theme-button";
 import {
   AGENT_SESSION_PURPOSES,
   PURPOSE_LABEL,
+  RAIL_SESSION_LIMIT,
+  railSessions,
   sessionsQueryKey,
   sessionTitle,
   type AgentSession,
@@ -392,6 +394,8 @@ export function ProductRail({
 
             <div className="min-w-0 max-lg:order-2">
             <SessionRail
+              // 换产品时收回去:展开是看这一个产品的全部会话,不该带到下一个产品上。
+              key={current.id}
               productId={current.id}
               sessions={sessions}
               pending={sessionsQuery.isPending}
@@ -486,6 +490,8 @@ function SessionRail({
   // 会话按最近活动降序排,刚说过话的会话浮上来,而不是固定按创建时间。sort 是稳定排序,
   // lastActiveAt 并列时落回服务端原有的 id desc 顺序。
   const sorted = [...sessions].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
+  const [expanded, setExpanded] = useState(false);
+  const shown = railSessions(sorted, activeSessionId, expanded);
   return (
     <RailCard
       title="会话"
@@ -507,7 +513,7 @@ function SessionRail({
         </Text>
       ) : (
         <ul>
-          {sorted.map((session) => (
+          {shown.map((session) => (
             <li key={session.id} className="border-t border-line first:border-t-0">
               <MasterListItem
                 asChild
@@ -546,6 +552,20 @@ function SessionRail({
             </li>
           ))}
         </ul>
+      )}
+      {sessions.length <= RAIL_SESSION_LIMIT ? null : (
+        <div className="border-t border-line px-2 py-1">
+          <Button
+            variant="ghost"
+            color="gray"
+            size="1"
+            className="w-full justify-start pointer-coarse:min-h-11"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((open) => !open)}
+          >
+            {expanded ? "收起" : `全部 ${sessions.length} 条`}
+          </Button>
+        </div>
       )}
     </RailCard>
   );

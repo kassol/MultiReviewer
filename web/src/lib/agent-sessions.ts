@@ -86,3 +86,19 @@ export function sessionsQueryKey(productId: number): readonly unknown[] {
 export function agentSessionQueryKey(sessionId: number): readonly unknown[] {
   return ["agent-sessions", sessionId];
 }
+
+/** 左栏「会话」卡默认只列这么多条:一个产品谈久了会攒几十场,卡会把左栏整个撑满。 */
+export const RAIL_SESSION_LIMIT = 5;
+
+/**
+ * 左栏「会话」卡此刻列哪几条。收着时是排好序的前 `limit` 条,再加上当前所在的那一场——人正
+ * 在它里面,左栏不高亮它就看不出自己在哪;它按原来的位置排进去,不挪到最前。展开时全列。
+ */
+export function railSessions<T extends { id: number }>(
+  sorted: readonly T[],
+  activeId: number | undefined,
+  expanded: boolean,
+  limit: number = RAIL_SESSION_LIMIT,
+): T[] {
+  return expanded ? [...sorted] : sorted.filter((row, index) => index < limit || row.id === activeId);
+}
