@@ -96,44 +96,48 @@ export function ReplyReader({
         className="flex max-h-[calc(100dvh-64px)] flex-col overflow-hidden rounded-3xl bg-surface p-0 shadow-modal"
         {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
       >
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-8">
+        {/* 收起时整行对「标题 + 时刻」这一块垂直居中;问题摊开后那一块变高,动作键留在顶上。
+            「展开问题全文」放进动作组:放在标题旁它只对得上标题那一行,与右侧三颗差半行。 */}
+        <div
+          className={cn(
+            "flex shrink-0 justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-8",
+            titleOpen ? "items-start" : "items-center",
+          )}
+        >
           <div className="min-w-0 flex-1">
-            <div className={cn("flex min-w-0 gap-2", titleOpen ? "items-start" : "items-center")}>
-              {/* 摊开的长问题限高自己滚,不把正文挤出视口。 */}
-              <Dialog.Title
-                size="4"
-                mb="0"
-                className={
-                  titleOpen
-                    ? "max-h-[40dvh] min-w-0 overflow-y-auto whitespace-pre-wrap break-words"
-                    : "min-w-0"
-                }
-              >
-                <span ref={setTitleElement} className={titleOpen ? undefined : "block truncate"}>
-                  {title}
-                </span>
-              </Dialog.Title>
-              {clipped || titleOpen ? (
-                <IconButton
-                  type="button"
-                  variant="ghost"
-                  color="gray"
-                  size="1"
-                  className={titleOpen ? "mt-0.5 shrink-0" : "shrink-0"}
-                  aria-expanded={titleOpen}
-                  aria-label={titleOpen ? "收起问题" : "展开问题全文"}
-                  onClick={() => setTitleOpen((was) => !was)}
-                >
-                  <ChevronDownIcon aria-hidden className={titleOpen ? "rotate-180" : undefined} />
-                </IconButton>
-              ) : null}
-            </div>
+            {/* 摊开的长问题限高自己滚,不把正文挤出视口。 */}
+            <Dialog.Title
+              size="4"
+              mb="0"
+              className={
+                titleOpen
+                  ? "max-h-[40dvh] min-w-0 overflow-y-auto whitespace-pre-wrap break-words"
+                  : "min-w-0"
+              }
+            >
+              <span ref={setTitleElement} className={titleOpen ? undefined : "block truncate"}>
+                {title}
+              </span>
+            </Dialog.Title>
             <Text as="p" size="1" color="gray">
               {localSecond(at)}
             </Text>
           </div>
           {/* ghost 键的 hover 底向四周撑出 8px,相邻两颗留 gap-5 才不叠。 */}
           <div className="flex shrink-0 items-center gap-5 max-sm:gap-3">
+            {clipped || titleOpen ? (
+              <IconButton
+                type="button"
+                variant="ghost"
+                color="gray"
+                size="1"
+                aria-expanded={titleOpen}
+                aria-label={titleOpen ? "收起问题" : "展开问题全文"}
+                onClick={() => setTitleOpen((was) => !was)}
+              >
+                <ChevronDownIcon aria-hidden className={titleOpen ? "rotate-180" : undefined} />
+              </IconButton>
+            ) : null}
             <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
               {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
               <span className="max-sm:sr-only">{copied ? "已复制" : "复制 Markdown"}</span>
