@@ -7,6 +7,7 @@ import {
   DotsHorizontalIcon,
   MagnifyingGlassIcon,
   Pencil1Icon,
+  StackIcon,
   TrashIcon,
 } from "@radix-ui/react-icons";
 import {
@@ -57,6 +58,7 @@ import { localMinute } from "@/lib/time";
 
 import { send } from "./api.ts";
 import { NameDialog, ProductRail, useEnterSession, useProductDetail, useProductSessions } from "./product-rail.tsx";
+import { ManageReposDialog } from "./product-repos.tsx";
 import { TrackerSection, type TrackerView } from "./product-tracker.tsx";
 
 /** 主区停在哪一页。缺省是产品知识——读它的人比动 tracker 的人多。 */
@@ -86,7 +88,7 @@ export function ProductsPage({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [dialog, setDialog] = useState<"rename" | "survey" | null>(null);
+  const [dialog, setDialog] = useState<"rename" | "survey" | "repos" | null>(null);
   const [confirming, setConfirming] = useState(false);
   /*
    * 主区停在哪一页、打开的是哪一条 spec,都记在地址上(`?tab=` 与 `?spec=`),与阶段详情
@@ -241,11 +243,13 @@ export function ProductsPage({
     },
   });
 
-  /** 左栏(建产品、归属、改职责、移出、建会话)有写动作在跑。 */
+  /** 左栏(建产品、建会话)有写动作在跑。 */
   const [railBusy, setRailBusy] = useState(false);
-  const busy = rename.isPending || remove.isPending || survey.isPending || railBusy;
+  /** 「管理仓库」弹窗(归入、改职责、移出)有写动作在跑。 */
+  const [reposBusy, setReposBusy] = useState(false);
+  const busy = rename.isPending || remove.isPending || survey.isPending || railBusy || reposBusy;
 
-  function openDialog(next: "rename" | "survey"): void {
+  function openDialog(next: "rename" | "survey" | "repos"): void {
     setFeedback(null);
     rename.reset();
     setDialog(next);
@@ -306,6 +310,10 @@ export function ProductsPage({
                 <DropdownMenu.Item onSelect={() => openDialog("rename")}>
                   <Pencil1Icon aria-hidden />
                   改名
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={() => openDialog("repos")}>
+                  <StackIcon aria-hidden />
+                  管理仓库
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   color="red"
@@ -466,6 +474,13 @@ export function ProductsPage({
               setFeedback(null);
               rename.mutate({ product: selected, name });
             }}
+          />
+          <ManageReposDialog
+            open={dialog === "repos"}
+            product={selected}
+            products={products}
+            onClose={() => setDialog(null)}
+            onPending={setReposBusy}
           />
           <SurveyDialog
             open={dialog === "survey"}
