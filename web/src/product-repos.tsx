@@ -164,33 +164,35 @@ export function ManageReposDialog({
               {product.repos.map((repo) => (
                 <li
                   key={repo.repoId}
-                  className="group/repo flex items-start justify-between gap-2 border-t border-line px-3 py-3 first:border-t-0"
+                  className="group/repo flex flex-col gap-1.5 border-t border-line px-3 py-3 first:border-t-0"
                 >
-                  <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  {/* 移出键跟仓库名同一行,职责框在下面铺满整行:移出键单占右侧一列时,职责框右边
+                      会空出一条跟它等宽的缝。 */}
+                  <div className="flex items-center justify-between gap-2">
                     <span className="min-w-0 wrap-anywhere font-mono text-base">{repoPath(repo)}</span>
-                    <RoleField
-                      repo={repo}
-                      busy={working}
-                      onSave={(next) => {
+                    <IconButton
+                      variant="ghost"
+                      color="gray"
+                      size={{ initial: "3", sm: "1" }}
+                      className="shrink-0 transition-opacity md:opacity-0 md:group-hover/repo:opacity-100 md:group-focus-within/repo:opacity-100 md:focus-visible:opacity-100"
+                      aria-label={`把 ${repoPath(repo)} 移出 ${product.name}`}
+                      disabled={working}
+                      onClick={() => {
                         setFeedback(null);
-                        setRepoRole.mutate({ repo, role: next });
+                        setDetaching(repo);
                       }}
-                    />
+                    >
+                      <Cross2Icon aria-hidden />
+                    </IconButton>
                   </div>
-                  <IconButton
-                    variant="ghost"
-                    color="gray"
-                    size={{ initial: "3", sm: "1" }}
-                    className="shrink-0 transition-opacity md:opacity-0 md:group-hover/repo:opacity-100 md:group-focus-within/repo:opacity-100 md:focus-visible:opacity-100"
-                    aria-label={`把 ${repoPath(repo)} 移出 ${product.name}`}
-                    disabled={working}
-                    onClick={() => {
+                  <RoleField
+                    repo={repo}
+                    busy={working}
+                    onSave={(next) => {
                       setFeedback(null);
-                      setDetaching(repo);
+                      setRepoRole.mutate({ repo, role: next });
                     }}
-                  >
-                    <Cross2Icon aria-hidden />
-                  </IconButton>
+                  />
                 </li>
               ))}
             </ul>
@@ -323,7 +325,8 @@ function RoleField({
     <div className="flex items-start gap-2">
       <TextField.Root
         size={{ initial: "3", sm: "2" }}
-        className="min-w-0 flex-1"
+        // 窄屏上长职责装不下一行,没聚焦时以省略号收尾,不在字中间切断。
+        className="min-w-0 flex-1 [&_input]:text-ellipsis"
         aria-label={`${repoPath(repo)} 的职责`}
         placeholder="写一句它在这个产品里干什么（选填）"
         maxLength={64}
