@@ -123,13 +123,11 @@ export function ProductRail({
   const productsQuery = useQuery(productListQuery());
   const products = productsQuery.data ?? [];
   const current = currentProduct(products, productId);
-  // 建会话弹窗的基点行按它与产品的仓库求交(见下面 `sessionRepos`)。仍只在有 `repo:write` 时才读:
-  // 这道门原本为归属候选而设,归属搬走之后没改——只有 `agent:chat` 的人因此看不到基点行,
-  // 服务端按生效默认分支回落。
+  // 只为建会话弹窗的基点行而读:按它与产品的仓库求交(见下面 `sessionRepos`),建会话要 `agent:chat`。
   const reposQuery = useQuery({
     queryKey: ["repos"],
     queryFn: () => fetchJson<RegisteredRepo[]>("/repos"),
-    enabled: canWrite,
+    enabled: canChat,
   });
   const sessionsQuery = useProductSessions(current?.id);
   const sessions = sessionsQuery.data ?? [];
