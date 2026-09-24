@@ -111,6 +111,7 @@ export function ProductRail({
   busy = false,
   className,
   onFeedback,
+  onPending,
 }: {
   /** 地址上的产品。`undefined` 即地址没带(`/products`),落在列表第一个上。 */
   productId?: number | undefined;
@@ -118,11 +119,13 @@ export function ProductRail({
   activeSessionId?: number | undefined;
   canWrite: boolean;
   canChat: boolean;
-  /** 调用页自己的写动作也让左栏的按钮一起置灰。 */
+  /** 调用页自己的写动作在跑时,左栏的按钮一起置灰。 */
   busy?: boolean;
   className?: string;
   /** 回执交给调用页那条 Callout;`null` 即动手前先把上一条清掉。 */
   onFeedback: (feedback: Feedback | null) => void;
+  /** 左栏自己的写动作在跑时报给调用页,调用页的写动作跟着置灰——两侧互相挡住,不并发写同一个产品。 */
+  onPending?: (pending: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -222,13 +225,15 @@ export function ProductRail({
     onError: failed,
   });
 
-  const working =
-    busy ||
+  const pending =
     create.isPending ||
     attach.isPending ||
     setRole.isPending ||
     detach.isPending ||
     createSession.isPending;
+  const working = busy || pending;
+  // 只报自己的那几个:调用页的 `busy` 再报回去就绕成一个圈。
+  useEffect(() => onPending?.(pending), [pending, onPending]);
 
   /** 还没归入任何产品、且在这个账号分配内的仓库。归入第二个产品服务端会回 409。 */
   const attachable = unassignedRepos(reposQuery.data ?? [], products);

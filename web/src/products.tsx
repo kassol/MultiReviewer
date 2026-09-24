@@ -241,7 +241,9 @@ export function ProductsPage({
     },
   });
 
-  const busy = rename.isPending || remove.isPending || survey.isPending;
+  /** 左栏(建产品、归属、改职责、移出、建会话)有写动作在跑。 */
+  const [railBusy, setRailBusy] = useState(false);
+  const busy = rename.isPending || remove.isPending || survey.isPending || railBusy;
 
   function openDialog(next: "rename" | "survey"): void {
     setFeedback(null);
@@ -422,6 +424,7 @@ export function ProductsPage({
           canChat={canChat}
           busy={busy}
           onFeedback={setFeedback}
+          onPending={setRailBusy}
           className="lg:sticky lg:top-[var(--v8-top-chrome)] lg:max-h-[calc(100vh_-_var(--v8-top-chrome)_-_40px)] lg:self-start lg:overflow-y-auto lg:overscroll-y-contain"
         />
         <div className="flex min-w-0 flex-1 flex-col gap-3 max-lg:order-4">
