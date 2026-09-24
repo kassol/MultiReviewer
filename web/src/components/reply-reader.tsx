@@ -12,11 +12,13 @@ import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/theme-button";
 import { replyFileName, replyTitle } from "@/lib/reply-title";
 import { localSecond } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 /**
  * 长回复的阅读视图(模仿 Craft Agents 的 `DocumentFormattedMarkdownOverlay`)。
- * 对话卡片里 320px 收着的长回复点「阅读」在这里摊开成一篇文章:字号上提一档(`Markdown`
- * 的 `size="article"`),880px 居中限宽,头部钉住标题与「复制 Markdown」,滚的只是正文。
+ * 对话卡片里 320px 收着的长回复点「阅读」在这里摊开成一篇文章:字号上提一档、行宽收到
+ * 45em(`Markdown` 的 `size="article"`,约 45 个汉字一行),弹窗宽 800px 正好装下这一栏加
+ * 两侧 40px 边距;头部钉住标题与动作,滚的只是正文,滚动条因此不贯穿头部。
  *
  * `open`/`onOpenChange` 受控:「阅读」按钮在对话卡片里,这个组件不渲染触发它的那个按钮;
  * 焦点归位交给调用方的 `useDialogReturnFocus`(`onCloseAutoFocus` 由调用方传入)。
@@ -83,18 +85,20 @@ export function ReplyReader({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       {/* 上限里减掉视口宽:Radix 的滚动容器是按内容收缩的 flex 项,`width="100%"` 在手机上
-          只能拿到「正文 72ch 加内边距」那么宽,比视口宽、关闭键被挤出屏外;把上限钉在视口
-          宽减两侧 16px 边距,表格才在自己的滚动壳里横滚,壳不再撑开。 */}
+          只能拿到「正文行宽加内边距」那么宽,比视口宽、关闭键被挤出屏外;把上限钉在视口
+          宽减两侧 16px 边距,表格才在自己的滚动壳里横滚,壳不再撑开。
+          Content 本身不滚(Themes 默认 overflow auto):它是一列 flex,头部不收缩,正文那一格
+          `min-h-0` 自己滚。 */}
       <Dialog.Content
         {...(portalHost === null ? {} : { container: portalHost })}
         width="100%"
-        maxWidth="min(1200px, calc(100vw - 32px))"
-        className="max-h-[calc(100dvh-64px)] overflow-y-auto rounded-3xl bg-surface p-0 shadow-modal"
+        maxWidth="min(800px, calc(100vw - 32px))"
+        className="flex max-h-[calc(100dvh-64px)] flex-col overflow-hidden rounded-3xl bg-surface p-0 shadow-modal"
         {...(onCloseAutoFocus === undefined ? {} : { onCloseAutoFocus })}
       >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-overlay-line bg-surface px-6 py-3">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-overlay-line px-4 py-3 sm:px-10">
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-start gap-2">
+            <div className={cn("flex min-w-0 gap-2", titleOpen ? "items-start" : "items-center")}>
               {/* 摊开的长问题限高自己滚,不把正文挤出视口。 */}
               <Dialog.Title
                 size="4"
@@ -115,7 +119,7 @@ export function ReplyReader({
                   variant="ghost"
                   color="gray"
                   size="1"
-                  className="mt-1 shrink-0"
+                  className={titleOpen ? "mt-0.5 shrink-0" : "shrink-0"}
                   aria-expanded={titleOpen}
                   aria-label={titleOpen ? "收起问题" : "展开问题全文"}
                   onClick={() => setTitleOpen((was) => !was)}
@@ -145,7 +149,7 @@ export function ReplyReader({
             </Dialog.Close>
           </div>
         </div>
-        <div className="px-6 py-5">
+        <div className="min-h-0 overflow-y-auto px-4 py-5 sm:px-10 sm:py-6">
           <Markdown text={text} size="article" />
         </div>
       </Dialog.Content>
