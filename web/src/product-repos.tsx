@@ -227,36 +227,37 @@ export function ManageReposDialog({
               )}
             </div>
             {reposQuery.isSuccess && attachable.length > 0 ? (
-              <>
-                <div className="flex flex-col gap-1.5">
-                  <Text as="label" htmlFor="attach-repo-role" size="2" weight="medium">
-                    职责
-                  </Text>
+              <div className="flex flex-col gap-1.5">
+                <Text as="label" htmlFor="attach-repo-role" size="2" weight="medium">
+                  职责
+                </Text>
+                {/* 提交键跟在职责框右侧、与它同高:它提交的是这一段,放到下面单占一行会与弹窗的
+                    「完成」叠成两颗右对齐的键,分不清哪颗管哪件事。 */}
+                <div className="flex items-start gap-2">
                   <TextField.Root
                     id="attach-repo-role"
                     size={{ initial: "3", sm: "2" }}
-                    className="min-w-0 w-full"
+                    className="min-w-0 flex-1"
                     placeholder="选填，例如：后端 API(Node)"
                     maxLength={64}
                     aria-describedby="attach-repo-role-hint"
                     value={role}
                     onChange={(event) => setRole(event.target.value)}
                   />
-                  <Text as="p" id="attach-repo-role-hint" size="1" color="gray">
-                    这个仓库在这个产品里干什么，最多 64 字；归入之后在上面的列表里也改得了。
-                  </Text>
-                </div>
-                <div className="flex justify-end">
                   <Button
                     type="submit"
                     variant="soft"
                     size={{ initial: "3", sm: "2" }}
+                    className="shrink-0"
                     disabled={working || chosen === undefined}
                   >
                     {attach.isPending ? "归入中…" : "归入"}
                   </Button>
                 </div>
-              </>
+                <Text as="p" id="attach-repo-role-hint" size="1" color="gray">
+                  这个仓库在这个产品里干什么，最多 64 字；归入之后在上面的列表里也改得了。
+                </Text>
+              </div>
             ) : null}
           </form>
 
