@@ -36,14 +36,13 @@ import {
 import {
   currentProduct,
   PRODUCTS_QUERY_KEY,
-  productQueryKey,
   repoPath,
   unassignedRepos,
   type Product,
-  type ProductDetail,
   type ProductRepo,
   type RegisteredRepo,
 } from "@/lib/products";
+import { productDetailQuery, productListQuery, productSessionsQuery } from "@/lib/product-queries";
 import { localMinute } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -61,21 +60,12 @@ const CREATABLE_PURPOSES = AGENT_SESSION_PURPOSES.filter(
 const DEFAULT_PURPOSE: AgentSessionPurpose = "requirement-breakdown";
 
 export function useProductSessions(productId: number | undefined) {
-  return useQuery({
-    queryKey: sessionsQueryKey(productId ?? 0),
-    queryFn: async () =>
-      (await fetchJson<{ sessions: AgentSession[] }>(`/products/${productId!}/sessions`)).sessions,
-    enabled: productId !== undefined,
-  });
+  return useQuery(productSessionsQuery(productId));
 }
 
 /** 产品页右栏与会话页头部共用的产品详情。产品知识也在这一份里。 */
 export function useProductDetail(productId: number | undefined) {
-  return useQuery({
-    queryKey: productQueryKey(productId),
-    queryFn: () => fetchJson<ProductDetail>(`/products/${productId!}`),
-    enabled: productId !== undefined,
-  });
+  return useQuery(productDetailQuery(productId));
 }
 
 /**
@@ -124,10 +114,7 @@ export function ProductRail({
   /** 正要移出的仓库:移出会退役涉及它的产品知识,先过一道确认。 */
   const [detaching, setDetaching] = useState<ProductRepo | null>(null);
 
-  const productsQuery = useQuery({
-    queryKey: PRODUCTS_QUERY_KEY,
-    queryFn: async () => (await fetchJson<{ products: Product[] }>("/products")).products,
-  });
+  const productsQuery = useQuery(productListQuery());
   const products = productsQuery.data ?? [];
   const current = currentProduct(products, productId);
   // 归属弹窗的候选只在有写权限时才读:没有这一格的人看不到那个按钮。

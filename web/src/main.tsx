@@ -29,13 +29,8 @@ import { PageBody } from "@/components/page-body";
 import { PanelTheme } from "@/components/panel-theme";
 import { DropdownMenu, Skeleton } from "@radix-ui/themes";
 
-import {
-  agentSessionQueryKey,
-  PURPOSE_LABEL,
-  sessionTitle,
-  type AgentSession,
-} from "@/lib/agent-sessions";
-import { productQueryKey, type ProductDetail } from "@/lib/products";
+import { PURPOSE_LABEL, sessionTitle } from "@/lib/agent-sessions";
+import { agentSessionQuery, productDetailQuery } from "@/lib/product-queries";
 import { shouldRetryQuery } from "@/lib/query-retry";
 /*
  * 阶段详情路由的预取(issue #439)。这两份工厂在 `lib/` 而不在阶段详情页里:静态引那一页
@@ -43,7 +38,7 @@ import { shouldRetryQuery } from "@/lib/query-retry";
  */
 import { scopeFromStageId, stageDetailQuery, stageSummaryQuery } from "@/lib/stage-queries";
 
-import { api, fetchJson } from "./api.ts";
+import { api } from "./api.ts";
 import type { ModelServiceTab } from "./credentials.tsx";
 import {
   clearPanelSession,
@@ -335,16 +330,8 @@ function useProductCrumbs(pathname: string): string[] {
   const matched = /^\/products\/(\d+)(?:\/sessions\/(\d+))?$/.exec(pathname);
   const productId = matched === null ? undefined : Number(matched[1]);
   const sessionId = matched?.[2] === undefined ? undefined : Number(matched[2]);
-  const product = useQuery({
-    queryKey: productQueryKey(productId),
-    queryFn: () => fetchJson<ProductDetail>(`/products/${productId!}`),
-    enabled: productId !== undefined,
-  });
-  const session = useQuery({
-    queryKey: agentSessionQueryKey(sessionId ?? 0),
-    queryFn: () => fetchJson<{ session: AgentSession }>(`/agent-sessions/${sessionId!}`),
-    enabled: sessionId !== undefined,
-  });
+  const product = useQuery(productDetailQuery(productId));
+  const session = useQuery(agentSessionQuery(sessionId));
   const data = session.data?.session;
   // 会话标题(`title`,服务端从首条用户消息派生)优先于用途名,与头部标题同一读法。
   const sessionCrumb =

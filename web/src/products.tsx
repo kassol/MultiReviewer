@@ -78,6 +78,7 @@ import {
   type TrackerSpec,
   type TrackerState,
 } from "@/lib/products";
+import { productListQuery } from "@/lib/product-queries";
 import { localMinute } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -162,10 +163,7 @@ export function ProductsPage({
   const selectTab = (next: ProductTab): void =>
     replaceSearch((prev) => ({ ...prev, tab: next === "knowledge" ? undefined : next }));
 
-  const productsQuery = useQuery({
-    queryKey: PRODUCTS_QUERY_KEY,
-    queryFn: async () => (await fetchJson<{ products: Product[] }>("/products")).products,
-  });
+  const productsQuery = useQuery(productListQuery());
 
   const products = productsQuery.data ?? [];
   const selected = currentProduct(products, productId);

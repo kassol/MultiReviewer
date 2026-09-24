@@ -71,6 +71,7 @@ import {
   type ConversationGroup,
 } from "@/lib/agent-session-records";
 import { lastSeq, pendingView, type PendingMessage } from "@/lib/pending-message";
+import { agentSessionQuery } from "@/lib/product-queries";
 import { productQueryKey } from "@/lib/products";
 import { roundAnswerText } from "@/lib/session-question-round";
 import {
@@ -1823,17 +1824,15 @@ export function AgentSessionPage({
   const [metaOpen, setMetaOpen] = useState(false);
 
   const sessionQuery = useQuery({
-    queryKey: agentSessionQueryKey(sessionId),
-    queryFn: () =>
-      fetchJson<{
-        session: AgentSession;
-        queue: QueuedMessage[];
-        imageInput: boolean;
-        /** 重建之后前几条进不了模型上下文(ADR 0031,issue #335)。0 即记录完整。 */
-        droppedFromContext: number;
-        /** 这个会话写进产品 tracker 的 spec 与票(issue #366)。 */
-        wrote: SessionWrote;
-      }>(`/agent-sessions/${sessionId}`),
+    ...agentSessionQuery<{
+      session: AgentSession;
+      queue: QueuedMessage[];
+      imageInput: boolean;
+      /** 重建之后前几条进不了模型上下文(ADR 0031,issue #335)。0 即记录完整。 */
+      droppedFromContext: number;
+      /** 这个会话写进产品 tracker 的 spec 与票(issue #366)。 */
+      wrote: SessionWrote;
+    }>(sessionId),
     // 在跑时轮询:回合结束与队列变动都没有单独的事件,状态与排队列表是会话自己那两格
     // (issue #333、#334)。
     refetchInterval: (query) => (query.state.data?.session.status === "running" ? 2000 : false),
