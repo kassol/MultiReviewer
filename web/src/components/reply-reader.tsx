@@ -6,7 +6,7 @@ import {
   DownloadIcon,
 } from "@radix-ui/react-icons";
 import { Dialog, IconButton, Text } from "@radix-ui/themes";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/theme-button";
@@ -50,18 +50,18 @@ export function ReplyReader({
   }, []);
   const title = replyTitle(question, text);
   /** 标题一行放不下(`truncate` 截掉了)才给「展开」:短问题不该多一颗点了没反应的键。 */
-  const titleRef = useRef<HTMLSpanElement>(null);
+  /** 元素放在 state 里而不是 ref:Portal 里的内容晚于这个组件的 effect 才挂上,ref 在那一刻还是空的。 */
+  const [titleElement, setTitleElement] = useState<HTMLSpanElement | null>(null);
   const [clipped, setClipped] = useState(false);
   const [titleOpen, setTitleOpen] = useState(false);
   useEffect(() => {
-    const element = titleRef.current;
-    if (!open || titleOpen || element === null) return;
-    const check = (): void => setClipped(element.scrollWidth > element.clientWidth);
+    if (titleOpen || titleElement === null) return;
+    const check = (): void => setClipped(titleElement.scrollWidth > titleElement.clientWidth);
     check();
     const observer = new ResizeObserver(check);
-    observer.observe(element);
+    observer.observe(titleElement);
     return () => observer.disconnect();
-  }, [open, titleOpen, title]);
+  }, [titleElement, titleOpen, title]);
   const download = (): void => {
     const url = URL.createObjectURL(new Blob([text], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a");
@@ -105,7 +105,7 @@ export function ReplyReader({
                     : "min-w-0"
                 }
               >
-                <span ref={titleRef} className={titleOpen ? undefined : "block truncate"}>
+                <span ref={setTitleElement} className={titleOpen ? undefined : "block truncate"}>
                   {title}
                 </span>
               </Dialog.Title>
