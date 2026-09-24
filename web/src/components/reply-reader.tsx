@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 /**
  * 长回复的阅读视图(模仿 Craft Agents 的 `DocumentFormattedMarkdownOverlay`)。
  * 对话卡片里 320px 收着的长回复点「阅读」在这里摊开成一篇文章:字号上提一档、行宽收到
- * 45em(`Markdown` 的 `size="article"`,约 45 个汉字一行),弹窗宽 800px 正好装下这一栏加
+ * 45rem(`Markdown` 的 `size="article"`,约 45 个汉字一行),弹窗宽 800px 正好装下这一栏加
  * 两侧 40px 边距;头部钉住标题与动作,滚的只是正文,滚动条因此不贯穿头部。
  *
  * `open`/`onOpenChange` 受控:「阅读」按钮在对话卡片里,这个组件不渲染触发它的那个按钮;

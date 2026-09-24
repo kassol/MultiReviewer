@@ -193,7 +193,7 @@ const ARTICLE_COMPONENTS = markdownComponents("article");
  *
  * 流式生成时同一段文字每帧重渲一次,半截的代码围栏或表格 react-markdown 也能给出合法结果。
  *
- * `size="article"`(阅读视图 `ReplyReader` 用):字号上提一档、行距放宽、正文限宽 45em(约 45 个汉字)居中
+ * `size="article"`(阅读视图 `ReplyReader` 用):字号上提一档、行距放宽、正文限宽 45rem(约 45 个汉字)居中
  * ——长文当文章读,不是当聊天气泡读。默认 `"chat"`,对话流里的密度不变。
  */
 export function Markdown({
@@ -206,7 +206,7 @@ export function Markdown({
   size?: "chat" | "article";
 }) {
   return (
-    <div className={cn("min-w-0", size === "article" ? "mx-auto max-w-[45em]" : "", className)}>
+    <div className={cn("min-w-0", size === "article" ? "mx-auto max-w-[45rem]" : "", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         skipHtml
