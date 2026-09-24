@@ -1553,7 +1553,7 @@ function UsageLine({ usage }: { usage: AgentSession["usage"] }) {
     <Tooltip
       content={`输入 ${n(usage.inputTokens)} · 输出 ${n(usage.outputTokens)} · 缓存读 ${n(usage.cacheReadTokens)} · 缓存写 ${n(usage.cacheWriteTokens)}`}
     >
-      <span className="font-mono tabular-nums underline decoration-dotted underline-offset-2">
+      <span className="tabular-nums underline decoration-text-faint decoration-dotted underline-offset-[3px]">
         {n(usage.totalTokens)}
       </span>
     </Tooltip>
@@ -2123,12 +2123,12 @@ export function AgentSessionPage({
                   className="flex min-w-0 flex-col gap-0.5 max-sm:data-[state=closed]:hidden"
                 >
                   {session === undefined ? null : (
-                    <p className="flex flex-wrap items-center gap-1.5 text-sm text-text-muted">
+                    <p className="text-sm text-text-muted">
                       {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。
                           克制成一行素文字,不再用 Badge 强调用途——三行封顶,用途只是其中一项元信息。 */}
                       {/* 日志、数据库与 API 都按会话的全局 id 索引,口头排障报的号要在
                           面板上找得到,因此放在元信息的第一项。 */}
-                      <span className="font-mono tabular-nums">会话 #{session.id}</span> ·{" "}
+                      会话 <span className="font-mono tabular-nums">#{session.id}</span> ·{" "}
                       {session.title === null ? `${PURPOSE_LABEL[session.purpose]} · ` : null}
                       {session.createdBy} · {localMinute(session.createdAt)} ·{" "}
                       <UsageLine usage={session.usage} /> token
