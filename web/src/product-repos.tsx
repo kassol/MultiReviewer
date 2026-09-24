@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Cross2Icon, Pencil1Icon } from "@radix-ui/react-icons";
-import { Dialog, Flex, IconButton, Select, Skeleton, Text, TextArea, TextField } from "@radix-ui/themes";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { Cross2Icon } from "@radix-ui/react-icons";
+import { Dialog, Flex, IconButton, Select, Skeleton, Text, TextField } from "@radix-ui/themes";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { FeedbackCallout, type Feedback } from "@/components/feedback-callout";
@@ -140,9 +140,10 @@ export function ManageReposDialog({
           event.preventDefault();
           (event.currentTarget as HTMLElement).focus();
         }}
-        // 在职责框里按 Escape 是放弃这一格的改动,不是关掉整个弹窗(`RoleField` 自己处理它)。
+        // 在改了一半的职责框里按 Escape 是放弃这一格的改动,不是关掉整个弹窗(`RoleField` 自己
+        // 放回原值);没改动时照常关弹窗。
         onEscapeKeyDown={(event) => {
-          if (event.target instanceof HTMLTextAreaElement) event.preventDefault();
+          if (event.target instanceof HTMLElement && event.target.dataset.dirty === "true") event.preventDefault();
         }}
       >
         <Dialog.Title size="4" mb="2">
@@ -163,9 +164,9 @@ export function ManageReposDialog({
               {product.repos.map((repo) => (
                 <li
                   key={repo.repoId}
-                  className="group/repo flex items-start justify-between gap-2 border-t border-line px-3 py-2.5 first:border-t-0"
+                  className="group/repo flex items-start justify-between gap-2 border-t border-line px-3 py-3 first:border-t-0"
                 >
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <div className="flex min-w-0 flex-1 flex-col gap-1.5">
                     <span className="min-w-0 wrap-anywhere font-mono text-base">{repoPath(repo)}</span>
                     <RoleField
                       repo={repo}
@@ -298,9 +299,9 @@ export function ManageReposDialog({
 }
 
 /**
- * 一行仓库的职责(CONTEXT.md 仓库职责,issue #341)。平时是一段可换行的文本,点它进编辑:
- * Enter 或失焦保存并退出,Escape 放回原值并退出;与库里那一份相同时一律不发请求,失焦不该
- * 变成一次空写。
+ * 一行仓库的职责(CONTEXT.md 仓库职责,issue #341)。常驻一格输入框,不分只读与编辑两态:点进去
+ * 就是在改,字号与位置不跳。改动未保存时框右侧出一颗「保存」;Enter、点「保存」或失焦都保存,
+ * Escape 放回原值。与库里那一份相同时一律不发请求,失焦不该变成一次空写。
  */
 function RoleField({
   repo,
@@ -311,76 +312,48 @@ function RoleField({
   busy: boolean;
   onSave: (role: string) => void;
 }) {
-  const [editing, setEditing] = useState(false);
   const [text, setText] = useState(repo.role ?? "");
   useEffect(() => setText(repo.role ?? ""), [repo.role]);
-  // Escape 之后输入框卸载,浏览器可能还补一次 blur;那一次不能把改了一半的文字存下去。
-  const cancelled = useRef(false);
-  // 职责最长 64 字,一行常装不下;编辑框随内容长高,不让开头滚出视野。
-  const area = useRef<HTMLTextAreaElement>(null);
-  useLayoutEffect(() => {
-    const el = area.current;
-    if (el === null) return;
-    el.style.overflow = "hidden";
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [text, editing]);
-
-  if (!editing) {
-    return (
-      <button
-        type="button"
-        aria-label={`改 ${repoPath(repo)} 的职责`}
-        disabled={busy}
-        onClick={() => setEditing(true)}
-        className="-mx-1 flex min-w-0 items-start gap-1 rounded-sm px-1 py-0.5 text-left text-base transition-colors hover:bg-sunken focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 pointer-coarse:min-h-11"
-      >
-        <span className={repo.role === null ? "min-w-0 break-words text-text-disabled" : "min-w-0 break-words"}>
-          {repo.role ?? "填写职责"}
-        </span>
-        <Pencil1Icon
-          aria-hidden
-          className="mt-0.5 shrink-0 text-text-faint transition-opacity md:opacity-0 md:group-hover/repo:opacity-100 md:group-focus-within/repo:opacity-100"
-        />
-      </button>
-    );
-  }
-
-  const finish = (): void => {
-    setEditing(false);
-    if (cancelled.current) return;
-    if (text.trim() !== (repo.role ?? "")) onSave(text.trim());
+  const dirty = text.trim() !== (repo.role ?? "");
+  const save = (): void => {
+    if (dirty && !busy) onSave(text.trim());
   };
 
   return (
-    <TextArea
-      ref={area}
-      size="1"
-      rows={1}
-      resize="none"
-      className="min-h-0 min-w-0 w-full"
-      aria-label={`${repoPath(repo)} 的职责`}
-      placeholder="职责（选填）"
-      maxLength={64}
-      autoFocus
-      disabled={busy}
-      value={text}
-      onChange={(event) => setText(event.target.value)}
-      onFocus={() => {
-        cancelled.current = false;
-      }}
-      onBlur={finish}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          // 职责是一行文本,回车即保存,不进换行。
-          event.preventDefault();
-          event.currentTarget.blur();
-        } else if (event.key === "Escape") {
-          cancelled.current = true;
-          setText(repo.role ?? "");
-          setEditing(false);
-        }
-      }}
-    />
+    <div className="flex items-start gap-2">
+      <TextField.Root
+        size={{ initial: "3", sm: "2" }}
+        className="min-w-0 flex-1"
+        aria-label={`${repoPath(repo)} 的职责`}
+        placeholder="写一句它在这个产品里干什么（选填）"
+        maxLength={64}
+        value={text}
+        data-dirty={dirty}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={save}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            save();
+          } else if (event.key === "Escape") {
+            setText(repo.role ?? "");
+          }
+        }}
+      />
+      {dirty ? (
+        <Button
+          type="button"
+          variant="soft"
+          size={{ initial: "3", sm: "2" }}
+          className="shrink-0"
+          disabled={busy}
+          // 按下时不让输入框失焦:否则失焦先存一次,点击再存一次。
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={save}
+        >
+          保存
+        </Button>
+      ) : null}
+    </div>
   );
 }
