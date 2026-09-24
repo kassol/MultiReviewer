@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cross2Icon, Pencil1Icon } from "@radix-ui/react-icons";
-import { Dialog, Flex, IconButton, Select, Text, TextArea, TextField } from "@radix-ui/themes";
+import { Dialog, Flex, IconButton, Select, Skeleton, Text, TextArea, TextField } from "@radix-ui/themes";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -134,6 +134,12 @@ export function ManageReposDialog({
         maxWidth="560px"
         size={{ initial: "2", sm: "3" }}
         aria-busy={working}
+        // 默认焦点会落在第一行的职责上,打开即给它套一圈焦点环,看着像一格已经在编辑的输入框。
+        // 焦点改落浮层本身,与仓库配置、知识集两个弹窗同一处理。
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          (event.currentTarget as HTMLElement).focus();
+        }}
         // 在职责框里按 Escape 是放弃这一格的改动,不是关掉整个弹窗(`RoleField` 自己处理它)。
         onEscapeKeyDown={(event) => {
           if (event.target instanceof HTMLTextAreaElement) event.preventDefault();
@@ -160,7 +166,7 @@ export function ManageReposDialog({
                   className="group/repo flex items-start justify-between gap-2 border-t border-line px-3 py-2.5 first:border-t-0"
                 >
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <span className="min-w-0 break-all font-mono text-base">{repoPath(repo)}</span>
+                    <span className="min-w-0 wrap-anywhere font-mono text-base">{repoPath(repo)}</span>
                     <RoleField
                       repo={repo}
                       busy={working}
@@ -189,17 +195,22 @@ export function ManageReposDialog({
             </ul>
           )}
 
-          <form onSubmit={submitAttach} className="flex flex-col gap-1.5 border-t border-line pt-4">
-            <Text as="span" id="attach-repo-label" size="2" weight="medium">
-              归入仓库
-            </Text>
-            {reposQuery.isPending ? null : attachable.length === 0 ? (
-              <Text as="p" size="1" color="gray">
-                没有可归入的仓库：分配内的仓库都已经归在某个产品下了。
+          <form onSubmit={submitAttach} className="flex flex-col gap-3 border-t border-line pt-4">
+            {/* 标签 ↔ 控件 ↔ 说明 6px,字段之间 12px,与发起范围审查、重跑两处同一个节奏。 */}
+            <div className="flex flex-col gap-1.5">
+              <Text as="span" id="attach-repo-label" size="2" weight="medium">
+                归入仓库
               </Text>
-            ) : (
-              <>
-                <Select.Root size="3" value={repoId} onValueChange={setRepoId}>
+              {reposQuery.isPending ? (
+                <Skeleton aria-hidden height="32px" />
+              ) : reposQuery.isError ? (
+                <FeedbackCallout feedback={{ text: reposQuery.error.message, error: true }} />
+              ) : attachable.length === 0 ? (
+                <Text as="p" size="1" color="gray">
+                  没有可归入的仓库：分配内的仓库都已经归在某个产品下了。
+                </Text>
+              ) : (
+                <Select.Root size={{ initial: "3", sm: "2" }} value={repoId} onValueChange={setRepoId}>
                   <Select.Trigger
                     aria-labelledby="attach-repo-label"
                     placeholder="选一个仓库"
@@ -213,33 +224,40 @@ export function ManageReposDialog({
                     ))}
                   </Select.Content>
                 </Select.Root>
-                <Text as="label" htmlFor="attach-repo-role" size="2" weight="medium" mt="2">
-                  职责
-                </Text>
-                <TextField.Root
-                  id="attach-repo-role"
-                  size={{ initial: "3", sm: "2" }}
-                  className="min-w-0 w-full"
-                  placeholder="选填，例如：后端 API(Node)"
-                  maxLength={64}
-                  value={role}
-                  onChange={(event) => setRole(event.target.value)}
-                />
-                <Text as="p" size="1" color="gray">
-                  这个仓库在这个产品里干什么。Agent 会话的系统提示会把它写给 agent。
-                </Text>
-                <div className="flex justify-end pt-1">
+              )}
+            </div>
+            {reposQuery.isSuccess && attachable.length > 0 ? (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <Text as="label" htmlFor="attach-repo-role" size="2" weight="medium">
+                    职责
+                  </Text>
+                  <TextField.Root
+                    id="attach-repo-role"
+                    size={{ initial: "3", sm: "2" }}
+                    className="min-w-0 w-full"
+                    placeholder="选填，例如：后端 API(Node)"
+                    maxLength={64}
+                    aria-describedby="attach-repo-role-hint"
+                    value={role}
+                    onChange={(event) => setRole(event.target.value)}
+                  />
+                  <Text as="p" id="attach-repo-role-hint" size="1" color="gray">
+                    这个仓库在这个产品里干什么，最多 64 字；归入之后在上面的列表里也改得了。
+                  </Text>
+                </div>
+                <div className="flex justify-end">
                   <Button
                     type="submit"
                     variant="soft"
                     size={{ initial: "3", sm: "2" }}
                     disabled={working || chosen === undefined}
                   >
-                    {attach.isPending ? "归属中…" : "归属"}
+                    {attach.isPending ? "归入中…" : "归入"}
                   </Button>
                 </div>
               </>
-            )}
+            ) : null}
           </form>
 
           <Flex justify="end">
