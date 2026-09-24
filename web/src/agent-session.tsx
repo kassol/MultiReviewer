@@ -2131,7 +2131,9 @@ export function AgentSessionPage({
                       会话 <span className="font-mono tabular-nums">#{session.id}</span> ·{" "}
                       {session.title === null ? `${PURPOSE_LABEL[session.purpose]} · ` : null}
                       {session.createdBy} · {localMinute(session.createdAt)} ·{" "}
-                      <UsageLine usage={session.usage} /> token
+                      <span className="whitespace-nowrap">
+                        <UsageLine usage={session.usage} /> token
+                      </span>
                     </p>
                   )}
                   <BaselinesSummary
