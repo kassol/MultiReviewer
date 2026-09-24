@@ -1629,7 +1629,7 @@ function BaselinesSummary({
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger>
         {/* ghost 键的负外边距会让它在 flex 列里居中,钉回左边与元信息行对齐。 */}
-        <Button type="button" variant="ghost" color="gray" size="1" className="self-start lg:self-center">
+        <Button type="button" variant="ghost" color="gray" size="1" className="self-start lg:shrink-0 lg:self-center">
           <CommitIcon aria-hidden />
           {baselineLabel(baselines)}
         </Button>
@@ -2110,7 +2110,7 @@ export function AgentSessionPage({
               >
                 {/* 这一行不许折:标题、徽章与开关一旦换行,头部就从一行涨到两三行。标题让位
                     截断,徽章与开关保持整颗(issue #384)。 */}
-                <div className="flex min-w-0 flex-nowrap items-center gap-2 lg:flex-1">
+                <div className="flex min-w-0 flex-nowrap items-center gap-2 lg:min-w-[45%] lg:flex-1">
                   {/* 标题优先说这个会话在聊什么(`title`,服务端从首条用户消息派生);没有
                       标题的旧会话与开放对话退回用途名。单行截断,`title=` 补全文——头部
                       只占一行,屏幕留给对话流。 */}
@@ -2151,10 +2151,11 @@ export function AgentSessionPage({
                     lg 以下才听上面那颗开关。用 JS 按屏宽算开合的话,转屏那一下还要再算一次。 */}
                 <Collapsible.Content
                   forceMount
-                  className="flex min-w-0 flex-col gap-0.5 max-lg:data-[state=closed]:hidden lg:shrink-0 lg:flex-row lg:items-center lg:gap-3"
+                  className="flex min-w-0 flex-col gap-0.5 max-lg:data-[state=closed]:hidden lg:flex-row lg:items-center lg:gap-3"
                 >
                   {session === undefined ? null : (
-                    <p className="text-sm text-text-muted lg:whitespace-nowrap">
+                    // 有右栏时中栏窄,标题至少留 45%,这一行放不下就截断(会话号在最前,截不掉)。
+                    <p className="text-sm text-text-muted lg:truncate">
                       {/* 标题已经把用途说没了,元信息行不重复它;标题缺席时 h1 本身就是用途名。
                           克制成一行素文字,不再用 Badge 强调用途——三行封顶,用途只是其中一项元信息。 */}
                       {/* 日志、数据库与 API 都按会话的全局 id 索引,口头排障报的号要在
