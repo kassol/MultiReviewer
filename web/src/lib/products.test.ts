@@ -176,7 +176,7 @@ test("票行只列还开着的阻塞", () => {
   assert.equal(ticketNotes(ticket({ blockedBy: [1, 2] }), new Set()), "");
   assert.equal(
     ticketNotes(ticket({ state: "closed", claimedBy: "admin", blockedBy: [1] }), new Set([1])),
-    "已关 · admin 认领 · 等 #1",
+    "admin 认领 · 等 #1",
   );
   assert.deepEqual(
     [...openTicketIds([{ id: 1, title: "s", state: "open", tickets: [ticket({ id: 1 }), ticket({ id: 2, state: "closed" })] }])],

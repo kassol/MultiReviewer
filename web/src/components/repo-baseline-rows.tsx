@@ -5,7 +5,7 @@
 import { CommitIcon, Cross2Icon } from "@radix-ui/react-icons";
 import { Badge, Dialog, IconButton, Skeleton, Text } from "@radix-ui/themes";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { CommitChip } from "@/components/commit-chip";
 import { Button } from "@/components/theme-button";
@@ -166,9 +166,28 @@ function BaselineRow({
 }
 
 /**
+ * 弹窗里人动过的那几行(键是 `baselineRepoKey(repo)`)。弹窗每次打开都从一行没动开始:上一次
+ * 选的提交不该带进下一场会话。展开进 `RepoBaselineRows`,提交时交给 `pickedBaselines`。
+ */
+export function useBaselinePicks(open: boolean): {
+  picked: Readonly<Record<string, CommitSelection>>;
+  onPick: (repo: BaselineRepo, selection: CommitSelection) => void;
+} {
+  const [picked, setPicked] = useState<Record<string, CommitSelection>>({});
+  useEffect(() => {
+    if (open) setPicked({});
+  }, [open]);
+  return {
+    picked,
+    onPick: (repo, selection) =>
+      setPicked((current) => ({ ...current, [baselineRepoKey(repo)]: selection })),
+  };
+}
+
+/**
  * 一个仓库一行,预选这个仓库生效的默认分支当前 head;人只动要改的那几行,没动过的行不进
  * `picked`,调用方因此只提交动过的那几行——服务端对缺的仓库回落到生效的默认分支,两侧说的是
- * 同一件事。
+ * 同一件事。上面带一行「每个仓库读哪个提交」与一句提示,两个弹窗一字不差;没有仓库时整段不画。
  */
 export function RepoBaselineRows({
   repos,
@@ -183,17 +202,26 @@ export function RepoBaselineRows({
   /** 选择器里这一侧的名字,缺省「基点」。 */
   pickerLabel?: string;
 }) {
+  if (repos.length === 0) return null;
   return (
-    <div className="flex flex-col">
-      {repos.map((repo) => (
-        <BaselineRow
-          key={baselineRepoKey(repo)}
-          repo={repo}
-          picked={picked[baselineRepoKey(repo)]}
-          pickerLabel={pickerLabel}
-          onPick={(selection) => onPick(repo, selection)}
-        />
-      ))}
+    <div className="flex flex-col gap-1.5">
+      <Text as="span" size="2" weight="medium">
+        每个仓库读哪个提交
+      </Text>
+      <Text as="span" size="1" color="gray">
+        不动即读这个仓库生效默认分支此刻的 head。
+      </Text>
+      <div className="flex flex-col">
+        {repos.map((repo) => (
+          <BaselineRow
+            key={baselineRepoKey(repo)}
+            repo={repo}
+            picked={picked[baselineRepoKey(repo)]}
+            pickerLabel={pickerLabel}
+            onPick={(selection) => onPick(repo, selection)}
+          />
+        ))}
+      </div>
     </div>
   );
 }

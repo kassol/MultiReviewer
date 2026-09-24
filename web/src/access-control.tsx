@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircledIcon, Cross2Icon, CrossCircledIcon, DotsHorizontalIcon, PlusIcon } from "@radix-ui/react-icons";
+import { Cross2Icon, CrossCircledIcon, DotsHorizontalIcon, PlusIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Checkbox, Dialog, DropdownMenu, Flex, IconButton, Select, Skeleton, Switch, Table, Tabs, Text, TextField, Tooltip } from "@radix-ui/themes";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { FeedbackCallout, type Feedback } from "@/components/feedback-callout";
 import { PageBody } from "@/components/page-body";
 import { PageHeader } from "@/components/page-header";
 import { StatusBadge } from "@/components/status-badge";
@@ -80,7 +81,7 @@ function toggleRepoId(repoIds: readonly number[], repoId: number): number[] {
 
 export function AccessControlPage() {
   const queryClient = useQueryClient();
-  const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [createKind, setCreateKind] = useState<"user" | "role" | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "reset" | "delete-user" | "delete-role"; id: string; label: string } | null>(null);
   const [resetPassword, setResetPassword] = useState("");
@@ -261,14 +262,7 @@ export function AccessControlPage() {
         <PageHeader
           title="访问控制"
         />
-        {feedback === null ? null : (
-          <Callout.Root role={feedback.error ? "alert" : "status"} color={feedback.error ? "red" : "green"} size="1">
-            <Callout.Icon>
-              {feedback.error ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-            </Callout.Icon>
-            <Callout.Text>{feedback.text}</Callout.Text>
-          </Callout.Root>
-        )}
+        <FeedbackCallout feedback={feedback} />
         {loadError === null ? null : (
           <Callout.Root role="alert" color="red" size="1">
             <Callout.Icon><CrossCircledIcon aria-hidden /></Callout.Icon>

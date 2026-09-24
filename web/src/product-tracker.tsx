@@ -538,10 +538,7 @@ export function TrackerSection({
                     <span className="truncate text-sm text-text-muted" title={spec.title}>
                       {spec.title}
                     </span>
-                    {/* 已关那一句列头已经说了,卡上只留认领人与还挡着它的票。 */}
-                    {notes.replace(/^已关( · )?/, "") === "" ? null : (
-                      <span className="text-sm text-text-secondary">{notes.replace(/^已关( · )?/, "")}</span>
-                    )}
+                    {notes === "" ? null : <span className="text-sm text-text-secondary">{notes}</span>}
                   </button>
                 );
               })

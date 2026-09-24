@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
-  CheckCircledIcon,
   ChevronDownIcon,
   Cross2Icon,
   CrossCircledIcon,
@@ -19,29 +18,28 @@ import {
   IconButton,
   Skeleton,
   Tabs,
-  Text,
   TextField,
   Tooltip,
 } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { FeedbackCallout, type Feedback } from "@/components/feedback-callout";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { PageBody } from "@/components/page-body";
 import {
-  baselineRepoKey,
   pickedBaselines,
   RepoBaselineRows,
+  useBaselinePicks,
   type SessionBaseline,
 } from "@/components/repo-baseline-rows";
 import { Statement } from "@/components/statement";
 import { TAB_TRIGGER } from "@/components/tab-trigger";
 import { Button } from "@/components/theme-button";
-import type { CommitSelection } from "@/commit-picker";
-import { sessionsQueryKey, type AgentSession } from "@/lib/agent-sessions";
+import type { AgentSession } from "@/lib/agent-sessions";
 import {
   currentProduct,
   filterKnowledge,
@@ -58,7 +56,7 @@ import { productListQuery } from "@/lib/product-queries";
 import { localMinute } from "@/lib/time";
 
 import { send } from "./api.ts";
-import { NameDialog, ProductRail, useProductDetail, useProductSessions } from "./product-rail.tsx";
+import { NameDialog, ProductRail, useEnterSession, useProductDetail, useProductSessions } from "./product-rail.tsx";
 import { TrackerSection, type TrackerView } from "./product-tracker.tsx";
 
 /** 主区停在哪一页。缺省是产品知识——读它的人比动 tracker 的人多。 */
@@ -87,7 +85,7 @@ export function ProductsPage({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [dialog, setDialog] = useState<"rename" | "survey" | null>(null);
   const [confirming, setConfirming] = useState(false);
   /*
@@ -222,6 +220,7 @@ export function ProductsPage({
    * `baselines` 是人在梳理弹窗里动过的那几行(issue #353);一行都没动就不带它,每个仓库
    * 读生效默认分支此刻的最新提交。
    */
+  const enterSession = useEnterSession();
   const survey = useMutation({
     mutationFn: (input: { product: Product; baselines: SessionBaseline[] }) =>
       send<{ session: AgentSession }>(
@@ -229,14 +228,10 @@ export function ProductsPage({
         "POST",
         input.baselines.length === 0 ? undefined : { baselines: input.baselines },
       ),
-    onSuccess: async ({ session }) => {
+    onSuccess: ({ session }) => {
       setDialog(null);
-      await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
       void refreshKnowledge();
-      void navigate({
-        to: "/products/$productId/sessions/$sessionId",
-        params: { productId: String(session.productId), sessionId: String(session.id) },
-      });
+      return enterSession(session);
     },
     // 回绝那一句在页顶的 Callout 里,弹窗开着就挡住它:先关弹窗再报(issue #353 的选错 sha
     // 是这一条唯一能触发的新回绝)。
@@ -399,18 +394,7 @@ export function ProductsPage({
           {selected.name}
         </h2>
       )}
-      {feedback === null ? null : (
-        <Callout.Root
-          role={feedback.error ? "alert" : "status"}
-          color={feedback.error ? "red" : "green"}
-          size="1"
-        >
-          <Callout.Icon>
-            {feedback.error ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-          </Callout.Icon>
-          <Callout.Text>{feedback.text}</Callout.Text>
-        </Callout.Root>
-      )}
+      <FeedbackCallout feedback={feedback} />
       {loadError === null ? null : (
         <Callout.Root role="alert" color="red" size="1">
           <Callout.Icon>
@@ -542,14 +526,11 @@ function SurveyDialog({
   onClose: () => void;
   onSubmit: (baselines: SessionBaseline[]) => void;
 }) {
-  const [picked, setPicked] = useState<Record<string, CommitSelection>>({});
-  useEffect(() => {
-    if (open) setPicked({});
-  }, [open]);
+  const baseline = useBaselinePicks(open);
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    onSubmit(pickedBaselines(picked));
+    onSubmit(pickedBaselines(baseline.picked));
   };
 
   return (
@@ -569,20 +550,7 @@ function SurveyDialog({
               让 agent 读一遍「{productName}」的全部仓库，再按轮问你，把谈定的写进产品知识。
             </Dialog.Description>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Text as="span" size="2" weight="medium">
-              每个仓库读哪个提交
-            </Text>
-            <Text as="span" size="1" color="gray">
-              不动即读这个仓库生效默认分支此刻的 head。
-            </Text>
-            <RepoBaselineRows
-              repos={repos}
-              picked={picked}
-              onPick={(repo, selection) =>
-                setPicked((current) => ({ ...current, [baselineRepoKey(repo)]: selection }))}
-            />
-          </div>
+          <RepoBaselineRows repos={repos} {...baseline} />
           <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
             <Dialog.Close>
               <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>

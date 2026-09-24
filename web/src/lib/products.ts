@@ -85,11 +85,13 @@ export function openTicketIds(specs: readonly TrackerSpec[]): Set<number> {
   );
 }
 
-/** 一张票那一行右侧的几句:状态、认领人、还挡着它的票。没有的那几样不占位置。 */
+/**
+ * 看板卡片底下那一句:认领人、还挡着它的票。没有的那几样不占位置。开关不在这里说——卡片所在
+ * 那一列的列头已经写着。
+ */
 export function ticketNotes(ticket: TrackerTicket, openTickets: ReadonlySet<number>): string {
   const blockers = ticket.blockedBy.filter((id) => openTickets.has(id));
   return [
-    ticket.state === "closed" ? "已关" : null,
     ticket.claimedBy === null ? null : `${ticket.claimedBy} 认领`,
     blockers.length === 0 ? null : `等 ${blockers.map((id) => `#${id}`).join("、")}`,
   ]

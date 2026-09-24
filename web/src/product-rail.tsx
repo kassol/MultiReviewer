@@ -14,17 +14,17 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import type { Feedback } from "@/components/feedback-callout";
 import { MasterListItem, MasterListItemText } from "@/components/master-list-item";
 import { RailCard } from "@/components/rail-card";
 import {
-  baselineRepoKey,
   pickedBaselines,
   RepoBaselineRows,
+  useBaselinePicks,
   type BaselineRepo,
   type SessionBaseline,
 } from "@/components/repo-baseline-rows";
 import { Button } from "@/components/theme-button";
-import type { CommitSelection } from "@/commit-picker";
 import {
   AGENT_SESSION_PURPOSES,
   PURPOSE_LABEL,
@@ -69,6 +69,22 @@ export function useProductDetail(productId: number | undefined) {
 }
 
 /**
+ * 刚开起来的会话:先失效这个产品的会话列表,再跳进去——左栏那一行跳过去时就已经在。建会话与
+ * 梳理共用这一段,两处都是「开了就进去说话」。
+ */
+export function useEnterSession(): (session: AgentSession) => Promise<void> {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  return async (session) => {
+    await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
+    void navigate({
+      to: "/products/$productId/sessions/$sessionId",
+      params: { productId: String(session.productId), sessionId: String(session.id) },
+    });
+  };
+}
+
+/**
  * 移出确认框的说明。产品知识不跟着仓库退役(issue #360):条目说的是这个产品是什么、它的
  * 仓库之间怎么协作,少一个仓库并不让某一条当场不成立,说的正是那个仓库的那几条由下一场梳理
  * 改写或撤回,而那一场由人在产品页上开(issue #365)。
@@ -106,7 +122,7 @@ export function ProductRail({
   busy?: boolean;
   className?: string;
   /** 回执交给调用页那条 Callout;`null` 即动手前先把上一条清掉。 */
-  onFeedback: (feedback: { text: string; error: boolean } | null) => void;
+  onFeedback: (feedback: Feedback | null) => void;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -186,6 +202,7 @@ export function ProductRail({
     onError: failed,
   });
 
+  const enterSession = useEnterSession();
   /** 建会话。建完直接进那个会话:下一步就是在里面说话,不让人再点一次。 */
   const createSession = useMutation({
     mutationFn: (input: {
@@ -198,13 +215,9 @@ export function ProductRail({
         purpose: input.purpose,
         ...(input.baselines.length === 0 ? {} : { baselines: input.baselines }),
       }),
-    onSuccess: async ({ session }) => {
+    onSuccess: ({ session }) => {
       setDialog(null);
-      await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(session.productId) });
-      void navigate({
-        to: "/products/$productId/sessions/$sessionId",
-        params: { productId: String(session.productId), sessionId: String(session.id) },
-      });
+      return enterSession(session);
     },
     onError: failed,
   });
@@ -838,18 +851,15 @@ function CreateSessionDialog({
   onSubmit: (purpose: AgentSessionPurpose, baselines: SessionBaseline[]) => void;
 }) {
   const [purpose, setPurpose] = useState<string>(DEFAULT_PURPOSE);
-  const [picked, setPicked] = useState<Record<string, CommitSelection>>({});
+  const baseline = useBaselinePicks(open);
   useEffect(() => {
-    if (open) {
-      setPurpose(DEFAULT_PURPOSE);
-      setPicked({});
-    }
+    if (open) setPurpose(DEFAULT_PURPOSE);
   }, [open]);
 
   const chosen = CREATABLE_PURPOSES.find((value) => value === purpose);
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    if (chosen !== undefined) onSubmit(chosen, pickedBaselines(picked));
+    if (chosen !== undefined) onSubmit(chosen, pickedBaselines(baseline.picked));
   };
 
   return (
@@ -888,22 +898,7 @@ function CreateSessionDialog({
               </Select.Content>
             </Select.Root>
           </div>
-          {repos.length === 0 ? null : (
-            <div className="flex flex-col gap-1.5">
-              <Text as="span" size="2" weight="medium">
-                每个仓库读哪个提交
-              </Text>
-              <Text as="span" size="1" color="gray">
-                不动即读这个仓库生效默认分支此刻的 head。
-              </Text>
-              <RepoBaselineRows
-                repos={repos}
-                picked={picked}
-                onPick={(repo, selection) =>
-                  setPicked((current) => ({ ...current, [baselineRepoKey(repo)]: selection }))}
-              />
-            </div>
-          )}
+          <RepoBaselineRows repos={repos} {...baseline} />
           <Flex gap="3" justify="end" direction={{ initial: "column-reverse", sm: "row" }}>
             <Dialog.Close>
               <Button type="button" variant="outline" color="gray" size={{ initial: "4", sm: "2" }}>

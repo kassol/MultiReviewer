@@ -11,6 +11,7 @@ import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useSta
 
 import { CardShell } from "@/components/card-shell";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import type { Feedback } from "@/components/feedback-callout";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EditableModelCombobox } from "@/components/editable-model-combobox";
 import { EmptyState } from "@/components/empty-state";
@@ -1576,7 +1577,7 @@ function CredentialControls({
     : "";
   const [validationModel, setValidationModel] = useState(initialValidationModel);
   const [mutationVersion, setMutationVersion] = useState(target.version);
-  const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const dialogFocus = useDialogReturnFocus(modelServiceStableFocus);
   const deleteFocus = useDialogReturnFocus(modelServiceStableFocus);

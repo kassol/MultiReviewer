@@ -49,6 +49,7 @@ import { CardShell } from "@/components/card-shell";
 import { CommitChip } from "@/components/commit-chip";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
+import { FeedbackCallout, type Feedback } from "@/components/feedback-callout";
 import { Markdown } from "@/components/markdown";
 import { PageBody } from "@/components/page-body";
 import { ReplyReader } from "@/components/reply-reader";
@@ -1801,7 +1802,7 @@ export function AgentSessionPage({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [confirming, setConfirming] = useState(false);
   /** 正在确认更新基点的那一行(issue #356)。null 即弹窗关着。 */
   const [updating, setUpdating] = useState<AgentSessionBaseline | null>(null);
@@ -2039,18 +2040,7 @@ export function AgentSessionPage({
   // 是这一页的底,`PageBody` 默认那段为滚到底的最后一张卡留的空在这里只是把输入区顶上去。
   return (
     <PageBody className="h-full pt-4 pb-4 sm:pt-6">
-      {feedback === null ? null : (
-        <Callout.Root
-          role={feedback.error ? "alert" : "status"}
-          color={feedback.error ? "red" : "green"}
-          size="1"
-        >
-          <Callout.Icon>
-            {feedback.error ? <CrossCircledIcon aria-hidden /> : <CheckCircledIcon aria-hidden />}
-          </Callout.Icon>
-          <Callout.Text>{feedback.text}</Callout.Text>
-        </Callout.Root>
-      )}
+      <FeedbackCallout feedback={feedback} />
       {loadError === null ? null : (
         <Callout.Root role="alert" color="red" size="1">
           <Callout.Icon>
