@@ -1560,13 +1560,9 @@ function StateRows({ service, canReadCredential }: { service: ModelService; canR
 
 function CredentialControls({
   target,
-  dialog = false,
-  onClose,
   headerAction,
 }: {
   target: CredentialTarget;
-  dialog?: boolean;
-  onClose?: () => void;
   /** 内置服务的「轮换凭据」:与删除同放卡头,和「服务配置」卡的 [修改配置][删除服务] 同形。 */
   headerAction?: ReactNode;
 }) {
@@ -1579,7 +1575,6 @@ function CredentialControls({
   const [mutationVersion, setMutationVersion] = useState(target.version);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const dialogFocus = useDialogReturnFocus(modelServiceStableFocus);
   const deleteFocus = useDialogReturnFocus(modelServiceStableFocus);
   const expectedVersion = Math.max(target.version, mutationVersion);
 
@@ -1628,7 +1623,6 @@ function CredentialControls({
       void queryClient.invalidateQueries({ queryKey: ["model-services"] }).then(() => {
         deleteFocus.restoreFocus();
       });
-      if (dialog) onClose?.();
     },
   });
 
@@ -1652,7 +1646,7 @@ function CredentialControls({
 
   const maintenanceForm = (
     <form
-      className={cn("flex flex-col gap-2.5", !dialog && "border-t border-line px-4 pt-3.5 pb-4 sm:px-5")}
+      className="flex flex-col gap-2.5 border-t border-line px-4 pt-3.5 pb-4 sm:px-5"
       onSubmit={(event) => {
         event.preventDefault();
         setFeedback(null);
@@ -1677,7 +1671,6 @@ function CredentialControls({
         <Button type="submit" variant="solid" size={{ initial: "4", sm: "2" }} disabled={reverify.isPending || validationModel.trim() === ""}>
           {reverify.isPending ? "正在验证…" : "重新验证"}
         </Button>
-        {dialog ? deleteButton : null}
       </div>
       <p className="text-base text-text-muted">可从自动发现的模型中选择，也可手填目录外的 model id；提交时会重新发现目录并执行一次最小真实推理。</p>
       {feedback === null ? null : (
@@ -1735,44 +1728,6 @@ function CredentialControls({
       )}
     </ConfirmDialog>
   );
-
-  if (dialog) {
-    return (
-      <>
-        <Dialog.Root open onOpenChange={(open) => { if (!open) onClose?.(); }}>
-          <Dialog.Content
-            maxWidth="640px"
-            maxHeight="calc(100dvh - 2rem)"
-            size={{ initial: "2", sm: "3" }}
-            className="rounded-2xl shadow-modal sm:rounded-3xl"
-            onCloseAutoFocus={dialogFocus.onCloseAutoFocus}
-          >
-            <div className="pr-9">
-              <Dialog.Title size="6" mb="2" className="break-words font-extrabold tracking-[-0.02em]">维护 {target.provider} 的模型凭据</Dialog.Title>
-              <Dialog.Description size="2" color="gray">重新验证使用已存凭据，凭据与已存验证记录不会回到浏览器。</Dialog.Description>
-            </div>
-            <div className="mt-4">{maintenanceForm}</div>
-            <div className="absolute top-3 right-3">
-              <Tooltip content="关闭凭据维护">
-                <Dialog.Close>
-                  <IconButton
-                    variant="soft"
-                    color="gray"
-                    radius="full"
-                    size={{ initial: "3", sm: "2" }}
-                    aria-label="关闭凭据维护"
-                  >
-                    <Cross2Icon aria-hidden />
-                  </IconButton>
-                </Dialog.Close>
-              </Tooltip>
-            </div>
-          </Dialog.Content>
-        </Dialog.Root>
-        {deleteConfirmDialog}
-      </>
-    );
-  }
 
   return (
     <CardShell className="overflow-hidden" aria-labelledby={`credential-actions-${target.provider}`}>
