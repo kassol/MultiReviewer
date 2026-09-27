@@ -200,7 +200,7 @@ export function rootedTool(
       const path = (params as { path?: unknown } | null)?.path;
       if (typeof path === "string" && outsideSessionRoot(sessionRoot, path)) {
         throw new Error(
-          `cannot use ${path}: every path stays inside the session root, one directory per repository`,
+          `cannot use ${path}: it is outside the working directory; pass a path inside it`,
         );
       }
       return definition.execute(id, params, signal, onUpdate, ctx);

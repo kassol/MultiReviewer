@@ -179,7 +179,7 @@ export function sessionSystemPrompt(request: OpenSessionRequest): string {
     "",
     // 会话子代理(issue #358):深读一段代码不必占着对话。派单参数由工具边界钉死,这里只说
     // 它是什么、什么时候派,不教它写参数——写错的那几项会被改回来。
-    `The ${SUBAGENT_TOOL} tool sends a read-only investigator into these repositories. Call it with agent set to "${SESSION_SUBAGENT_AGENT}" — that is the only agent available — and one question per task; the call waits and returns the investigator's report. Send one when the answer needs a deep read the conversation should not wait through, and send several in one call when the questions are independent. The investigator reads and reports; it decides nothing, and what it brings back is yours to judge.`,
+    `The ${SUBAGENT_TOOL} tool sends a read-only investigator into these repositories. Call it with agent set to "${SESSION_SUBAGENT_AGENT}" — that is the only agent available — and one question per task; the call waits and returns the investigator's report. Make that dispatch your first call: do not call the tool with action "list" or any other action first — this session has no management actions, the tool description's advice to list agents does not apply here, and such a call is refused and wastes a turn. Send one when the answer needs a deep read the conversation should not wait through, and send several in one call when the questions are independent. The investigator reads and reports; it decides nothing, and what it brings back is yours to judge.`,
     "",
     "## What this product has written down",
     "",

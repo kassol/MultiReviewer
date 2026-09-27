@@ -502,7 +502,7 @@ test("Reviewer 会话里的 grep / find / ls 圈在工作副本上:出根的路�
     const call = events.find((event) => event.kind === "tool_call" && event.tool === name);
     assert.ok(call?.kind === "tool_call", `轨迹里没有 ${name}`);
     assert.equal(call.isError, true, `${name} 放过了出根的路径`);
-    assert.match(call.error ?? "", /inside the session root/);
+    assert.match(call.error ?? "", /outside the working directory/);
   }
   // 出根被拒是探索仓库的正常摩擦,不算契约失配。
   assert.equal(outcome.rejectedToolCalls, 0);
@@ -538,7 +538,7 @@ test("取证子会话的四件套与 Reviewer 同一份:grep / find / ls 出根�
     const inner = nested.find((event) => event.kind === "tool_call" && event.tool === name);
     assert.ok(inner?.kind === "tool_call", `取证轨迹里没有 ${name}`);
     assert.equal(inner.isError, true, `子会话的 ${name} 放过了出根的路径`);
-    assert.match(inner.error ?? "", /inside the session root/);
+    assert.match(inner.error ?? "", /outside the working directory/);
   }
   // read 是带号那一份:子会话第三次请求里的工具返回带 `1: ` 前缀。
   const readResult = requests[3]!.messages.filter((m) => m.role === "tool").at(-1);

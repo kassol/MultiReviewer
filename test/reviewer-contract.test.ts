@@ -585,6 +585,11 @@ test("只复核那一轮的系统提示只讲复核,不要求报出新 Finding",
   assert.match(VERDICT_ONLY_SYSTEM_PROMPT, /review_prior_finding exactly once/);
   // 取证口径与中文叙述两种模式同一份:复核同样只能对读过的代码下结论。
   assert.match(VERDICT_ONLY_SYSTEM_PROMPT, /Evidence calls are limited/);
+  // pi-subagents 的工具描述叫模型先 {action:"list"},这里没有管理动作,那一次必被拦下
+  // (2026-09-27 Run 146 首派即如此),两份系统提示都要先说破。
+  for (const prompt of [SYSTEM_PROMPT, VERDICT_ONLY_SYSTEM_PROMPT]) {
+    assert.match(prompt, /do not call the tool with action "list"/);
+  }
   assert.match(VERDICT_ONLY_SYSTEM_PROMPT, /Narrate in Chinese/);
   // 完整审查那份照旧要求报出。
   assert.match(SYSTEM_PROMPT, /Report each problem by calling the report_finding tool/);

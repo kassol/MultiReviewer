@@ -94,6 +94,8 @@ test("系统提示写出产品名,有职责的仓库带破折号那一段,没有
     prompt,
     /^The note after the dash says what that repository is for in this product; start from it to decide which repository to read\.$/m,
   );
+  // pi-subagents 的工具描述叫模型先 {action:"list"},会话里那一次同样必被拦下。
+  assert.match(prompt, /do not call the tool with action "list"/);
 });
 
 test("没有一个仓库写过职责时,不写那句说破折号的话", () => {
