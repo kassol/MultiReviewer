@@ -11,6 +11,7 @@ allowBuilds:
 # pnpm 11 默认拒装发布不满 24 小时的版本(minimumReleaseAge),镜像里的
 # `pnpm install --frozen-lockfile` 也按锁文件逐项核验。Pi 0.87.1 发布于 2026-09-22、
 # pi-subagents 0.70.1 发布于 2026-09-21(issue #462),升级当天不豁免就装不进镜像。
+# pi-subagents 0.71.0 升级时已过窗口,不需要豁免。
 # 豁免只钉树里实际装上的这几个精确版本,过了窗口它们自然失效,留着不影响之后的升级。
 # 0.68 起 pi-subagents 不再捆绑 pi-server,它与 pi-protocol 已不在树里。
 minimumReleaseAgeExclude:
@@ -20,4 +21,3 @@ minimumReleaseAgeExclude:
   - "@earendil-works/pi-coding-agent@0.87.1"
   - "@earendil-works/pi-telemetry@0.87.1"
   - "@earendil-works/pi-tui@0.87.1"
-  - "pi-subagents@0.70.1"

@@ -142,6 +142,9 @@ test("取证真跑一遍:文件内容回到子会话的模型请求,过程嵌进
   // 不在。单层靠工具面构造出来,不靠深度计数(issue #262)。
   const [parentFirst, childFirst, childSecond, parentSecond] = requests;
   assert.ok(parentFirst!.tools.includes(SUBAGENT_TOOL));
+  // pi-subagents 0.71 起 subagent 可改为经 subagents_enable 按需加载;Reviewer 必须一开始
+  // 就拿得到 subagent,加载器不能出现在工具面上。
+  assert.ok(!parentFirst!.tools.includes("subagents_enable"));
   assert.ok(parentFirst!.tools.includes("report_finding"));
   assert.deepEqual([...childFirst!.tools].sort(), ["find", "grep", "ls", "read"]);
 

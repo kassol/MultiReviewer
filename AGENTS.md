@@ -8,7 +8,7 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.87.1 与 pi-subagents 0.70.1:`@earendil-works/pi-server` 已不在依赖树里——Pi 的根入口不引用它,pi-subagents 0.68 起也不再捆绑它(只有后台子会话用得到,本项目一律前台)。运行时第三方依赖是这两个加上 Pi 工具 schema 用的 `typebox`、库层的 `drizzle-orm` 与 `pg`,共五个(`drizzle-kit` 是开发依赖)。**持久化用 PostgreSQL,经 Drizzle 读写(ADR 0036)**:只接外部实例,schema 用 TS 写在 `src/review/schema/`,迁移文件由 drizzle-kit 生成进 `drizzle/` 并在服务启动时执行。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 0.87.1 与 pi-subagents 0.71.0:`@earendil-works/pi-server` 已不在依赖树里——Pi 的根入口不引用它,pi-subagents 0.68 起也不再捆绑它(只有后台子会话用得到,本项目一律前台)。运行时第三方依赖是这两个加上 Pi 工具 schema 用的 `typebox`、库层的 `drizzle-orm` 与 `pg`,共五个(`drizzle-kit` 是开发依赖)。**持久化用 PostgreSQL,经 Drizzle 读写(ADR 0036)**:只接外部实例,schema 用 TS 写在 `src/review/schema/`,迁移文件由 drizzle-kit 生成进 `drizzle/` 并在服务启动时执行。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
 
 ## 目录索引
 
@@ -188,6 +188,7 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 
 ## 变更日志
 
+- 2026-09-27: **pi-subagents 升到 0.71.0**(调研见 `docs/research/pi-upgrade-2026-09-27.md`),Pi 仍是 0.87.1(已是最新)。0.71 唯一相关的改动是 `subagent` 可改为经 `subagents_enable` 按需加载:它认不出本项目的 Reviewer / 会话子进程是 Pi 宿主,于是保持即时可用,工具面与取证契约不变,源码一行未改;代价是每个子进程在日志里多一行 `keeping subagent eagerly available`。取证回归补一条断言钉住加载器不出现在 Reviewer 工具面上。0.71.0 发布已过 24 小时,`pnpm-workspace.yaml` 删掉 0.70.1 那条发布年龄豁免。顺手修复:`test/panel-frontend-bundle.test.ts` 仍断言模型目录的「再显示」,该文案已随 2026-09-24 的分页改动删掉,改断言分页的「模型分页」。
 - 2026-09-24: **产品页与会话页的写动作各归其位**(纯前端,服务端无改动,细节见 `web/AGENTS.md` 同日条目)。票的认领、改标签与开关在 tracker 列表的票行上就做得了;spec 弹窗去掉右侧侧栏,导出只留列表组头一处;左栏仓库卡只读,归入、改职责与移出搬进产品页「…」下的「管理仓库」弹窗,会话页上不再出现;左栏「会话」卡默认只列 5 条;左栏写动作在跑时页头动作一并禁用。另把产品 tracker 拆成 `web/src/product-tracker.tsx`,产品与会话的四份查询收进 `web/src/lib/product-queries.ts`。
 - 2026-09-23: **backlog #463 清空**:Agent 会话冷启动开跑之前那段窗口里的三处边角修掉——删会话不再往已删的会话落排队消息、取留存失败时触发那一条照样投出去、开跑之前点清空连留存一起清;测试夹具的假模型服务改为起来即进收尾队列,harness 建到一半失败不再让测试进程挂死;开发机临时目录里残留的会话根来自被外部强杀的测试进程,正常收尾不漏,已手动清掉。无 schema 变更,细节见 `src/AGENTS.md`。
 - 2026-09-23: 地图 [#386](https://github.com/kassol/MultiReviewer/issues/386) 改方向(未开工):平台本期不自建执行环境,产品 tracker 的票交给开发者本机的 coding agent 消费,平台负责 spec / 票与 PR 上的多模型审查两头并接上交接(本机 agent 接入 tracker、票与 PR 关联、合并关票、审查拿票当规格)。原目的地「实现会话用途」与 grill 第一轮四题作废;认领与 `ready-for-agent` / `ready-for-human` 眼下仍只是标记。
