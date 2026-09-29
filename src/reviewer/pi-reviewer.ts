@@ -116,6 +116,7 @@ export async function runInChild(
   let usage: ReviewerUsage | undefined;
   let stopReason: string | undefined;
   let turns: number | undefined;
+  let verdictNudge: { missingBefore: number } | undefined;
 
   const request: ReviewerRequest = {
     runtimeModel: config.runtimeModel,
@@ -186,6 +187,7 @@ export async function runInChild(
       usage = message.usage;
       stopReason = message.stopReason;
       turns = message.turns;
+      verdictNudge = message.verdictNudge;
     },
   });
 
@@ -202,5 +204,7 @@ export async function runInChild(
     // 子进程没回报收尾消息就退出时两格都取不到(issue #408),如实缺失。
     ...(stopReason === undefined ? {} : { stopReason }),
     ...(turns === undefined ? {} : { turns }),
+    // 续问过一次才带(issue #431),批次收尾事件据它记下续前缺几条。
+    ...(verdictNudge === undefined ? {} : { verdictNudge }),
   };
 }

@@ -2433,6 +2433,9 @@ export async function runReview(
             // 这个模型这一批的收尾(issue #408):在这一刻落,不等整轮跑完——一个模型在
             // 某几批上无声收工时,轮次级那条收尾只汇总得出总数,说不出是哪一批。
             // 失败与正常同一档,由 `failed` 分;「给出 / 应给」指的就是复核结论。
+            const verdictsGiven = (outcome.verdicts ?? []).filter((v) =>
+              wanted.has(v.findingId),
+            ).length;
             trace.reviewer(reviewer.model, "reviewer_batch_finished", {
               batch: batch.index,
               failed: outcome.failure !== undefined,
@@ -2444,10 +2447,21 @@ export async function runReview(
               findings: findings.length,
               rejectedToolCalls: outcome.rejectedToolCalls,
               anchorRejections: outcome.anchorRejections,
-              verdictsGiven: (outcome.verdicts ?? []).filter((v) => wanted.has(v.findingId)).length,
+              verdictsGiven,
               verdictsExpected: wanted.size,
               usage: outcome.usage ?? null,
               durationMs,
+              // 续问过一次才有这一格(issue #431):续前缺几条是 Reviewer 报的,续后缺几条按
+              // 本批落下的给出算——与上面两格同一口径,面板不必自己再减一次。没续过的批次
+              // 载荷与这一票之前逐字一致。
+              ...(outcome.verdictNudge === undefined
+                ? {}
+                : {
+                    verdictNudge: {
+                      missingBefore: outcome.verdictNudge.missingBefore,
+                      missingAfter: wanted.size - verdictsGiven,
+                    },
+                  }),
             });
             return timed;
           }),

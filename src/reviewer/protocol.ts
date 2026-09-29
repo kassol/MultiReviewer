@@ -62,6 +62,11 @@ export type WorkerMessage =
        * 不依赖事件流。
        */
       turns?: number;
+      /**
+       * 这一批收尾前复核结论给出少于应给、在同一会话里续问过一次(issue #431):续问前还缺
+       * 几条。没续过即缺席。
+       */
+      verdictNudge?: { missingBefore: number };
       /** Pi 会话统计出的用量。会话没建起来时取不到。 */
       usage?: ReviewerUsage;
     };

@@ -4,7 +4,11 @@
  * 每个 Reviewer 一个进程,进程的环境里只有它自己那一家厂商的凭据(见 `env.ts`)。
  * 这里跑一个 Pi 会话,把模型经 `report_finding` 报出的每条原始条目立即回传主进程。
  */
-import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  type InlineExtension,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import type {
@@ -109,7 +113,7 @@ Write the title, description, impact and suggestion fields in Chinese. The revie
 
 ${NARRATION_PARAGRAPH}
 
-When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. When one of them is still there but its code was rewritten or moved, give the verdict present together with position: the line it sits on now and the snippet of that line, copied verbatim from the read output. Give position only in that case, and when you give it, give both line and snippet — a position with either one missing or an empty snippet is an invalid call.`;
+When the prompt lists findings reported earlier in this review stage, call review_prior_finding exactly once for every one of them that is still open, and never report one of them again through report_finding. A verdict exists only when it is given through review_prior_finding: a verdict written in prose does not exist. When one of them is still there but its code was rewritten or moved, give the verdict present together with position: the line it sits on now and the snippet of that line, copied verbatim from the read output. Give position only in that case, and when you give it, give both line and snippet — a position with either one missing or an empty snippet is an invalid call.`;
 
 /**
  * 只复核那一轮的系统提示(issue #270)。与完整审查那份的差别只有一处语义:这一轮没有
@@ -132,7 +136,7 @@ ${EVIDENCE_PARAGRAPH}
 
 ${NARRATION_PARAGRAPH}
 
-Call review_prior_finding exactly once for every finding the prompt lists as still open — those verdicts are the whole output of this round. Judge each one from the code you have read: present when the problem is still there, fixed when the change removed it, unclear when you cannot tell. When one of them is still there but its code was rewritten or moved, give the verdict present together with position: the line it sits on now and the snippet of that line, copied verbatim from the read output. Give position only in that case, and when you give it, give both line and snippet — a position with either one missing or an empty snippet is an invalid call. A position on a line this change does not touch is dropped and the finding stays on the line it has now; the verdict itself is kept.`;
+Call review_prior_finding exactly once for every finding the prompt lists as still open — those verdicts are the whole output of this round. A verdict exists only when it is given through review_prior_finding: a verdict written in prose does not exist. Judge each one from the code you have read: present when the problem is still there, fixed when the change removed it, unclear when you cannot tell. When one of them is still there but its code was rewritten or moved, give the verdict present together with position: the line it sits on now and the snippet of that line, copied verbatim from the read output. Give position only in that case, and when you give it, give both line and snippet — a position with either one missing or an empty snippet is an invalid call. A position on a line this change does not touch is dropped and the finding stays on the line it has now; the verdict itself is kept.`;
 
 /**
  * 枚举字段必须在自身的 `description` 里写明允许值。prototype 实测:仅用字面量联合
@@ -559,6 +563,67 @@ export function reviewPriorFindingTool(options: {
   });
 }
 
+/** 续问那条消息在会话记录里的 customType(issue #431)。 */
+const VERDICT_NUDGE_CUSTOM_TYPE = "multireviewer-verdict-nudge";
+
+/** 续问过一次仍一条复核结论都没经工具给出时,这一批的失败原因(issue #431)。 */
+export const NO_VERDICT_AFTER_NUDGE = "模型未经工具给出任何复核结论(续问一次后仍为 0 条)";
+
+/**
+ * 续问的正文(issue #431):列出还缺结论的那几条,标识就是 prompt 里给它们的 `[id]`。线上
+ * 那几批模型把全部结论写成一段正文、一次复核工具都没调,这句话要让它知道正文不算数。
+ */
+export function verdictNudgeText(missing: readonly HistoryFinding[]): string {
+  return [
+    `These still-open findings from the list have no verdict yet. A verdict written in prose does not count — only a ${REVIEW_PRIOR_FINDING_TOOL} call records it:`,
+    "",
+    ...missing.map((entry) => `- [${entry.id}] ${entry.file}:${entry.line} ${entry.title}`),
+    "",
+    `Call ${REVIEW_PRIOR_FINDING_TOOL} once for each of them now, with its id and your verdict.`,
+  ].join("\n");
+}
+
+/**
+ * 会话要收工时,本批未处置的历史还有没拿到复核结论的,就在同一会话里续问一次(issue #431)。
+ *
+ * 用 Pi 的 `agent_before_settle`:它在会话真正收尾之前触发,返回的草稿条目连同
+ * `continue: true` 让同一次 `prompt()` 再跑一轮,续问的回合因此照常进审查轨迹、用量照常
+ * 并进这一批。`custom_message` 在发给模型时转成一条用户消息。只续一次;这一轮以出错或被
+ * 中止收尾时不续——那一批本来就判失败,再发一次请求只是白花。
+ */
+function verdictNudgeExtension(options: {
+  open: readonly HistoryFinding[];
+  given: ReadonlySet<number>;
+  onNudge: (missingBefore: number) => void;
+}): InlineExtension {
+  let nudged = false;
+  return {
+    name: "multireviewer:verdict-nudge",
+    factory: (pi) => {
+      pi.on("agent_before_settle", (event) => {
+        if (nudged || event.outcome !== "completed") return undefined;
+        const missing = options.open.filter((entry) => !options.given.has(entry.id));
+        if (missing.length === 0) return undefined;
+        nudged = true;
+        options.onNudge(missing.length);
+        return {
+          // 别的扩展这一刻也可能交了草稿:它们的那几条要留着,不能被这一条顶掉。
+          entries: [
+            ...event.entries,
+            {
+              type: "custom_message",
+              customType: VERDICT_NUDGE_CUSTOM_TYPE,
+              content: verdictNudgeText(missing),
+              display: true,
+            },
+          ],
+          continue: true,
+        };
+      });
+    },
+  };
+}
+
 async function run(request: ReviewerRequest): Promise<void> {
   const hasRules = request.rules !== undefined && request.rules.length > 0;
   /**
@@ -581,6 +646,8 @@ async function run(request: ReviewerRequest): Promise<void> {
    * (`report_finding` 与 `review_prior_finding`)记同一份,口径因此只有一个。
    */
   const anchorRejectedCalls = new Set<string>();
+  /** 锚定通过、回传出去的 Finding 条数。续问后判不判失败要看它(issue #431)。 */
+  let findingsReported = 0;
 
   const reportFinding = defineTool({
     name: REPORT_FINDING_TOOL,
@@ -610,16 +677,34 @@ async function run(request: ReviewerRequest): Promise<void> {
         anchorRejectedCalls.add(id);
         return { content: [{ type: "text", text: result.message }], details: {} };
       }
+      findingsReported += 1;
       send({ kind: "finding", raw: { ...raw, line: result.line } });
       return { content: [{ type: "text", text: "recorded" }], details: {} };
     },
   });
 
+  /**
+   * 本批要复核结论的那几条(未处置的历史,与编排层 `openHistory` 同一判据)与已经经工具
+   * 给出结论的那几条(issue #431)。续问与「续过仍一条没给即失败」都按这两样判。
+   */
+  const openHistory = request.history.filter(
+    (entry) => entry.disposition === "unresolved" || entry.disposition === "unknown",
+  );
+  const openIds = new Set(openHistory.map((entry) => entry.id));
+  const verdictsGiven = new Set<number>();
+  /** 续问前还缺几条;没续过即缺席。 */
+  let nudgedMissing: number | undefined;
+
   const reviewPriorFinding = reviewPriorFindingTool({
     history: request.history,
     worktreePath: request.worktreePath,
     commentable: request.commentable,
-    send,
+    send: (message) => {
+      if (message.kind === "verdict" && openIds.has(message.raw.id)) {
+        verdictsGiven.add(message.raw.id);
+      }
+      send(message);
+    },
     anchorRejectedCalls,
   });
 
@@ -637,7 +722,21 @@ async function run(request: ReviewerRequest): Promise<void> {
       request.mode === "verdict-only" ? VERDICT_ONLY_SYSTEM_PROMPT : SYSTEM_PROMPT,
     extensionPaths: [vendoredSubagentsPath()],
     // 取证契约在工具边界的那一道(issue #262):与 pi-subagents 同一批装进会话。
-    extensionFactories: [subagentContractExtension(request.worktreePath, EVIDENCE_AGENT)],
+    extensionFactories: [
+      subagentContractExtension(request.worktreePath, EVIDENCE_AGENT),
+      // 没有要复核的历史时不装:无事可续,装上也只是每次收尾多问一句「缺不缺」。
+      ...(openHistory.length === 0
+        ? []
+        : [
+            verdictNudgeExtension({
+              open: openHistory,
+              given: verdictsGiven,
+              onNudge: (missing) => {
+                nudgedMissing = missing;
+              },
+            }),
+          ]),
+    ],
     // 取证子代理的铺装(issue #226)。知识注入与 Reviewer 拿到的是同一批条目;会话上限是
     // 本轮运行计划冻结的那一格(issue #258),不带即系统默认。铺在扩展首次加载之前:
     // pi-subagents 注册时读一次 config,写晚了 intercom 桥就照默认开着(issue #262)。
@@ -706,7 +805,16 @@ async function run(request: ReviewerRequest): Promise<void> {
         rejectedToolCalls += 1;
       }
     },
-    done: ({ usage, failure, stopReason, turns }) =>
+    done: ({ usage, failure, stopReason, turns }) => {
+      // 续问过一次仍一条结论都没经工具给出、也一条 Finding 都没报出(issue #431):这一批
+      // 判失败,走编排层既有的批次失败路径。报出过 Finding 的不判失败——批次失败会连它们
+      // 一起作废(issue #420),丢真问题比漏几条复核结论更糟;续后给出一部分的同样不判,
+      // 缺的那几条照旧记漏复核。
+      const outcomeFailure =
+        failure ??
+        (nudgedMissing !== undefined && verdictsGiven.size === 0 && findingsReported === 0
+          ? NO_VERDICT_AFTER_NUDGE
+          : undefined);
       send({
         kind: "done",
         rejectedToolCalls,
@@ -715,8 +823,10 @@ async function run(request: ReviewerRequest): Promise<void> {
         // 批次收尾事件靠这两格答出「这一批是怎么收工的」(issue #408)。
         turns,
         ...(stopReason === undefined ? {} : { stopReason }),
-        ...(failure === undefined ? {} : { failure }),
-      }),
+        ...(nudgedMissing === undefined ? {} : { verdictNudge: { missingBefore: nudgedMissing } }),
+        ...(outcomeFailure === undefined ? {} : { failure: outcomeFailure }),
+      });
+    },
   });
 }
 

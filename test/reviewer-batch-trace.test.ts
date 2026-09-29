@@ -10,6 +10,7 @@ import { test } from "node:test";
 
 import type { Reviewer, ReviewerUsage } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
+import { NO_VERDICT_AFTER_NUDGE } from "../src/reviewer/worker.ts";
 import { openStore } from "../src/review/store/index.ts";
 import { testCleanups } from "./support/git-fixture.ts";
 import { EVENT, FILES, batchReviewer, query, setup as setupRepo } from "./support/batch-run.ts";
@@ -212,6 +213,70 @@ test("漏给结论的条数与 finding_verdict 里记「跑了没给」的对得
   ));
   assert.equal(row!["missed"], skipped);
   assert.equal(row!["batchFailed"], failedExpected);
+});
+
+/**
+ * 续问过的批次(issue #431)。Reviewer 那一侧的续问由真实子进程做(见
+ * `reviewer-verdict-nudge.test.ts`),这里只验编排层怎么收它的结果:第一批续后补齐,第二批
+ * 续后仍一条没给而判失败,第三批本来就给全、没续过。
+ */
+function nudgedReviewer(model: string): Reviewer {
+  return {
+    model,
+    review: async ({ range, history }) => {
+      const file = range.files[0]!;
+      const base = { model, findings: [], anomalies: [], rejectedToolCalls: 0, anchorRejections: 0 };
+      const all = history.map((entry) => ({ findingId: entry.id, verdict: "present" as const }));
+      if (file === FILES[0]) return { ...base, verdicts: all, verdictNudge: { missingBefore: 1 } };
+      if (file === FILES[1]) {
+        return { ...base, failure: NO_VERDICT_AFTER_NUDGE, verdictNudge: { missingBefore: 1 } };
+      }
+      return { ...base, verdicts: all };
+    },
+  };
+}
+
+test("续问过的批次在收尾事件里记下续前与续后各缺几条,续后仍一条没给的那批走批次失败", async () => {
+  const fixture = (await setupRepo(cleanups));
+  const common = deps(fixture);
+
+  await runReview(EVENT, { ...common, reviewers: [batchReviewer("model-a")] });
+  await runReview(EVENT, { ...common, mode: "verdict-only", reviewers: [nudgedReviewer("model-a")] });
+
+  const events = await batchFinished(fixture.db.url);
+  assert.deepEqual(
+    events.map((event) => ({
+      batch: event.payload["batch"],
+      failed: event.payload["failed"],
+      failure: event.payload["failure"],
+      verdictsGiven: event.payload["verdictsGiven"],
+      verdictNudge: event.payload["verdictNudge"],
+    })),
+    [
+      { batch: 1, failed: false, failure: null, verdictsGiven: 1, verdictNudge: { missingBefore: 1, missingAfter: 0 } },
+      {
+        batch: 2,
+        failed: true,
+        failure: NO_VERDICT_AFTER_NUDGE,
+        verdictsGiven: 0,
+        verdictNudge: { missingBefore: 1, missingAfter: 1 },
+      },
+      // 没续过的批次载荷里没有这一格,与这一票之前逐字一致。
+      { batch: 3, failed: false, failure: null, verdictsGiven: 1, verdictNudge: undefined },
+    ],
+  );
+  assert.equal("verdictNudge" in events[2]!.payload, false);
+
+  // 判失败的那一批走既有的批次失败路径:它那条历史记「批次没跑成」,不记漏复核。
+  const runId = (await openStore(fixture.db.url).listRuns({ limit: 1 }))[0]!.id;
+  const [row] = await query(
+    fixture.db.url,
+    `SELECT COUNT(*) FILTER (WHERE missing_reason = 'no-verdict') AS missed,
+            COUNT(*) FILTER (WHERE missing_reason = 'batch-failed') AS "batchFailed"
+       FROM finding_verdict WHERE run_id = ${runId}`,
+  );
+  assert.equal(Number(row!["missed"]), 0);
+  assert.equal(Number(row!["batchFailed"]), 1);
 });
 
 test("只复核那一轮的批次同样落这条事件,报出条数恒为 0", async () => {

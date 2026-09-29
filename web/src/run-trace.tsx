@@ -819,6 +819,12 @@ function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
   const usage = record(payload, "usage");
   const total = usage === null ? null : num(usage, "totalTokens");
   const durationMs = num(payload, "durationMs");
+  // 续问过一次(issue #431):复核结论给出少于应给,Reviewer 在同一会话里追问过一句。
+  const nudge = record(payload, "verdictNudge");
+  const nudgeLine =
+    nudge === null
+      ? null
+      : `已续问一次：续前缺 ${num(nudge, "missingBefore") ?? "?"} 条复核结论，续后缺 ${num(nudge, "missingAfter") ?? "?"} 条`;
 
   if (payload["failed"] === true) {
     return (
@@ -835,6 +841,7 @@ function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
               已给出的 {given} 条复核结论不作数，这一批的历史按没复核记。
             </span>
           )}
+          {nudgeLine === null ? null : <span className="block">{nudgeLine}。</span>}
         </Callout.Text>
       </Callout.Root>
     );
@@ -852,6 +859,11 @@ function BatchFinished({ payload }: { payload: Record<string, unknown> }) {
         <span className={given < expected ? "text-warning" : undefined}>
           复核结论 <span className="font-mono tabular-nums">{given}</span>/
           <span className="font-mono tabular-nums">{expected}</span>
+        </span>
+      )}
+      {nudgeLine === null ? null : (
+        <span className={given < expected ? "text-warning" : "text-sm text-text-secondary"}>
+          {nudgeLine}
         </span>
       )}
       {stopReason === null ? null : (

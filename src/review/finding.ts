@@ -268,6 +268,12 @@ export type ReviewerOutcome = {
   stopReason?: string;
   turns?: number;
   /**
+   * 这一批收尾前复核结论给出少于应给,Reviewer 在同一会话里续问过一次(issue #431):续问前
+   * 还缺几条。没续过即缺席;批次收尾事件据它记下「续过一次」。与 `stopReason` 同律,只有
+   * 真实子进程给得出,也只对单批有意义,批次合并不带它。
+   */
+  verdictNudge?: { missingBefore: number };
+  /**
    * 分批执行时部分批次失败,该模型本次覆盖不全,成功批次的 Finding 仍然有效。
    * 全部批次都失败时改记 `failure`,按缺席处理。由编排层合并批次结果时填写。
    */
