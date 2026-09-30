@@ -9,9 +9,12 @@ export type RuntimeApi = NonNullable<
   Parameters<ModelRuntime["registerProvider"]>[1]["api"]
 >;
 
-type RegisterProviderModel = NonNullable<
-  Parameters<ModelRuntime["registerProvider"]>[1]["models"]
->[number];
+// Pi 0.99 起模型配置是 chat / image / classifier 的联合,思考映射与 compat 只在 chat 那一支上;
+// 本项目只注册 chat 模型(不写 `type` 即按 chat 处理)。
+type RegisterProviderModel = Extract<
+  NonNullable<Parameters<ModelRuntime["registerProvider"]>[1]["models"]>[number],
+  { thinkingLevelMap?: unknown }
+>;
 
 /**
  * Pi 的思考档位映射与请求兼容性。adaptive thinking 模型(fable / opus-5 一类)靠
