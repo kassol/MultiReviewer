@@ -72,6 +72,7 @@ import {
   type ConversationGroup,
 } from "@/lib/agent-session-records";
 import { lastSeq, pendingView, type PendingMessage } from "@/lib/pending-message";
+import { readRetry, retryNotice, type LiveRetry } from "@/lib/retry-notice";
 import { agentSessionQuery } from "@/lib/product-queries";
 import { productQueryKey } from "@/lib/products";
 import { roundAnswerText } from "@/lib/session-question-round";
@@ -277,6 +278,14 @@ function Conversation({
   hasBaselines: boolean;
 }) {
   const [live, setLive] = useState<LiveStream | null>(null);
+  /**
+   * Pi 正在等的那一轮自动重试。与 `live` 分开放:失败的那次请求可能落一条记录,`live` 随
+   * 落库条目清掉时这一行不该跟着没——它要等落定帧、新的文字或回合结束才清。
+   */
+  const [retry, setRetry] = useState<LiveRetry | null>(null);
+  useEffect(() => {
+    if (!running) setRetry(null);
+  }, [running]);
   /** 摊开了的长回复,按 `seq` 记。长回复默认收起,展开只是内容高度变化,不是
       新消息,不进「最新」跟随判定。 */
   const [expandedReplies, setExpandedReplies] = useState<Set<number>>(new Set());
@@ -308,6 +317,10 @@ function Conversation({
       const subagent = Array.isArray(payload?.subagent)
         ? (payload.subagent as SubagentRun[])
         : undefined;
+      // 重试落定、或者模型又开始吐字,那一行「正在重试」就过时了。
+      const retried = readRetry(payload);
+      if (retried !== undefined) setRetry(retried);
+      else if (text !== "") setRetry(null);
       setLive((prev) => {
         const tracked = tool ?? prev?.tool;
         const running = subagent ?? prev?.subagent;
@@ -501,7 +514,14 @@ function Conversation({
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <p className="flex items-center gap-1.5 px-1 text-sm text-text-muted" aria-live="polite">
               <Spinner size="1" />
-              {pendingState === "preparing" ? "正在准备工作树…" : "agent 在跑"}
+              {pendingState === "preparing" ? (
+                "正在准备工作树…"
+              ) : retry !== null ? (
+                // 错误原文放在 title 上:一整段上游报错摊在流式区里比重试本身还吵。
+                <span title={retry.errorMessage}>{retryNotice(retry)}</span>
+              ) : (
+                "agent 在跑"
+              )}
             </p>
             <StreamStatus stream={stream} />
           </div>

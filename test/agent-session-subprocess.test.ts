@@ -659,5 +659,52 @@ test("流式 delta 走无 id 的瞬时帧:不落库,重连不回放", async () =
   }
 });
 
+test("模型服务出错时 Pi 的自动重试走瞬时帧:先有重试帧,再有落定帧,会话照常收尾", async () => {
+  const turns: StubTurn[] = [
+    // 第一次请求回 5xx:Pi 判它可重试,等一轮退避再发第二次。
+    { status: 503, text: "upstream temporarily unavailable", usage: { input: 0, output: 0 } },
+    { text: "重试之后答上了", usage: { input: 10, output: 2 } },
+  ];
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness(turns);
+  try {
+    const stream = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/stream`, {
+      headers: { cookie },
+    });
+    assert.equal(stream.status, 200);
+    const reader = frameReader(stream);
+    assert.equal((await send(h, cookie, sessionId, "c1", MESSAGE)).status, 202);
+
+    type Retry = { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string };
+    const retries: (Retry | null)[] = [];
+    for (let read = 0; read < 60 && !retries.includes(null); read += 1) {
+      const frame = await reader.next();
+      if (frame.id !== undefined) continue;
+      const payload = (JSON.parse(frame.data) as { payload: { retry?: Retry | null } }).payload;
+      if ("retry" in payload) retries.push(payload.retry ?? null);
+    }
+    await reader.cancel();
+
+    const [waiting, settled] = retries;
+    assert.ok(waiting !== undefined && waiting !== null, `没收到重试帧: ${JSON.stringify(retries)}`);
+    assert.equal(waiting.attempt, 1);
+    assert.equal(waiting.maxAttempts, 10);
+    assert.ok(waiting.delayMs > 0);
+    assert.match(waiting.errorMessage, /upstream temporarily unavailable/);
+    assert.equal(settled, null, "重试落定之后该有一条清掉它的帧");
+
+    await idle(h, cookie, sessionId);
+    assert.equal(requests.length, 2, "失败那一次与重试那一次,各一条请求");
+    const assistants = (await records(h, cookie, sessionId)).filter(
+      (record) =>
+        record.entry.message?.role === "assistant" &&
+        JSON.stringify(record.entry).includes("重试之后答上了"),
+    );
+    assert.equal(assistants.length, 1, "重试之后那一回合该落进会话记录");
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
 /* ─────────────── 子进程生命周期(issue #335) ─────────────── */
 

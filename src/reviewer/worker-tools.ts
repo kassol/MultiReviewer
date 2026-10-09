@@ -345,6 +345,9 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  * delta,每个 token 一次,拿它当活着的证据;按间隔节流,不然一次思考就是几千条 IPC。
  *
  * 第一条立即发:上一次真消息之后可能已经沉默了一会儿,等满一个间隔才发会白丢那段时间。
+ *
+ * Pi 的自动重试(`auto_retry_start` / `auto_retry_end`)也算活着:十次退避加上失败的请求
+ * 可能超过 5 分钟,而这期间一条 `message_update` 都没有。这两个事件稀疏,不节流。
  */
 export function streamHeartbeat(
   send: (message: { kind: "heartbeat" }) => void,
@@ -353,6 +356,11 @@ export function streamHeartbeat(
 ): (event: { type: string }) => void {
   let lastSentAt: number | undefined;
   return (event) => {
+    if (event.type === "auto_retry_start" || event.type === "auto_retry_end") {
+      lastSentAt = now();
+      send({ kind: "heartbeat" });
+      return;
+    }
     if (event.type !== "message_update") return;
     const at = now();
     if (lastSentAt !== undefined && at - lastSentAt < intervalMs) return;
@@ -459,9 +467,10 @@ export async function prepareAgentRuntime(options: {
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: options.compaction === true },
     // 上游模型服务时有 429 / 5xx / 网关 502,只重试一次时线上 14 天里 12 个批次因此失败。
-    // Pi 自带指数退避(2s 起每次翻倍,封顶 60s),五次累计最多约 62 秒,远小于子进程的
-    // 静默判死阈值;用量与配额类报错 Pi 判为不可重试,不会白等。
-    retry: { enabled: true, maxRetries: 5 },
+    // Pi 自带指数退避(2s 起每次翻倍,封顶 60s),十次的间隔依次是 2、4、8、16、32、60、
+    // 60、60、60、60 秒,累计约 362 秒,超过子进程 5 分钟的静默判死阈值——重试的开始与
+    // 结束因此各发一次心跳(`streamHeartbeat`);用量与配额类报错 Pi 判为不可重试,不会白等。
+    retry: { enabled: true, maxRetries: 10 },
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd: options.worktreePath,

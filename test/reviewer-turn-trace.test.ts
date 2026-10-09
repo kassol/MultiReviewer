@@ -154,7 +154,7 @@ test("瞬时的模型服务失败被重试吞掉之后,轨迹里留得下这次�
   assert.equal(turns(events).at(-1)?.text, "重试之后读到了改动,没有问题");
 });
 
-test("上游连续失败几次不会让这一批直接失败:同一次请求最多重试五次,按指数退避", async () => {
+test("上游连续失败几次不会让这一批直接失败:同一次请求最多重试十次,按指数退避", async () => {
   // 线上 14 天里 12 个批次死在「只重试一次」上:429 之后紧跟 503、网关 502 连着来两次。
   const { outcome, requests, events } = await reviewWithStub([
     { status: 429, text: "Upstream rate limit exceeded, please retry later", usage: { input: 0, output: 0 } },
@@ -170,7 +170,7 @@ test("上游连续失败几次不会让这一批直接失败:同一次请求最�
     waiting.map((event) => event.attempt),
     [1, 2],
   );
-  assert.ok(waiting.every((event) => event.maxAttempts === 5), "重试上限该是 5");
+  assert.ok(waiting.every((event) => event.maxAttempts === 10), "重试上限该是 10");
   const [firstDelay, secondDelay] = waiting.map((event) => event.delayMs ?? 0);
   assert.ok(secondDelay! > firstDelay!, `退避没有递增: ${firstDelay} → ${secondDelay}`);
   assert.equal(retries(events).at(-1)?.outcome, "succeeded");

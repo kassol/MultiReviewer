@@ -221,6 +221,17 @@ export type SessionCommand =
    */
   | { kind: "drain" };
 
+/**
+ * Pi 排上的一次自动重试(`auto_retry_start`)。子进程回传与主进程的瞬时帧是同一个形状,
+ * `errorMessage` 在子进程里已抹掉凭据。
+ */
+export type SessionRetry = {
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  errorMessage: string;
+};
+
 /** 子进程回传的消息。 */
 export type SessionWorkerMessage =
   /** 会话已建好,可以收 prompt 了。 */
@@ -258,6 +269,13 @@ export type SessionWorkerMessage =
    * `AGENT_SESSION_SUBAGENT_ENTRY` 条目,经镜像落库。
    */
   | { kind: "subagent"; runs: readonly SessionSubagentRun[] }
+  /**
+   * Pi 排上一次自动重试(`auto_retry_start`)。同样只走瞬时帧:面板据它在流式区显示「正在
+   * 重试」,`errorMessage` 已抹掉凭据。
+   */
+  | ({ kind: "retry" } & SessionRetry)
+  /** 这一轮重试落定(`auto_retry_end`)。失败时的最终错误照回合失败那条路显示,这里不带。 */
+  | { kind: "retry-end"; success: boolean; attempt: number }
   /** 这一个回合结束,会话回到空闲。`failure` 是这一回合里可见的失败原因。 */
   | { kind: "turn-end"; failure?: string }
   /** 会话建不起来:这个子进程之后什么都做不了。 */

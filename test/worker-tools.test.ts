@@ -68,7 +68,18 @@ test("超过间隔之后再发一条", () => {
   assert.equal(sent.length, 2);
 });
 
-test("message_update 以外的事件不发心跳", () => {
+test("自动重试的开始与结束各发一次心跳,不受节流", () => {
+  const sent: { kind: "heartbeat" }[] = [];
+  const heartbeat = streamHeartbeat((message) => sent.push(message), 30_000, () => 1_000);
+
+  heartbeat({ type: "message_update" });
+  heartbeat({ type: "auto_retry_start" });
+  heartbeat({ type: "auto_retry_end" });
+
+  assert.equal(sent.length, 3);
+});
+
+test("message_update 与自动重试以外的事件不发心跳", () => {
   const sent: { kind: "heartbeat" }[] = [];
   const heartbeat = streamHeartbeat((message) => sent.push(message), 30_000, () => 1_000);
 

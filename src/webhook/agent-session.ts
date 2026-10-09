@@ -63,6 +63,7 @@ import {
   type SessionKnowledgeWrite,
   type SessionProductKnowledge,
   type SessionRepoInput,
+  type SessionRetry,
   type SessionWorkerMessage,
   type TrackerRequest,
 } from "../reviewer/session-protocol.ts";
@@ -243,6 +244,11 @@ type RuntimeEntry = {
     tool: string | undefined;
     /** 正在跑的那几个会话子代理(issue #358)。后一份整份盖掉前一份:它是现状,不是增量。 */
     subagent: readonly SessionSubagentRun[] | undefined;
+    /**
+     * Pi 的自动重试:对象即这一轮重试正排着,`null` 即重试已落定(面板据它清掉那一行),
+     * `undefined` 即这个窗口里没有重试的消息。后一条整份盖掉前一条:它是现状,不是增量。
+     */
+    retry: SessionRetry | null | undefined;
     timer: NodeJS.Timeout | undefined;
   };
 };
@@ -444,17 +450,25 @@ async function recordEntry(store: Store, sessionId: number, entry: unknown): Pro
  * 没有在线订阅者时 `publishTransientTrace` 是空操作。
  */
 function flushStream(sessionId: number, entry: RuntimeEntry): void {
-  const { text, tool, subagent, timer } = entry.stream;
+  const { text, tool, subagent, retry, timer } = entry.stream;
   if (timer !== undefined) clearTimeout(timer);
-  entry.stream = { text: "", tool: undefined, subagent: undefined, timer: undefined };
-  if (text === "" && tool === undefined && subagent === undefined) return;
+  entry.stream = {
+    text: "",
+    tool: undefined,
+    subagent: undefined,
+    retry: undefined,
+    timer: undefined,
+  };
+  if (text === "" && tool === undefined && subagent === undefined && retry === undefined) return;
   publishTransientTrace(agentSessionChannel(sessionId), {
     kind: AGENT_SESSION_STREAM_FRAME,
-    // 正在生成的文字、正在跑的工具与正在跑的子代理分三格:页面要把它们摊成三样东西。
+    // 正在生成的文字、正在跑的工具、正在跑的子代理与正在等的重试分四格:页面要把它们摊成
+    // 四样东西。`retry` 为 null 即重试已落定。
     payload: {
       text,
       ...(tool === undefined ? {} : { tool }),
       ...(subagent === undefined ? {} : { subagent }),
+      ...(retry === undefined ? {} : { retry }),
     },
   });
 }
@@ -463,11 +477,17 @@ function flushStream(sessionId: number, entry: RuntimeEntry): void {
 function collectStream(
   sessionId: number,
   entry: RuntimeEntry,
-  part: { text?: string; tool?: string; subagent?: readonly SessionSubagentRun[] },
+  part: {
+    text?: string;
+    tool?: string;
+    subagent?: readonly SessionSubagentRun[];
+    retry?: SessionRetry | null;
+  },
 ): void {
   entry.stream.text += part.text ?? "";
   if (part.tool !== undefined) entry.stream.tool = part.tool;
   if (part.subagent !== undefined) entry.stream.subagent = part.subagent;
+  if (part.retry !== undefined) entry.stream.retry = part.retry;
   if (entry.stream.timer !== undefined) return;
   entry.stream.timer = setTimeout(() => flushStream(sessionId, entry), STREAM_FRAME_MS);
 }
@@ -1232,6 +1252,19 @@ async function boot(
       case "subagent":
         collectStream(session.id, entry, { subagent: message.runs });
         return;
+      case "retry":
+        collectStream(session.id, entry, {
+          retry: {
+            attempt: message.attempt,
+            maxAttempts: message.maxAttempts,
+            delayMs: message.delayMs,
+            errorMessage: message.errorMessage,
+          },
+        });
+        return;
+      case "retry-end":
+        collectStream(session.id, entry, { retry: null });
+        return;
       // 下面这几对请求-回应各自带 `requestId`,互相之间没有顺序:各走各的那一条链,不排队。
       case "finding-query":
         void answerFindingQuery(deps.store, child, message.requestId, message.query);
@@ -1454,7 +1487,7 @@ export function deliverAgentSessionMessage(
     disposed: false,
     retainedCleared: false,
     recording: Promise.resolve(),
-    stream: { text: "", tool: undefined, subagent: undefined, timer: undefined },
+    stream: { text: "", tool: undefined, subagent: undefined, retry: undefined, timer: undefined },
   };
   // **登记仍是同步的**:接口已经回了 202,下一条消息要在这一刻就看得到它在跑(状态在字面量
   // 里就是 `running`)。读库那几步排在下面那条链上——它们只欠一个微任务,而微任务在事件循环

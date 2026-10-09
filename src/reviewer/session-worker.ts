@@ -364,6 +364,19 @@ async function open(request: OpenSessionRequest): Promise<void> {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         send({ kind: "delta", text: event.assistantMessageEvent.delta });
       }
+      // 模型服务出错时 Pi 的自动重试:没有它面板只看得到「在跑」,说不出在等什么。
+      if (event.type === "auto_retry_start") {
+        send({
+          kind: "retry",
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          delayMs: event.delayMs,
+          errorMessage: redactModelCredential(event.errorMessage, apiKey),
+        });
+      }
+      if (event.type === "auto_retry_end") {
+        send({ kind: "retry-end", success: event.success, attempt: event.attempt });
+      }
       if (event.type === "tool_execution_start") {
         send({ kind: "tool", tool: event.toolName });
         // 会话子代理(issue #358):任务原文只有这一档带着,记下来给条目与瞬时帧用。
