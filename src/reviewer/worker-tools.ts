@@ -458,7 +458,10 @@ export async function prepareAgentRuntime(options: {
 
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: options.compaction === true },
-    retry: { enabled: true, maxRetries: 1 },
+    // 上游模型服务时有 429 / 5xx / 网关 502,只重试一次时线上 14 天里 12 个批次因此失败。
+    // Pi 自带指数退避(2s 起每次翻倍,封顶 60s),五次累计最多约 62 秒,远小于子进程的
+    // 静默判死阈值;用量与配额类报错 Pi 判为不可重试,不会白等。
+    retry: { enabled: true, maxRetries: 5 },
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd: options.worktreePath,
