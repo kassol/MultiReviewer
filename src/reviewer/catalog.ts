@@ -126,10 +126,8 @@ async function loadPiRuntime(options: LoadOptions): Promise<ModelRuntime> {
  * 选择器里,直到 pi.dev 那一家下一次刷新成功才被顺带冲掉(判据与实测见 ADR 0009)。因此
  * 每一轮都拿当下这份清单重算,由 `writeVendorModels` 整批换掉上一轮那批。
  *
- * 补进来的行写进远程目录那一份落盘再让 Pi 重读,而不是只改内存里的目录:落盘是面板与
- * Reviewer 子进程之间唯一的通路,只补内存等于面板选得出、子进程取不到,那是本票最要紧的
- * 不变量反过来的样子。共用落盘拿不到时(缓存目录建不出来)因此干脆不补:那一档补了也只是
- * 造出一批取不到的模型。
+ * 补进来的行写进远程目录那一份落盘再让 Pi 不联网重读,发现结果因此就是 Pi 运行时给出的那份
+ * 目录。共用落盘拿不到时(缓存目录建不出来)干脆不补。
  */
 async function mergeVendorCatalog(
   runtime: ModelRuntime,
@@ -149,48 +147,47 @@ async function mergeVendorCatalog(
     // 落盘还不在或者读坏了:当空的重建,反正它是可以从 pi.dev 与厂商目录重建的派生物。
   }
   const previous = new Set(store[OPENROUTER_PROVIDER]?.[VENDOR_MODEL_IDS] ?? []);
-  const known = new Set(provider.getModels().map((model) => model.id));
-  const additions = models.filter((model) => !known.has(model.id) || previous.has(model.id));
+  // Pi 1.2 起 OpenRouter 的落盘那一条整份替换目录(`withPersonalizedCatalog`),所以底子必须是
+  // 当前运行时里这一家的全量,只写补的行会把目录冲成只剩这几十行。
+  const base = (provider.getAllModels?.() ?? provider.getModels()).filter((model) => !previous.has(model.id));
+  const known = new Set(base.map((model) => model.id));
+  const additions = models.filter((model) => !known.has(model.id));
   if (additions.length > 0 || previous.size > 0) {
-    writeVendorModels(storePath, store, OPENROUTER_PROVIDER, additions);
+    writeVendorModels(storePath, store, OPENROUTER_PROVIDER, base, additions);
     // 不联网的这一次刷新只做一件事:把落盘里的条目恢复进内存。
     await runtime.refresh({ allowNetwork: false });
   }
 }
 
 /**
- * 厂商目录那一层补进落盘的那些 model id。Pi 只认 `models` / `checkedAt` / `lastModified` /
- * `etag` 四项,多出来的键它原样带着走——远程刷新失败、304 与 404 那几条路写回去的都是
- * `{...stored, …}`(`dist/core/remote-catalog-provider.js`)。只有远程目录 200 那一条路整条
- * 换成一个只含远程行的新对象,这一位于是跟着消失,而那正是它该消失的时刻:那一刻厂商目录
- * 这一层被远程目录整条冲掉了,下一次读目录按当下的厂商清单从零补一遍。
+ * 厂商目录那一层补进落盘的那些 model id。Pi 只认 `models` / `checkedAt` 等自己的几项,多出来
+ * 的键它在不联网恢复时不碰。联网刷新成功的那一次 Pi 把整条换成「内置表 + pi.dev」的新对象
+ * (`dist/core/remote-catalog-provider.js` 的 `withPersonalizedCatalog`),这一位跟着消失,而那正是
+ * 它该消失的时刻:那一刻厂商目录这一层被冲掉了,紧接着按当下的厂商清单从零补一遍。
  */
 const VENDOR_MODEL_IDS = "multireviewerVendorModels";
 
 /**
  * `models-store.json` 里一家 provider 的那一条。除了 `models` 与上面那一位,其余都是 Pi
- * 自己的记账。`models` 的每一行由 Pi 与本模块两边写,`id` 两边都必有。
+ * 自己的记账。`models` 的每一行带 `provider`:Pi 恢复时按它过滤。
  */
 type StoreEntry = {
-  models?: readonly { readonly id: string }[];
-  lastModified?: number;
+  models?: readonly { readonly id: string; readonly provider?: string }[];
   [VENDOR_MODEL_IDS]?: readonly string[];
 };
 
 type Store = Record<string, StoreEntry | undefined>;
 
 /**
- * 把厂商目录那一层写进远程目录共用的那份落盘:上一轮补的整批换成这一轮的。
+ * 把厂商目录那一层写进远程目录共用的那份落盘:`models` 是底子加这一轮补的行,上一轮补的那批
+ * 已经由调用方从底子里剔掉。
  *
- * 换而不是追加,守住两件事。一、**厂商下线的模型跟着消失**:上一轮那批按 `VENDOR_MODEL_IDS`
- * 认出来先丢掉,这一轮清单里没有它就不再写回去。二、**同一个 id 在落盘里只出现一次**:
- * 落盘里已有该 id 而运行时看不见它这一档是真的(Pi 升级后内置表的生成时间新于 store 的
- * `lastModified`,或者 pi.dev 回 404 把它压成 0,两种情形下 Pi 都不把 store 里的行恢复进内存),
- * 盲追加于是让同一个 id 在文件里出现两次、而且每读一次目录再多一份。
+ * 整份重写而不是在旧条目上追加,守住两件事。一、**厂商下线的模型跟着消失**:上一轮那批按
+ * `VENDOR_MODEL_IDS` 认出来先丢掉,这一轮清单里没有它就不再写回去。二、**目录不缩水**:Pi 拿
+ * 这份 `models` 整个替换 OpenRouter 的目录,不再与内置表合并,也不看 `lastModified`。
  *
- * `etag` 与 `checkedAt` 原样留着:那是远程那一层的记账,动了它下一次要么白拉一遍,要么
- * 该拉的不拉。`lastModified` 反过来必须改成现在——Pi 拿它与内置表的生成时间比,早于内置表
- * 的整条丢掉,沿用旧值时补进来的行会在下一次读目录时凭空消失。
+ * 代价是内置表的行被冻进这份可丢弃缓存:Pi 升级改了内置行时,要等下一次 pi.dev 联网刷新成功
+ * (Pi 那时按新内置表重写整条)才跟上。
  *
  * 清单没变时也照写:这些行的上下文窗口以厂商那份清单为准,跳过写入等于把第一次拉到的
  * 那一份冻在落盘里。一次目录加载只付一次,而目录在进程里是缓存住的。
@@ -202,18 +199,13 @@ function writeVendorModels(
   storePath: string,
   store: Store,
   providerId: string,
+  base: readonly { readonly id: string }[],
   models: readonly VendorModel[],
 ): void {
-  const entry = store[providerId];
-  const replaced = new Set([
-    ...(entry?.[VENDOR_MODEL_IDS] ?? []),
-    ...models.map((model) => model.id),
-  ]);
   store[providerId] = {
-    ...entry,
-    models: [...(entry?.models ?? []).filter((row) => !replaced.has(row.id)), ...models],
+    ...store[providerId],
+    models: [...base, ...models],
     [VENDOR_MODEL_IDS]: models.map((model) => model.id),
-    lastModified: Date.now(),
   };
   const pending = `${storePath}.pending`;
   writeFileSync(pending, `${JSON.stringify(store, null, 2)}\n`);

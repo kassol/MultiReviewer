@@ -360,7 +360,7 @@ const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false }
  * cwd,钉不到)这类入口在关掉 `denyExtensions` 之后都能把仓库里的扩展带进 Reviewer 进程。
  * 放行清单比拦截清单短,pi-subagents 加了新参数也默认不放。
  *
- * 剥掉而不是整次打回(issue #404):模型看得到 pi-subagents 工具的完整 schema,第一次调用
+ * 剥掉而不是整次打回(issue #404):模型看得到 pi-subagents 工具的 schema,第一次调用
  * 常带上几个清单外的键,打回之后它去掉那几项重试一遍就过——一次往返白花。被剥的键到不了
  * pi-subagents,与打回等价。
  */
@@ -501,8 +501,30 @@ export function subagentContractExtension(
         Object.assign(input, pinned.params);
         return undefined;
       });
+      pi.on("tool_result", (event) => {
+        if (event.toolName !== SUBAGENT_TOOL || event.isError) return undefined;
+        const full = fullSubagentOutput(event.content, event.details);
+        return full === undefined ? undefined : { content: [{ type: "text", text: full }] };
+      });
     },
   };
+}
+
+/**
+ * pi-subagents 0.77 起前台单派的结果超过 2000 字时,工具正文只留前 2000 字加一行
+ * `Full output: <宿主 tmp 路径>`(`src/runs/shared/single-output.js` 的 `capInlineOutput`),而父会话的
+ * `read` 圈在工作副本或会话根里,读不到那个文件。被截的那一种换回 `details.results[0].finalOutput`
+ * 全文(本项目的调用形状下它就是截断前的正文),与 0.76 的行为一致;其余原样不动。
+ */
+function fullSubagentOutput(content: unknown, details: unknown): string | undefined {
+  const results = (details as { results?: unknown } | null)?.results;
+  if (!Array.isArray(results) || results.length !== 1) return undefined;
+  const finalOutput = (results[0] as { finalOutput?: unknown } | null)?.finalOutput;
+  if (typeof finalOutput !== "string") return undefined;
+  const blocks = Array.isArray(content) ? content : [];
+  const text = blocks.length === 1 ? (blocks[0] as { type?: unknown; text?: unknown }).text : undefined;
+  if (typeof text !== "string" || text === finalOutput || !text.includes("\nFull output: ")) return undefined;
+  return finalOutput;
 }
 
 /**

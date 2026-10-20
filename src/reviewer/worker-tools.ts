@@ -477,6 +477,10 @@ export async function prepareAgentRuntime(options: {
     agentDir,
     settingsManager,
     noSkills: true,
+    // cwd 是被审仓库的工作副本,它的 AGENTS.md / CLAUDE.md / .pi/APPEND_SYSTEM.md 是半可信内容,不进系统提示;
+    // 空数组即不去找 APPEND_SYSTEM(取证子会话同理,见 evidence.ts 的 `inheritProjectContext: false`)。
+    noContextFiles: true,
+    appendSystemPrompt: [],
     ...(options.skills === true ? { additionalSkillPaths: [join(agentDir, "skills")] } : {}),
     ...(options.extensionPaths === undefined || options.extensionPaths.length === 0
       ? {}
