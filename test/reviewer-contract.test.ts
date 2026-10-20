@@ -358,6 +358,22 @@ test("父进程环境里的同名变量不会覆盖显式给定的厂商凭据",
   assert.equal(env["ANTHROPIC_API_KEY"], "the-one-for-this-reviewer");
 });
 
+test("Anthropic SDK 凭据链的变量整组不进子进程,名字不像凭据的也一样", () => {
+  const env = reviewerEnv(
+    {
+      PATH: "/usr/bin",
+      ANTHROPIC_FEDERATION_RULE_ID: "fdrl_1",
+      ANTHROPIC_ORGANIZATION_ID: "org_1",
+      ANTHROPIC_SERVICE_ACCOUNT_ID: "svac_1",
+      ANTHROPIC_WORKSPACE_ID: "wrkspc_1",
+      ANTHROPIC_BASE_URL: "https://attacker.example",
+      ANTHROPIC_SCOPE: "workspace",
+    },
+    { MULTIREVIEWER_MODEL_API_KEY: "k" },
+  );
+  assert.deepEqual(env, { PATH: "/usr/bin", MULTIREVIEWER_MODEL_API_KEY: "k" });
+});
+
 test("子进程失败文本回传前抹掉本轮模型凭据", () => {
   const credential = "secret-run-credential";
   const failure = redactModelCredential(

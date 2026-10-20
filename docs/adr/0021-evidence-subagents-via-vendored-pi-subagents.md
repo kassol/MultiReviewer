@@ -1,5 +1,7 @@
 # 取证子代理:vendor pi-subagents,对空 agentDir 开受控例外
 
+> 2026-10-20 附记(backlog #466):「单次调用扇出上限 8」(`PI_SUBAGENT_MAX_SPAWNS_PER_RUN`)不再成立,这一格已删掉。pi-subagents 0.71 起顶层 `tasks` / `chain` / `concurrency` 只在 `disabledFeatures` 含 `workflow-scripts` 时才被执行器接受(`normalizePublicSubagentExecution` 的 `structuredWorkflows`),本项目的 config 不写这一项,这类调用整次被打回;替代入口 `workflow*` 又被放行清单剥掉。线上 1197 次派单里一次都没带过它们。工具边界从此把这几个键与其他清单外的键一样剥掉,一次调用只派一个 agent,单次调用内的扇出不存在,只剩会话级上限。并行取证与这里说的「同时买到并行」一并作废;要并行另作产品决策。
+
 十轮评审复盘里的误报五类根因(未查全局拦截器就断言无认证、未 grep 就断言注解存在、未读持久化调用就断言落库、未考虑发版状态、控制流没读完)共享同一个形状:断言依赖没读过的代码。治它分两层:system prompt 加通用证据链纪律(跨文件的因果主张必须先取证),项目特有判据由知识集的事实注入承载(ADR 0020)。取证的执行体是子代理——它同时买到并行与容量:调用链取证要读大量变更外代码,全部塞进 Reviewer 单会话会吃穿上下文。
 
 Pi 本体不内建 subagent,官方注册表包 pi-subagents 以扩展形态提供完整能力(自定义 agent 锁工具面、递归防护、spawn 预算、后台运行、运行产物)。MultiReviewer 采用它而不自写:把包 vendor 进镜像,每次建 Reviewer 会话时与自定义取证 agent 定义一起铺进该会话的临时 agentDir。这对「空 agentDir 隔绝宿主扩展」的既有隔离模型开一个受控例外:铺进去的内容由镜像构建时固定,不来自宿主机运行环境,隔离所防的「宿主全局扩展与凭据渗入」仍然成立。

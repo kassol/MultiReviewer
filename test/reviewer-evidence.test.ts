@@ -1,7 +1,7 @@
 /**
  * 取证子代理的铺装内容与它的几道闸(issue #226,ADR 0021)。
  *
- * 断言的是铺进 agentDir 的那几个文件、两个环境变量与工具边界那道钩子——它们就是「子代理
+ * 断言的是铺进 agentDir 的那几个文件、会话上限那个环境变量与工具边界那道钩子——它们就是「子代理
  * 能做什么」的全部依据,pi-subagents 在派出之前读的正是这几处。会不会真的派、报告长什么样
  * 是模型契约,由 `reviewer-smoke.test.ts` 的 opt-in 用例守;这几道闸在真实 SDK 上是否生效
  * 由 `reviewer-evidence-session.test.ts` 守。
@@ -15,7 +15,6 @@ import { test } from "node:test";
 import { MODEL_API_KEY_ENV } from "../src/reviewer/env.ts";
 import {
   EVIDENCE_AGENT,
-  EVIDENCE_FANOUT_BUDGET,
   EVIDENCE_SESSION_BUDGET,
   SUBAGENT_TOOL,
   evidenceAgentDefinition,
@@ -254,7 +253,7 @@ test("工具边界钉死取证契约:intercomBridge 与 async 按契约改写,�
   assert.equal(ceilingRegistrations("session-stripped").length, 1);
 });
 
-test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue #328)", () => {
+test("取证调用的发现范围与 cwd 钉死,并行扇出的键与管理入口一起剥掉(issue #328、#404、backlog #466)", () => {
   const pinnedTop = { intercomBridge: { mode: "off" }, async: false, agentScope: "user", cwd: WORKTREE };
 
   // 单任务:模型要 project 范围、换目录,一律改回。
@@ -263,90 +262,34 @@ test("取证调用的发现范围与 cwd 在三种派单形状上都钉死(issue
     { params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop }, stripped: [] },
   );
 
-  // tasks[]:每一项的 cwd 都钉,没写的也补上。
-  assert.deepEqual(
-    pinSubagentCall(
-      { tasks: [{ agent: EVIDENCE_AGENT, task: "a", cwd: "../" }, { agent: EVIDENCE_AGENT, task: "b" }], agentScope: "both" },
-      WORKTREE,
-    ),
-    {
-      params: {
-        tasks: [
-          { agent: EVIDENCE_AGENT, task: "a", cwd: WORKTREE },
-          { agent: EVIDENCE_AGENT, task: "b", cwd: WORKTREE },
-        ],
-        ...pinnedTop,
-      },
-      stripped: [],
-    },
-  );
-
-  // chain[]:每一步与它的 parallel(任务数组或单个模板)都钉。
-  assert.deepEqual(
-    pinSubagentCall(
-      {
-        chain: [
-          { agent: EVIDENCE_AGENT, task: "a", cwd: "/" },
-          { parallel: [{ agent: EVIDENCE_AGENT, cwd: "/tmp" }] },
-          { parallel: { agent: EVIDENCE_AGENT, cwd: "~" } },
-        ],
-      },
-      WORKTREE,
-    ),
-    {
-      params: {
-        chain: [
-          { agent: EVIDENCE_AGENT, task: "a", cwd: WORKTREE },
-          { cwd: WORKTREE, parallel: [{ agent: EVIDENCE_AGENT, cwd: WORKTREE }] },
-          { cwd: WORKTREE, parallel: { agent: EVIDENCE_AGENT, cwd: WORKTREE } },
-        ],
-        ...pinnedTop,
-      },
-      stripped: [],
-    },
-  );
-
-  // 管理动作与 workflow 脚本钉不住发现范围,那几项剥掉、调用照常派出(issue #404);
-  // 入参不被改写,钉好的那一份里一个都不剩。
-  for (const key of ["action", "workflow", "workflowScript", "workflowScriptPath", "config"]) {
-    const params = { agent: EVIDENCE_AGENT, task: "查", [key]: "x" };
+  // 并行扇出(pi-subagents 在本项目配置下整次打回)、管理动作与 workflow 脚本(钉不住发现
+  // 范围)都剥掉,调用照常只派那一个 agent;入参不被改写,钉好的那一份里一个都不剩。
+  const fanout = {
+    tasks: [{ agent: EVIDENCE_AGENT, task: "a", cwd: "../" }],
+    chain: [{ parallel: [{ agent: EVIDENCE_AGENT, cwd: "/tmp" }] }],
+    concurrency: 2,
+    parallel: [{ agent: EVIDENCE_AGENT, task: "b" }],
+  };
+  for (const [key, value] of [
+    ...Object.entries(fanout),
+    ...["action", "workflow", "workflowScript", "workflowScriptPath", "config"].map((k) => [k, "x"] as const),
+  ]) {
+    const params = { agent: EVIDENCE_AGENT, task: "查", [key]: value };
     const result = pinSubagentCall(params, WORKTREE);
     assert.deepEqual(result, {
       params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop },
       stripped: [key],
     });
-    assert.deepEqual(params, { agent: EVIDENCE_AGENT, task: "查", [key]: "x" });
+    assert.deepEqual(params, { agent: EVIDENCE_AGENT, task: "查", [key]: value });
   }
-});
 
-test("取证任务项里的 output / reads / model 一类键剥掉:项也有放行清单(issue #328、#404)", () => {
-  // output 是文件路径,绝对路径原样写盘;reads 把任意路径读进上下文;model 换模型。
-  for (const key of ["output", "reads", "model", "skill", "progress", "outputMode"]) {
-    const item = { agent: EVIDENCE_AGENT, task: "a", [key]: "/etc/x" };
-    for (const params of [
-      { tasks: [{ agent: EVIDENCE_AGENT, task: "ok" }, item] },
-      { chain: [item] },
-      { chain: [{ parallel: [item] }] },
-      { chain: [{ parallel: item }] },
-    ]) {
-      const where = JSON.stringify(params);
-      const result = pinSubagentCall(params, WORKTREE);
-      assert.deepEqual(result.stripped, [key], `${key} 在 ${where} 里没被剥掉`);
-      // 派出去的那一份里这个键一个都不剩,它因此到不了 pi-subagents。
-      assert.ok(!JSON.stringify(result.params).includes(key), `${key} 在 ${where} 里漏进了钉好的参数`);
-    }
-  }
-  // 标签类与 chain 自己的三项照常放行。
-  assert.deepEqual(
-    pinSubagentCall(
-      {
-        tasks: [{ agent: EVIDENCE_AGENT, task: "a", label: "一", phase: "p", as: "one", count: 2 }],
-        chain: [{ agent: EVIDENCE_AGENT, expand: { from: { output: "one", path: "/items" } }, collect: { as: "all" } }],
-      },
-      WORKTREE,
-    ).stripped,
-    [],
-  );
+  // 只带扇出、不带 agent 的调用剥完无可派:拦下并指路。
+  const hook = toolCallHook();
+  const ctx = { sessionManager: { getSessionFile: () => undefined, getSessionId: () => "session-fanout" } };
+  assert.deepEqual(hook({ toolName: SUBAGENT_TOOL, input: { tasks: fanout.tasks, concurrency: 2 } }, ctx), {
+    block: true,
+    reason: `subagent has no tasks, concurrency action here; call it with agent "${EVIDENCE_AGENT}" and task`,
+  });
 });
 
 test("取证 agent 经扩展装上 Reviewer 那一份四件套,工作副本根写死(issue #328)", () => {
@@ -360,14 +303,11 @@ test("取证 agent 经扩展装上 Reviewer 那一份四件套,工作副本根�
   assert.ok(source.includes(`sessionReadOnlyTools(${JSON.stringify(WORKTREE)})`));
 });
 
-test("取证受两道上限约束:一次会话默认 3 次,单次调用内 fan-out 8", () => {
+test("取证一次会话默认最多 3 次", () => {
   install();
   // 会话上限管的是这个 Reviewer 子进程一共派几次取证,即每批每模型的总量。
   assert.equal(EVIDENCE_SESSION_BUDGET, 3);
   assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_SESSION"], "3");
-  // fan-out 上限管的是一次 subagent 调用内部展开几个子任务,每次调用重新计数。
-  assert.equal(EVIDENCE_FANOUT_BUDGET, 8);
-  assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
 });
 
 test("会话上限按运行计划冻结的那一格设,只动这一个环境变量(issue #258)", () => {
@@ -377,8 +317,7 @@ test("会话上限按运行计划冻结的那一格设,只动这一个环境变�
 
   const tuned = install({ sessionBudget: 1 });
   assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_SESSION"], "1");
-  // 扇出上限与铺进 agentDir 的每个文件都与默认铺装逐字相同:策略只改会话总量。
-  assert.equal(process.env["PI_SUBAGENT_MAX_SPAWNS_PER_RUN"], "8");
+  // 铺进 agentDir 的每个文件都与默认铺装逐字相同:策略只改会话总量。
   assert.deepEqual(
     ["settings.json", "extensions/subagent/config.json", "models.json", `agents/${EVIDENCE_AGENT}.md`, "evidence-tools.ts"]
       .map((file) => read(tuned, ...file.split("/"))),

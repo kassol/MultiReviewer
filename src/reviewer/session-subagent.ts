@@ -8,7 +8,7 @@
  * 某一个仓库的工作副本,而是整个会话根:一个问题常常横跨这个产品的几个仓库。
  *
  * 会话子代理不设会话总量上限:取证是每批每模型的定向动作,一批派太多次就是在滥派;会话
- * 按天续谈、人就在对面看着,派几次由对话本身决定。扇出上限仍写死。
+ * 按天续谈、人就在对面看着,派几次由对话本身决定。
  *
  * 一次派单的过程要留在会话记录里(ADR 0031):pi-subagents 把子会话的每一步写进 transcript
  * 文件,而那个文件随子进程的临时目录消失,重建时读不回来。子进程因此在 `tool_execution_end`
@@ -111,15 +111,13 @@ export function installSessionSubagentKit(options: {
 }
 
 /**
- * 一次派单派出去的那几句任务(issue #358)。**任务只有调用参数里有**:pi-subagents 在返回
+ * 一次派单派出去的那句任务(issue #358)。**任务只有调用参数里有**:pi-subagents 在返回
  * 之前把 `results[].task` 换成 `[prompt redacted]`,读它拿不到人话。按下标与 `results` 对位。
+ * 只读顶层 `task`:参数是模型写下的原样,带着的 `tasks` 在工具边界已被剥掉,派出去的只有
+ * 这一句(backlog #466)。
  */
 export function subagentTasks(args: unknown): string[] {
-  const call = (args ?? {}) as { task?: unknown; tasks?: unknown };
-  if (Array.isArray(call.tasks)) {
-    return call.tasks.map((one: unknown) => str((one as { task?: unknown } | null)?.task));
-  }
-  return [str(call.task)];
+  return [str((args as { task?: unknown } | null)?.task)];
 }
 
 /** pi-subagents 挂在工具返回(或流式快照)上的每个子任务。只认下面用到的那几个字段。 */

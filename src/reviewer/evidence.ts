@@ -12,12 +12,12 @@
  * - **能力天花板**:按父会话注册进 pi-subagents 的进程内登记表,在派出之前判定。它挡的
  *   不是我们自己写的那份 agent 定义,而是被审仓库工作副本里可能存在的 `.pi/agents/*.md`
  *   ——那是半可信输入,agent 定义里写 `tools: bash` 就能把只读会话变成可写会话。
- * - **spawn 预算**:两道,作用域不同,不要互相顶替。`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION`
- *   限一个 Reviewer 子进程一次会话累计派几次取证(即每批每模型),取证是针对存疑 Finding
- *   的定向动作,一批派太多次就是在滥派;它的值是审查策略的一格(issue #258),默认 3,
- *   随运行计划在开跑时冻结、经 `ReviewerRequest.maxEvidenceCallsPerBatch` 进到这里;
- *   `PI_SUBAGENT_MAX_SPAWNS_PER_RUN` 限的是单次 `subagent` 调用内部展开的子任务数,
- *   每次调用重新计数,挡的是一次调用扇出过宽,写死不进策略。
+ * - **spawn 预算**:`PI_SUBAGENT_MAX_SPAWNS_PER_SESSION` 限一个 Reviewer 子进程一次会话
+ *   累计派几次取证(即每批每模型),取证是针对存疑 Finding 的定向动作,一批派太多次就是在
+ *   滥派;它的值是审查策略的一格(issue #258),默认 3,随运行计划在开跑时冻结、经
+ *   `ReviewerRequest.maxEvidenceCallsPerBatch` 进到这里。一次调用只派一个 agent:顶层
+ *   `tasks` / `chain` 在本项目的配置下被 pi-subagents 打回,放行清单也不收它们,单次调用
+ *   内的扇出因此不存在,不另设上限(backlog #466)。
  *
  * 子会话与 Reviewer 同模型同凭据同思考档位。pi-subagents 0.65 起前台子代理是 Reviewer
  * 子进程内的原生 `AgentSession`(issue #262,ADR 0021 附记),不再另起 pi 进程;但它的模型
@@ -72,11 +72,7 @@ export const EVIDENCE_AGENT = "evidence";
  */
 export const EVIDENCE_SESSION_BUDGET = 3;
 
-/** 单次 `subagent` 调用内部的 fan-out 上限,每次调用重新计数(ADR 0021)。 */
-export const EVIDENCE_FANOUT_BUDGET = 8;
-
 const SESSION_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_SESSION";
-const FANOUT_BUDGET_ENV = "PI_SUBAGENT_MAX_SPAWNS_PER_RUN";
 
 /**
  * 子会话的只读四件套扩展(issue #328),铺在 agentDir 根上。不放进 `extensions/`:那是
@@ -266,7 +262,7 @@ export default function (pi) {
 }
 
 /**
- * 把一个子代理铺进这个会话的临时 agentDir,并设好它的两个 spawn 预算环境变量
+ * 把一个子代理铺进这个会话的临时 agentDir,并设好它的 spawn 预算环境变量
  * (issue #226、#358)。取证与 Agent 会话的子代理共用这一份:按 agent 名区分的是 agent
  * 定义与它的只读工具扩展,其余几样两条链路逐字相同。
  *
@@ -315,12 +311,11 @@ export function installSubagentKit(options: {
   // 链路。pi-subagents 读不到它即不限次数。
   if (options.sessionBudget === undefined) delete process.env[SESSION_BUDGET_ENV];
   else process.env[SESSION_BUDGET_ENV] = String(options.sessionBudget);
-  process.env[FANOUT_BUDGET_ENV] = String(EVIDENCE_FANOUT_BUDGET);
 }
 
 /**
  * 把取证子代理铺进这个会话的临时 agentDir。会话上限取本轮运行计划冻结的那个数,不给即
- * 系统默认(issue #258);扇出上限写死。
+ * 系统默认(issue #258)。
  */
 export function installEvidenceKit(options: {
   agentDir: string;
@@ -358,6 +353,9 @@ const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false }
  * 取证调用放行的参数(issue #328):派单与超时要用的几项,加上钉死的四项。其余一律剥掉——
  * `action`(能新建或改写 agent 定义)、`workflow` / `workflowScript*`(子任务各自带发现范围与
  * cwd,钉不到)这类入口在关掉 `denyExtensions` 之后都能把仓库里的扩展带进 Reviewer 进程。
+ * 并行扇出的 `tasks` / `chain` / `concurrency` 也不放(backlog #466):pi-subagents 0.71 起
+ * 它们只在 `disabledFeatures` 含 `workflow-scripts` 时才被接受,本项目的 config 不写这一项,
+ * 带上只会整次被打回。一次调用只派一个 agent。
  * 放行清单比拦截清单短,pi-subagents 加了新参数也默认不放。
  *
  * 剥掉而不是整次打回(issue #404):模型看得到 pi-subagents 工具的 schema,第一次调用
@@ -367,9 +365,6 @@ const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false }
 const EVIDENCE_CALL_KEYS = new Set([
   "agent",
   "task",
-  "tasks",
-  "chain",
-  "concurrency",
   "timeoutMs",
   "maxRuntimeMs",
   "toolTimeoutMs",
@@ -380,84 +375,28 @@ const EVIDENCE_CALL_KEYS = new Set([
 ]);
 
 /**
- * `tasks[]` / `chain[]` / `parallel` 每一项放行的键(issue #328):派单要用的几项加标签类。
- * 项里的 `output` 是文件路径,绝对路径原样写盘(pi-subagents `single-output.ts`),只读的取证
- * 会话由此往任意位置写;`reads` 把任意路径读进上下文;`model` 换模型;`skill` / `progress`
- * 也读写文件。与顶层同一个做法:清单外的键剥掉。
- */
-const EVIDENCE_TASK_KEYS = new Set(["agent", "task", "cwd", "agentScope", "label", "phase", "as", "count"]);
-/** chain 一步在任务项之上多的三项:并行子任务、按上一步产出展开、收集展开结果。 */
-const EVIDENCE_STEP_KEYS = new Set([...EVIDENCE_TASK_KEYS, "parallel", "expand", "collect"]);
-
-/** 只留放行清单里的键,剥掉的键名记进 `stripped`。 */
-function keepAllowed(
-  item: object,
-  allowed: ReadonlySet<string>,
-  stripped: string[],
-): Record<string, unknown> {
-  const kept: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(item)) {
-    if (allowed.has(key)) kept[key] = value;
-    else stripped.push(key);
-  }
-  return kept;
-}
-
-/**
- * 给一项钉上工作副本,清单外的键剥掉。不是对象的原样留着,形状错由 pi-subagents 自己报。
- */
-function pinItem(
-  item: unknown,
-  allowed: ReadonlySet<string>,
-  worktreePath: string,
-  stripped: string[],
-): unknown {
-  if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
-  return { ...keepAllowed(item, allowed, stripped), cwd: worktreePath };
-}
-
-/**
  * 一次取证调用钉成契约形状(issue #262、#328、#404)。纯函数:给出钉好的参数,与被剥掉的
  * 那些键名。
  *
  * 钉四项:`intercomBridge` 与 `async` 见上;`agentScope` 钉 `user`,发现只读 agentDir——
  * 默认 `both` 时仓库 `.pi/agents` 里同名的 `evidence.md` 优先,带上 `extensions` 就是在
- * Reviewer 进程里跑仓库的代码;`cwd` 钉工作副本,顶层、`tasks[]` 每项、`chain[]` 每项及其
- * `parallel`(任务数组或单个模板)都钉——cwd 决定项目发现从哪读,也是子会话的工作目录。
- * 顶层与每一项各有放行清单,清单外的键剥掉:调用照常派出,那几项到不了 pi-subagents。
+ * Reviewer 进程里跑仓库的代码;`cwd` 钉工作副本——cwd 决定项目发现从哪读,也是子会话的
+ * 工作目录。清单外的键剥掉:调用照常派出,那几项到不了 pi-subagents。
  */
 export function pinSubagentCall(
   params: Readonly<Record<string, unknown>>,
   worktreePath: string,
 ): { params: Record<string, unknown>; stripped: string[] } {
   const stripped: string[] = [];
-  const pinned: Record<string, unknown> = {
-    ...keepAllowed(params, EVIDENCE_CALL_KEYS, stripped),
-    ...EVIDENCE_PINNED_PARAMS,
-    agentScope: "user",
-    cwd: worktreePath,
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (EVIDENCE_CALL_KEYS.has(key)) kept[key] = value;
+    else stripped.push(key);
+  }
+  return {
+    params: { ...kept, ...EVIDENCE_PINNED_PARAMS, agentScope: "user", cwd: worktreePath },
+    stripped,
   };
-  if (Array.isArray(params["tasks"])) {
-    pinned["tasks"] = params["tasks"].map((task) =>
-      pinItem(task, EVIDENCE_TASK_KEYS, worktreePath, stripped),
-    );
-  }
-  if (Array.isArray(params["chain"])) {
-    pinned["chain"] = params["chain"].map((step) => {
-      const pinnedStep = pinItem(step, EVIDENCE_STEP_KEYS, worktreePath, stripped);
-      const parallel = (step as { parallel?: unknown } | null)?.parallel;
-      // 不是对象的那一步原样留着,没有 parallel 的那一步已经钉完。
-      if (parallel === undefined || pinnedStep === step) return pinnedStep;
-      const items = (Array.isArray(parallel) ? parallel : [parallel]).map((task) =>
-        pinItem(task, EVIDENCE_TASK_KEYS, worktreePath, stripped),
-      );
-      return {
-        ...(pinnedStep as object),
-        parallel: Array.isArray(parallel) ? items : items[0],
-      };
-    });
-  }
-  return { params: pinned, stripped };
 }
 
 /**
@@ -487,7 +426,7 @@ export function subagentContractExtension(
         const pinned = pinSubagentCall(input, worktreePath);
         // 剥完没有可派的东西(模型拿 `action: "list"` 之类探能力,issue #404 线上验收):交给
         // pi-subagents 只会得到一句通用的形状报错,模型看不出错在哪。这一档在这里指路。
-        if (!["agent", "tasks", "chain"].some((key) => key in pinned.params)) {
+        if (!("agent" in pinned.params)) {
           return {
             block: true,
             reason: `subagent has no ${pinned.stripped.join(", ") || "management"} action here; call it with agent "${agent}" and task`,
@@ -669,7 +608,7 @@ export function subagentTranscriptEvents(path: string): ReviewerEvent[] {
   return transcriptEvents(content.split("\n"));
 }
 
-/** 一次取证调用的子会话事件(issue #227)。一次调用可能派出几个子任务,按顺序接起来。 */
+/** 一次取证调用的子会话事件(issue #227)。一次调用只派一个 agent,结果里有几份 transcript 就按顺序接起来。 */
 export function evidenceTranscriptEvents(result: unknown): ReviewerEvent[] {
   return transcriptPaths(result).flatMap(subagentTranscriptEvents);
 }

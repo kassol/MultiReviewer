@@ -8,6 +8,13 @@
 const CREDENTIAL_PATTERN = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?|AUTH)(?:_|$)/i;
 
 /**
+ * Anthropic SDK 的凭据链变量整组不传(`@anthropic-ai/sdk` 的 `core/credentials.js`):
+ * `ANTHROPIC_ORGANIZATION_ID`、`ANTHROPIC_FEDERATION_RULE_ID`、`ANTHROPIC_BASE_URL` 这些名字不像凭据,
+ * 却能拼出 OIDC 联邦凭据或改掉请求的目标地址。
+ */
+const ANTHROPIC_PREFIX = "ANTHROPIC_";
+
+/**
  * 模型凭据经这一个固定变量进入子进程,再由 worker 注入 Pi 的运行时。
  * 走环境变量而非 IPC 消息:消息可能被日志或崩溃转储带出去。
  */
@@ -32,7 +39,7 @@ export function reviewerEnv(
 
   for (const [name, value] of Object.entries(parentEnv)) {
     if (value === undefined) continue;
-    if (CREDENTIAL_PATTERN.test(name)) continue;
+    if (CREDENTIAL_PATTERN.test(name) || name.startsWith(ANTHROPIC_PREFIX)) continue;
     env[name] = value;
   }
 

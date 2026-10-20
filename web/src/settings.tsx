@@ -93,7 +93,7 @@ const LIMITS: {
   {
     field: "maxEvidenceCallsPerBatch",
     title: "每批每模型最多取证次数",
-    help: "一个模型在一批里最多派几次取证子代理。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值；单次取证内部的扇出上限不受它影响。",
+    help: "一个模型在一批里最多派几次取证子代理。改了之后下一轮审查生效，已开跑的轮次沿用开跑时的值。",
     inputId: "max-evidence-calls-per-batch",
   },
 ];
