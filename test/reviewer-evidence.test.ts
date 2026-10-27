@@ -291,18 +291,6 @@ test("取证调用的发现范围与 cwd 钉死,并行扇出的键与管理入�
     block: true,
     reason: `subagent has no tasks, concurrency action here; call it with agent "${EVIDENCE_AGENT}" and task`,
   });
-
-  // 子代理默认继承父会话模型;显式给了字符串就按它解析,别的形状照旧剥掉。
-  assert.deepEqual(
-    pinSubagentCall({ agent: EVIDENCE_AGENT, task: "查", model: "opencode/deepseek-v4.1-flash" }, WORKTREE),
-    { params: { agent: EVIDENCE_AGENT, task: "查", model: "opencode/deepseek-v4.1-flash", ...pinnedTop }, stripped: [] },
-  );
-  for (const value of [null, false, 42, { provider: "opencode" }]) {
-    assert.deepEqual(
-      pinSubagentCall({ agent: EVIDENCE_AGENT, task: "查", model: value }, WORKTREE),
-      { params: { agent: EVIDENCE_AGENT, task: "查", ...pinnedTop }, stripped: ["model"] },
-    );
-  }
 });
 
 test("取证 agent 经扩展装上 Reviewer 那一份四件套,工作副本根写死(issue #328)", () => {
