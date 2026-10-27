@@ -18,8 +18,9 @@ import {
   parseModelSpecDraft,
   rebaseModelSpecEditor,
   sameModelSpecOverrides,
+  withModelSpecAuto,
   withModelSpecCandidate,
-  withModelSpecValue,
+  withModelSpecManual,
   type ModelSpecCandidateChoice,
   type ModelSpecDraft,
   type ModelSpecEditor,
@@ -73,14 +74,6 @@ function specValueText(field: ModelSpecField, value: SpecValue | null): string {
   }
 }
 
-function seedFromAutomatic(
-  draft: ModelSpecDraft,
-  field: ModelSpecField,
-  value: SpecValue | null | undefined,
-): ModelSpecDraft {
-  return value === null || value === undefined ? draft : withModelSpecValue(draft, field, value);
-}
-
 function jsonDraftText(draft: ModelSpecDraft, field: ModelSpecField): string {
   return field === "thinkingLevelMap" ? draft.thinkingLevelMap : draft.compat;
 }
@@ -118,9 +111,6 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
   const updateDraft = (change: (draft: ModelSpecDraft) => ModelSpecDraft): void => {
     setEditor((current) => (current === null ? current : { ...current, draft: change(current.draft) }));
   };
-  const setFieldEnabled = (field: ModelSpecField, enabled: boolean): void => {
-    updateDraft((draft) => ({ ...draft, enabled: { ...draft.enabled, [field]: enabled } }));
-  };
   const toggleInput = (kind: "text" | "image", checked: boolean): void => {
     updateDraft((draft) => {
       const rest = draft.input.filter((value) => value !== kind);
@@ -129,26 +119,22 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
   };
   const selectMode = (field: ModelSpecField, next: string, choices: readonly ModelSpecCandidateChoice[]): void => {
     if (next === "auto") {
-      setFieldEnabled(field, false);
+      updateDraft((draft) => withModelSpecAuto(draft, field));
       return;
     }
     if (next === "manual") {
-      updateDraft((current) => {
-        const seeded = current.enabled[field]
-          ? current
-          : seedFromAutomatic(current, field, model.automaticEffectiveFields[field]);
-        return { ...seeded, enabled: { ...seeded.enabled, [field]: true } };
-      });
+      updateDraft((current) => withModelSpecManual(
+        current,
+        field,
+        current.enabled[field] ? undefined : model.automaticEffectiveFields[field],
+      ));
       return;
     }
     const choice = choices.find((entry) => entry.candidateId === next);
     if (choice !== undefined) updateDraft((current) => withModelSpecCandidate(current, field, choice.value));
   };
   const resetAll = (): void => {
-    updateDraft((draft) => ({
-      ...draft,
-      enabled: Object.fromEntries(MODEL_SPEC_FIELDS.map((field) => [field, false])) as ModelSpecDraft["enabled"],
-    }));
+    updateDraft((draft) => MODEL_SPEC_FIELDS.reduce((current, field) => withModelSpecAuto(current, field), draft));
   };
   const formatJson = (field: "thinkingLevelMap" | "compat"): void => {
     updateDraft((draft) => {

@@ -5,6 +5,8 @@ export type ModelSpecField = typeof MODEL_SPEC_FIELDS[number];
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 export type ModelSpecDraft = {
   enabled: Record<ModelSpecField, boolean>;
+  /** 覆盖里哪些字段是人手填的；为假时按候选组解释（值相同的组无法再区分来源）。 */
+  manual: Record<ModelSpecField, boolean>;
   input: readonly ("text" | "image")[];
   reasoning: boolean;
   contextWindow: string;
@@ -17,6 +19,15 @@ export function modelSpecDraft(projection: ModelSpecProjection): ModelSpecDraft 
   const values = projection.effectiveFields;
   return {
     enabled: Object.fromEntries(MODEL_SPEC_FIELDS.map((field) => [field, Object.hasOwn(projection.overrides, field)])) as ModelSpecDraft["enabled"],
+    manual: Object.fromEntries(MODEL_SPEC_FIELDS.map((field) => {
+      if (!Object.hasOwn(projection.overrides, field)) return [field, false];
+      const value = projection.overrides[field];
+      const matches = projection.candidates.some((candidate) => {
+        const candidateValue = candidate.values[field];
+        return candidateValue !== undefined && stableModelSpecValue(candidateValue) === stableModelSpecValue(value);
+      });
+      return [field, !matches];
+    })) as ModelSpecDraft["manual"],
     input: [...(values.input ?? ["text"])],
     reasoning: values.reasoning ?? false,
     contextWindow: String(values.contextWindow ?? ""),
@@ -143,6 +154,7 @@ export function modelSpecSourceChoice(
   choices: readonly ModelSpecCandidateChoice[],
 ): string {
   if (!draft.enabled[field]) return "auto";
+  if (draft.manual[field]) return "manual";
   const value = draftFieldValue(draft, field);
   return choices.find((choice) => stableModelSpecValue(choice.value) === stableModelSpecValue(value))?.candidateId ?? "manual";
 }
@@ -175,7 +187,35 @@ export function withModelSpecCandidate(
   field: ModelSpecField,
   value: NonNullable<ModelSpecOverrides[ModelSpecField]>,
 ): ModelSpecDraft {
-  return { ...withModelSpecValue(draft, field, value), enabled: { ...draft.enabled, [field]: true } };
+  const next = withModelSpecValue(draft, field, value);
+  return {
+    ...next,
+    enabled: { ...next.enabled, [field]: true },
+    manual: { ...next.manual, [field]: false },
+  };
+}
+
+/** 切到手动:可选从自动值起手,之后同值的候选组不会再把它读回组覆盖。 */
+export function withModelSpecManual(
+  draft: ModelSpecDraft,
+  field: ModelSpecField,
+  value?: NonNullable<ModelSpecOverrides[ModelSpecField]> | null,
+): ModelSpecDraft {
+  const next = value === undefined || value === null ? draft : withModelSpecValue(draft, field, value);
+  return {
+    ...next,
+    enabled: { ...next.enabled, [field]: true },
+    manual: { ...next.manual, [field]: true },
+  };
+}
+
+/** 恢复自动:不提交这个字段。 */
+export function withModelSpecAuto(draft: ModelSpecDraft, field: ModelSpecField): ModelSpecDraft {
+  return {
+    ...draft,
+    enabled: { ...draft.enabled, [field]: false },
+    manual: { ...draft.manual, [field]: false },
+  };
 }
 
 function draftFieldValue(draft: ModelSpecDraft, field: ModelSpecField): unknown {

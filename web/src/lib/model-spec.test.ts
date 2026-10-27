@@ -10,7 +10,9 @@ import {
   parseModelSpecDraft,
   rebaseModelSpecEditor,
   sameModelSpecOverrides,
+  withModelSpecAuto,
   withModelSpecCandidate,
+  withModelSpecManual,
 } from "./model-spec.ts";
 
 const fields = { input: ["text"] as const, reasoning: true, contextWindow: 128000, maxTokens: 16000, thinkingLevelMap: { off: null, high: "high" }, compat: { supportsStore: false } };
@@ -130,6 +132,27 @@ test("候选组按字段去重、官方排最前，选中即写成覆盖，恢�
   assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices.slice(0, 1)), "manual");
   draft.enabled.contextWindow = false;
   assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices), "auto");
+});
+
+test("手动与同值的候选组分开记：切手动后即使值等于某一组也保持手动", () => {
+  const choices = modelSpecCandidateChoices(candidates, "contextWindow");
+  let draft = modelSpecDraft(projection);
+  draft = withModelSpecManual(draft, "contextWindow", 32_000);
+  assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices), "manual");
+  assert.equal(draft.enabled.contextWindow, true);
+  assert.equal(draft.manual.contextWindow, true);
+  assert.deepEqual(parseModelSpecDraft(draft).overrides, { contextWindow: 32_000 });
+
+  draft = withModelSpecCandidate(draft, "contextWindow", 32_000);
+  assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices), "pi:radius");
+
+  draft = withModelSpecAuto(draft, "contextWindow");
+  assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices), "auto");
+  assert.equal(draft.enabled.contextWindow, false);
+
+  const inferred = modelSpecDraft({ ...projection, candidates, overrides: { contextWindow: 32_000 } });
+  assert.equal(inferred.manual.contextWindow, false);
+  assert.equal(modelSpecDraft({ ...projection, candidates, overrides: { contextWindow: 30_000 } }).manual.contextWindow, true);
 });
 
 test("候选值按字段摊进草稿：输入类型、推理、容量与两份 JSON 原样成为覆盖", () => {
