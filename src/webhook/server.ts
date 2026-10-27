@@ -818,6 +818,7 @@ function synthesisForRun(
   service: ModelServiceRecord,
   discovery: DiscoveredModel,
   target: ModelServiceTarget | undefined,
+  applyOverrides = true,
 ): RuntimeSynthesisResult {
   if (target === undefined) {
     return {
@@ -828,7 +829,9 @@ function synthesisForRun(
       },
     };
   }
-  discovery = applyModelSpecOverrides(discovery, modelSpecOverrides(service, discovery.id, target));
+  if (applyOverrides) {
+    discovery = applyModelSpecOverrides(discovery, modelSpecOverrides(service, discovery.id, target));
+  }
   if (service.type === "builtin") {
     return synthesizeRuntimeModel(
       { kind: "builtin", provider: service.provider, credential: "" },
@@ -4073,17 +4076,15 @@ function projectServiceModel(
     (typeof discovery.api === "string" && typeof discovery.baseUrl === "string"
       ? { baseUrl: discovery.baseUrl, api: discovery.api }
       : undefined);
-  const synthesis = synthesisForRun(
-    service,
-    {
-      identity: modelIdentity({ provider: service.provider, model: id }),
-      provider: service.provider,
-      id,
-      fields: discovery,
-      ...(automatic?.fieldSources === undefined ? {} : { fieldSources: automatic.fieldSources }),
-    },
-    projectionTarget,
-  );
+  const discovered: DiscoveredModel = {
+    identity: modelIdentity({ provider: service.provider, model: id }),
+    provider: service.provider,
+    id,
+    fields: discovery,
+    ...(automatic?.fieldSources === undefined ? {} : { fieldSources: automatic.fieldSources }),
+  };
+  const synthesis = synthesisForRun(service, discovered, projectionTarget);
+  const automaticSynthesis = synthesisForRun(service, discovered, projectionTarget, false);
 
   const unavailableReason: ModelUnavailableReason | null =
     service.disabledReason === "name-conflict"
@@ -4106,6 +4107,7 @@ function projectServiceModel(
     automaticFields: specFields(discovery),
     overrides: modelSpecOverrides(service, id, target),
     effectiveFields: synthesis.ok ? specFields(synthesis.value.runtime) : specFields({}),
+    automaticEffectiveFields: automaticSynthesis.ok ? specFields(automaticSynthesis.value.runtime) : specFields({}),
     candidates: automatic?.candidates ?? [],
     ...modelAvailabilityProjection(unavailableReason),
     discovery: {
@@ -4130,6 +4132,7 @@ function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
     automaticFields: specFields({}),
     overrides: {},
     effectiveFields: specFields({ ...BASELINE_RUNTIME_PROJECTION, maxTokens: BASELINE_RUNTIME_PROJECTION.maxOutput }),
+    automaticEffectiveFields: specFields({ ...BASELINE_RUNTIME_PROJECTION, maxTokens: BASELINE_RUNTIME_PROJECTION.maxOutput }),
     candidates: [],
     provider: spec.provider,
     id: spec.model,
@@ -5182,7 +5185,7 @@ async function modelSpecMutationResponse(deps: WebhookServerDeps, provider: stri
   const projected = projectServiceModel(service, model, [], automatic, supplement, binding, service.credential.state, true);
   return { provider, model, currentVersion: projected.currentVersion, targetFingerprint: projected.targetFingerprint,
     automaticFields: projected.automaticFields, overrides: projected.overrides, effectiveFields: projected.effectiveFields,
-    candidates: projected.candidates };
+    automaticEffectiveFields: projected.automaticEffectiveFields, candidates: projected.candidates };
 }
 
 async function handleModelSpecOverrides(

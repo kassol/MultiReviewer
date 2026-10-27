@@ -92,10 +92,12 @@ export function sameModelSpecOverrides(left: ModelSpecOverrides, right: ModelSpe
   return stableModelSpecValue(left) === stableModelSpecValue(right);
 }
 
-/** 目录里同一型号的候选组按字段摊开(2026-10-27):只在多组给同一个字段不同值时才有得选。 */
+/** 目录里同一型号的候选组按字段摊开(2026-10-27):值相同的组合并成一项。 */
 export type ModelSpecCandidateChoice = {
   candidateId: string;
   label: string;
+  labels: readonly string[];
+  official: boolean;
   value: NonNullable<ModelSpecOverrides[ModelSpecField]>;
 };
 
@@ -103,21 +105,35 @@ export function modelSpecCandidateChoices(
   candidates: readonly ModelSpecCandidate[],
   field: ModelSpecField,
 ): ModelSpecCandidateChoice[] {
-  const seen = new Set<string>();
-  const choices: ModelSpecCandidateChoice[] = [];
+  const groups = new Map<string, { candidateId: string; labels: string[]; official: boolean; officialLabel?: string; value: NonNullable<ModelSpecOverrides[ModelSpecField]> }>();
   for (const candidate of candidates) {
     const value = candidate.values[field];
     if (value === undefined) continue;
     const key = stableModelSpecValue(value);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    choices.push({ candidateId: candidate.id, label: candidate.label, value: value as NonNullable<ModelSpecOverrides[ModelSpecField]> });
+    const existing = groups.get(key);
+    if (existing !== undefined) {
+      existing.labels.push(candidate.label);
+      existing.official ||= candidate.official;
+      if (candidate.official) existing.officialLabel = candidate.label;
+      continue;
+    }
+    groups.set(key, {
+      candidateId: candidate.id,
+      labels: [candidate.label],
+      official: candidate.official,
+      ...(candidate.official ? { officialLabel: candidate.label } : {}),
+      value: value as NonNullable<ModelSpecOverrides[ModelSpecField]>,
+    });
   }
-  return choices.sort((left, right) => Number(right.candidateId === officialCandidateId(candidates)) - Number(left.candidateId === officialCandidateId(candidates)));
-}
-
-function officialCandidateId(candidates: readonly ModelSpecCandidate[]): string | undefined {
-  return candidates.find((candidate) => candidate.official)?.id;
+  return [...groups.values()]
+    .map((group) => ({
+      candidateId: group.candidateId,
+      labels: group.labels,
+      official: group.official,
+      value: group.value,
+      label: group.labels.length === 1 ? group.labels[0]! : `${group.officialLabel ?? group.labels[0]} 等 ${group.labels.length} 组`,
+    }))
+    .sort((left, right) => Number(right.official) - Number(left.official));
 }
 
 /** 一个字段此刻的值:自动、某一组候选,或人自己填的第三个数。 */
@@ -131,27 +147,35 @@ export function modelSpecSourceChoice(
   return choices.find((choice) => stableModelSpecValue(choice.value) === stableModelSpecValue(value))?.candidateId ?? "manual";
 }
 
-/** 选中某一组:把那一组在这个字段上的值填进草稿,并勾上手动覆盖。 */
+/** 把某一组或自动值填进草稿,不改「是否覆盖」——切到手动时用它起一个已知的初值。 */
+export function withModelSpecValue(
+  draft: ModelSpecDraft,
+  field: ModelSpecField,
+  value: NonNullable<ModelSpecOverrides[ModelSpecField]>,
+): ModelSpecDraft {
+  switch (field) {
+    case "input":
+      return { ...draft, input: [...(value as readonly ("text" | "image")[])] };
+    case "reasoning":
+      return { ...draft, reasoning: value === true };
+    case "contextWindow":
+      return { ...draft, contextWindow: String(value) };
+    case "maxTokens":
+      return { ...draft, maxTokens: String(value) };
+    case "thinkingLevelMap":
+      return { ...draft, thinkingLevelMap: JSON.stringify(value, null, 2) };
+    case "compat":
+      return { ...draft, compat: JSON.stringify(value, null, 2) };
+  }
+}
+
+/** 选中某一组:把那一组在这个字段上的值填进草稿,并标成覆盖。 */
 export function withModelSpecCandidate(
   draft: ModelSpecDraft,
   field: ModelSpecField,
   value: NonNullable<ModelSpecOverrides[ModelSpecField]>,
 ): ModelSpecDraft {
-  const enabled = { ...draft.enabled, [field]: true };
-  switch (field) {
-    case "input":
-      return { ...draft, enabled, input: [...(value as readonly ("text" | "image")[])] };
-    case "reasoning":
-      return { ...draft, enabled, reasoning: value === true };
-    case "contextWindow":
-      return { ...draft, enabled, contextWindow: String(value) };
-    case "maxTokens":
-      return { ...draft, enabled, maxTokens: String(value) };
-    case "thinkingLevelMap":
-      return { ...draft, enabled, thinkingLevelMap: JSON.stringify(value, null, 2) };
-    case "compat":
-      return { ...draft, enabled, compat: JSON.stringify(value, null, 2) };
-  }
+  return { ...withModelSpecValue(draft, field, value), enabled: { ...draft.enabled, [field]: true } };
 }
 
 function draftFieldValue(draft: ModelSpecDraft, field: ModelSpecField): unknown {

@@ -435,6 +435,7 @@ test("规格覆盖按模型写权限与版本保存,斜杠 ID 可用,恢复自�
   assert.equal(saved.targetFingerprint, fingerprint);
   assert.deepEqual(saved.overrides, overrides);
   assert.equal(saved.automaticFields.contextWindow, 100_000);
+  assert.equal(saved.automaticEffectiveFields.contextWindow, 100_000);
   assert.equal(saved.effectiveFields.contextWindow, 1_000_000);
   const get = await request(h, reader, "/model-services");
   const body = await get.json() as { services: { provider: string; models: ModelSpecMutationResponse[] }[]; candidates: (ModelSpecMutationResponse & { id: string })[] };
@@ -453,6 +454,7 @@ test("规格覆盖按模型写权限与版本保存,斜杠 ID 可用,恢复自�
   assert.equal(automatic.currentVersion, 3);
   assert.deepEqual(automatic.overrides, {});
   assert.deepEqual(automatic.effectiveFields, automatic.automaticFields);
+  assert.deepEqual(automatic.effectiveFields, automatic.automaticEffectiveFields);
 });
 
 test("同目标最小推理采用规格覆盖且刷新后的自动快照保持独立", async () => {
@@ -1635,6 +1637,14 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
       },
       overrides: {},
       effectiveFields: {
+        input: ["text"],
+        reasoning: false,
+        contextWindow: 128_000,
+        maxTokens: 16_000,
+        thinkingLevelMap: null,
+        compat: null,
+      },
+      automaticEffectiveFields: {
         input: ["text"],
         reasoning: false,
         contextWindow: 128_000,

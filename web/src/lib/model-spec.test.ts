@@ -14,7 +14,7 @@ import {
 } from "./model-spec.ts";
 
 const fields = { input: ["text"] as const, reasoning: true, contextWindow: 128000, maxTokens: 16000, thinkingLevelMap: { off: null, high: "high" }, compat: { supportsStore: false } };
-const projection: ModelSpecProjection = { currentVersion: 3, targetFingerprint: "target-a", automaticFields: fields, effectiveFields: fields, overrides: {}, candidates: [] };
+const projection: ModelSpecProjection = { currentVersion: 3, targetFingerprint: "target-a", automaticFields: fields, effectiveFields: fields, automaticEffectiveFields: fields, overrides: {}, candidates: [] };
 test("自动字段不提交，逐字段恢复自动，显式 false 与空对象保留", () => {
   const draft = modelSpecDraft(projection);
   assert.deepEqual(parseModelSpecDraft(draft).overrides, {});
@@ -116,6 +116,8 @@ const candidates: ModelSpecCandidate[] = [
 test("候选组按字段去重、官方排最前，选中即写成覆盖，恢复自动即不提交", () => {
   const choices = modelSpecCandidateChoices(candidates, "contextWindow");
   assert.deepEqual(choices.map((choice) => choice.candidateId), ["pi:opencode", "pi:radius"]);
+  assert.equal(choices[0]!.label, "opencode（官方） 等 2 组");
+  assert.deepEqual(choices[0]!.labels, ["opencode（官方）", "opencode-go"]);
   assert.deepEqual(modelSpecCandidateChoices(candidates, "reasoning"), []);
 
   let draft = modelSpecDraft(projection);

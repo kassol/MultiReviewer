@@ -37,6 +37,8 @@ export type ModelSpecProjection = {
   automaticFields: ModelSpecFields;
   overrides: ModelSpecOverrides;
   effectiveFields: ModelSpecFields;
+  /** 不加任何手动覆盖时的生效值;面板用它说明「恢复自动会得到什么」。 */
+  automaticEffectiveFields: ModelSpecFields;
   /** 目录里匹配到的候选组;空数组即没有匹配,自动值只剩运行基线。 */
   candidates: readonly ModelSpecCandidate[];
 };
