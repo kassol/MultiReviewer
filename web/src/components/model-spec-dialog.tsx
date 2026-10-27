@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon } from "@radix-ui/react-icons";
+import { ArrowRightIcon, ChevronDownIcon, Cross2Icon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon } from "@radix-ui/react-icons";
 import { Badge, Callout, Checkbox, Dialog, IconButton, Select, Text, TextArea, TextField } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 import { useState, type ReactNode } from "react";
@@ -76,6 +76,32 @@ function specValueText(field: ModelSpecField, value: SpecValue | null): string {
 
 function jsonDraftText(draft: ModelSpecDraft, field: ModelSpecField): string {
   return field === "thinkingLevelMap" ? draft.thinkingLevelMap : draft.compat;
+}
+
+function draftValueText(draft: ModelSpecDraft, field: ModelSpecField): string {
+  switch (field) {
+    case "input":
+      return draft.input.length === 0 ? "未选择" : draft.input.join(" / ");
+    case "reasoning":
+      return draft.reasoning ? "声明推理" : "不声明推理";
+    case "contextWindow":
+    case "maxTokens": {
+      const text = draft[field].trim();
+      return /^\d+$/.test(text) ? `${quantity(Number(text))} tokens` : "无效";
+    }
+    case "thinkingLevelMap":
+    case "compat": {
+      try {
+        const value: unknown = JSON.parse(draft[field]);
+        if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+          return `JSON · ${Object.keys(value).length} 个键`;
+        }
+      } catch {
+        // 无效 JSON 由字段错误说明。
+      }
+      return "无效 JSON";
+    }
+  }
 }
 
 /**
@@ -208,14 +234,16 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
     const manual = mode === "manual";
     const automatic = model.automaticEffectiveFields[field] ?? null;
     const fieldError = parsed.errors[field];
+    const changeText = manual ? draftValueText(draft, field) : choice === undefined ? "覆盖" : specValueText(field, choice.value);
     return (
       <div
         key={field}
         className={cn(
-          "rounded-lg border p-3 transition-colors sm:p-4",
-          overridden ? "border-accent-track bg-accent-tint" : "border-line bg-surface",
+          "relative flex flex-col gap-2 px-3 py-3 transition-colors sm:px-4",
+          overridden && "bg-accent-tint/40",
         )}
       >
+        {overridden ? <span className="absolute inset-y-3 left-0 w-[3px] rounded-full bg-primary" aria-hidden /> : null}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -226,10 +254,17 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                 </Badge>
               ) : null}
             </div>
-            <p className="mt-1 text-md font-medium text-text">
-              自动值 <span className="font-semibold">{specValueText(field, automatic)}</span>
-              {overridden && !manual && choice !== undefined ? ` · 取自 ${choice.label}：${specValueText(field, choice.value)}` : null}
-              {manual ? " · 当前为手动覆盖" : null}
+            <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-md">
+              <span className="text-text-muted">自动</span>
+              <span className={cn("font-medium", overridden ? "text-text-muted" : "text-text")}>
+                {specValueText(field, automatic)}
+              </span>
+              {overridden ? (
+                <>
+                  <ArrowRightIcon className="size-3 shrink-0 text-text-muted" aria-hidden />
+                  <span className="font-semibold text-text">{changeText}</span>
+                </>
+              ) : null}
             </p>
             <p className="mt-0.5 hidden text-base text-text-muted sm:block">{SPEC_FIELD_HINT[field]}</p>
           </div>
@@ -250,14 +285,12 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
             </Select.Content>
           </Select.Root>
         </div>
-        {manual ? (
-          <div className="mt-3">{control}</div>
-        ) : JSON_FIELDS.has(field) ? (
-          <pre className="mt-3 max-h-40 overflow-auto rounded-md border border-line bg-sunken p-3 font-mono text-base leading-relaxed">
+        {manual ? control : JSON_FIELDS.has(field) ? (
+          <pre className="max-h-40 overflow-auto rounded-md border border-line bg-sunken p-3 font-mono text-base leading-relaxed">
             {!overridden && automatic === null ? "未设置" : jsonDraftText(draft, field)}
           </pre>
         ) : null}
-        {fieldError === undefined ? null : <p className="mt-2 text-base text-danger">{fieldError}</p>}
+        {fieldError === undefined ? null : <p className="text-base text-danger">{fieldError}</p>}
       </div>
     );
   };
@@ -268,7 +301,9 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
         <Text size="2" weight="medium">{title}</Text>
         <Text size="1" className="text-text-muted">{hint}</Text>
       </div>
-      {children}
+      <div className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
+        {children}
+      </div>
     </section>
   );
 
@@ -348,9 +383,9 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
           </div>
 
           {section("能力", "输入与推理", (
-            <div className="flex flex-col gap-2">
+            <>
               {fieldRow("input", (
-                <div role="group" aria-labelledby={`${idPrefix}-input`} className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-line bg-surface px-3 py-2">
+                <div role="group" aria-labelledby={`${idPrefix}-input`} className="flex flex-wrap items-center gap-x-5 gap-y-2">
                   <Text as="label" size="2" className="inline-flex items-center gap-2">
                     <Checkbox
                       size="2"
@@ -370,7 +405,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                 </div>
               ))}
               {fieldRow("reasoning", (
-                <Text as="label" size="2" className="inline-flex w-fit items-center gap-2 rounded-md border border-line bg-surface px-3 py-2">
+                <Text as="label" size="2" className="inline-flex w-fit items-center gap-2">
                   <Checkbox
                     size="2"
                     checked={draft.reasoning}
@@ -379,11 +414,11 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                   声明支持推理
                 </Text>
               ))}
-            </div>
+            </>
           ))}
 
           {section("容量", "以 token 计", (
-            <div className="flex flex-col gap-2">
+            <>
               {fieldRow("contextWindow", (
                 <TextField.Root
                   id={`${idPrefix}-contextWindow`}
@@ -410,7 +445,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                   <TextField.Slot side="right"><Text size="1" color="gray">tokens</Text></TextField.Slot>
                 </TextField.Root>
               ))}
-            </div>
+            </>
           ))}
 
           <Collapsible.Root open={advancedOpen} onOpenChange={setAdvancedOpen} className="flex flex-col gap-2">
@@ -423,7 +458,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
               <ChevronDownIcon className={cn("shrink-0 transition-transform duration-150", advancedOpen && "rotate-180")} aria-hidden />
             </Collapsible.Trigger>
             <Collapsible.Content className="collapsible-motion">
-              <div className="flex flex-col gap-2 pt-2">
+              <div className="mt-2 divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
                 {fieldRow("thinkingLevelMap", (
                   <div className="flex flex-col gap-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
