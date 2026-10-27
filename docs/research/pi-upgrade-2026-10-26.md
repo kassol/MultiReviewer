@@ -109,3 +109,12 @@ pi-subagents 已依赖 undici 8.12.3，Pi coding-agent 1.4.0 仍带 undici 8.10.
 - 目录刷新后,`sub2api-opencode:deepseek-v4.1-flash` 取到 1,000,000 / 384,000、文本与图片输入、「Pi 目录」单一来源,models.dev 不再参与;维护页用已存凭据重新验证成功。
 - 规格编辑弹窗在部署实例上验过:未改动时保存禁用;容量填 `0` 就地报错并禁保存;覆盖最大输出 300,000 保存后关窗、行上显示「已手动覆盖 1 项」、刷新后保留;取消勾选保存即回到自动值;409 时提示「模型服务版本已变化…草稿原样保留」、值未丢、再次保存成功。390×844 下弹窗 358×710、无横向溢出、内容区自身滚动。
 - 真实 Review Run:Run 172 用 `sub2api-opencode:deepseek-v4.1-flash` 完成(122,861 tokens,1 批,43 条轨迹事件,`run_finished` 为正常收尾);轮次 pin 冻结了上下文 1,000,000、最大输出 384,000 与文本 / 图片输入。零新报出——该轮把 14 条历史逐条复核为 `present`,未重报。Run 170 / 171 因两个上游网关 503(`No available accounts` / `Service temporarily unavailable`)整轮失败,与本次改动无关;验收期间临时把全局组合切成同一家 opencode 型号,跑完已原样恢复为 `claude-opus-5-5` 与 `gpt-6.1-sol`(版本推进到 17),覆盖保持清空。
+
+## 2026-10-27 干净发版与目录候选组
+
+- **发版流程纠正**。`scripts/build-push.sh` 在工作区有未提交改动时给版本 tag 加 `-dirty`。`2026.10.27-2-dirty` 就是这样构建出来的;同一份源码先提交(`4efa95b`)再构建,得到干净的 `2026.10.27-3`(摘要 `sha256:9618c9ff397858f21b5df68b2375616d7cef3e6cb244adf117f4d170f40f7715`),内容与 `-2-dirty` 相同。之后候选组与子代理模型放行的改动提交为 `845658c`,再构建干净镜像 `2026.10.27-4`(摘要 `sha256:ab860c3b4ccad724ffdd938fa752de334f244965eb960a7bb376a55aee8164c7`,镜像 label `org.opencontainers.image.revision` = `845658cc6bc4ced6cff8bdd0a558ecf58a4b8cd3`)。
+- **部署**。00-test 已指向 `2026.10.27-4`,容器 `running`、重启 0、Node 24.22.1 / undici 7.30.1 / Pi 1.4.0 / pi-subagents 0.82.1 / amd64;迁移记录 3,`model_directory_model.candidates_json`(`jsonb`、可空)就位;启动监听成功,近十分钟错误日志 0 行,无在跑轮次。三份 `bak-20261026-model-overrides` 备份大小未变。
+- **候选组**。显式刷新 `sub2api-opencode` 目录(服务版本推进到 18)后,`deepseek-v4.1-flash` 回 5 组候选:`opencode`、`opencode-go`、`qwen-token-plan`、`qwen-token-plan-cn`、`radius`。输入、推理与上下文五组一致(1,000,000),最大输出分两档(前四组 384,000,`radius` 32,768),思考映射与 compat 也各有差异;没有匹配到官方厂商行,因此五组都不带官方标记,自动值按多数合成。
+- **面板验收**。「编辑规格」弹窗顶部显示「目录匹配到 5 组」;只有存在不同值的字段出现「值来源」——最大输出、思考映射、兼容参数,输入 / 推理 / 上下文不出现。最大输出下拉的选项是「自动(官方优先)」「opencode:384,000」「radius:32,768」「手动输入」(后四组里三组同值,合并成一项)。选 `radius:32,768` 保存后覆盖写成 `{maxTokens:32768}`(服务版本 19),重新打开时下拉仍停在 `radius:32,768`;改回「自动」保存后覆盖清空、生效值回到 384,000(服务版本 20)。390×844 下弹窗保持 358×710、无横向溢出。
+- **真实链路**。维护页用已存凭据重新验证 `deepseek-v4.1-flash` 成功(一次最小真实推理)。临时把全局组合切成该型号(high),对 `zhangxu/review#66` 发起只复核重跑,Run 173 完成:70,367 tokens,0 条新报出,轮次 pin 冻结 1,000,000 / 384,000 与文本 / 图片输入。组合随后恢复为 `claude-opus-5-5` + `gpt-6.1-sol`(high),设置版本推进到 20。
+- **503 的成因**。此前 Run 170 / 171 的 `Service temporarily unavailable` 与 `No available accounts` 经确认为两个网关额度用尽,不是代码缺陷。
