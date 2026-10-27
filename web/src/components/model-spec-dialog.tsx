@@ -260,20 +260,22 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                 {specValueText(field, automatic)}
               </span>
               {overridden ? (
-                <>
+                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                   <ArrowRightIcon className="size-3 shrink-0 text-text-muted" aria-hidden />
                   <span className="font-semibold text-text">{changeText}</span>
-                </>
+                </span>
               ) : null}
             </p>
             <p className="mt-0.5 hidden text-base text-text-muted sm:block">{SPEC_FIELD_HINT[field]}</p>
           </div>
           <Select.Root
-            size="1"
+            size={{ initial: "3", sm: "1" }}
             value={mode}
             onValueChange={(next) => selectMode(field, next, choices)}
           >
-            <Select.Trigger className="w-32 shrink-0 sm:w-auto" aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`} />
+            <Select.Trigger className="w-32 shrink-0 sm:w-auto" aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`}>
+              {manual ? "手动" : choice === undefined ? "自动" : specValueText(field, choice.value)}
+            </Select.Trigger>
             <Select.Content>
               <Select.Item value="auto">自动</Select.Item>
               {choices.map((entry) => (
@@ -372,14 +374,10 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                       ? "匹配到 1 组目录候选"
                       : "未匹配到目录候选"}
                 </Text>
+                <p className="mt-0.5 text-base text-text-muted sm:hidden">官方优先合成；可逐字段改选或手填。</p>
                 <p className="mt-0.5 hidden text-base text-text-muted sm:block">{candidatesHint}</p>
               </div>
             </div>
-            {overrideCount === 0 ? null : (
-              <Button type="button" variant="ghost" color="gray" size="1" onClick={resetAll}>
-                全部恢复自动
-              </Button>
-            )}
           </div>
 
           {section("能力", "输入与推理", (
@@ -423,7 +421,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                 <TextField.Root
                   id={`${idPrefix}-contextWindow`}
                   aria-labelledby={`${idPrefix}-contextWindow`}
-                  size="2"
+                  size={{ initial: "3", sm: "2" }}
                   className="font-mono"
                   inputMode="numeric"
                   value={draft.contextWindow}
@@ -436,7 +434,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                 <TextField.Root
                   id={`${idPrefix}-maxTokens`}
                   aria-labelledby={`${idPrefix}-maxTokens`}
-                  size="2"
+                  size={{ initial: "3", sm: "2" }}
                   className="font-mono"
                   inputMode="numeric"
                   value={draft.maxTokens}
@@ -520,9 +518,16 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
         </div>
 
         <div className="mt-3 flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-          <Text size="1" className="text-text-muted">
-            {editor === null ? "" : `${overrideCount} 项覆盖 · ${unchanged ? "没有未保存改动" : "有未保存改动"}`}
-          </Text>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <Text size="1" className="text-text-muted">
+              {editor === null ? "" : `${overrideCount} 项覆盖 · ${unchanged ? "没有未保存改动" : "有未保存改动"}`}
+            </Text>
+            {overrideCount === 0 ? null : (
+              <Button type="button" variant="ghost" color="gray" size={{ initial: "3", sm: "1" }} onClick={resetAll}>
+                全部恢复自动
+              </Button>
+            )}
+          </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {targetChanged ? (
               <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }} onClick={reload}>
