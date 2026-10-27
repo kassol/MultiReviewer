@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -106,6 +106,33 @@ test("生产面板包含局部滚动、模型增量展示与路由弹窗返回�
       /\(min-width:40rem\)\{\.rt-BaseDialogScrollPadding:has\(>\[data-dock-top\]\)\{margin-top:0\}/,
     );
     assert.match(javascript, /"data-dock-top":!0/);
+    // 主屏安装(面板可安装,见 web/AGENTS.md):manifest 与四个图标放 public/,Vite 原样
+    // 复制到 dist 根——文件名不能带内容哈希,manifest 里写死的正是这些路径。
+    const manifest = JSON.parse(readFileSync(join(dist, "manifest.webmanifest"), "utf8")) as {
+      name: string;
+      start_url: string;
+      scope: string;
+      display: string;
+      icons: { src: string; sizes: string; purpose?: string }[];
+    };
+    assert.equal(manifest.name, "MultiReviewer");
+    assert.equal(manifest.start_url, "/");
+    assert.equal(manifest.scope, "/");
+    assert.equal(manifest.display, "standalone");
+    assert.deepEqual(
+      manifest.icons.map((icon) => `${icon.sizes} ${icon.purpose ?? "any"}`).sort(),
+      ["192x192 any", "512x512 any", "512x512 maskable"],
+    );
+    for (const icon of manifest.icons) {
+      assert.ok(existsSync(join(dist, icon.src.slice(1))), icon.src);
+    }
+    assert.ok(existsSync(join(dist, "apple-touch-icon.png")));
+    const pageHtml = readFileSync(join(dist, "index.html"), "utf8");
+    assert.match(pageHtml, /rel="manifest" href="\/manifest\.webmanifest"/);
+    assert.match(pageHtml, /rel="apple-touch-icon" href="\/apple-touch-icon\.png"/);
+    // iOS 读 manifest 之前靠这两条:capable 去掉地址栏,status-bar 不压在内容上。
+    assert.match(pageHtml, /name="apple-mobile-web-app-capable" content="yes"/);
+    assert.match(pageHtml, /name="apple-mobile-web-app-status-bar-style" content="default"/);
   } finally {
     rmSync(dist, { recursive: true, force: true });
   }

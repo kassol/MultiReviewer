@@ -11,11 +11,26 @@
     <!-- 面板只做亮色一套。不声明的话系统切暗色时浏览器会把滚动条与表单控件画成暗色。 -->
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#f5f6f8" />
-    <!-- 面板挂在随机前缀下,不该进任何索引。 -->
+    <!-- 面板不该进任何索引。 -->
     <meta name="robots" content="noindex, nofollow" />
     <!--
-      图标内联成 data URI:静态路由只对外开 /assets/*,放 public/ 的文件在生产会 404,
-      而内联的与前缀无关,dev 与生产同一份。三条错位短线 = 三个模型看同一段改动。
+      安装到手机主屏:manifest 与四个图标是 dist 根下的固定名字(public/ 原样复制过去),
+      由服务的白名单路由给,见 src/AGENTS.md。它们不能进 `/assets`——那里的长缓存靠
+      文件名带内容哈希,而 manifest 里写死的是路径。
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!--
+      iOS 读 manifest 之前靠这两行:capable 去掉地址栏,status-bar 选 default 让状态栏
+      占自己那一条——面板是亮色,black-translucent 会给白字压在白底上。
+    -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Reviewer" />
+    <!--
+      图标内联成 data URI:省一次请求,dev 与生产同一份。三条错位短线 = 三个模型看同一段
+      改动,与 web/src/components/mark.tsx 同一份图形(public/ 下那四个 PNG 也由它来)。
     -->
     <link
       rel="icon"

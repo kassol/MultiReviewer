@@ -6,7 +6,8 @@
 
 ## 目录结构
 
-- `index.html` — Vite 入口。生产由服务原样返回,深层路由刷新也回它。viewport 带 `viewport-fit=cover`:不写它 iOS 上 `env(safe-area-inset-*)` 恒为 0,底边那些安全区留白等于没写(issue #373)。
+- `index.html` — Vite 入口。生产由服务原样返回,深层路由刷新也回它。viewport 带 `viewport-fit=cover`:不写它 iOS 上 `env(safe-area-inset-*)` 恒为 0,底边那些安全区留白等于没写(issue #373)。**主屏安装**:`link rel="manifest"`、`apple-touch-icon` 与四行 `mobile-web-app-capable` / `apple-mobile-web-app-*`(去掉地址栏,状态栏用 `default` 让它占自己那一条——亮色面板上用 `black-translucent` 等于白字压白底)。manifest 与图标是同目录 `public/` 的固定文件名,不能进 `/assets`:那里靠内容哈希做长缓存,而 manifest 里写死的只能是路径。
+- `public/` — 主屏安装用的静态资源:`manifest.webmanifest` 与 `icon-192.png`、`icon-512.png`、`icon-512-maskable.png`、`apple-touch-icon.png`。Vite 原样复制到 `dist` 根,由服务的白名单路由提供(见 `src/AGENTS.md`),因此文件名不能带哈希。四个 PNG 从 `components/mark.tsx` 那份 SVG 栅格化而来,改了标记要重出这四个文件。**不放 service worker**:离线不是这一层要的,而 sw 会接管 `/` 的导航缓存、把 index.html 的 `no-cache` 挡住(issue #439 的发版语义)。
 - `vite.config.ts` — 后端端口从仓库根的 `.env` 读(`loadEnv`);dev proxy 把 `/api` 转本机后端。`manualChunks` 把 React 与 TanStack 四个包拆成 `vendor` 块吃长缓存(issue #443);`@radix-ui/themes` 是 barrel,放进去会把懒加载页面才用的依赖拖进首屏,因此不收。
 - **响应契约从 `../../src/contracts/` 引,不再手抄一份**(issue #426)。`fetchJson<T>` 是断言不是校验:两边各写一份类型时任一侧漏一格都没人报错(`missedVerdicts` 服务端一直在回、这边从来没声明过)。阶段列表与阶段详情在 `src/contracts/stages.ts`,阶段汇总在 `src/contracts/stage-summary.ts`(issue #429),轮次详情与时间流在 `src/contracts/runs.ts`(issue #433),这边只 `import type` 相对路径引它并按原名再导出——`runs.tsx` 的 `StageItem` / `RunItem` / `UsageSummary`、`stage-summary.tsx` 的 `StageTimelineEntry` / `TriggerSource` / `StageFinding` / `StageSummaryBody`、`lib/stage-alert.ts` 的 `StageRunAlert`、`lib/root-cause.ts` 的 `RootCauseRef`、`repo-actions.tsx` 的 `RerunMode` 都是这么来的,调用点因此一个字没改。`run-diff.tsx` 是唯一改了名的:它那三个导出组件渲染的一律是阶段汇总里的 Finding(两个调用方传进来的都是它),参数类型从 `RunFinding` 换成 `StageSummaryFinding`,直接引契约而不经 `stage-summary.tsx` 再导出一手——那个文件反过来引它。契约文件只有类型,不配路径别名(`@/` 仍只指 `web/src`):`../../src/` 这个前缀本身就说明它是服务端的文件。端点在投影之上另拼的格子(阶段详情的 `rangeReview` 与 `minReportSeverity`)不属于契约,仍在这边声明,与契约类型交叉出响应体。后续端点迁过来照这个做法。
 - `src/api.ts` — 面板 API 的唯一入口,基址是 `/api`。`apiUrl(path)` 给出同一份绝对路径,供 `EventSource` 这类只收 URL、进不了 `api()` 封装的调用点用。`send<T>(path, method, body?)` 是「发请求 → `!ok` 报错 → 有响应体就当 JSON 解析,204 或空响应体当没有返回值」这个最常见形状的唯一封装,写操作默认用它;需要在 `!response.ok` 判断之前先读一次响应体分支的调用点(比如 409 冲突要带出服务端当前值)不适用,仍手写 `api()` + 判断。
@@ -154,6 +155,8 @@
 - 选中态三分类语义保留，颜色改为：当前位置 = 蓝下划线 / 加粗；主从列表当前项 = 蓝色 tint 底 + 3px 蓝色左条（替代深色实底反白）；编辑中选择不变（浅底 / 描边 / Checkbox）。弹窗关闭恢复底层项与 tab 等交互约束全部沿用。`aria-current="page"` 只给导航用(顶栏导航项、详情 TabNav);主从列表的当前项用 `aria-current="true"`——它是列表里的当前项,不是当前页面,写成 `page` 会让模型服务这类页面同时报出三个「当前页面」。
 
 ## 变更日志
+
+- 2026-10-27: **主屏安装**。新增 `public/manifest.webmanifest`(`display: standalone`，`start_url` 与 `scope` 都是 `/`，`theme_color` 与 index.html 同一份)与四个 PNG：`icon-192`、`icon-512`、`icon-512-maskable`(满铺、标记缩到 0.78 留给安卓裁)、`apple-touch-icon`(180，满铺方图交给 iOS 自己加圆角)，都由 `components/mark.tsx` 那条 SVG 栅格化而来。`index.html` 补 `link rel="manifest"`、`apple-touch-icon` 与四行 `mobile-web-app-capable` / `apple-mobile-web-app-*`(状态栏取 `default`，亮色面板上用 `black-translucent` 是白字压白底)；顺手把「面板挂在随机前缀下」那条与现状矛盾的注释改掉。不放 service worker：离线不要，而 sw 会把 index.html 的 `no-cache` 挡住(issue #439)。服务端白名单见 `src/AGENTS.md`。`styles.css` 未动——`default` 状态栏下 iOS 自己让出顶部；实测若顶栏仍钻到状态栏或刘海下，再补 `@media (display-mode: standalone)` 下的 `env(safe-area-inset-top)` 让位。
 
 - 2026-10-27: **模型规格弹窗改版**。每个字段从「手动覆盖勾选 + 值来源」改成单一「取值方式」选择：自动、某一组目录候选、手动输入。自动与组值只读展示，切到手动才出现编辑控件并从自动值起手；同值候选组合并成一项并优先列出官方目录。字段按能力、容量、高级设置分三张卡逐行排，覆盖行左侧蓝条加浅蓝底并写「自动 X → Y」，来源只在徽章、取值方式只显示当前值；顶部摘要说明候选组数，底部常驻覆盖数、未保存状态与「全部恢复自动」；JSON 字段带有效性徽章与格式化键。移动端取值方式 40px 高、摘要保留短说明。弹窗移到 `components/model-spec-dialog.tsx`；服务端投影多回 `automaticEffectiveFields`，因此覆盖中的字段也显示「不加覆盖时会是什么值」。
 

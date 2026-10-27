@@ -10697,6 +10697,27 @@ const ASSET_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
+/**
+ * dist 根下那几个固定名字的文件:Web App Manifest 与主屏图标(面板可安装到手机主屏,
+ * 见 `web/AGENTS.md`)。
+ *
+ * 它们进不了 `/assets`——那里的 long cache 靠文件名带内容哈希,而 manifest 里写死的是
+ * 路径,换一张图标同名文件就变了。改成这份白名单加 `no-cache`:五个小文件每次核对一遍,
+ * 与 index.html 同档,发版后刷新一次就换掉。名单外的名字照旧走 SPA fallback,dist 根
+ * 不当静态目录开放。
+ */
+const PANEL_ROOT_FILES = new Map<string, string>([
+  ["/manifest.webmanifest", "application/manifest+json"],
+  ["/icon-192.png", "image/png"],
+  ["/icon-512.png", "image/png"],
+  ["/icon-512-maskable.png", "image/png"],
+  ["/apple-touch-icon.png", "image/png"],
+]);
+
+/** 产物缺失那一句。页面与 dist 根那几件说同一句,不各写一半。 */
+const MISSING_PANEL_DIST =
+  "面板前端产物缺失:镜像构建要包含 web/dist,或检查 MULTIREVIEWER_PANEL_DIST。";
+
 /** 静态产物。`/assets` 不带认证直接对外,路径解码后必须钉死在 dist 之内。 */
 async function serveAsset(
   res: ServerResponse,
@@ -10740,7 +10761,7 @@ async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<
   } catch {
     // 503 与 404 分开:这里是「前端没构建 / 路径配错」的部署问题。
     res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
-    res.end("面板前端产物缺失:镜像构建要包含 web/dist,或检查 MULTIREVIEWER_PANEL_DIST。");
+    res.end(MISSING_PANEL_DIST);
     return;
   }
   res.writeHead(200, {
@@ -10748,6 +10769,32 @@ async function servePage(res: ServerResponse, deps: WebhookServerDeps): Promise<
     "cache-control": "no-cache",
   });
   res.end(html);
+}
+
+/**
+ * dist 根那几个固定名字的文件。路径来自白名单,不是调用方的任意字符串;判不进去即 404——
+ * 调用方只在名单命中时才进来,这一支兜的是调用点写错的情形。
+ */
+async function servePanelFile(
+  res: ServerResponse,
+  panelDist: string,
+  path: string,
+): Promise<void> {
+  const contentType = PANEL_ROOT_FILES.get(path);
+  if (contentType === undefined) return send(res, 404);
+  try {
+    const content = await readFile(join(panelDist, path.slice(1)));
+    res.writeHead(200, {
+      "content-type": contentType,
+      // 名字不带哈希,换一张图标还是同一个 URL,因此每次都核对一次。
+      "cache-control": "no-cache",
+    });
+    res.end(content);
+  } catch {
+    // 与 index.html 同档:缺产物是部署缺口,与「没有这个路径」分开。
+    res.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
+    res.end(MISSING_PANEL_DIST);
+  }
 }
 
 /**
@@ -10912,8 +10959,9 @@ export async function createWebhookServer(deps: WebhookServerDeps): Promise<Serv
   const hookManager =
     deps.gitea === undefined ? undefined : createGiteaHookManager(deps.gitea);
   const server = createServer((req, res) => {
-    // 路由表(issue #26):`POST /webhook` → 投递;`/api/*` → 面板 API;`/assets/*` →
-    // 构建产物;其余的 GET → index.html,由客户端路由接管;非 GET 一律 404。
+    // 路由表(issue #26):`POST /webhook` → 投递;`/api/*` → 面板 API;dist 根下那几个
+    // 固定名字(manifest 与主屏图标)→ 白名单文件;`/assets/*` → 构建产物;其余的 GET →
+    // index.html,由客户端路由接管;非 GET 一律 404。
     // `/webhook` 上的其它方法也是 404:那是投递入口,不是面板页面。
     const path = pathname(req);
     if (path === "/webhook") {
@@ -10942,6 +10990,12 @@ export async function createWebhookServer(deps: WebhookServerDeps): Promise<Serv
             requestId,
           });
         }
+      });
+      return;
+    }
+    if (req.method === "GET" && PANEL_ROOT_FILES.has(path)) {
+      void servePanelFile(res, deps.panelDist, path).catch(() => {
+        if (!res.headersSent) send(res, 500);
       });
       return;
     }

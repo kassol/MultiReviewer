@@ -1,9 +1,9 @@
 /**
  * 根路径下的页面与静态产物(issue #33)。
  *
- * 前端逻辑不做程序化测试(布局与交互由原型定稿),这里压的是服务端可测的两半:
- * index.html 的 SPA fallback 与 `/assets` 的文件服务。深层路由刷新、路径穿越都在
- * HTTP 缝上验。
+ * 前端逻辑不做程序化测试(布局与交互由原型定稿),这里压的是服务端可测的几半:
+ * index.html 的 SPA fallback、`/assets` 的文件服务,以及 dist 根那几个固定名字
+ * (manifest 与主屏图标)的白名单。深层路由刷新、路径穿越都在 HTTP 缝上验。
  */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -20,6 +20,19 @@ const INDEX_HTML = `<!doctype html>
 <html><head><title>MultiReviewer</title></head><body><div id="root"></div></body></html>
 `;
 const APP_JS = "console.log('panel');\n";
+const MANIFEST = JSON.stringify(
+  { display: "standalone", icons: [{ src: "/icon-192.png", sizes: "192x192" }] },
+  null,
+  2,
+);
+/** 只验「原样送出」,不解码;真图标的几何由 public/ 下那几个文件自己负责。 */
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PANEL_ROOT_ICONS = [
+  "icon-192.png",
+  "icon-512.png",
+  "icon-512-maskable.png",
+  "apple-touch-icon.png",
+];
 
 const cleanups = testCleanups();
 
@@ -34,7 +47,10 @@ async function startPages(options: { withDist?: boolean } = {}) {
     writeFileSync(join(dist, "index.html"), INDEX_HTML);
     mkdirSync(join(dist, "assets"));
     writeFileSync(join(dist, "assets", "app.js"), APP_JS);
-    // dist 根下的文件只有 index.html 会被服务,其他文件不经 /assets 暴露。
+    // 主屏安装那几件是 dist 根的固定名字(public/ 原样复制)。
+    writeFileSync(join(dist, "manifest.webmanifest"), MANIFEST);
+    for (const icon of PANEL_ROOT_ICONS) writeFileSync(join(dist, icon), PNG_BYTES);
+    // 白名单之外的文件同样在 dist 根,但服务只认名单里那几个名字。
     writeFileSync(join(dist, "secret.txt"), "not-served");
   }
 
@@ -122,6 +138,31 @@ test("/assets 长缓存、index.html 不缓存:发版后刷新一次就拿到新
   assert.equal((await h.get("/assets/missing.js")).headers.get("cache-control"), null);
 });
 
+test("主屏安装的 manifest 与图标从 dist 根给:固定名字、各自的类型、不缓存", async () => {
+  const h = await startPages();
+
+  // manifest 与图标是 public/ 原样复制过来的固定文件名,因此不能进 `/assets`(那里靠
+  // 内容哈希做长缓存)。它们与 index.html 同档 `no-cache`:换一张图标还是同一个 URL。
+  const manifest = await h.get("/manifest.webmanifest");
+  assert.equal(manifest.status, 200);
+  assert.equal(manifest.headers.get("content-type"), "application/manifest+json");
+  assert.equal(manifest.headers.get("cache-control"), "no-cache");
+  assert.equal(await manifest.text(), MANIFEST);
+
+  for (const icon of PANEL_ROOT_ICONS) {
+    const response = await h.get(`/${icon}`);
+    assert.equal(response.status, 200, icon);
+    assert.equal(response.headers.get("content-type"), "image/png", icon);
+    assert.equal(response.headers.get("cache-control"), "no-cache", icon);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), PNG_BYTES, icon);
+  }
+
+  // 名单之外的名字照旧回 index.html:dist 根没有因此变成静态目录。
+  const stray = await h.get("/secret.txt");
+  assert.equal(stray.status, 200);
+  assert.doesNotMatch(await stray.text(), /not-served/);
+});
+
 test("/assets 的路径穿越被挡住", async () => {
   const h = await startPages();
 
@@ -150,4 +191,11 @@ test("前端产物缺失时页面回 503 并说明部署缺口,不与 404 混淆
   // `/assets` 与 webhook 入口不走 SPA fallback:产物缺失时仍是裸 404。
   assert.equal((await h.get("/assets/app.js")).status, 404);
   assert.equal((await h.get("/webhook")).status, 404);
+
+  // manifest 与图标同样是「产物缺失」,不伪装成 404。
+  for (const path of ["/manifest.webmanifest", "/icon-192.png"]) {
+    const response = await h.get(path);
+    assert.equal(response.status, 503, path);
+    assert.match(await response.text(), /web\/dist|MULTIREVIEWER_PANEL_DIST/, path);
+  }
 });
