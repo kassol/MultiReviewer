@@ -311,7 +311,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
         maxWidth="680px"
         maxHeight="calc(100dvh - 2rem)"
         size={{ initial: "2", sm: "3" }}
-        className="flex flex-col overflow-hidden"
+        className="flex flex-col overflow-hidden max-sm:h-[calc(100dvh_-_2rem)]"
       >
         <div className="flex shrink-0 items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
@@ -518,6 +518,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
               variant={saveEnabled || saving ? "solid" : "outline"}
               {...(saveEnabled || saving ? {} : { color: "gray" as const })}
               size={{ initial: "3", sm: "2" }}
+              className="disabled:opacity-100"
               disabled={!saveEnabled}
               onClick={() => void save()}
             >
