@@ -2716,9 +2716,9 @@ function ModelRuntimeFacts({ model, canWriteModels }: { model: ModelServiceModel
         <span>最大输出：<span className="font-mono tabular-nums">{quantity(model.runtime.maxOutput)}</span></span>
       </p>
       <p className="text-text-muted">规格来源：{sources.join(" / ")}</p>
-      {overridden === 0 ? null : <p className="text-text-muted">已手动覆盖 {overridden} 项。</p>}
-      <div className="mt-1">
+      <div className="mt-1 flex flex-wrap items-center gap-2">
         <ModelSpecDialog model={model} canWrite={canWriteModels} />
+        {overridden === 0 ? null : <Badge size="1" color="blue" variant="soft">{overridden} 项手动覆盖</Badge>}
       </div>
     </div>
   );

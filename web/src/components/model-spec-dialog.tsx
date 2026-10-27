@@ -56,7 +56,7 @@ function quantity(value: number): string {
 }
 
 function specValueText(field: ModelSpecField, value: SpecValue | null): string {
-  if (value === null) return "未知";
+  if (value === null) return JSON_FIELDS.has(field) ? "未设置" : "未知";
   switch (field) {
     case "input":
       return (value as readonly ("text" | "image")[]).length === 0
@@ -104,6 +104,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
   const unchanged = editor !== null && sameModelSpecOverrides(parsed.overrides, editor.baseline.overrides);
   const overrideCount = Object.values(draft.enabled).filter(Boolean).length;
   const advancedOverrides = [draft.enabled.thinkingLevelMap, draft.enabled.compat].filter(Boolean).length;
+  const saveEnabled = editor !== null && parsed.valid && !targetChanged && !unchanged && !saving;
 
   const reset = (): void => {
     setOpen(false);
@@ -229,27 +230,29 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
           overridden ? "border-accent-track bg-accent-tint" : "border-line bg-surface",
         )}
       >
-        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-x-4">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <Text id={`${idPrefix}-${field}`} size="2" weight="medium">{SPEC_FIELD_LABEL[field]}</Text>
-              <Badge size="1" variant="soft" color={!overridden ? "gray" : manual ? "amber" : "blue"}>
-                {!overridden ? "自动" : manual ? "手动" : choice?.label ?? "覆盖"}
-              </Badge>
+              {overridden ? (
+                <Badge size="1" variant="soft" color={manual ? "amber" : "blue"}>
+                  {manual ? "手动" : choice?.label ?? "覆盖"}
+                </Badge>
+              ) : null}
             </div>
-            <p className="mt-1 text-base text-text-muted">
-              自动值 <span className="font-medium text-text">{specValueText(field, automatic)}</span>
-              {overridden && !manual && choice !== undefined ? ` · 取自 ${choice.label}` : null}
+            <p className="mt-1 text-md font-medium text-text">
+              自动值 <span className="font-semibold">{specValueText(field, automatic)}</span>
+              {overridden && !manual && choice !== undefined ? ` · 取自 ${choice.label}：${specValueText(field, choice.value)}` : null}
               {manual ? " · 当前为手动覆盖" : null}
             </p>
-            <p className="mt-0.5 text-base text-text-muted">{SPEC_FIELD_HINT[field]}</p>
+            <p className="mt-0.5 hidden text-base text-text-muted sm:block">{SPEC_FIELD_HINT[field]}</p>
           </div>
           <Select.Root
             size="1"
             value={mode}
             onValueChange={(next) => selectMode(field, next, choices)}
           >
-            <Select.Trigger aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`} />
+            <Select.Trigger className="w-full sm:w-auto" aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`} />
             <Select.Content>
               <Select.Item value="auto">自动</Select.Item>
               {choices.map((entry) => (
@@ -265,7 +268,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
           <div className="mt-3">{control}</div>
         ) : JSON_FIELDS.has(field) ? (
           <pre className="mt-3 max-h-40 overflow-auto rounded-md border border-line bg-sunken p-3 font-mono text-base leading-relaxed">
-            {jsonDraftText(draft, field).trim() === "" ? "未设置" : jsonDraftText(draft, field)}
+            {!overridden && automatic === null ? "未设置" : jsonDraftText(draft, field)}
           </pre>
         ) : null}
         {fieldError === undefined ? null : <p className="mt-2 text-base text-danger">{fieldError}</p>}
@@ -393,7 +396,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
             </div>
           ))}
 
-          {section("容量", "1–2,147,483,647 tokens", (
+          {section("容量", "以 token 计", (
             <div className="flex flex-col gap-2">
               {fieldRow("contextWindow", (
                 <TextField.Root
@@ -512,9 +515,10 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
             </Dialog.Close>
             <Button
               type="button"
-              variant="solid"
+              variant={saveEnabled || saving ? "solid" : "outline"}
+              {...(saveEnabled || saving ? {} : { color: "gray" as const })}
               size={{ initial: "3", sm: "2" }}
-              disabled={editor === null || !parsed.valid || targetChanged || unchanged || saving}
+              disabled={!saveEnabled}
               onClick={() => void save()}
             >
               {saving ? "正在保存…" : "保存"}
