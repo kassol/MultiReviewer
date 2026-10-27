@@ -8,9 +8,7 @@ allowBuilds:
   esbuild: true
   protobufjs: false
 
-# pnpm 11 默认拒装发布不满 24 小时的版本(minimumReleaseAge),镜像里的
-# `pnpm install --frozen-lockfile` 也按锁文件逐项核验。pi-subagents 0.79.2 发布于
-# 2026-10-20T06:12Z,升级当天不豁免就装不进镜像(调研见 docs/research/pi-subagents-0.79-2026-10-20.md)。
-# Pi 1.3.0 升级时已过窗口,不在清单里。豁免只钉精确版本,下一次升级删掉。
+# pi-subagents 0.82.1 发布于 2026-10-25T06:30Z,此次升级仍在 24 小时窗口内。
+# 镜像的 pnpm 11 按锁文件核验;豁免钉精确版本,下次升级删除。
 minimumReleaseAgeExclude:
-  - "pi-subagents@0.79.2"
+  - "pi-subagents@0.82.1"

@@ -8,7 +8,7 @@ MultiReviewer:基于真实 Coding Agent 的多模型并行 PR 智能审查工具
 
 ## 技术栈
 
-TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前钉在 Pi 1.3.0 与 pi-subagents 0.79.2(后者的 `typebox` 是 peer,由项目根那一份提供):`@earendil-works/pi-server` 已不在依赖树里——Pi 的根入口不引用它,pi-subagents 0.68 起也不再捆绑它(只有后台子会话用得到,本项目一律前台)。运行时第三方依赖是这两个加上 Pi 工具 schema 用的 `typebox`、库层的 `drizzle-orm` 与 `pg`,共五个(`drizzle-kit` 是开发依赖)。**持久化用 PostgreSQL,经 Drizzle 读写(ADR 0036)**:只接外部实例,schema 用 TS 写在 `src/review/schema/`,迁移文件由 drizzle-kit 生成进 `drizzle/` 并在服务启动时执行。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
+TypeScript / Node 24,源码由 Node 原生运行,无构建步骤。测试用内置的 `node:test`。Reviewer 的 agent harness 采用 Pi(`@earendil-works/pi-coding-agent`,MIT),见 ADR 0004。取证子代理用 Pi 官方注册表包 `pi-subagents`(MIT,ADR 0021):它以普通运行时依赖的形态 vendor 进镜像(`pnpm install --prod` 那一层就装好了,运行时不联网装包),由 Reviewer 子进程铺进会话的临时 agentDir;前台取证子会话跑在 Reviewer 子进程内(pi-subagents 0.65 起,ADR 0021 附记),不另起进程。当前使用 Pi 1.4.0 与 pi-subagents 0.82.1(后者的 `typebox` 是 peer,由项目根那一份提供):`@earendil-works/pi-server` 已不在依赖树里——Pi 的根入口不引用它,pi-subagents 0.68 起也不再捆绑它(只有后台子会话用得到,本项目一律前台)。运行时第三方依赖是这两个加上 Pi 工具 schema 用的 `typebox`、库层的 `drizzle-orm` 与 `pg`,共五个(`drizzle-kit` 是开发依赖)。**持久化用 PostgreSQL,经 Drizzle 读写(ADR 0036)**:只接外部实例,schema 用 TS 写在 `src/review/schema/`,迁移文件由 drizzle-kit 生成进 `drizzle/` 并在服务启动时执行。管理面板用 React 19、Radix Themes 与 Tailwind v4 构建。包管理用 pnpm。
 
 ## 目录索引
 
@@ -187,6 +187,20 @@ Single-context 布局:根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/do
 - 三份 AGENTS.md(根 / `web/` / `src/`)的变更日志段由主会话独占:子代理把条目文本交回,主会话一次写齐。六路合并零冲突靠的是这一条。
 
 ## 变更日志
+
+- 2026-10-27: **模型规格覆盖发布到 00-test 并端到端验收**。前端补上模型页每行的「编辑规格」弹窗:六个字段各一枚「手动覆盖」勾选、只提交勾上的字段,`false` 与空对象照实提交,成功即关窗,草稿与基线一致时禁保存;409 换基线不换草稿,调用目标变了封住旧草稿只给「按当前规格重载」。字段来源多一档「手动覆盖」。镜像 `2026.10.27-2-dirty`(摘要 `sha256:ff64f7e1…`)部署后迁移记录 2、`overrides_json` 就位;显式刷新目录后目标型号取到 1,000,000 / 384,000 与「Pi 目录」来源,最小真实推理通过;真实 Run 172 用该型号完成并冻结完整规格(零新报出,14 条历史全部复核为仍在)。Run 170 / 171 因上游网关 503 整轮失败,与本次改动无关;验收期间临时切的组合已原样恢复。两份更早的 `.env` 备份按「一类只留最新一份」清掉。详见 `docs/research/pi-upgrade-2026-10-26.md`。
+
+- 2026-10-26: **多来源模型规格逐字段优先官方,并允许手动覆盖**。Pi 与 models.dev 都先取全目录完整 ID 候选,集合为空才取双方去厂商路径后的 ID;Pi 在该集合内按官方、路径 provider、其余候选逐字段补齐,models.dev 只补四个基础字段。模型页可编辑输入类型、推理能力、上下文窗口、最大输出、思考映射与 compat,逐字段恢复自动;覆盖绑定调用目标,刷新与凭据轮换保留,换目标清除。迁移仅新增可空 `model_service_model_state.overrides_json`。Review Run 与辅助模型冻结完整规格,重启恢复原规格;常驻会话下一次开跑时因规格变化重建。最终检查与部署结果见 `docs/research/pi-upgrade-2026-10-26.md`。
+
+- 2026-10-26: **自定义模型服务改为在整个 Pi 目录里按 model id 匹配**,不再只查 GPT/o-series、Claude、Gemini 三家官方目录。先取全目录完整 ID 相等的候选集合,为空才按双方末段 ID 精确匹配;在统一集合内逐字段按官方厂商、ID 路径对应 provider、其余候选补齐,高优先层缺失或无法合成的字段继续取下一层。各层多候选时名字、推理能力、上下文窗口、最大输出与思考映射取多数(并列即未知),输入类型与 compat 要全体一致。`deepseek-v4.1-flash` 因此在 Pi 1.4.0 的 opencode 等行上直接取到百万上下文、384k 输出与 low / high / max;models.dev 退为四个基础字段的兜底,Pi 给全时不发请求。覆盖功能加入前的全量检查:后端 1,251 条(1,241 通过、10 条门控跳过、0 失败),前端 114 条通过。最终检查与部署结果见 `docs/research/pi-upgrade-2026-10-26.md`。
+
+- 2026-10-26: 通用 models.dev 补缺的全量检查与部署验收通过:后端 1,239 条通过、10 条跳过,前端 114 条通过。镜像 `2026.10.26-2-dirty` 显式刷新后,DeepSeek 输入与推理能力来源为 models.dev,容量冲突保持未知并使用 128k / 16k 运行基线;模型页来源说明与最小真实推理通过。详情见 `docs/research/pi-upgrade-2026-10-26.md`。
+
+- 2026-10-26: 自定义模型发现增加 models.dev 通用能力补缺,取代同日的 DeepSeek → OpenCode 特判。Pi 未提供的输入类型、推理能力、上下文窗口与最大输出按精确模型 ID 匹配,跨 provider 候选逐字段只采纳一致值;字段来源随快照保存并在面板显示。已有快照经显式刷新才更新。models.dev 不提供思考映射,仅补出推理能力时档位沿通用规则为 off / minimal / low / medium / high。
+
+- 2026-10-26: Pi 升到 1.4.0、pi-subagents 升到 0.82.1,调研见 `docs/research/pi-upgrade-2026-10-26.md`。新版入口移入 `bundle/`,包根定位改用 Node `findPackageJSON`。子代理前台历史与报告绑定私有 agentDir,父进程在子进程关闭后清理,覆盖正常退出、会话回收与强杀;父进程自身被强杀仍可能留下临时目录。全量检查通过,镜像已部署;Run 169 两个 Reviewer 与三次真实取证均成功,正常收尾并发布一条 Finding。
+
+- 2026-10-26: 自定义服务的精确型号 `deepseek-v4.1-flash` 改从 Pi 的 `opencode` 目录补齐能力,修复因未匹配而使用 128k / 16k 运行基线的问题。目标规格为百万上下文、384k 最大输出、文本与图片输入及 low / high / max 思考档位;同名及近似 ID 保持未匹配。对应 17 条自动化测试通过;部署后显式刷新目标服务目录,上述字段已生效,该型号的最小真实推理通过。
 
 - 2026-10-20: **backlog #466 清空**(无 schema 变更)。三条:**取证与会话子代理的调用不再钉并行扇出**——pi-subagents 0.71 起顶层 `tasks` / `chain` / `concurrency` 在本项目的配置下整次被打回、`workflow*` 被放行清单剥掉,线上 1197 次派单 0 次用到;给它们逐项钉 cwd 的那一段与「单次调用扇出上限 8」删掉,这几个键从此与其他清单外的键一样剥掉、调用照常只派那一个 agent,只带它们不带 `agent` 的调用拦下并指路,ADR 0021 顶部加附记。**系统提示写明一回合只派一个子代理**:同一回合并发的第二次调用会被 pi-subagents 打回(线上 1447 次里 18 次),Reviewer 与会话提示的子代理段各补一句,会话那一段原先「独立的几个问题在一次调用里一起派」的说法随之删掉。**Reviewer 与会话子进程不再继承父进程的 `ANTHROPIC_*` 变量**:`ANTHROPIC_ORGANIZATION_ID`、`ANTHROPIC_FEDERATION_RULE_ID` 这些名字不像凭据,却够 Anthropic SDK 拼出联邦凭据或改掉目标地址,整组剥掉;模型凭据仍经 `MULTIREVIEWER_MODEL_API_KEY` 进子进程,不受影响。细节见 `src/AGENTS.md`。
 - 2026-10-20: **Reviewer 不再读被审仓库里的 `AGENTS.md`、`CLAUDE.md` 与 `.pi/APPEND_SYSTEM.md`**(既有缺陷,与本日升级无关)。Pi 的资源加载器默认从工作目录往上读这几份文件并拼进系统提示,自定义系统提示也挡不住;Reviewer、规则 agent 与合并 agent 的工作目录是被审仓库的工作副本,PR 作者因此能在被审分支里放一份文件,改写这一轮 Reviewer 收到的指令。取证子代理那一侧早已按「被审仓库内容半可信」关掉,父会话这一侧漏了。现在 `src/reviewer/worker-tools.ts` 的加载器关掉上下文文件、并给空的追加提示让 Pi 不去找 APPEND_SYSTEM,四条链路(含 Agent 会话)共用这一处。回归:`test/reviewer-evidence-session.test.ts`(工作副本里放三份文件,发给模型的请求里一个字都不出现;两个选项各自注掉都会红)。

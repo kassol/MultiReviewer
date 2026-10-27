@@ -42,7 +42,7 @@
  * 一层,`installEvidenceKit` 是取证在它上面的那一薄层;会话那一层在 `session-subagent.ts`。
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { findPackageJSON } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -139,7 +139,8 @@ export function registerSubagentCeiling(sessionId: string, agent: string): void 
 
 /** vendor 进镜像的 pi-subagents 包根目录。它是一个 pi 包,整个目录交给资源加载器。 */
 export function vendoredSubagentsPath(): string {
-  return dirname(createRequire(import.meta.url).resolve("pi-subagents"));
+  // 包入口自 0.81 起在 bundle/ 下,由包清单定位根目录,不依赖入口文件的层级。
+  return dirname(findPackageJSON("pi-subagents", import.meta.url)!);
 }
 
 /**
@@ -285,6 +286,8 @@ export function installSubagentKit(options: {
   sessionBudget?: number;
 }): void {
   const { agentDir, agent } = options;
+  // bundle 在首次 import 时捕获临时根;前台历史含任务与报告,随本次私有目录一起清理。
+  process.env.PI_SUBAGENTS_TEMP_ROOT = agentDir;
   writeFileSync(
     join(agentDir, "settings.json"),
     JSON.stringify({ subagents: { disableBuiltins: true } }, null, 2),

@@ -49,7 +49,7 @@ import {
   publishAgentSessionRecord,
   publishTransientTrace,
 } from "../review/trace.ts";
-import { MODEL_API_KEY_ENV, reviewerEnv } from "../reviewer/env.ts";
+import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, reviewerEnv } from "../reviewer/env.ts";
 import type { RuntimeModel } from "../reviewer/model-service-runtime.ts";
 import { FINDING_QUERY_LIMIT } from "../reviewer/session-finding-tool.ts";
 import { deflateImageBlocks, type AgentSessionImageRef } from "../reviewer/session-images.ts";
@@ -175,6 +175,7 @@ type RuntimeEntry = {
    * 不同即落一条系统消息、回收这个子进程、用新模型重建(issue #335)。
    */
   modelKey: string;
+  modelName: string;
   /**
    * 执行中是静默闸、空闲是回收闸,两档共用这一格:同一时刻只有一种在计时,而「换档」正是
    * 状态变化那一刻要做的事(`rearm`)。
@@ -521,9 +522,13 @@ function sendCommand(entry: RuntimeEntry, command: SessionCommand): void {
 
 /**
  * 这次开跑用的辅助模型的指纹(ADR 0029,issue #335)。模型与思考档位都算在内:同一个模型换了
- * 档位就是另一种跑法,上下文里的思考痕迹对不上。它同时是系统消息里的那个名字,存两份就会漂。
+ * 档位就是另一种跑法。完整运行模型也参与复用判定,显示名独立保存。
  */
 function modelKey(model: AgentSessionModel): string {
+  return JSON.stringify({ runtimeModel: model.runtimeModel, thinkingLevel: model.thinkingLevel ?? "off" });
+}
+
+function modelName(model: AgentSessionModel): string {
   return `${model.runtimeModel.provider}:${model.runtimeModel.id}(思考 ${model.thinkingLevel ?? "off"})`;
 }
 
@@ -1179,16 +1184,19 @@ async function boot(
   // 等仓库备好再发不会丢。
   const sessionRoot = mkdtempSync(join(tmpdir(), "multireviewer-session-root-"));
   entry.sessionRoot = sessionRoot;
+  // 放在工作树之外,父进程在 close 后收掉;强杀同样不留子代理的任务与报告。
+  const agentDir = mkdtempSync(join(tmpdir(), "multireviewer-session-agent-"));
   const child = fork(WORKER_PATH, {
     // cwd 是会话根。只设 Pi 的 cwd 不够:模型会拼出相对于编排进程目录的路径。
     cwd: sessionRoot,
-    env: reviewerEnv(process.env, { [MODEL_API_KEY_ENV]: model.credential }),
+    env: reviewerEnv(process.env, { [MODEL_API_KEY_ENV]: model.credential, [PI_AGENT_DIR_ENV]: agentDir }),
     // 不继承父进程的 execArgv:worker 是普通脚本,在 `node --test` 下会被当成测试文件启动。
     execArgv: [],
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
   // 当场登记:准备仓库那几秒里收拢(删会话、排空、抢名额)要杀得到它。
   entry.child = child;
+  child.once("close", () => rmSync(agentDir, { recursive: true, force: true }));
 
   let ready: (() => void) | undefined;
   let failed: ((error: Error) => void) | undefined;
@@ -1445,6 +1453,7 @@ export function deliverAgentSessionMessage(
     ...(images.length === 0 ? {} : { images }),
   };
   const key = modelKey(model);
+  const name = modelName(model);
   const existing = registry.get(session.id);
   if (existing !== undefined && existing.modelKey === key) {
     startRun(session.id, existing, message, first);
@@ -1463,7 +1472,9 @@ export function deliverAgentSessionMessage(
         recordSystemMessage(
           deps,
           session.id,
-          `辅助模型从 ${existing.modelKey} 换成 ${key},会话已用新模型重建。`,
+          existing.modelName === name
+            ? `辅助模型 ${name} 的运行规格已更新,会话已重建。`
+            : `辅助模型从 ${existing.modelName} 换成 ${name},会话已用新模型重建。`,
         ),
       );
   }
@@ -1472,6 +1483,7 @@ export function deliverAgentSessionMessage(
     status: "running",
     lastActiveAt: deps.now(),
     modelKey: key,
+    modelName: name,
     cancelTimer: undefined,
     child: undefined,
     booting: undefined,

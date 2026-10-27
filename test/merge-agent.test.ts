@@ -1342,7 +1342,10 @@ async function runAuxiliaryModel(databaseUrl: string): Promise<unknown> {
     "SELECT auxiliary_model FROM review_run ORDER BY id DESC LIMIT 1",
   );
   const value = row?.["auxiliary_model"];
-  return value === null || value === undefined ? null : JSON.parse(String(value));
+  if (value === null || value === undefined) return null;
+  const { pin, ...spec } = JSON.parse(String(value));
+  assert.ok(pin === null || pin?.runtimeModel !== undefined, "辅助模型必须冻结非秘密运行规格");
+  return spec;
 }
 
 /**

@@ -72,32 +72,44 @@ function queueCatalogLoad<T>(load: () => Promise<T>): Promise<T> {
 
 
 /** 模型服务的内置发现输入；私有 `models.json` 保证模型补录不会伪装成自动来源。 */
-export function loadPiProviderCatalog(
+export async function loadPiProviderCatalog(
   providerId: string,
   options: LoadOptions = {},
 ): Promise<PiProviderCatalog | undefined> {
-  return queueCatalogLoad(async () => {
-    const runtime = await loadPiRuntime(options);
-    const provider = runtime.getProvider(providerId);
-    if (provider === undefined) return undefined;
-    return {
-      id: provider.id,
-      name: provider.name,
-      models: provider.getModels().map((model) => ({
-        id: model.id,
-        name: model.name,
-        api: model.api,
-        baseUrl: model.baseUrl,
-        input: model.input,
-        reasoning: model.reasoning,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-        // 内置表里这两项可能是 null(如 opus-4-5 的 thinkingLevelMap),null 即没有。
-        ...(model.thinkingLevelMap == null ? {} : { thinkingLevelMap: model.thinkingLevelMap }),
-        ...(model.compat == null ? {} : { compat: model.compat }),
-      })),
-    };
-  });
+  return (await loadPiCatalog(options)).find((catalog) => catalog.id === providerId);
+}
+
+type PiRuntimeProvider = ReturnType<ModelRuntime["getProviders"]>[number];
+
+function piProviderCatalog(provider: PiRuntimeProvider): PiProviderCatalog {
+  return {
+    id: provider.id,
+    name: provider.name,
+    models: provider.getModels().map((model) => ({
+      id: model.id,
+      name: model.name,
+      api: model.api,
+      baseUrl: model.baseUrl,
+      input: model.input,
+      reasoning: model.reasoning,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      // 内置表里这两项可能是 null(如 opus-4-5 的 thinkingLevelMap),null 即没有。
+      ...(model.thinkingLevelMap == null ? {} : { thinkingLevelMap: model.thinkingLevelMap }),
+      ...(model.compat == null ? {} : { compat: model.compat }),
+    })),
+  };
+}
+
+/**
+ * 一份 Pi 的完整目录:全部 provider 与它们当前那一份模型表。自定义模型服务的发现要按
+ * model id 在整个目录里找同一个模型(同一行常常同时出现在官方家与若干转售家下),只读
+ * 一家会漏掉那些没被厂商前缀规则覆盖的型号。
+ *
+ * 与单家那一份共用同一条加载队列与同一份运行时:一次发现只付一次目录加载。
+ */
+export function loadPiCatalog(options: LoadOptions = {}): Promise<PiProviderCatalog[]> {
+  return queueCatalogLoad(async () => (await loadPiRuntime(options)).getProviders().map(piProviderCatalog));
 }
 
 async function loadPiRuntime(options: LoadOptions): Promise<ModelRuntime> {

@@ -5,6 +5,9 @@
  * 工具在不在。公用 harness 在 `support/agent-session.ts`(issue #399)。
  */
 import assert from "node:assert/strict";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { openStore } from "../src/review/store/index.ts";
@@ -864,8 +867,24 @@ test("会话里派一个子代理:工具面是只读四件套、出根被拒,过
     assert.match(run.calls[0]!.error ?? "", /outside|超出|not in|会话根|repository/i);
     assert.match(run.conclusion, /answer\.ts:1/);
 
+    const historyRoots = readdirSync(tmpdir())
+      .filter((name) => name.startsWith("multireviewer-session-agent-"))
+      .map((name) => join(tmpdir(), name))
+      .filter((root) => {
+        const history = join(root, "async-subagent-results", "foreground-history");
+        return existsSync(history) && readdirSync(history).some((file) => {
+          const saved = readFileSync(join(history, file), "utf8");
+          const historyRun = JSON.parse(saved) as { children: { artifactPaths?: { outputPath?: string } }[] };
+          const output = historyRun.children[0]?.artifactPaths?.outputPath;
+          return saved.includes(run.task) && output?.startsWith(`${root}/`) === true &&
+            readFileSync(output, "utf8").includes(run.conclusion);
+        });
+      });
+    assert.equal(historyRoots.length, 1, "任务与报告应只在本会话的私有前台历史中");
+
     // 回收之后从记录重建,这一条照样在:transcript 文件随子进程的临时目录没了,卡片靠它。
     await disposeAgentSessions();
+    assert.equal(existsSync(historyRoots[0]!), false, "回收后私有前台历史应删除");
     const rebuilt = await records(h, cookie, sessionId);
     assert.deepEqual(
       rebuilt.map((one) => (one.entry as { customType?: string }).customType ?? one.type),

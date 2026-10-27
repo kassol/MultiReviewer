@@ -14,11 +14,12 @@ import {
   modelIdentity,
   type ReviewerSpec,
 } from "../../config.ts";
-import {
-  type DiscoveredModel,
-  type TrustedModelFields,
-  type TrustedModelFieldSource,
-  type TrustedModelFieldSources,
+import type { BoundModelSpecOverride } from "../../contracts/model-specs.ts";
+import type {
+  DiscoveredModel,
+  TrustedModelFields,
+  TrustedModelFieldSource,
+  TrustedModelFieldSources,
 } from "../../reviewer/model-service-runtime.ts";
 import type { ProjectFact, ReviewRule } from "../finding.ts";
 import { panelUserRepo } from "../schema/accounts.ts";
@@ -60,6 +61,7 @@ import type {
 } from "./index.ts";
 import {
   boundTargetForModel,
+  modelServiceTargetFingerprint,
   modelServiceTargetSetFingerprint,
   normalizeModelServiceTargets,
   readMinReportSeverity,
@@ -139,6 +141,7 @@ const TRUSTED_MODEL_FIELD_KEYS = [
 const TRUSTED_MODEL_FIELD_SOURCES = new Set<TrustedModelFieldSource>([
   "service-interface",
   "pi-catalog",
+  "models-dev",
   "service-target",
 ]);
 
@@ -201,6 +204,7 @@ type ReposMethods = Pick<
   | "listModelReferences"
   | "listModelServiceModelStates"
   | "updateModelServiceModelStates"
+  | "replaceModelSpecOverrides"
   | "listModelSupplements"
   | "claimDelivery"
 >;
@@ -834,6 +838,23 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
           version = expectedVersion + 1;
         }
 
+        // 覆盖随实际调用目标存活;切目标时清掉,日后切回也不恢复旧值。刷新与凭据轮换保留。
+        const overrideRows = await orm.select().from(modelServiceModelState).where(eq(modelServiceModelState.provider, record.provider));
+        for (const row of overrideRows) {
+          if (row.overridesJson === null) continue;
+          const bound = JSON.parse(row.overridesJson) as Omit<BoundModelSpecOverride, "model">;
+          const automatic = automaticModels.get(modelIdentity({ provider: record.provider, model: row.model }));
+          const supplement = record.supplements.find((entry) => entry.model === row.model);
+          // 目录与补录都缺席只能说明来源暂不可用;原目标仍绑定时留存覆盖,由运行侧拒绝应用。
+          if (record.type === "builtin" && targets !== null && automatic === undefined && supplement === undefined
+            && targets.some((target) => target.fingerprint === bound.targetFingerprint)) continue;
+          const nextFingerprint = record.type === "custom" ? record.targetFingerprint
+            : targets === null ? record.targetFingerprint : boundTargetForModel(targets, automatic, supplement)?.target.fingerprint;
+          if (nextFingerprint !== bound.targetFingerprint) {
+            await orm.update(modelServiceModelState).set({ overridesJson: null }).where(and(eq(modelServiceModelState.provider, record.provider), eq(modelServiceModelState.model, row.model)));
+          }
+        }
+
         await orm
           .delete(modelServiceCredential)
           .where(eq(modelServiceCredential.provider, record.provider));
@@ -1184,6 +1205,8 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
         },
         automaticModels,
         supplements: await store().listModelSupplements(provider),
+        modelSpecOverrides: (await orm.select().from(modelServiceModelState).where(eq(modelServiceModelState.provider, provider)))
+          .flatMap((row): BoundModelSpecOverride[] => row.overridesJson === null ? [] : [{ model: row.model, ...JSON.parse(row.overridesJson) }]),
       };
     },
 
@@ -1330,6 +1353,29 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
             });
         }
         return { status: "updated", updated: requested.length } as const;
+      });
+    },
+
+    async replaceModelSpecOverrides(provider, model, expectedVersion, targetFingerprint, overrides, updatedAt) {
+      return await transaction(async (tx) => {
+        const current = await lockService(provider);
+        if (current === undefined || current.version !== expectedVersion) return tx.rollback({ status: "version-conflict" } as const);
+        const service = (await store().getModelService(provider))!;
+        const automatic = service.automaticModels.find((entry) => entry.id === model);
+        const supplement = service.supplements.find((entry) => entry.model === model);
+        if (automatic === undefined && supplement === undefined) return tx.rollback({ status: "unknown-model" } as const);
+        const fingerprint = service.type === "custom"
+          ? service.baseUrl === null || service.api === null ? undefined : modelServiceTargetFingerprint(service.baseUrl, service.api)
+          : service.targets === null ? service.targetFingerprint ?? undefined : boundTargetForModel(service.targets, automatic, supplement)?.target.fingerprint;
+        if (fingerprint === undefined || fingerprint !== targetFingerprint) return tx.rollback({ status: "target-unresolved" } as const);
+        const overridesJson = Object.keys(overrides).length === 0 ? null : JSON.stringify({ targetFingerprint, overrides });
+        await orm.insert(modelServiceModelState).values({ provider, model, enabled: true, overridesJson, updatedAt })
+          .onConflictDoUpdate({ target: [modelServiceModelState.provider, modelServiceModelState.model], set: { overridesJson, updatedAt } });
+        const version = expectedVersion + 1;
+        await orm.update(modelService).set({ version, updatedAt }).where(eq(modelService.provider, provider));
+        await orm.update(modelDirectory).set({ serviceVersion: version }).where(eq(modelDirectory.provider, provider));
+        await orm.update(modelDirectoryModel).set({ serviceVersion: version }).where(eq(modelDirectoryModel.provider, provider));
+        return { status: "updated", version } as const;
       });
     },
 

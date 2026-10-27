@@ -11,7 +11,7 @@
  * 停下之后不再发请求。
  */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -136,7 +136,29 @@ const PLAIN_USAGE = [
 ] as const;
 
 test("取证真跑一遍:文件内容回到子会话的模型请求,过程嵌进轨迹,用量只计一次", async () => {
-  const { outcome, events, requests } = await reviewWithStub(evidenceTurns(PLAIN_USAGE));
+  let historyRoot: string | undefined;
+  const turns = evidenceTurns(PLAIN_USAGE);
+  turns[3]!.match = () => {
+    for (const name of readdirSync(tmpdir()).filter((name) => name.startsWith("multireviewer-worker-agent-"))) {
+      const root = join(tmpdir(), name);
+      const history = join(root, "async-subagent-results", "foreground-history");
+      if (!existsSync(history)) continue;
+      for (const file of readdirSync(history)) {
+        const saved = readFileSync(join(history, file), "utf8");
+        const run = JSON.parse(saved) as { children: { artifactPaths?: { outputPath?: string } }[] };
+        const output = run.children[0]?.artifactPaths?.outputPath;
+        if (output && readFileSync(output, "utf8").includes(TARGET_CONTENT.trim())) {
+          assert.ok(output.startsWith(`${root}/`), "报告正文应在同一私有目录");
+          assert.ok(saved.includes(`读 ${TARGET_FILE}`), "前台历史应包含派单任务");
+          historyRoot = root;
+        }
+      }
+    }
+    return true;
+  };
+  const { outcome, events, requests } = await reviewWithStub(turns);
+  assert.ok(historyRoot, "真实前台历史没有写进私有 agentDir");
+  assert.equal(existsSync(historyRoot), false, "Reviewer 退出后私有历史应删除");
 
   assert.equal(outcome.failure, undefined, `Reviewer 失败: ${outcome.failure}`);
   assert.equal(requests.length, 4, "父会话两次、子会话两次,多一次都是多派");

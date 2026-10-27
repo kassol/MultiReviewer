@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelIdentity } from "../config.ts";
 import {
+  loadPiCatalog,
   loadPiProviderCatalog,
   piBuiltinProviderTargets,
   type LoadOptions,
   type PiBuiltinProviderTarget,
+  type PiCatalogModel,
   type PiProviderCatalog,
 } from "./catalog.ts";
 import {
@@ -48,7 +50,7 @@ export type TrustedModelFields = {
   compat?: RuntimeModelCompat;
 };
 
-export type TrustedModelFieldSource = "service-interface" | "pi-catalog" | "service-target";
+export type TrustedModelFieldSource = "service-interface" | "pi-catalog" | "models-dev" | "service-target" | "manual-override";
 export type TrustedModelFieldSources = Partial<
   Record<keyof TrustedModelFields, TrustedModelFieldSource>
 >;
@@ -108,12 +110,12 @@ export type RuntimeModel = {
     name: "trusted" | "model-id";
     api: "service-target";
     baseUrl: "service-target";
-    input: "trusted" | "runtime-baseline";
-    reasoning: "trusted" | "runtime-baseline";
-    contextWindow: "trusted" | "runtime-baseline";
-    maxTokens: "trusted" | "runtime-baseline";
-    thinkingLevelMap?: "trusted";
-    compat?: "trusted";
+    input: "trusted" | "runtime-baseline" | "manual-override";
+    reasoning: "trusted" | "runtime-baseline" | "manual-override";
+    contextWindow: "trusted" | "runtime-baseline" | "manual-override";
+    maxTokens: "trusted" | "runtime-baseline" | "manual-override";
+    thinkingLevelMap?: "trusted" | "manual-override";
+    compat?: "trusted" | "manual-override";
   };
 };
 
@@ -252,12 +254,169 @@ function trustedInput(value: unknown): value is readonly ("text" | "image")[] {
   );
 }
 
-function customModelVendor(modelId: string): "openai" | "anthropic" | "google" | undefined {
-  const bareId = modelId.slice(modelId.lastIndexOf("/") + 1).toLowerCase();
+function bareModelId(modelId: string): string {
+  return modelId.slice(modelId.lastIndexOf("/") + 1);
+}
+
+/**
+ * 自定义服务的模型 id 命中这几个家族时,Pi 里那家官方厂商目录就是它的权威一行。
+ *
+ * 同一型号在 Pi 目录里常常同时出现在官方家与若干转售家下,转售家报的是自己那一站的容量
+ * (`deepseek-v4.1-flash` 在 radius 是 32k 输出、在 opencode 是 384k,maxTokens 两值相差
+ * 一个数量级)。官方那一行说的是模型自己的规格,有它就用它;没有才退到下面那层按多数取值。
+ */
+function officialCatalogProvider(modelId: string, providers: Iterable<string>): string | undefined {
+  const bareId = bareModelId(modelId).toLowerCase();
   if (/^(?:gpt(?:[-.]|$)|o\d+(?:[-.]|$))/u.test(bareId)) return "openai";
   if (/^claude(?:[-.]|$)/u.test(bareId)) return "anthropic";
   if (/^gemini(?:[-.]|$)/u.test(bareId)) return "google";
-  return undefined;
+  return [...providers].filter((id) => bareId.startsWith(`${id.toLowerCase()}-`) || bareId === id.toLowerCase())
+    .sort((left, right) => right.length - left.length)[0];
+}
+
+/** 全目录先定同一型号的集合,后续优先级与补缺都只能在这个集合内进行。 */
+function matchingModelRows<T extends { id: string }>(rows: readonly T[], modelId: string): T[] {
+  const exact = rows.filter((model) => model.id === modelId);
+  if (exact.length > 0) return exact;
+  const bareId = bareModelId(modelId);
+  return rows.filter((model) => bareModelId(model.id) === bareId);
+}
+
+type PiCatalogEntry = { provider: string; id: string; model: PiCatalogModel };
+
+function providerRows(candidates: readonly PiCatalogEntry[], provider: string | undefined): PiCatalogModel[] {
+  return candidates.filter((row) => row.provider === provider).map((row) => row.model);
+}
+
+/** 一份目录的查找索引:按 provider 取一家,或按 model id 扫全量。一次发现建一次。 */
+type PiCatalogIndex = {
+  byProvider: Map<string, PiProviderCatalog>;
+  rows: PiCatalogEntry[];
+};
+
+function catalogIndex(catalogs: readonly PiProviderCatalog[]): PiCatalogIndex {
+  return {
+    byProvider: new Map(catalogs.map((catalog) => [catalog.id, catalog])),
+    rows: catalogs.flatMap((catalog) => catalog.models.map((model) => ({ provider: catalog.id, id: model.id, model }))),
+  };
+}
+
+/**
+ * 全目录完整 id 相等的集合为空时才允许双方裸 id 匹配。官方与路径 provider 的优先级
+ * 由 catalogFields 在这个统一集合内应用,防止官方裸 id 越过另一家的完整 id。
+ */
+function piCatalogCandidates(index: PiCatalogIndex, modelId: string): PiCatalogEntry[] {
+  return matchingModelRows(index.rows, modelId);
+}
+
+/** 排序后的键,让 `{a,b}` 与 `{b,a}` 算同一个值(目录里同一条配置的键序不保证一致)。 */
+function fieldKey(value: unknown): string {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    return JSON.stringify(Object.keys(record).sort().map((key) => [key, record[key]]));
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** 出现次数最多的那个值;并列即为未知——两条同样常见的说法,谁也证明不了自己是模型规格。 */
+function mostCommon<T>(values: readonly T[]): T | undefined {
+  const tally = new Map<string, { value: T; count: number }>();
+  for (const value of values) {
+    const key = fieldKey(value);
+    const entry = tally.get(key);
+    if (entry === undefined) tally.set(key, { value, count: 1 });
+    else entry.count += 1;
+  }
+  const ranked = [...tally.values()].sort((left, right) => right.count - left.count);
+  return ranked[0] === undefined || ranked[1]?.count === ranked[0].count ? undefined : ranked[0].value;
+}
+
+/** 全部候选都给出同一个值才算数;**缺这一项与给出别的值一样算不一致**。 */
+function unanimous<T>(values: readonly T[]): T | undefined {
+  const first = values[0];
+  if (first === undefined) return undefined;
+  const key = fieldKey(first);
+  return values.every((value) => fieldKey(value) === key) ? first : undefined;
+}
+
+/**
+ * 候选行合成一份可信字段。两类字段的判据不同:
+ *
+ * - **模型自身的能力与容量**(名字、reasoning、contextWindow、maxTokens、思考映射)取多数:
+ *   同一行在多数站点上重复出现的那个值说的是模型自己的规格,单个站点的另说多半是它自己的
+ *   服务上限(上面 radius 的 32k)。并列即未知。
+ * - **端点的行为**(compat)要全体一致:它描述的是这一家怎么发请求(`thinkingFormat` 一家
+ *   `deepseek` 一家 `qwen`),转售家之间本来就会不同,抄错一家会让另一家的请求发成它不认的
+ *   形状。缺这一项同样算不一致,因此只有真的一致才采纳。
+ *
+ * input 也按全体一致取:它比容量更容易一句话说错——把只收文本的模型标成收图,传一张图就是
+ * 一次失败的请求;标少了人只是传不上去。
+ */
+export function customCatalogFields(
+  catalogs: readonly PiProviderCatalog[],
+  modelId: string,
+): TrustedModelFields {
+  return catalogFields(catalogIndex(catalogs), modelId);
+}
+
+function catalogFields(index: PiCatalogIndex, modelId: string): TrustedModelFields {
+  const candidates = piCatalogCandidates(index, modelId);
+  const official = officialCatalogProvider(modelId, index.byProvider.keys());
+  const officialRows = providerRows(candidates, official);
+  const remaining = candidates.filter((row) => row.provider !== official);
+  const path = modelId.includes("/") ? modelId.slice(0, modelId.lastIndexOf("/")) : undefined;
+  const pathRows = providerRows(remaining, path);
+  return {
+    ...fieldsFromCandidates(remaining.filter((row) => row.provider !== path).map((row) => row.model)),
+    ...fieldsFromCandidates(pathRows),
+    ...fieldsFromCandidates(officialRows),
+  };
+}
+
+function fieldsFromCandidates(candidates: readonly PiCatalogModel[]): TrustedModelFields {
+  if (candidates.length === 0) return {};
+  const fields: TrustedModelFields = {};
+  const name = mostCommon(candidates.map((model) => model.name.trim()).filter((value) => value !== ""));
+  if (name !== undefined) fields.name = name;
+  const input = unanimous(candidates.map((model) => model.input));
+  if (trustedInput(input)) fields.input = input;
+  const reasoning = mostCommon(candidates.map((model) => model.reasoning));
+  if (reasoning !== undefined) fields.reasoning = reasoning;
+  const contextWindow = mostCommon(candidates.map((model) => model.contextWindow).filter(positiveInteger));
+  if (contextWindow !== undefined) fields.contextWindow = contextWindow;
+  const maxTokens = mostCommon(candidates.map((model) => model.maxTokens).filter(positiveInteger));
+  if (maxTokens !== undefined) fields.maxTokens = maxTokens;
+  const thinkingLevelMap = mostCommon(
+    candidates.map((model) => model.thinkingLevelMap).filter((value) => value !== undefined),
+  );
+  if (thinkingLevelMap !== undefined) fields.thinkingLevelMap = thinkingLevelMap;
+  const compat = unanimous(candidates.map((model) => model.compat));
+  if (compat !== undefined) fields.compat = compat;
+  return fields;
+}
+
+/**
+ * 这次发现涉及的每个模型 id 各自从 Pi 全目录取哪些字段。目录读不到时回空表:Pi 只是补齐
+ * 信息的来源,读不到就按服务接口给出的那几项走,后面还有 models.dev 兜底。
+ */
+async function piCatalogFieldsForModels(
+  modelIds: readonly string[],
+  options: DiscoverModelsOptions,
+): Promise<Map<string, TrustedModelFields>> {
+  const fields = new Map<string, TrustedModelFields>();
+  if (modelIds.length === 0) return fields;
+  let catalogs: PiProviderCatalog[];
+  try {
+    catalogs = await loadPiCatalog({ ...options, allowNetwork: false });
+  } catch {
+    return fields;
+  }
+  const index = catalogIndex(catalogs);
+  for (const modelId of modelIds) {
+    const matched = catalogFields(index, modelId);
+    if (Object.keys(matched).length > 0) fields.set(modelId, matched);
+  }
+  return fields;
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -266,21 +425,63 @@ function nonEmptyString(value: unknown): string | undefined {
   return normalized === "" ? undefined : normalized;
 }
 
-async function piModelsForCustomCatalog(
-  modelIds: readonly string[],
+const BASIC_MODEL_FIELDS = ["input", "reasoning", "contextWindow", "maxTokens"] as const;
+type BasicModelFields = Pick<TrustedModelFields, (typeof BASIC_MODEL_FIELDS)[number]>;
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+async function supplementModelsDev(
+  models: DiscoveredModel[],
   options: DiscoverModelsOptions,
-): Promise<Map<string, PiProviderCatalog["models"][number]>> {
-  const vendors = new Set(modelIds.map(customModelVendor).filter((value) => value !== undefined));
-  const models = new Map<string, PiProviderCatalog["models"][number]>();
-  for (const vendor of vendors) {
-    try {
-      const catalog = await loadPiProviderCatalog(vendor, { ...options, allowNetwork: false });
-      for (const model of catalog?.models ?? []) models.set(`${vendor}:${model.id}`, model);
-    } catch {
-      // Pi 目录只补充信息；读不到时保留服务接口的发现结果。
+  signal: AbortSignal,
+): Promise<void> {
+  if (options.allowNetwork === false || process.env["PI_OFFLINE"] !== undefined ||
+    !models.some(({ fields }) => BASIC_MODEL_FIELDS.some((field) => fields[field] === undefined))) return;
+  try {
+    const response = await fetch("https://models.dev/api.json", {
+      headers: { accept: "application/json" }, signal, redirect: "error",
+    });
+    if (!response.ok) return;
+    const catalog = recordValue(await response.json());
+    if (catalog === undefined) return;
+    const entries: { provider: string; id: string; fields: BasicModelFields }[] = [];
+    for (const [providerId, provider] of Object.entries(catalog)) {
+      const rows = recordValue(recordValue(provider)?.models);
+      for (const value of Object.values(rows ?? {})) {
+        const row = recordValue(value);
+        if (row === undefined || typeof row.id !== "string" || row.id.trim() === "") continue;
+        const modalities = recordValue(row.modalities)?.input;
+        const limit = recordValue(row.limit);
+        const input = Array.isArray(modalities) && modalities.every((item) => typeof item === "string")
+          ? (["text", "image"] as const).filter((item) => modalities.includes(item)) : [];
+        entries.push({ provider: providerId, id: row.id, fields: {
+          ...(input.length === 0 ? {} : { input }),
+          ...(typeof row.reasoning === "boolean" ? { reasoning: row.reasoning } : {}),
+          ...(positiveInteger(limit?.context) ? { contextWindow: limit.context } : {}),
+          ...(positiveInteger(limit?.output) ? { maxTokens: limit.output } : {}),
+        } });
+      }
     }
+    for (const model of models) {
+      const matches = matchingModelRows(entries, model.id);
+      const official = officialCatalogProvider(model.id, Object.keys(catalog));
+      const officialMatches = matches.filter((row) => row.provider === official);
+      for (const field of BASIC_MODEL_FIELDS) {
+        if (model.fields[field] !== undefined) continue;
+        const officialValues = officialMatches.map(({ fields }) => fields[field]).filter((value) => value !== undefined);
+        const values = officialValues.length > 0 ? officialValues : matches.map(({ fields }) => fields[field]).filter((value) => value !== undefined);
+        const value = values[0];
+        if (value === undefined || !values.every((other) => JSON.stringify(other) === JSON.stringify(value))) continue;
+        Object.assign(model.fields, { [field]: value });
+        (model.fieldSources ??= {})[field] = "models-dev";
+      }
+    }
+  } catch {
+    // 补缺失败不影响服务接口发现；未知字段继续使用运行基线。
   }
-  return models;
 }
 
 /**
@@ -352,7 +553,7 @@ export function synthesizeRuntimeModel(
   const thinkingLevelMap = fields.thinkingLevelMap;
   // 已存快照里可能带着目录抄来的 supportsMidConvoEffort(0.85.0 升级前后各一版),注册
   // 运行时对自定义服务再剥一次,老快照不必重新验证。
-  const compat = candidate.kind === "custom" ? gatewayCompat(fields.compat) : fields.compat;
+  const compat = candidate.kind === "custom" && discovery.fieldSources?.compat !== "manual-override" ? gatewayCompat(fields.compat) : fields.compat;
 
   return {
     ok: true,
@@ -374,12 +575,12 @@ export function synthesizeRuntimeModel(
           name: name === fields.name ? "trusted" : "model-id",
           api: "service-target",
           baseUrl: "service-target",
-          input: input === fields.input ? "trusted" : "runtime-baseline",
-          reasoning: typeof fields.reasoning === "boolean" ? "trusted" : "runtime-baseline",
-          contextWindow: contextWindow === fields.contextWindow ? "trusted" : "runtime-baseline",
-          maxTokens: maxTokens === fields.maxTokens ? "trusted" : "runtime-baseline",
-          ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap: "trusted" as const }),
-          ...(compat === undefined ? {} : { compat: "trusted" as const }),
+          input: discovery.fieldSources?.input === "manual-override" ? "manual-override" : input === fields.input ? "trusted" : "runtime-baseline",
+          reasoning: discovery.fieldSources?.reasoning === "manual-override" ? "manual-override" : typeof fields.reasoning === "boolean" ? "trusted" : "runtime-baseline",
+          contextWindow: discovery.fieldSources?.contextWindow === "manual-override" ? "manual-override" : contextWindow === fields.contextWindow ? "trusted" : "runtime-baseline",
+          maxTokens: discovery.fieldSources?.maxTokens === "manual-override" ? "manual-override" : maxTokens === fields.maxTokens ? "trusted" : "runtime-baseline",
+          ...(thinkingLevelMap === undefined ? {} : { thinkingLevelMap: discovery.fieldSources?.thinkingLevelMap === "manual-override" ? "manual-override" as const : "trusted" as const }),
+          ...(compat === undefined ? {} : { compat: discovery.fieldSources?.compat === "manual-override" ? "manual-override" as const : "trusted" as const }),
         },
       },
     },
@@ -536,27 +737,22 @@ export async function discoverModels(
     if (rows.length === 0) {
       return failure("empty-catalog", `模型服务 ${candidate.provider} 没有返回可用的 model id`);
     }
-    const piModels = await piModelsForCustomCatalog(rows.map((row) => row.id), options);
+    const piFields = await piCatalogFieldsForModels(rows.map((row) => row.id), options);
     const models = rows.map(({ id, name }): DiscoveredModel => {
-      const vendor = customModelVendor(id);
-      const piModel = vendor === undefined ? undefined : piModels.get(`${vendor}:${id}`);
+      const matched = piFields.get(id) ?? {};
       // 自定义地址后面是兼容网关:目录的 compat 剥掉只对官方地址成立的那一位(issue #262)。
-      const piCompat = gatewayCompat(piModel?.compat);
+      const piCompat = gatewayCompat(matched.compat);
       const fields: TrustedModelFields = {
         ...(name === undefined
-          ? piModel === undefined || piModel.name.trim() === "" ? {} : { name: piModel.name }
+          ? matched.name === undefined || matched.name.trim() === "" ? {} : { name: matched.name }
           : { name }),
         api: candidate.api,
         baseUrl,
-        ...(piModel === undefined || !trustedInput(piModel.input) ? {} : { input: piModel.input }),
-        ...(piModel === undefined ? {} : { reasoning: piModel.reasoning }),
-        ...(piModel === undefined || !positiveInteger(piModel.contextWindow)
-          ? {}
-          : { contextWindow: piModel.contextWindow }),
-        ...(piModel === undefined || !positiveInteger(piModel.maxTokens)
-          ? {}
-          : { maxTokens: piModel.maxTokens }),
-        ...(piModel?.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: piModel.thinkingLevelMap }),
+        ...(matched.input === undefined ? {} : { input: matched.input }),
+        ...(matched.reasoning === undefined ? {} : { reasoning: matched.reasoning }),
+        ...(matched.contextWindow === undefined ? {} : { contextWindow: matched.contextWindow }),
+        ...(matched.maxTokens === undefined ? {} : { maxTokens: matched.maxTokens }),
+        ...(matched.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: matched.thinkingLevelMap }),
         ...(piCompat === undefined ? {} : { compat: piCompat }),
       };
       const fieldSources: TrustedModelFieldSources = {
@@ -578,6 +774,7 @@ export async function discoverModels(
         fieldSources,
       };
     });
+    await supplementModelsDev(models, options, signal);
     return { ok: true, models, ignoredCount };
   } catch (error) {
     const timedOut = timeout.aborted;
@@ -661,7 +858,16 @@ export async function validateMinimalInference(
         cacheRetention: "none",
         fetch: globalThis.fetch,
         maxRetries: 0,
-        maxTokens: 16,
+        maxTokens: Math.min(16, target.maxTokens),
+        // Pi 将 Responses 的输出下限抬到 16;验证仍须遵守模型规格中的更小上限。
+        ...(target.api === "openai-responses" && target.maxTokens < 16 ? {
+          onPayload: (payload: unknown) => {
+            const params = payload as Record<string, unknown>;
+            return typeof params["max_output_tokens"] === "number"
+              ? { ...params, max_output_tokens: target.maxTokens }
+              : undefined;
+          },
+        } : {}),
         signal,
         // 不带 temperature:验证只看这一笔请求能不能通,而 adaptive thinking 模型
         // (fable / opus-5)对显式 temperature 直接 400 deprecated。

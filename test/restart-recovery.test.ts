@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { ReviewRunReviewerPin } from "../src/config.ts";
+import type { FrozenAuxiliaryModel, ReviewRunReviewerPin, ReviewerRuntimePlan } from "../src/config.ts";
+import type { RuntimeModel } from "../src/reviewer/model-service-runtime.ts";
 import type { Forge, PullRequestRef, Reaction } from "../src/forge/forge.ts";
 import type { Reviewer } from "../src/review/finding.ts";
 import { runReview } from "../src/review/run.ts";
@@ -23,7 +24,7 @@ import { query } from "./support/batch-run.ts";
 import type { FileTree } from "./support/git-fixture.ts";
 import { makeCacheDir, makeTestDatabase, makeRepo, testCleanups } from "./support/git-fixture.ts";
 import { memoryForge } from "./support/memory-forge.ts";
-import { startPanelHarness } from "./support/panel-harness.ts";
+import { startPanelHarness, seedAvailableModelService, PANEL_CREDENTIAL_MASTER_KEY } from "./support/panel-harness.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
 /** 启动时刻。被改判的轮次的结束时间就是它。 */
@@ -388,6 +389,8 @@ async function interruptedRun(options: {
   added: Record<string, number>;
   limits: BatchLimits;
   throwOnCall: number;
+  reviewerPins?: readonly ReviewRunReviewerPin[];
+  auxiliaryModel?: FrozenAuxiliaryModel;
 }): Promise<{
   db: { url: string; dataDir: string };
   memory: Awaited<ReturnType<typeof memoryForge>>;
@@ -442,7 +445,8 @@ async function interruptedRun(options: {
           store: openStore(db.url),
           // 失败原因逐 Reviewer 各记一份,给了指定才有那几行(issue #247);轮次级那一份
           // 不靠它(issue #256)。
-          reviewerPins: [pin("a")],
+          reviewerPins: options.reviewerPins ?? [pin("a")],
+          ...(options.auxiliaryModel === undefined ? {} : { auxiliaryModel: options.auxiliaryModel }),
           ...options.limits,
           maxParallelBatches: 1,
         },
@@ -503,6 +507,53 @@ test("重启后只补缺的那一批,这一轮沿用原编号正常结束", { ti
     memory.createdReviews[0]?.comments.map((comment) => comment.path),
     RESUME_FILES,
   );
+});
+
+test("续跑恢复 Reviewer 与独立辅助模型的原规格及档位,目录变化不混入", async () => {
+  const runtime: RuntimeModel = {
+    provider: "test", id: "a", name: "a", api: "openai-completions",
+    baseUrl: "https://test.models.example.test/v1", input: ["text"], reasoning: true,
+    contextWindow: 160000, maxTokens: 24000, thinkingLevelMap: { low: "low", high: "high" },
+    compat: { supportsStrictMode: false },
+    sources: { name: "model-id", api: "service-target", baseUrl: "service-target", input: "trusted",
+      reasoning: "trusted", contextWindow: "trusted", maxTokens: "trusted" },
+  };
+  const reviewerPin: ReviewRunReviewerPin = { ...pin("a"), thinkingLevel: "low", modelServiceVersion: 1,
+    target: { api: runtime.api, baseUrl: runtime.baseUrl }, runtimeModel: runtime };
+  const auxiliaryRuntime: RuntimeModel = { ...runtime, provider: "aux", id: "merge", name: "merge",
+    baseUrl: "https://aux.models.example.test/v1", maxTokens: 18000 };
+  const auxiliary: FrozenAuxiliaryModel = { provider: "aux", model: "merge", thinkingLevel: "high",
+    pin: { ...reviewerPin, identity: "aux:merge", provider: "aux", model: "merge", thinkingLevel: "high",
+      target: { api: auxiliaryRuntime.api, baseUrl: auxiliaryRuntime.baseUrl }, runtimeModel: auxiliaryRuntime } };
+  const { db, memory, runId } = await interruptedRun({
+    added: Object.fromEntries(RESUME_FILES.map((path) => [path, 1])),
+    limits: { maxFilesPerBatch: 1 }, throwOnCall: 3, reviewerPins: [reviewerPin], auxiliaryModel: auxiliary,
+  });
+  await seedAvailableModelService({ db }, "test", ["a"], { reasoning: true, contextWindow: 900000, maxTokens: 90000 });
+  await seedAvailableModelService({ db }, "aux", ["merge"], { reasoning: true, contextWindow: 700000, maxTokens: 70000 });
+  const store = openStore(db.url);
+  assert.equal(await putGlobalSettings(store, { reviewersJson: JSON.stringify([{ provider: "test", model: "a", thinkingLevel: "high" }]) }), true);
+  const plans: ReviewerRuntimePlan[] = [];
+  const merges: { runtimeModel: RuntimeModel; thinkingLevel?: string }[] = [];
+  const reviewer = resumeReviewer();
+  const cache = makeCacheDir();
+  cleanups.push(cache.cleanup);
+  const settled = new Promise<string | undefined>(async (resolve) => {
+    await createWebhookServer({
+      forges: { gitea: memory.forge }, cacheDir: cache.dir, store, dataDir: db.dataDir,
+      baseUrl: "https://reviewer.example.test", panelDist: "web/dist", credentialMasterKey: PANEL_CREDENTIAL_MASTER_KEY,
+      buildReviewers: (next) => { plans.push(...next); return [reviewer]; },
+      buildMergeAgent: (options) => { merges.push(options); return async () => ({ groups: [], failure: "测试回退" }); },
+      onRunResumed: (_id, failure) => resolve(failure),
+    });
+  });
+  assert.equal(await settled, undefined);
+  assert.equal(plans[0]?.spec.thinkingLevel, "low");
+  assert.deepEqual(plans[0]?.runtimeModel, runtime);
+  assert.deepEqual(merges[0]?.runtimeModel, auxiliaryRuntime);
+  assert.equal(merges[0]?.thinkingLevel, "high");
+  assert.deepEqual(reviewer.files, [["src/c.ts"]]);
+  assert.deepEqual((await store.listRuns({ id: runId, limit: 1 }))[0]?.reviewerPins, [reviewerPin]);
 });
 
 test("工作副本准备失败:改判失败、原因可见,下一次启动不再处理它", { timeout: WAIT_MS }, async () => {

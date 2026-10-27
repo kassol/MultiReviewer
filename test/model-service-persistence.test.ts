@@ -7,6 +7,7 @@ import {
   openStore,
   type ModelServiceVersionCommit,
 } from "../src/review/store/index.ts";
+import { modelServiceTargetSetFingerprint } from "../src/review/store/shared.ts";
 import { makeTestDatabase, testCleanups, withTestDb } from "./support/git-fixture.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 
@@ -108,10 +109,10 @@ test("自动目录快照往返稀疏可信字段", async () => {
             name: "service-interface",
             api: "service-target",
             baseUrl: "service-target",
-            input: "pi-catalog",
+            input: "models-dev",
             reasoning: "pi-catalog",
-            contextWindow: "pi-catalog",
-            maxTokens: "pi-catalog",
+            contextWindow: "models-dev",
+            maxTokens: "models-dev",
           },
         },
         {
@@ -157,10 +158,10 @@ test("自动目录快照往返稀疏可信字段", async () => {
         name: "service-interface",
         api: "service-target",
         baseUrl: "service-target",
-        input: "pi-catalog",
+        input: "models-dev",
         reasoning: "pi-catalog",
-        contextWindow: "pi-catalog",
-        maxTokens: "pi-catalog",
+        contextWindow: "models-dev",
+        maxTokens: "models-dev",
       },
     },
   ]);
@@ -290,8 +291,126 @@ test("模型服务当前版本把目标、凭据证据、目录与补录作为�
         createdAt: "2026-08-20T00:01:30.000Z",
       },
     ],
+    modelSpecOverrides: [],
   });
 });
+
+test("模型规格覆盖独立存储并保留停用状态,同目标切版保留,换目标清除且切回不复活", async () => {
+  const db = await makeTestDatabase();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.url);
+  const record = availableService("override-lifecycle", ["vendor/model"]);
+  const provider = record.provider;
+  const model = "vendor/model";
+  const at = record.updatedAt;
+  const overrides = { contextWindow: 1_000_000, maxTokens: 384_000, compat: {}, thinkingLevelMap: { off: null } };
+  assert.equal(await store.commitModelServiceVersion(null, record), 1);
+  assert.equal((await store.updateModelServiceModelStates(provider, 1, [model], false, at)).status, "updated");
+  assert.deepEqual(await store.replaceModelSpecOverrides(provider, model, 1, "wrong-target", overrides, at), { status: "target-unresolved" });
+  assert.deepEqual(await store.replaceModelSpecOverrides(provider, "missing", 1, record.targetFingerprint!, overrides, at), { status: "unknown-model" });
+  assert.deepEqual(await store.replaceModelSpecOverrides(provider, model, 1, record.targetFingerprint!, overrides, at), { status: "updated", version: 2 });
+  assert.deepEqual(await store.replaceModelSpecOverrides(provider, model, 1, record.targetFingerprint!, {}, at), { status: "version-conflict" });
+  const reopened = openStore(db.url);
+  const saved = (await reopened.getModelService(provider))!;
+  assert.deepEqual(saved.modelSpecOverrides, [{ model, targetFingerprint: record.targetFingerprint, overrides }]);
+  assert.deepEqual(saved.automaticModels, record.automaticModels, "覆盖不能写成自动事实");
+  assert.equal((await reopened.listModelServiceModelStates(provider))[0]!.enabled, false);
+  await withTestDb(db.url, async (sql) => {
+    const [directory] = await sql("SELECT service_version FROM model_directory WHERE provider = $1", provider);
+    assert.equal(directory!["service_version"], 2);
+  });
+  assert.equal(await store.commitModelServiceVersion(2, { ...record, credential: { ...record.credential, apiKeyEncrypted: "rotated-ciphertext" } }), 3);
+  assert.deepEqual((await store.getModelService(provider))!.modelSpecOverrides, saved.modelSpecOverrides);
+  assert.deepEqual(await store.replaceModelSpecOverrides(provider, model, 3, record.targetFingerprint!, {}, at), { status: "updated", version: 4 });
+  assert.deepEqual((await store.getModelService(provider))!.modelSpecOverrides, []);
+  assert.equal((await store.replaceModelSpecOverrides(provider, model, 4, record.targetFingerprint!, overrides, at)).status, "updated");
+  const changed = availableService(provider, [model], "new-ciphertext", "https://other-target.test/v1");
+  assert.equal(await store.commitModelServiceVersion(5, changed), 6);
+  assert.deepEqual((await store.getModelService(provider))!.modelSpecOverrides, []);
+  assert.equal(await store.commitModelServiceVersion(6, record), 7);
+  assert.deepEqual((await store.getModelService(provider))!.modelSpecOverrides, []);
+});
+
+test("内置多目标目录暂时缺席时保留覆盖,来源恢复后仍能读回", async () => {
+  const db = await makeTestDatabase();
+  cleanups.push(db.cleanup);
+  const store = openStore(db.url);
+  const provider = "builtin-override-missing";
+  const model = "vendor/model";
+  const firstTarget = { api: "openai-completions", baseUrl: "https://first.example.test/v1" };
+  const secondTarget = { api: "anthropic-messages", baseUrl: "https://second.example.test" };
+  const targets = [firstTarget, secondTarget];
+  const record: ModelServiceVersionCommit = {
+    ...availableService(provider, [model]),
+    type: "builtin",
+    baseUrl: null,
+    api: null,
+    targets,
+    targetFingerprint: modelServiceTargetSetFingerprint(targets),
+    automaticModels: [{ identity: `${provider}:${model}`, provider, id: model, fields: firstTarget }],
+  };
+  const fingerprint = modelServiceTargetFingerprint(firstTarget.baseUrl, firstTarget.api);
+  const overrides = { contextWindow: 1_000_000, maxTokens: 384_000 };
+  const saved = [{ model, targetFingerprint: fingerprint, overrides }];
+  assert.equal(await store.commitModelServiceVersion(null, record), 1);
+  assert.deepEqual(await store.replaceModelSpecOverrides(provider, model, 1, fingerprint, overrides, record.updatedAt), { status: "updated", version: 2 });
+  const absent = { ...record, automaticModels: [], credential: { ...record.credential, apiKeyEncrypted: "rotated-ciphertext" } };
+  assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: JSON.stringify({ provider, model }) }), true);
+  assert.equal(await store.commitModelServiceVersion(2, absent), undefined, "已有引用仍阻止来源消失");
+  assert.equal((await store.getModelService(provider))!.version, 2);
+  assert.equal(await putGlobalSettings(store, { auxiliaryModelJson: null }), true);
+  assert.equal(await store.commitModelServiceVersion(2, absent), 3);
+  const reopened = openStore(db.url);
+  const missing = (await reopened.getModelService(provider))!;
+  assert.deepEqual(missing.automaticModels, []);
+  assert.deepEqual(missing.supplements, []);
+  assert.deepEqual(missing.modelSpecOverrides, saved);
+  assert.deepEqual(await reopened.replaceModelSpecOverrides(provider, model, 3, fingerprint, overrides, record.updatedAt), { status: "unknown-model" });
+  assert.equal(await putGlobalSettings(reopened, { auxiliaryModelJson: JSON.stringify({ provider, model }) }), false, "留存覆盖不能充当模型来源");
+  assert.equal(await reopened.commitModelServiceVersion(3, record), 4);
+  assert.deepEqual((await reopened.getModelService(provider))!.modelSpecOverrides, saved);
+  assert.equal(await putGlobalSettings(reopened, { auxiliaryModelJson: JSON.stringify({ provider, model }) }), true);
+});
+
+for (const change of ["bound-target", "unbound-target", "removed-binding"] as const) {
+  test(`内置模型规格覆盖在 ${change} 时清除,切回不复活`, async () => {
+    const db = await makeTestDatabase();
+    cleanups.push(db.cleanup);
+    const store = openStore(db.url);
+    const provider = `builtin-override-${change}`;
+    const model = "vendor/model";
+    const firstTarget = { api: "openai-completions", baseUrl: "https://first.example.test/v1" };
+    const secondTarget = { api: "anthropic-messages", baseUrl: "https://second.example.test" };
+    const targets = [firstTarget, secondTarget];
+    const record: ModelServiceVersionCommit = {
+      ...availableService(provider, [model]),
+      type: "builtin",
+      baseUrl: null,
+      api: null,
+      targets,
+      targetFingerprint: modelServiceTargetSetFingerprint(targets),
+      automaticModels: [{ identity: `${provider}:${model}`, provider, id: model, fields: firstTarget }],
+    };
+    const fingerprint = modelServiceTargetFingerprint(firstTarget.baseUrl, firstTarget.api);
+    assert.equal(await store.commitModelServiceVersion(null, record), 1);
+    assert.deepEqual(await store.replaceModelSpecOverrides(provider, model, 1, fingerprint, { contextWindow: 1_000_000 }, record.updatedAt), { status: "updated", version: 2 });
+    const nextTargets = change === "removed-binding" ? [secondTarget] : targets;
+    const changed: ModelServiceVersionCommit = {
+      ...record,
+      targets: nextTargets,
+      targetFingerprint: modelServiceTargetSetFingerprint(nextTargets),
+      automaticModels: change === "removed-binding" ? [] : [{
+        identity: `${provider}:${model}`, provider, id: model,
+        fields: change === "bound-target" ? secondTarget : { ...firstTarget, baseUrl: "https://unbound.example.test/v1" },
+      }],
+    };
+    assert.equal(await store.commitModelServiceVersion(2, changed), 3);
+    const reopened = openStore(db.url);
+    assert.deepEqual((await reopened.getModelService(provider))!.modelSpecOverrides, []);
+    assert.equal(await reopened.commitModelServiceVersion(3, record), 4);
+    assert.deepEqual((await reopened.getModelService(provider))!.modelSpecOverrides, []);
+  });
+}
 
 test("旧版本候选不写入，匹配版本时整份快照推进并替换目录来源", async () => {
   const db = await makeTestDatabase();

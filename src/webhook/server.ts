@@ -16,6 +16,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   assertReviewerSpecs,
@@ -26,11 +27,15 @@ import {
   supportedThinkingLevels,
   type ModelServiceTarget,
   type ReviewerRuntimePlan,
+  type ReviewRunReviewerPin,
+  type FrozenAuxiliaryModel,
   type ReviewerSpec,
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "../config.ts";
 import type { Drain } from "../drain.ts";
+import type { ModelSpecFields, ModelSpecOverrides, ModelSpecProjection, ModelSpecMutationResponse } from "../contracts/model-specs.ts";
+import { applyModelSpecOverrides, validModelSpecOverrides } from "../reviewer/model-spec-overrides.ts";
 import type {
   ChangedFile,
   CloneCredentials,
@@ -791,6 +796,24 @@ function discoveredTargets(models: readonly DiscoveredModel[]): PiBuiltinProvide
   );
 }
 
+function modelSpecOverrides(service: ModelServiceRecord, model: string, target: ModelServiceTarget | undefined): ModelSpecOverrides {
+  if (target === undefined) return {};
+  const fingerprint = modelServiceTargetFingerprint(target.baseUrl, target.api);
+  return service.modelSpecOverrides.find((entry) => entry.model === model && entry.targetFingerprint === fingerprint)?.overrides ?? {};
+}
+
+function validationModelWithOverrides(
+  service: ModelServiceRecord | undefined,
+  candidate: ModelServiceCandidate,
+  model: DiscoveredModel | string,
+  target: ModelServiceTarget,
+): DiscoveredModel {
+  const discovery = typeof model === "string"
+    ? { identity: modelIdentity({ provider: candidate.provider, model }), provider: candidate.provider, id: model, fields: {} }
+    : model;
+  return service === undefined ? discovery : applyModelSpecOverrides(discovery, modelSpecOverrides(service, discovery.id, target));
+}
+
 function synthesisForRun(
   service: ModelServiceRecord,
   discovery: DiscoveredModel,
@@ -805,6 +828,7 @@ function synthesisForRun(
       },
     };
   }
+  discovery = applyModelSpecOverrides(discovery, modelSpecOverrides(service, discovery.id, target));
   if (service.type === "builtin") {
     return synthesizeRuntimeModel(
       { kind: "builtin", provider: service.provider, credential: "" },
@@ -970,16 +994,62 @@ async function buildRunPlan(
    * 配置时,续跑的合并用的仍要是这一轮开跑时那一处。`null` 是「那一轮就没有」,与
    * 「这一次不是续跑」(省略)分开。
    */
-  frozenAuxiliaryModel?: ReviewerSpec | null,
+  frozenAuxiliaryModel?: FrozenAuxiliaryModel | null,
+  frozenReviewerPins?: readonly ReviewRunReviewerPin[],
 ): Promise<ReviewRunPlan> {
   const snapshot = await deps.store.getReviewRunSnapshot(repoId);
-  const plans = await materializeReviewerPlans(deps, snapshot.modelServices, snapshot.reviewers);
+  if (frozenReviewerPins !== undefined && snapshot.reviewers.length > 0 &&
+    !isDeepStrictEqual(snapshot.reviewers.map(modelIdentity), frozenReviewerPins.map((pin) => pin.identity))) {
+    throw new Error(`${RESUME_NOT_VIABLE}:开跑时的模型组合与当前配置不符`);
+  }
+  const specs = frozenReviewerPins === undefined ? snapshot.reviewers : frozenReviewerPins.map((pin) => ({
+    provider: pin.provider,
+    model: pin.model,
+    ...(pin.thinkingLevel === null ? {} : { thinkingLevel: pin.thinkingLevel }),
+  }));
+  const currentPlans = await materializeReviewerPlans(deps, snapshot.modelServices, specs);
+  const plans = frozenReviewerPins === undefined ? currentPlans : currentPlans.map((plan, index) =>
+    restoreReviewerPlan(plan, frozenReviewerPins[index]!),
+  );
   // 辅助模型开跑时解析一次(CONTEXT.md 辅助模型,ADR 0029):仓库覆盖 ?? 全局 ?? 生效
   // 组合第一个,最后那一档与这一票之前的 `plans[0]` 等价。
-  const auxiliaryModel =
+  const auxiliaryModel: FrozenAuxiliaryModel | null =
     frozenAuxiliaryModel === undefined
       ? (await deps.store.resolveAuxiliaryModel(repoId))?.spec ?? null
       : frozenAuxiliaryModel;
+  let frozenAuxiliary: FrozenAuxiliaryModel | null = auxiliaryModel;
+  let mergeAgent: MergeAgent | undefined;
+  if (auxiliaryModel !== null) {
+    if (frozenAuxiliaryModel !== undefined) {
+      // 旧轮次若辅助模型与某个 Reviewer 相同,那一份 pin 同样能证明它的原规格。
+      const pin = auxiliaryModel.pin ?? frozenReviewerPins?.find((pin) =>
+        pin.identity === modelIdentity(auxiliaryModel) &&
+        (pin.thinkingLevel ?? "off") === (auxiliaryModel.thinkingLevel ?? "off"),
+      );
+      if (auxiliaryModel.pin === null) {
+        mergeAgent = undefined;
+      } else {
+        if (pin === undefined) throw new Error(`${RESUME_NOT_VIABLE}:辅助模型缺少冻结的运行规格`);
+        const [current] = await materializeReviewerPlans(deps, await deps.store.listModelServices(), [auxiliaryModel]);
+        const restored = restoreReviewerPlan(current!, pin);
+        if (restored.runtimeModel !== null && restored.credential !== null && restored.failure === null) {
+          mergeAgent = (deps.buildMergeAgent ?? createPiMergeAgent)({
+            runtimeModel: restored.runtimeModel,
+            apiKey: restored.credential,
+            ...(auxiliaryModel.thinkingLevel === undefined ? {} : { thinkingLevel: auxiliaryModel.thinkingLevel }),
+          });
+        }
+      }
+    } else {
+      const runnable = await auxiliaryModelRunnability(deps, auxiliaryModel);
+      frozenAuxiliary = { ...auxiliaryModel, pin: runnable.plan === null ? null : reviewerPin(runnable.plan) };
+      if (runnable.plan !== null) mergeAgent = (deps.buildMergeAgent ?? createPiMergeAgent)({
+        runtimeModel: runnable.runtimeModel,
+        apiKey: runnable.credential,
+        ...(auxiliaryModel.thinkingLevel === undefined ? {} : { thinkingLevel: auxiliaryModel.thinkingLevel }),
+      });
+    }
+  }
   return createReviewRunPlan(
     repoId,
     deps.buildReviewers(plans),
@@ -994,30 +1064,21 @@ async function buildRunPlan(
     plans.map(reviewerPin),
     // 知识集与模型服务版本在同一次读事务里冻结(issue #204),两型一体(issue #221)。
     { version: snapshot.ruleSetVersion, rules: snapshot.rules, facts: snapshot.facts },
-    await mergeAgentFor(deps, auxiliaryModel),
-    auxiliaryModel,
+    mergeAgent,
+    frozenAuxiliary,
   );
 }
 
-/**
- * 本轮的合并 agent(issue #228、#304):用这一轮冻结的辅助模型物化出模型快照、凭据与
- * 思考档位。那一处跑不了时不建——这一轮的合并走算法档,与这一票之前逐字一致。
- *
- * 跑不跑得起来问的是 `auxiliaryModelRunnability` 那一份判据,与四条发起链路同一处:
- * 合并这一侧另判一遍的话,档位不被支持的那一处会在这里悄悄跑成 Pi clamp 出来的邻档。
- */
-async function mergeAgentFor(
-  deps: WebhookServerDeps,
-  spec: ReviewerSpec | null,
-): Promise<MergeAgent | undefined> {
-  if (spec === null) return undefined;
-  const runnable = await auxiliaryModelRunnability(deps, spec);
-  if (runnable.plan === null) return undefined;
-  return (deps.buildMergeAgent ?? createPiMergeAgent)({
-    runtimeModel: runnable.runtimeModel,
-    apiKey: runnable.credential,
-    ...(spec.thinkingLevel === undefined ? {} : { thinkingLevel: spec.thinkingLevel }),
-  });
+/** 续跑恢复非秘密的模型快照,凭据只从仍对应同一版本与目标的当前服务解密。 */
+function restoreReviewerPlan(current: ReviewerRuntimePlan, pin: ReviewRunReviewerPin): ReviewerRuntimePlan {
+  if (pin.failure === null && pin.runtimeModel !== null && (
+    current.failure !== null || current.modelServiceVersion !== pin.modelServiceVersion ||
+    !isDeepStrictEqual(current.target, pin.target)
+  )) {
+    throw new Error(`${RESUME_NOT_VIABLE}:${pin.identity} 的模型服务版本或调用目标已经变化,无法恢复冻结凭据`);
+  }
+  return { ...current, runtimeModel: pin.runtimeModel, target: pin.target,
+    modelServiceVersion: pin.modelServiceVersion, failure: pin.failure };
 }
 
 type Admission = { keys: RepoKey[] };
@@ -3552,6 +3613,7 @@ export const PANEL_ROUTES: readonly PanelRoute[] = [
   { method: "DELETE", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/credential$/, access: "credential:write", handler: ({ req, res, deps }, match) => handleDeleteModelServiceCredential(req, res, deps, match![1]!) },
   { method: "POST", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/refresh$/, access: "model:write", handler: ({ req, res, deps }, match) => handleRefreshModelService(req, res, deps, match![1]!) },
   { method: "PUT", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/model-states$/, access: "model:write", handler: ({ req, res, deps }, match) => handleUpdateModelServiceModelStates(req, res, deps, match![1]!) },
+  { method: "PUT", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/models\/([^/]+)\/overrides$/, access: "model:write", handler: ({ req, res, deps }, match) => handleModelSpecOverrides(req, res, deps, match![1]!, match![2]!) },
   { method: "POST", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/, access: "model:write", handler: ({ req, res, deps }, match) => handleAddModelSupplement(req, res, deps, match![1]!) },
   { method: "DELETE", pattern: /^\/model-services\/([A-Za-z0-9_-]+)\/supplements$/, access: "model:write", handler: ({ req, res, deps }, match) => handleDeleteModelSupplement(req, res, deps, match![1]!) },
 ];
@@ -3862,7 +3924,7 @@ const BASELINE_RUNTIME_PROJECTION = {
   },
 } as const;
 
-type ProjectedServiceModel = {
+type ProjectedServiceModel = ModelSpecProjection & {
   provider: string;
   id: string;
   identity: string;
@@ -4018,6 +4080,7 @@ function projectServiceModel(
       provider: service.provider,
       id,
       fields: discovery,
+      ...(automatic?.fieldSources === undefined ? {} : { fieldSources: automatic.fieldSources }),
     },
     projectionTarget,
   );
@@ -4038,6 +4101,11 @@ function projectServiceModel(
     identity: modelIdentity({ provider: service.provider, model: id }),
     enabled,
     sources,
+    currentVersion: service.version,
+    targetFingerprint: source.ok ? source.target.fingerprint : null,
+    automaticFields: specFields(discovery),
+    overrides: modelSpecOverrides(service, id, target),
+    effectiveFields: synthesis.ok ? specFields(synthesis.value.runtime) : specFields({}),
     ...modelAvailabilityProjection(unavailableReason),
     discovery: {
       name: discovery.name ?? null,
@@ -4056,6 +4124,11 @@ function projectServiceModel(
 
 function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
   return {
+    currentVersion: 0,
+    targetFingerprint: null,
+    automaticFields: specFields({}),
+    overrides: {},
+    effectiveFields: specFields({ ...BASELINE_RUNTIME_PROJECTION, maxTokens: BASELINE_RUNTIME_PROJECTION.maxOutput }),
     provider: spec.provider,
     id: spec.model,
     identity: modelIdentity(spec),
@@ -4081,6 +4154,17 @@ function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
       },
     },
     runtime: BASELINE_RUNTIME_PROJECTION,
+  };
+}
+
+function specFields(fields: DiscoveredModel["fields"]): ModelSpecFields {
+  return {
+    input: fields.input ?? null,
+    reasoning: fields.reasoning ?? null,
+    contextWindow: fields.contextWindow ?? null,
+    maxTokens: fields.maxTokens ?? null,
+    thinkingLevelMap: fields.thinkingLevelMap ?? null,
+    compat: fields.compat ?? null,
   };
 }
 
@@ -4625,10 +4709,9 @@ async function commitVerifiedBuiltinModelService(
     credential: input.credential,
   };
   const discovered = await discoverServiceModels(deps, candidate);
-  const validationDiscovery = discovered.ok
-    ? discovered.models.find((model) => model.id === input.validationModel)
-    : undefined;
-  // 验证模型用它自己可确认的目标:最终目录里它那一行,否则 Pi 内置表里它那一行;都没有
+  const automaticModels = discovered.ok ? discovered.models : (current?.automaticModels ?? []);
+  const validationDiscovery = automaticModels.find((model) => model.id === input.validationModel);
+  // 验证模型用它自己可确认的目标:实际提交的目录里它那一行,否则 Pi 内置表里它那一行;都没有
   // 时只有整份已确认目标恰好一个才沿用(ADR 0027)。已确认目标是这次发现到的集合,发现
   // 失败时退到上一版可证明的绑定;两者都没有时,Pi 内置表去重后恰好一个目标(单协议
   // 服务)才沿用它——混合协议的整份集合没经过验证,不进绑定(评审复核)。
@@ -4657,7 +4740,7 @@ async function commitVerifiedBuiltinModelService(
   if (!resolved.ok) return sendJson(res, 422, { error: resolved.failure.message });
   const validation = await validateMinimalInference(
     candidate,
-    validationDiscovery ?? input.validationModel,
+    validationModelWithOverrides(current, candidate, validationDiscovery ?? input.validationModel, resolved.target),
     { builtinTarget: resolved.target },
   );
   if (!validation.ok) {
@@ -4704,7 +4787,7 @@ async function commitVerifiedBuiltinModelService(
       verificationSource: "inference",
     },
     directory,
-    automaticModels: discovered.ok ? discovered.models : (current?.automaticModels ?? []),
+    automaticModels,
     supplements,
   };
   return commitAndRespond(res, deps, input.provider, input.expectedVersion, record);
@@ -4879,12 +4962,11 @@ async function handleReverifyModelService(
     credential,
   };
   const discovered = await discoverServiceModels(deps, candidate);
-  const validationDiscovery = discovered.ok
-    ? discovered.models.find((model) => model.id === validationModel)
-    : undefined;
+  const automaticModels = discovered.ok ? discovered.models : current.automaticModels;
+  const validationDiscovery = automaticModels.find((model) => model.id === validationModel);
   const validation = await validateMinimalInference(
     candidate,
-    validationDiscovery ?? validationModel,
+    validationModelWithOverrides(current, candidate, validationDiscovery ?? validationModel, candidate),
   );
   const secrets = [credential, current.credential.apiKeyEncrypted, masterKey];
   if (!validation.ok) return sendCandidateFailure(res, validation.failure, secrets);
@@ -4927,7 +5009,7 @@ async function handleReverifyModelService(
       verificationSource: "inference",
     },
     directory,
-    automaticModels: discovered.ok ? discovered.models : current.automaticModels,
+    automaticModels,
     supplements,
   };
   return commitAndRespond(res, deps, provider, expectedVersion, record);
@@ -5086,6 +5168,50 @@ function parseModelStateMutation(
     expectedVersion: Number(payload["expectedVersion"]),
     enabled: payload["enabled"] as boolean,
   };
+}
+
+async function modelSpecMutationResponse(deps: WebhookServerDeps, provider: string, model: string): Promise<ModelSpecMutationResponse | null> {
+  const service = await deps.store.getModelService(provider);
+  if (service === undefined) return null;
+  const automatic = service.automaticModels.find((entry) => entry.id === model);
+  const supplement = service.supplements.find((entry) => entry.model === model);
+  if (automatic === undefined && supplement === undefined) return null;
+  const binding = serviceTargetBinding(service, await piTargetsForBinding(service));
+  const projected = projectServiceModel(service, model, [], automatic, supplement, binding, service.credential.state, true);
+  return { provider, model, currentVersion: projected.currentVersion, targetFingerprint: projected.targetFingerprint,
+    automaticFields: projected.automaticFields, overrides: projected.overrides, effectiveFields: projected.effectiveFields };
+}
+
+async function handleModelSpecOverrides(
+  req: IncomingMessage, res: ServerResponse, deps: WebhookServerDeps, provider: string, encodedModel: string,
+): Promise<void> {
+  let model: string;
+  try { model = decodeURIComponent(encodedModel); } catch { return sendJson(res, 400, { error: "模型标识的路径编码无效" }); }
+  const value = await readJson(req, res);
+  if (value === undefined) return;
+  const payload = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+  if (payload === undefined ||
+    Object.keys(payload).some((key) => key !== "expectedVersion" && key !== "overrides") ||
+    !Number.isSafeInteger(payload["expectedVersion"]) || Number(payload["expectedVersion"]) <= 0 ||
+    !validModelSpecOverrides(payload["overrides"])) {
+    return sendJson(res, 400, { error: "模型规格需要正整数 expectedVersion 与合法 overrides，只能覆盖输入、推理、容量、思考映射与兼容参数" });
+  }
+  const expectedVersion = Number(payload["expectedVersion"]);
+  const current = await modelSpecMutationResponse(deps, provider, model);
+  if (current === null) return sendJson(res, 404, { error: "模型不属于当前模型服务" });
+  const conflict = async (error: string): Promise<void> => {
+    const latest = await modelSpecMutationResponse(deps, provider, model);
+    return sendJson(res, 409, { error, expectedVersion, actualVersion: (await deps.store.getModelService(provider))?.version ?? null, current: latest });
+  };
+  if (current.currentVersion !== expectedVersion) return conflict("模型服务版本已变化，请核对当前规格后再保存");
+  if (current.targetFingerprint === null) return conflict("调用目标无法确认，请重新验证模型服务");
+  const result = await deps.store.replaceModelSpecOverrides(provider, model, expectedVersion, current.targetFingerprint,
+    payload["overrides"], new Date((deps.now ?? Date.now)()).toISOString());
+  if (result.status === "version-conflict") return conflict("模型服务版本已变化，请核对当前规格后再保存");
+  if (result.status === "target-unresolved") return conflict("调用目标无法确认，请重新验证模型服务");
+  if (result.status === "unknown-model") return sendJson(res, 404, { error: "模型不属于当前模型服务" });
+  return sendJson(res, 200, await modelSpecMutationResponse(deps, provider, model));
 }
 
 async function handleUpdateModelServiceModelStates(
@@ -5257,7 +5383,9 @@ async function handleAddModelSupplement(
     const [customTarget] = bindingTargets(runtime.binding);
     target = { api: customTarget!.api, baseUrl: customTarget!.baseUrl };
   }
-  const validation = await validateMinimalInference(runtime.candidate, input.model, {
+  const validation = await validateMinimalInference(runtime.candidate, validationModelWithOverrides(
+    current, runtime.candidate, current.automaticModels.find((model) => model.id === input.model) ?? input.model, target,
+  ), {
     builtinTarget: target,
   });
   if (!validation.ok) {
@@ -5541,20 +5669,19 @@ async function handleCommitCustomModelService(
     credential: input.credential,
   };
   const discovered = await discoverServiceModels(deps, candidate);
-  const validationDiscovery = discovered.ok
-    ? discovered.models.find((model) => model.id === input.validationModel)
-    : undefined;
+  const targetFingerprint = modelServiceTargetFingerprint(input.baseUrl, input.api);
+  const sameTarget = current?.targetFingerprint === targetFingerprint;
+  const automaticModels = discovered.ok ? discovered.models : sameTarget ? current?.automaticModels ?? [] : [];
+  const validationDiscovery = automaticModels.find((model) => model.id === input.validationModel);
   const validation = await validateMinimalInference(
     candidate,
-    validationDiscovery ?? input.validationModel,
+    validationModelWithOverrides(current, candidate, validationDiscovery ?? input.validationModel, candidate),
   );
   if (!validation.ok) {
     return sendCandidateFailure(res, validation.failure, [input.credential]);
   }
 
   const committedAt = new Date((deps.now ?? Date.now)()).toISOString();
-  const targetFingerprint = modelServiceTargetFingerprint(input.baseUrl, input.api);
-  const sameTarget = current?.targetFingerprint === targetFingerprint;
   const supplements: CommittedSupplement[] = sameTarget
     ? [...knownSupplements]
     : input.reconfirmedSupplements.map((identity) => {
@@ -5618,11 +5745,7 @@ async function handleCommitCustomModelService(
       verificationSource: "inference",
     },
     directory,
-    automaticModels: discovered.ok
-      ? discovered.models
-      : sameTarget
-        ? current?.automaticModels ?? []
-        : [],
+    automaticModels,
     supplements,
   };
   return commitAndRespond(res, deps, input.provider, input.expectedVersion, record);
@@ -10650,8 +10773,8 @@ function removeInterruptedReactions(
 }
 
 /**
- * 续跑一轮被服务重启打断的 Review Run(issue #248)。重新准备工作副本、按同一 head 与
- * 当前这份运行计划重新切批,只跑库里缺结果的批次,再走现有的合并、收尾与发评论。
+ * 续跑一轮被服务重启打断的 Review Run(issue #248)。恢复冻结的运行模型,重新准备同一 head
+ * 的工作副本,按当前分批上限重新切批,只跑库里缺结果的批次,再走合并、收尾与发评论。
  *
  * 冻结前提的核对在 `runReview` 里做(head、历史快照、批次与 Reviewer 组合),这里只
  * 负责把它跑得起来所需的那几样凑齐:Forge、仓库注册与运行计划。任何一样不成立即抛,
@@ -10665,9 +10788,9 @@ async function resumeRun(deps: WebhookServerDeps, run: InterruptedRunDetail): Pr
   if (repoId === undefined) {
     throw new Error(`${RESUME_NOT_VIABLE}:仓库 ${run.owner}/${run.repo} 已经不在注册表里`);
   }
-  // 辅助模型沿用这一轮开跑时落库的那一处(issue #304):它不是续跑判据,改了也不让这
-  // 一轮续不成,但续跑的合并用的仍是开跑时那一处。
-  const plan = await buildRunPlan(deps, repoId, run.auxiliaryModel);
+  // 引用设置的改动只影响下一轮;本轮恢复 Reviewer 与辅助模型各自落库的运行规格。
+  const [recorded] = await deps.store.listRuns({ id: run.runId, limit: 1 });
+  const plan = await buildRunPlan(deps, repoId, run.auxiliaryModel, recorded?.reviewerPins);
   await runReview(
     { owner: run.owner, repo: run.repo, number: run.pullNumber },
     {

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { buildReviewers, modelIdentity } from "../src/config.ts";
+import type { ModelSpecMutationResponse, ModelSpecOverrides } from "../src/contracts/model-specs.ts";
 import { encryptCredential } from "../src/panel/credential-crypto.ts";
-import type { ReviewerOutcome } from "../src/review/finding.ts";
+import type { ReviewerInput, ReviewerOutcome } from "../src/review/finding.ts";
 import { modelServiceTargetFingerprint, openStore } from "../src/review/store/index.ts";
 import type { TrustedModelFields } from "../src/reviewer/model-service-runtime.ts";
 import {
@@ -364,4 +365,110 @@ test("多批次 Run 固定服务版本、目标、运行字段与凭据,手动�
   );
   assert.equal(h.runtimePlans.length, 2, "自动投递与手动重跑没有共用同一个计划构建入口");
   assert.equal(h.runtimePlans[1]![0]!.modelServiceVersion, 2);
+});
+
+test("普通 Review Run 运行中修改同型号规格覆盖,后续批次沿用原规格且新轮次使用新值", { timeout: 30_000 }, async (t) => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  t.after(() => release.resolve());
+  const before: ModelSpecOverrides = {
+    input: ["text"],
+    reasoning: false,
+    contextWindow: 96_000,
+    maxTokens: 8_000,
+    thinkingLevelMap: { off: "off", high: null },
+    compat: { supportsStore: false },
+  };
+  const after: ModelSpecOverrides = {
+    input: ["text", "image"],
+    reasoning: true,
+    contextWindow: 512_000,
+    maxTokens: 64_000,
+    thinkingLevelMap: { off: "off", high: "high", max: "max" },
+    compat: { supportsStore: true },
+  };
+  const observed: { run: number; files: readonly string[]; version: number | null; fields: ModelSpecOverrides }[] = [];
+  let buildCount = 0;
+  const h = await startPanelHarness({
+    buildReviewers: (plans) => {
+      const run = ++buildCount;
+      return plans.map((plan) => ({
+        model: modelIdentity(plan.spec),
+        review: async ({ range }: ReviewerInput): Promise<ReviewerOutcome> => {
+          assert.equal(plan.failure, null);
+          assert.ok(plan.runtimeModel);
+          const runtime = plan.runtimeModel;
+          observed.push({
+            run,
+            files: [...range.files],
+            version: plan.modelServiceVersion,
+            fields: {
+              input: runtime.input,
+              reasoning: runtime.reasoning,
+              contextWindow: runtime.contextWindow,
+              maxTokens: runtime.maxTokens,
+              ...(runtime.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: runtime.thinkingLevelMap }),
+              ...(runtime.compat === undefined ? {} : { compat: runtime.compat }),
+            },
+          });
+          if (run === 1 && observed.length === 1) {
+            entered.resolve();
+            await release.promise;
+          }
+          return { model: modelIdentity(plan.spec), findings: [], anomalies: [], rejectedToolCalls: 0, anchorRejections: 0 };
+        },
+      }));
+    },
+  });
+  const historicalHook = await seedHistoricalRepo(h);
+  await commitRunService(h, null, {
+    model: "global-model",
+    baseUrl: "https://spec-freeze.example.test/v1",
+    api: "openai-completions",
+    credential: "spec-freeze-key",
+    fields: { input: ["text"], reasoning: false, contextWindow: 128_000, maxTokens: 16_000 },
+  });
+  await putGlobalSettings(openStore(h.db.url), { maxChangedLinesPerBatch: 1, maxParallelBatches: 1 });
+  const path = "/model-services/test/models/global-model/overrides";
+  const initial = await h.api("PUT", path, { expectedVersion: 1, overrides: before });
+  assert.equal(initial.status, 200, await initial.text());
+
+  assert.equal((await h.deliverViaHook("sha-spec-freeze", historicalHook)).status, 200);
+  await entered.promise;
+  try {
+    const changed = await h.api("PUT", path, { expectedVersion: 2, overrides: after });
+    assert.equal(changed.status, 200);
+    const current = await changed.json() as ModelSpecMutationResponse;
+    assert.equal(current.currentVersion, 3);
+    assert.deepEqual(current.overrides, after);
+    assert.deepEqual(current.effectiveFields, after);
+    assert.equal(observed.length, 1, "第一批暂停时后续批次尚未执行");
+  } finally {
+    release.resolve();
+  }
+  await h.settledAtLeast(1);
+  assert.equal(h.settled[0]!.error, undefined);
+  const first = observed.filter((entry) => entry.run === 1);
+  assert.equal(first.length, 2);
+  assert.notDeepEqual(first[0]!.files, first[1]!.files);
+  assert.deepEqual(first.map(({ version, fields }) => ({ version, fields })), [
+    { version: 2, fields: before },
+    { version: 2, fields: before },
+  ]);
+
+  const rerun = await h.api("POST", "/rerun", {
+    owner: HARNESS_PR.owner,
+    repo: HARNESS_PR.repo,
+    pullNumber: HARNESS_PR.number,
+    mode: "full",
+  });
+  assert.equal(rerun.status, 202, await rerun.text());
+  await h.settledAtLeast(2);
+  assert.equal(h.settled[1]!.error, undefined);
+  const next = observed.filter((entry) => entry.run === 2);
+  assert.equal(next.length, 2);
+  assert.deepEqual(next.map(({ version, fields }) => ({ version, fields })), [
+    { version: 3, fields: after },
+    { version: 3, fields: after },
+  ]);
 });

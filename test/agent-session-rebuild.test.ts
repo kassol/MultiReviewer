@@ -24,6 +24,7 @@ import { withTestDb } from "./support/git-fixture.ts";
 import { GITEA_REPO, HARNESS_SPEC } from "./support/panel-harness.ts";
 import { putGlobalSettings } from "./support/store-seed.ts";
 import { type StubTurn } from "./support/model-stub.ts";
+import { pngBytes } from "./support/png.ts";
 import {
   bodyOf,
   droppedFromContext,
@@ -126,6 +127,52 @@ test("辅助模型变了:落一条系统消息、用新模型重建,上下文照
     assert.equal(requests[1]!.model, second);
     assert.match(bodyOf(requests[1]!), new RegExp(MESSAGE));
     assert.match(bodyOf(requests[1]!), /第一轮/);
+  } finally {
+    await disposeAgentSessions();
+    await close();
+  }
+});
+
+test("同型号运行规格变化:空闲后重建一次,相同规格继续复用", async () => {
+  const { h, cookie, sessionId, requests, close } = await startSessionHarness([
+    { text: "第一轮", usage: { input: 10, output: 2 } },
+    { text: "规格更新后", usage: { input: 11, output: 2 } },
+    { text: "同规格继续", usage: { input: 12, output: 2 } },
+  ]);
+  try {
+    assert.equal((await send(h, cookie, sessionId, "spec-1", MESSAGE)).status, 202);
+    await messagesAtLeast(h.db.url, sessionId, 2);
+    await idle(h, cookie, sessionId);
+    const store = openStore(h.db.url);
+    const service = (await store.getModelService(HARNESS_SPEC.provider))!;
+    assert.equal((await store.replaceModelSpecOverrides(
+      HARNESS_SPEC.provider, HARNESS_SPEC.model, service.version, service.targetFingerprint!,
+      { contextWindow: 200000, maxTokens: 32000, input: ["text", "image"], reasoning: true,
+        thinkingLevelMap: { off: "off", high: "high" }, compat: { supportsStrictMode: false } },
+      new Date().toISOString(),
+    )).status, "updated");
+    const image = await fetch(`${h.serverUrl}/api/agent-sessions/${sessionId}/images`, {
+      method: "POST",
+      headers: { cookie, "content-type": "image/png" },
+      body: pngBytes(2, 2),
+    });
+    assert.equal(image.status, 201);
+    const { image: { imageId } } = await image.json() as { image: { imageId: string } };
+    assert.equal((await send(h, cookie, sessionId, "spec-2", "继续", "followUp", [imageId])).status, 202);
+    await messagesAtLeast(h.db.url, sessionId, 4);
+    await idle(h, cookie, sessionId);
+    assert.equal((await send(h, cookie, sessionId, "spec-3", "再继续")).status, 202);
+    await messagesAtLeast(h.db.url, sessionId, 6);
+    await idle(h, cookie, sessionId);
+    const landed = await records(h, cookie, sessionId);
+    const changes = landed.filter((row) => row.type === "custom" && JSON.stringify(row.entry).includes("运行规格已更新"));
+    assert.equal(changes.length, 1);
+    assert.ok(!JSON.stringify(changes).includes("contextWindow"), "内部指纹不应显示给用户");
+    assert.equal(requests.length, 3);
+    assert.match(bodyOf(requests[1]!), new RegExp(MESSAGE));
+    assert.match(bodyOf(requests[1]!), /第一轮/);
+    assert.ok(requests[1]!.messages.some((message) => (message.images?.length ?? 0) > 0),
+      "新规格支持的图片必须进入模型请求,旧子进程会丢掉图片");
   } finally {
     await disposeAgentSessions();
     await close();

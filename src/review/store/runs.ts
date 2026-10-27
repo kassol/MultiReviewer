@@ -153,6 +153,19 @@ export function sumUsage(
  */
 export const UNRECORDED_RUN_FAILURE = "未记录原因";
 
+function recordedReviewerPin(row: typeof reviewRunReviewerPin.$inferSelect): ReviewRunReviewerPin {
+  return {
+    identity: row.identity,
+    provider: row.provider,
+    model: row.model,
+    thinkingLevel: row.thinkingLevel as ThinkingLevel | null,
+    modelServiceVersion: row.modelServiceVersion,
+    target: row.baseUrl === null || row.api === null ? null : { baseUrl: row.baseUrl, api: row.api },
+    runtimeModel: row.runtimeModelJson === null ? null : JSON.parse(row.runtimeModelJson),
+    failure: row.materializationFailure,
+  };
+}
+
 /**
  * 轮次级失败原因在这里定形(issue #432、#436):通篇空白的原因换成一句话。「非空即
  * 收尾失败」这一档否则可以在没有任何原因的情况下成立,轮次侧滑上得到一句尾巴空着的
@@ -490,7 +503,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
       // pin 与已落库的批次一起取(issue #248 的评审复核):第一批就崩的那种轮次一个批次
       // 都没有,模型组合换没换只有这几行说得出。
       const pins = await orm
-        .select({ identity: reviewRunReviewerPin.identity })
+        .select()
         .from(reviewRunReviewerPin)
         .where(eq(reviewRunReviewerPin.runId, runId))
         .orderBy(asc(reviewRunReviewerPin.position));
@@ -513,6 +526,7 @@ export function runsMethods(ctx: StoreContext): RunsMethods {
             ? undefined
             : (JSON.parse(run.batchPlanJson) as string[][]),
         reviewers: pins.map((pin) => pin.identity),
+        reviewerPins: pins.map(recordedReviewerPin),
         history:
           run.historyJson === null
             ? undefined

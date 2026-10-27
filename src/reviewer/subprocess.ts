@@ -6,8 +6,11 @@
  * 消息里的产出怎么收由调用方在 `onMessage` 里自己做。
  */
 import { fork, type ChildProcess, type Serializable } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { MODEL_API_KEY_ENV, reviewerEnv } from "./env.ts";
+import { MODEL_API_KEY_ENV, PI_AGENT_DIR_ENV, reviewerEnv } from "./env.ts";
 
 /**
  * 一个卡住的子进程不是失败,是永远不返回。没有这道闸,整次 Review Run 会被它拖住不
@@ -75,6 +78,7 @@ export type ChildRun<M extends ChildMessage> = {
  * 使失败路径(未回报即退出、被信号终止)能用受控的 worker 脚本驱动测试。
  */
 export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promise<ChildOutcome> {
+  const agentDir = mkdtempSync(join(tmpdir(), "multireviewer-worker-agent-"));
   return new Promise((resolve) => {
     let done: M | undefined;
     let settled = false;
@@ -84,7 +88,7 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
     try {
       child = fork(run.workerPath, {
         cwd: run.worktreePath,
-        env: reviewerEnv(process.env, { [MODEL_API_KEY_ENV]: run.apiKey }),
+        env: reviewerEnv(process.env, { [MODEL_API_KEY_ENV]: run.apiKey, [PI_AGENT_DIR_ENV]: agentDir }),
         // 不继承父进程的 execArgv。worker 是普通脚本,继承会把父进程的运行模式带过来
         // ——在 `node --test` 下跑时,worker 会被当成测试文件启动并挂住不退出。
         execArgv: [],
@@ -92,6 +96,7 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
         stdio: ["ignore", "inherit", "inherit", "ipc"],
       });
     } catch (error) {
+      rmSync(agentDir, { recursive: true, force: true });
       // 工作副本目录不存在时 fork 同步抛。这是一次调用的失败,
       // 不该把整次 Review Run 一起掀掉。
       resolve({
@@ -107,10 +112,15 @@ export function runWorkerChild<M extends ChildMessage>(run: ChildRun<M>): Promis
       if (graceTimer !== undefined) clearTimeout(graceTimer);
       child.removeAllListeners();
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      resolve({
+      const outcome = {
         ...(failure === undefined ? {} : { failure }),
         // 退出码只在失败时有意义,进轨迹的失败事件带上它(issue #171)。
         ...(exitCode === undefined ? {} : { exitCode }),
+      };
+      // SIGKILL 之后仍要等进程关闭,避免它在删除之后又写回前台历史。
+      child.once("close", () => {
+        rmSync(agentDir, { recursive: true, force: true });
+        resolve(outcome);
       });
     };
 

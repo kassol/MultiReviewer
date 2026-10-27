@@ -3,7 +3,7 @@
  * 驱动那些真实模型无法按需复现的路径:崩溃、被信号终止、只报畸形条目。
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -83,6 +83,34 @@ function silenceClock(): {
     },
   };
 }
+
+test("worker 强杀后父进程删除私有 agentDir", async () => {
+  const clock = silenceClock();
+  let agentDir = "";
+  const result = await runWorkerChild<{ kind: string; agentDir: string }>({
+    workerPath: worker(`
+      import { writeFileSync } from 'node:fs';
+      import { join } from 'node:path';
+      const agentDir = process.env.PI_CODING_AGENT_DIR;
+      writeFileSync(join(agentDir, 'private-history.json'), 'task and report');
+      process.send({ kind: 'ready', agentDir });
+      setInterval(() => {}, 1000);
+    `),
+    worktreePath: tmpdir(),
+    apiKey: "stub-key",
+    timeoutSubject: "Reviewer",
+    payload: {},
+    silenceTimer: clock.timer,
+    onMessage: (message) => {
+      agentDir = message.agentDir;
+      assert.ok(existsSync(join(agentDir, "private-history.json")));
+      setImmediate(() => clock.advance(5 * 60 * 1000));
+    },
+  });
+  assert.match(result.failure ?? "", /卡死/);
+  assert.ok(agentDir);
+  assert.equal(existsSync(agentDir), false);
+});
 
 const RAW = {
   file: "src/a.ts",

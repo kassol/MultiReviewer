@@ -41,12 +41,14 @@ export type { StoreTransaction } from "./pg.ts";
 
 import {
   type ReviewerSpec,
+  type FrozenAuxiliaryModel,
   type ReviewRunReviewerPin,
   type ThinkingLevel,
 } from "../../config.ts";
 import type { LineAuthor } from "../../git/worktree.ts";
 import type { PanelPermission } from "../../panel/permissions.ts";
-import { type DiscoveredModel } from "../../reviewer/model-service-runtime.ts";
+import type { BoundModelSpecOverride, ModelSpecOverrides } from "../../contracts/model-specs.ts";
+import type { DiscoveredModel } from "../../reviewer/model-service-runtime.ts";
 import type {
   CarriedAttribution,
   Category,
@@ -159,7 +161,7 @@ export type RunMeta = {
    * 它,续跑沿用落库的这一处;省略或 null 即这一轮没有解析出辅助模型,合并走算法档。
    * **它不是续跑判据**:改了它只影响下一轮,已开跑的这一轮读的始终是这一行。
    */
-  auxiliaryModel?: ReviewerSpec | null;
+  auxiliaryModel?: FrozenAuxiliaryModel | null;
 };
 
 /** 一条被启动改判掉的 Review Run(issue #247)。坐标够撤掉那个 PR 上的 👀。 */
@@ -185,7 +187,7 @@ export type InterruptedRunDetail = InterruptedRun & {
    * 有人改了配置时,续跑的合并用的仍要是这一轮开跑时那一处。旧行与解析不出的那一轮是
    * null,续跑的合并因此走算法档。
    */
-  auxiliaryModel: ReviewerSpec | null;
+  auxiliaryModel: FrozenAuxiliaryModel | null;
 };
 
 /**
@@ -214,6 +216,7 @@ export type ResumeState = {
    * (升级前的旧行、一个模型都没配的那一轮)读回空数组,那时无从比对。
    */
   reviewers: string[];
+  reviewerPins: ReviewRunReviewerPin[];
   /** 开跑时的历史快照;升级前落的旧行没有,为 undefined。 */
   history: HistoryFinding[] | undefined;
   /**
@@ -596,6 +599,7 @@ type ModelServiceModelStateUpdateResult =
   | { status: "referenced"; references: ModelReference[] };
 
 export type ModelServiceRecord = {
+  modelSpecOverrides: BoundModelSpecOverride[];
   provider: string;
   type: "builtin" | "custom";
   version: number;
@@ -675,7 +679,7 @@ type RenameConflictingCustomModelServiceResult =
  */
 export type ModelServiceVersionCommit = Omit<
   ModelServiceRecord,
-  "version" | "automaticModels" | "supplements" | "targets"
+  "version" | "automaticModels" | "supplements" | "targets" | "modelSpecOverrides"
 > & {
   automaticModels: readonly DiscoveredModel[];
   supplements: readonly Omit<ModelSupplementRecord, "provider">[];
@@ -2034,6 +2038,9 @@ type SyncStore = {
    */
   listModelReferences(): ModelReference[];
   listModelServiceModelStates(provider?: string): ModelServiceModelStateRecord[];
+  replaceModelSpecOverrides(provider: string, model: string, expectedVersion: number, targetFingerprint: string, overrides: ModelSpecOverrides, updatedAt: string):
+    | { status: "updated"; version: number }
+    | { status: "version-conflict" | "unknown-model" | "target-unresolved" };
   updateModelServiceModelStates(
     provider: string,
     expectedVersion: number,

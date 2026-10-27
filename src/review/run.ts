@@ -1,4 +1,5 @@
-import type { ReviewerSpec, ReviewRunReviewerPin } from "../config.ts";
+import { isDeepStrictEqual } from "node:util";
+import type { FrozenAuxiliaryModel, ReviewRunReviewerPin } from "../config.ts";
 import type { Drain } from "../drain.ts";
 import {
   PublishUncertainError,
@@ -135,7 +136,7 @@ export type ReviewRunPlan = Readonly<{
    * 本轮冻结的辅助模型(CONTEXT.md 辅助模型,issue #304)。它随轮次落库,续跑读落库的
    * 那一处;解析不出即 null,这一轮的合并走算法档。
    */
-  auxiliaryModel?: ReviewerSpec | null;
+  auxiliaryModel?: FrozenAuxiliaryModel | null;
 }>;
 
 /** 从启动时的配置快照生成一次运行计划。复制 Reviewer 列表,使组合的后续改动只影响下一轮。 */
@@ -172,7 +173,7 @@ export function createReviewRunPlan(
    * 本轮冻结的辅助模型(issue #304)。合并 agent 就是按它建的,这里传的是同一处引用:
    * 它随轮次落库,续跑读落库的那一处。不给即这一轮没有解析出辅助模型。
    */
-  auxiliaryModel?: ReviewerSpec | null,
+  auxiliaryModel?: FrozenAuxiliaryModel | null,
 ): ReviewRunPlan {
   return Object.freeze({
     repoId,
@@ -244,7 +245,7 @@ export type ReviewRunDeps = {
    * 是同一处引用,只为随轮次落库:回看时要答得出「那一轮的合并用的是哪一处模型」,
    * 续跑也据它建同一个合并 agent。不传即这一轮没有解析出辅助模型。
    */
-  auxiliaryModel?: ReviewerSpec | null;
+  auxiliaryModel?: FrozenAuxiliaryModel | null;
   /**
    * 这一轮的模式(CONTEXT.md 只复核,issue #242)。不传即完整审查,行为与这一票之前
    * 逐字一致。`verdict-only` 时变更文件集先过滤成有未处置历史的那些,Reviewer 只能给
@@ -1949,6 +1950,7 @@ function resumeMismatch(
   minReportSeverity: Severity,
   batches: readonly (readonly string[])[],
   reviewers: readonly Reviewer[],
+  pins: readonly ReviewRunReviewerPin[] | undefined,
 ): string | undefined {
   // head 先核对:PR 上推了新 commit 之后审的就不是这一轮那段代码了,已落库的批次结果
   // 与新 head 上的 diff 无关,接着跑等于把上一版的结论安到新版头上。
@@ -1975,6 +1977,9 @@ function resumeMismatch(
     if (!sameSequence(resume.reviewers, current)) {
       return `开跑时的模型组合是 ${resume.reviewers.join("、")},现在是 ${current.join("、")}`;
     }
+  }
+  if (pins !== undefined && !isDeepStrictEqual(resume.reviewerPins, pins)) {
+    return "Reviewer 的思考档位或冻结运行规格与开跑时不符";
   }
   if (resume.batchCount !== batches.length) {
     return `重新切批切出 ${batches.length} 批,开跑时是 ${resume.batchCount} 批`;
@@ -2205,6 +2210,7 @@ export async function runReview(
         minReportSeverity,
         batches,
         deps.reviewers,
+        deps.reviewerPins,
       );
       if (reason !== undefined) {
         throw new Error(`${RESUME_NOT_VIABLE}:${reason}`);

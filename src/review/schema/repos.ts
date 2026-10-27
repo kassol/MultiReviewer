@@ -231,6 +231,7 @@ export const modelServiceModelState = pgTable(
     provider: text().notNull(),
     model: text().notNull(),
     enabled: boolean().notNull().default(true),
+    overridesJson: jsonText("overrides_json"),
     updatedAt: isoTimestamp("updated_at").notNull(),
   },
   (t) => [

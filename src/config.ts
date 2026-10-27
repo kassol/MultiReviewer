@@ -147,6 +147,9 @@ export type ReviewRunReviewerPin = Readonly<{
   failure: string | null;
 }>;
 
+/** 辅助模型沿用现有 JSON 列保存非秘密运行快照;旧轮次没有 pin。 */
+export type FrozenAuxiliaryModel = ReviewerSpec & { pin?: ReviewRunReviewerPin | null };
+
 /**
  * 安全边界：逐字段复制可持久化字段，凭据既不在返回类型里，也不会因以后给运行计划加字段而
  * 被对象展开顺带落库。

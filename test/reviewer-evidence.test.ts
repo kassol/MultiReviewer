@@ -78,6 +78,7 @@ function read(agentDir: string, ...parts: string[]): string {
 
 test("铺装之后取证 agent 就位,内置 agent 全部禁用", () => {
   const agentDir = install();
+  assert.equal(process.env.PI_SUBAGENTS_TEMP_ROOT, agentDir);
 
   const settings = JSON.parse(read(agentDir, "settings.json")) as {
     subagents?: { disableBuiltins?: unknown };

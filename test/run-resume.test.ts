@@ -300,6 +300,32 @@ test("零批次落库时模型组合换了同样不续跑:核对开跑时钉下�
   assert.deepEqual(other.calls, []);
 });
 
+test("同型号换思考档位或运行规格:拒绝与已完成批次混用", async () => {
+  for (const change of ["thinkingLevel", "runtimeModel"] as const) {
+    const fixture = await setup(cleanups);
+    const pin: ReviewRunReviewerPin = {
+      identity: "model-a", provider: "test", model: "a", thinkingLevel: "low",
+      modelServiceVersion: 1, target: null, runtimeModel: null, failure: null,
+    };
+    await assert.rejects(() => runReview(EVENT, deps(fixture, [batchReviewer("model-a", { throwOnCall: 2 })],
+      { reviewerPins: [pin] })), /进程被重启了/);
+    const [run] = await query(fixture.db.url, "SELECT id FROM review_run WHERE finished_at IS NULL");
+    const changed: ReviewRunReviewerPin = change === "thinkingLevel" ? { ...pin, thinkingLevel: "high" } : {
+      ...pin, runtimeModel: {
+        provider: "test", id: "a", name: "a", api: "openai-completions", baseUrl: "https://models.example.test",
+        input: ["text"], reasoning: true, contextWindow: 200000, maxTokens: 32000,
+        sources: { name: "model-id", api: "service-target", baseUrl: "service-target", input: "trusted",
+          reasoning: "trusted", contextWindow: "trusted", maxTokens: "trusted" },
+      },
+    };
+    const reviewer = batchReviewer("model-a");
+    await assert.rejects(() => runReview(EVENT, deps(fixture, [reviewer], {
+      resumeRunId: Number(run!["id"]), reviewerPins: [changed],
+    })), /续跑不成立:Reviewer 的思考档位或冻结运行规格/);
+    assert.deepEqual(reviewer.calls, []);
+  }
+});
+
 /**
  * 全部批次的分组在开跑时冻结落库(issue #253):第一批就崩的轮次也有完整的核对依据,
  * 续跑时已完成与未完成的批次都要与它相符。
@@ -571,4 +597,3 @@ test("续跑轮次的轮次级耗时含崩溃前各批的并集,不含停机(iss
   // 面板上两个数不再矛盾:轮次耗时压得住它里头任一个模型的耗时。
   assert.ok(runMs >= modelMs, `轮次耗时 ${runMs} 毫秒,小于单模型的 ${modelMs} 毫秒`);
 });
-

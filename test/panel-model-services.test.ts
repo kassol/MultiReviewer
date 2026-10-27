@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { decryptCredential, encryptCredential } from "../src/panel/credential-crypto.ts";
+import type { ModelSpecMutationResponse, ModelSpecConflictResponse } from "../src/contracts/model-specs.ts";
 import type { PanelPermission } from "../src/panel/permissions.ts";
+import type { DiscoveredModel } from "../src/reviewer/model-service-runtime.ts";
 import {
   modelServiceTargetFingerprint,
   openStore,
@@ -364,6 +366,9 @@ function stubModelFetch(
     if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
       return original(input as Parameters<typeof original>[0], init);
     }
+    if (url.href === "https://models.dev/api.json") {
+      return Response.json({});
+    }
     const call = {
       url,
       auth: new Headers(init?.headers).get("authorization"),
@@ -392,6 +397,142 @@ function successfulInference(model: string): Response {
     status: 200,
     headers: { "content-type": "text/event-stream" },
   });
+}
+
+test("规格覆盖按模型写权限与版本保存,斜杠 ID 可用,恢复自动且非法输入不写库", async () => {
+  const h = await startPanelHarness({ reviewers: [] });
+  const writer = await cookieFor(h, "spec-writer", ["model:write"]);
+  const reader = await cookieFor(h, "spec-reader", ["model:read"]);
+  const credentialWriter = await cookieFor(h, "spec-credential-writer", ["credential:write"]);
+  const provider = "spec-gateway";
+  const model = "vendor/private-model";
+  const baseUrl = "https://spec-gateway.test/v1";
+  const fingerprint = modelServiceTargetFingerprint(baseUrl, "openai-completions");
+  const store = openStore(h.db.url);
+  await store.commitModelServiceVersion(null, service(provider, {
+    type: "custom", baseUrl, api: "openai-completions", targetFingerprint: fingerprint,
+    automaticModels: [{ identity: `${provider}:${model}`, provider, id: model,
+      fields: { input: ["text"], reasoning: false, contextWindow: 100_000, maxTokens: 4096 } }],
+  }));
+  const path = `/model-services/${provider}/models/${encodeURIComponent(model)}/overrides`;
+  const overrides = { input: ["text", "image"], reasoning: true, contextWindow: 1_000_000,
+    maxTokens: 384_000, thinkingLevelMap: { off: null, high: "high" }, compat: { supportsStore: false } };
+  for (const cookie of [reader, credentialWriter]) {
+    assert.equal((await mutation(h, cookie, "PUT", path, { expectedVersion: 1, overrides })).status, 403);
+  }
+  for (const body of [
+    { expectedVersion: 0, overrides }, { expectedVersion: 1 }, { expectedVersion: 1, overrides: null },
+    { expectedVersion: 1, overrides: { api: "openai-responses" } },
+    { expectedVersion: 1, overrides: { compat: { openRouterRouting: { unknown: true } } } },
+    { expectedVersion: 1, overrides: {}, baseUrl: "https://wrong.test" },
+  ]) assert.equal((await mutation(h, writer, "PUT", path, body)).status, 400, JSON.stringify(body));
+  assert.equal((await store.getModelService(provider))!.version, 1);
+  assert.equal((await mutation(h, writer, "PUT", `/model-services/${provider}/models/missing/overrides`, { expectedVersion: 1, overrides })).status, 404);
+  const response = await mutation(h, writer, "PUT", path, { expectedVersion: 1, overrides });
+  assert.equal(response.status, 200, await response.clone().text());
+  const saved = await response.json() as ModelSpecMutationResponse;
+  assert.equal(saved.currentVersion, 2);
+  assert.equal(saved.targetFingerprint, fingerprint);
+  assert.deepEqual(saved.overrides, overrides);
+  assert.equal(saved.automaticFields.contextWindow, 100_000);
+  assert.equal(saved.effectiveFields.contextWindow, 1_000_000);
+  const get = await request(h, reader, "/model-services");
+  const body = await get.json() as { services: { provider: string; models: ModelSpecMutationResponse[] }[]; candidates: (ModelSpecMutationResponse & { id: string })[] };
+  const projected = body.services.find((entry) => entry.provider === provider)!.models[0]!;
+  assert.deepEqual(projected.overrides, overrides);
+  assert.deepEqual(projected.automaticFields, saved.automaticFields);
+  assert.deepEqual(body.candidates.find((entry) => entry.provider === provider && entry.id === model)!.effectiveFields, saved.effectiveFields);
+  const stale = await mutation(h, writer, "PUT", path, { expectedVersion: 1, overrides: {} });
+  assert.equal(stale.status, 409);
+  const conflict = await stale.json() as ModelSpecConflictResponse;
+  assert.equal(conflict.actualVersion, 2);
+  assert.deepEqual(conflict.current, saved);
+  const cleared = await mutation(h, writer, "PUT", path, { expectedVersion: 2, overrides: {} });
+  assert.equal(cleared.status, 200);
+  const automatic = await cleared.json() as ModelSpecMutationResponse;
+  assert.equal(automatic.currentVersion, 3);
+  assert.deepEqual(automatic.overrides, {});
+  assert.deepEqual(automatic.effectiveFields, automatic.automaticFields);
+});
+
+test("同目标最小推理采用规格覆盖且刷新后的自动快照保持独立", async () => {
+  const h = await startPanelHarness({ reviewers: [] });
+  const provider = "spec-validation";
+  const model = "private-validation-model";
+  const baseUrl = "https://spec-validation.test/v1";
+  const fingerprint = modelServiceTargetFingerprint(baseUrl, "openai-completions");
+  const store = openStore(h.db.url);
+  await store.commitModelServiceVersion(null, service(provider, {
+    type: "custom", baseUrl, api: "openai-completions", targetFingerprint: fingerprint,
+    automaticModels: [{ identity: `${provider}:${model}`, provider, id: model, fields: {} }],
+  }));
+  const overrides = { maxTokens: 7, compat: { maxTokensField: "max_tokens" } };
+  assert.equal((await store.replaceModelSpecOverrides(provider, model, 1, fingerprint, overrides, "2026-10-26T00:00:00.000Z")).status, "updated");
+  const cookie = await cookieFor(h, "spec-validation-writer", ["credential:write"]);
+  const stub = stubModelFetch((call) => call.url.pathname.endsWith("/models")
+    ? Response.json({ data: [{ id: model }] }) : successfulInference(model));
+  try {
+    const response = await mutation(h, cookie, "POST", `/model-services/${provider}/reverify`, { validationModel: model, expectedVersion: 2 });
+    assert.equal(response.status, 200, await response.clone().text());
+    const inference = stub.calls.find((call) => call.body !== undefined)!;
+    assert.equal(inference.body!["max_tokens"], 7);
+    assert.equal(inference.body!["max_completion_tokens"], undefined);
+    const current = (await store.getModelService(provider))!;
+    assert.deepEqual(current.modelSpecOverrides[0]!.overrides, overrides);
+    assert.equal(current.automaticModels[0]!.fields.maxTokens, undefined);
+  } finally { stub.restore(); }
+});
+
+for (const kind of ["builtin", "custom"] as const) {
+  for (const action of ["reverify", "commit"] as const) {
+    test(`${kind} ${action} 发现失败时用保留的自动字段加稀疏覆盖验证`, async () => {
+      const h = await startPanelHarness({ reviewers: [], discoverModelServiceModels: async () => ({
+        ok: false, failure: { code: "request-error", message: "目录暂时不可用" },
+      }) });
+      const provider = kind === "builtin" ? "deepseek" : "retained-validation";
+      const model = "retained-validation-model";
+      const target = { baseUrl: "https://retained-validation.test/v1", api: "openai-completions" } as const;
+      const fingerprint = modelServiceTargetFingerprint(target.baseUrl, target.api);
+      const store = openStore(h.db.url);
+      const automatic: DiscoveredModel = {
+        identity: `${provider}:${model}`, provider, id: model,
+        fields: { ...target, input: ["text"], reasoning: false,
+          contextWindow: 100_000, maxTokens: 7, compat: { maxTokensField: "max_tokens" } },
+      };
+      assert.equal(await store.commitModelServiceVersion(null, service(provider, {
+        type: kind, baseUrl: kind === "builtin" ? null : target.baseUrl,
+        api: kind === "builtin" ? null : target.api, targetFingerprint: fingerprint,
+        ...(kind === "builtin" ? { targets: [target] } : {}), automaticModels: [automatic],
+      })), 1);
+      const overrides = { contextWindow: 200_000 };
+      assert.equal((await store.replaceModelSpecOverrides(provider, model, 1, fingerprint,
+        overrides, "2026-10-26T00:00:00.000Z")).status, "updated");
+      const cookie = await cookieFor(h, `retained-${kind}-${action}`, ["credential:write", "model:write"]);
+      const stub = stubModelFetch(() => successfulInference(model));
+      try {
+        const path = action === "reverify" ? `/model-services/${provider}/reverify` : `/model-services/${kind}/commit`;
+        const payload = action === "reverify" ? { validationModel: model, expectedVersion: 2 }
+          : { provider, credential: "rotated-validation-secret", validationModel: model, expectedVersion: 2,
+            ...(kind === "custom" ? { ...target, reconfirmedSupplements: [] } : {}) };
+        const response = await mutation(h, cookie, "POST", path, payload);
+        assert.equal(response.status, 200, await response.clone().text());
+        assert.equal(stub.calls.length, 1);
+        assert.equal(stub.calls[0]!.url.href, `${target.baseUrl}/chat/completions`);
+        assert.equal(stub.calls[0]!.body!["max_tokens"], 7);
+        assert.equal(stub.calls[0]!.body!["max_completion_tokens"], undefined);
+        const current = (await store.getModelService(provider))!;
+        assert.equal(current.version, 3);
+        assert.deepEqual(current.automaticModels, [automatic]);
+        assert.deepEqual(current.modelSpecOverrides[0]!.overrides, overrides);
+        const projection = await request(h, cookie, "/model-services");
+        const body = await projection.json() as { services: { provider: string; models: ModelSpecMutationResponse[] }[] };
+        const projected = body.services.find((entry) => entry.provider === provider)!.models[0]!;
+        assert.equal(projected.effectiveFields.contextWindow, 200_000);
+        assert.equal(projected.effectiveFields.maxTokens, 7);
+        assert.deepEqual(projected.effectiveFields.compat, automatic.fields.compat);
+      } finally { stub.restore(); }
+    });
+  }
 }
 
 function openRouterRow(id: string): Record<string, unknown> {
@@ -1482,6 +1623,25 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
   assert.deepEqual(
     candidates.find((model) => model.identity === "test:global-model"),
     {
+      currentVersion: 0,
+      targetFingerprint: null,
+      automaticFields: {
+        input: null,
+        reasoning: null,
+        contextWindow: null,
+        maxTokens: null,
+        thinkingLevelMap: null,
+        compat: null,
+      },
+      overrides: {},
+      effectiveFields: {
+        input: ["text"],
+        reasoning: false,
+        contextWindow: 128_000,
+        maxTokens: 16_000,
+        thinkingLevelMap: null,
+        compat: null,
+      },
       provider: "test",
       id: "global-model",
       identity: "test:global-model",

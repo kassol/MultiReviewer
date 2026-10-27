@@ -3,6 +3,7 @@
  * 候选已经按完整 `provider:model` 标识合并来源并带服务端可用性结论。
  */
 import { useQuery } from "@tanstack/react-query";
+import type { ModelSpecProjection } from "../../src/contracts/model-specs.ts";
 
 import { fetchJson } from "./api.ts";
 
@@ -39,10 +40,10 @@ export type ModelReference = {
   locations: ModelReferenceLocation[];
 };
 
-export type ModelDiscoveryFieldSource = "service-interface" | "pi-catalog" | "service-target";
-export type ModelRuntimeFieldSource = ModelDiscoveryFieldSource | "runtime-baseline" | "unknown";
+export type ModelDiscoveryFieldSource = "service-interface" | "pi-catalog" | "models-dev" | "service-target";
+export type ModelRuntimeFieldSource = ModelDiscoveryFieldSource | "manual-override" | "runtime-baseline" | "unknown";
 
-export type ModelServiceModel = {
+export type ModelServiceModel = ModelSpecProjection & {
   provider: string;
   id: string;
   identity: string;

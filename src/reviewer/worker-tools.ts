@@ -447,7 +447,7 @@ export async function prepareAgentRuntime(options: {
   compaction?: boolean;
 }): Promise<AgentRuntime | { failure: string }> {
   // 空的 agentDir:不让宿主机上的全局扩展、skill、设置与凭据渗进会话。
-  const agentDir = mkdtempSync(join(tmpdir(), options.agentDirPrefix));
+  const agentDir = process.env[PI_AGENT_DIR_ENV] ?? mkdtempSync(join(tmpdir(), options.agentDirPrefix));
   process.env[PI_AGENT_DIR_ENV] = agentDir;
 
   const apiKey = process.env[MODEL_API_KEY_ENV];

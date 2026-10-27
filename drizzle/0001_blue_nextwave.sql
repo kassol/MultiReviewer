@@ -1,0 +1,1 @@
+ALTER TABLE "model_service_model_state" ADD COLUMN "overrides_json" jsonb;
