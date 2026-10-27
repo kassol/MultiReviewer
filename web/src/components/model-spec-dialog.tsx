@@ -230,8 +230,8 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
           overridden ? "border-accent-track bg-accent-tint" : "border-line bg-surface",
         )}
       >
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-x-4">
-          <div className="min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <Text id={`${idPrefix}-${field}`} size="2" weight="medium">{SPEC_FIELD_LABEL[field]}</Text>
               {overridden ? (
@@ -252,7 +252,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
             value={mode}
             onValueChange={(next) => selectMode(field, next, choices)}
           >
-            <Select.Trigger className="w-full sm:w-auto" aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`} />
+            <Select.Trigger className="w-32 shrink-0 sm:w-auto" aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`} />
             <Select.Content>
               <Select.Item value="auto">自动</Select.Item>
               {choices.map((entry) => (
@@ -311,7 +311,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
         maxWidth="680px"
         maxHeight="calc(100dvh - 2rem)"
         size={{ initial: "2", sm: "3" }}
-        className="flex flex-col overflow-hidden max-sm:h-[calc(100dvh_-_2rem)]"
+        className="flex flex-col overflow-hidden"
       >
         <div className="flex shrink-0 items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-1">
@@ -518,7 +518,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
               variant={saveEnabled || saving ? "solid" : "outline"}
               {...(saveEnabled || saving ? {} : { color: "gray" as const })}
               size={{ initial: "3", sm: "2" }}
-              className="disabled:opacity-100"
+              className="disabled:text-text-muted disabled:opacity-100"
               disabled={!saveEnabled}
               onClick={() => void save()}
             >
