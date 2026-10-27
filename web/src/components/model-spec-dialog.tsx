@@ -351,7 +351,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
                       ? "匹配到 1 组目录候选"
                       : "未匹配到目录候选"}
                 </Text>
-                <p className="mt-0.5 text-base text-text-muted">{candidatesHint}</p>
+                <p className="mt-0.5 hidden text-base text-text-muted sm:block">{candidatesHint}</p>
               </div>
             </div>
             {overrideCount === 0 ? null : (
@@ -518,7 +518,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
               variant={saveEnabled || saving ? "solid" : "outline"}
               {...(saveEnabled || saving ? {} : { color: "gray" as const })}
               size={{ initial: "3", sm: "2" }}
-              className="disabled:text-text-muted disabled:opacity-100"
+              className="disabled:text-text-secondary disabled:opacity-100"
               disabled={!saveEnabled}
               onClick={() => void save()}
             >
