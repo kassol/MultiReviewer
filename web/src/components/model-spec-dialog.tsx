@@ -273,7 +273,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
             value={mode}
             onValueChange={(next) => selectMode(field, next, choices)}
           >
-            <Select.Trigger className="w-32 shrink-0 sm:w-auto" aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`}>
+            <Select.Trigger className="w-40 shrink-0 sm:w-auto" aria-label={`${SPEC_FIELD_LABEL[field]}的取值方式`}>
               {manual ? "手动" : choice === undefined ? "自动" : specValueText(field, choice.value)}
             </Select.Trigger>
             <Select.Content>
@@ -528,7 +528,7 @@ export function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel;
               </Button>
             )}
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
             {targetChanged ? (
               <Button type="button" variant="soft" color="gray" size={{ initial: "3", sm: "2" }} onClick={reload}>
                 按当前规格重载
