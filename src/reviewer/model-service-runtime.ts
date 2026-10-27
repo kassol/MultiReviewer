@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelIdentity } from "../config.ts";
+import type { ModelSpecCandidate } from "../contracts/model-specs.ts";
 import {
   loadPiCatalog,
   loadPiProviderCatalog,
@@ -61,6 +62,8 @@ export type DiscoveredModel = {
   id: string;
   fields: TrustedModelFields;
   fieldSources?: TrustedModelFieldSources;
+  /** 目录里同一个型号的多组候选(2026-10-27);只有自定义服务的发现会填。 */
+  candidates?: readonly ModelSpecCandidate[];
 };
 
 export type ModelOperationFailure = {
@@ -373,6 +376,42 @@ function catalogFields(index: PiCatalogIndex, modelId: string): TrustedModelFiel
   };
 }
 
+/**
+ * 同一个型号在目录里匹配到的每一组候选(2026-10-27)。与 `catalogFields` 用同一个候选集合,
+ * 差别只在不去重:面板按字段给人挑用哪一组,挑中的值落成普通覆盖,之后仍按那一份跑。
+ */
+export function customCatalogCandidates(
+  catalogs: readonly PiProviderCatalog[],
+  modelId: string,
+): ModelSpecCandidate[] {
+  return catalogCandidates(catalogIndex(catalogs), modelId);
+}
+
+function catalogCandidates(index: PiCatalogIndex, modelId: string): ModelSpecCandidate[] {
+  const candidates = piCatalogCandidates(index, modelId);
+  const official = officialCatalogProvider(modelId, index.byProvider.keys());
+  const groups: ModelSpecCandidate[] = [];
+  for (const { provider, model } of candidates) {
+    const compat = gatewayCompat(model.compat);
+    const values: ModelSpecCandidate["values"] = {
+      ...(model.input === undefined ? {} : { input: model.input }),
+      ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+      ...(positiveInteger(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
+      ...(positiveInteger(model.maxTokens) ? { maxTokens: model.maxTokens } : {}),
+      ...(model.thinkingLevelMap === undefined ? {} : { thinkingLevelMap: model.thinkingLevelMap }),
+      ...(compat === undefined ? {} : { compat: compat as Record<string, unknown> }),
+    };
+    if (Object.keys(values).length === 0) continue;
+    groups.push({
+      id: `pi:${provider}`,
+      label: provider === official ? `${provider}（官方）` : provider,
+      official: provider === official,
+      values,
+    });
+  }
+  return groups;
+}
+
 function fieldsFromCandidates(candidates: readonly PiCatalogModel[]): TrustedModelFields {
   if (candidates.length === 0) return {};
   const fields: TrustedModelFields = {};
@@ -402,21 +441,22 @@ function fieldsFromCandidates(candidates: readonly PiCatalogModel[]): TrustedMod
 async function piCatalogFieldsForModels(
   modelIds: readonly string[],
   options: DiscoverModelsOptions,
-): Promise<Map<string, TrustedModelFields>> {
-  const fields = new Map<string, TrustedModelFields>();
-  if (modelIds.length === 0) return fields;
+): Promise<Map<string, { fields: TrustedModelFields; candidates: ModelSpecCandidate[] }>> {
+  const matches = new Map<string, { fields: TrustedModelFields; candidates: ModelSpecCandidate[] }>();
+  if (modelIds.length === 0) return matches;
   let catalogs: PiProviderCatalog[];
   try {
     catalogs = await loadPiCatalog({ ...options, allowNetwork: false });
   } catch {
-    return fields;
+    return matches;
   }
   const index = catalogIndex(catalogs);
   for (const modelId of modelIds) {
-    const matched = catalogFields(index, modelId);
-    if (Object.keys(matched).length > 0) fields.set(modelId, matched);
+    const fields = catalogFields(index, modelId);
+    const candidates = catalogCandidates(index, modelId);
+    if (Object.keys(fields).length > 0 || candidates.length > 0) matches.set(modelId, { fields, candidates });
   }
-  return fields;
+  return matches;
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -737,9 +777,10 @@ export async function discoverModels(
     if (rows.length === 0) {
       return failure("empty-catalog", `模型服务 ${candidate.provider} 没有返回可用的 model id`);
     }
-    const piFields = await piCatalogFieldsForModels(rows.map((row) => row.id), options);
+    const piMatches = await piCatalogFieldsForModels(rows.map((row) => row.id), options);
     const models = rows.map(({ id, name }): DiscoveredModel => {
-      const matched = piFields.get(id) ?? {};
+      const match = piMatches.get(id);
+      const matched = match?.fields ?? {};
       // 自定义地址后面是兼容网关:目录的 compat 剥掉只对官方地址成立的那一位(issue #262)。
       const piCompat = gatewayCompat(matched.compat);
       const fields: TrustedModelFields = {
@@ -772,6 +813,7 @@ export async function discoverModels(
         id,
         fields,
         fieldSources,
+        ...(match === undefined || match.candidates.length === 0 ? {} : { candidates: match.candidates }),
       };
     });
     await supplementModelsDev(models, options, signal);

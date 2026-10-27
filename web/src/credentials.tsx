@@ -28,16 +28,19 @@ import { cn } from "@/lib/utils";
 import { pageItems } from "@/lib/pagination";
 import { localMinute } from "@/lib/time";
 
-import type { ModelSpecConflictResponse, ModelSpecProjection } from "../../src/contracts/model-specs.ts";
+import type { ModelSpecConflictResponse, ModelSpecOverrides, ModelSpecProjection } from "../../src/contracts/model-specs.ts";
 
 import { api, errorText, fetchJson, send } from "./api.ts";
 import {
+  modelSpecCandidateChoices,
   modelSpecDraft,
   modelSpecEditor,
+  modelSpecSourceChoice,
   modelSpecTargetChanged,
   parseModelSpecDraft,
   rebaseModelSpecEditor,
   sameModelSpecOverrides,
+  withModelSpecCandidate,
   type ModelSpecDraft,
   type ModelSpecEditor,
   type ModelSpecField,
@@ -2812,6 +2815,54 @@ function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel; canWri
     ? null
     : <p className="text-base text-danger">{parsed.errors[field]}</p>;
 
+  // 目录匹配到多组时,每个字段可以改选某一组的值(2026-10-27)。选中即落成普通覆盖——
+  // 它此后按这个值跑,不再跟着目录变;要回到按目录合成值就选「自动」。
+  const sourceSelect = (field: ModelSpecField): ReactNode => {
+    const choices = modelSpecCandidateChoices(model.candidates, field);
+    if (choices.length < 2) return null;
+    const current = modelSpecSourceChoice(draft, field, choices);
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <Text size="1" className="text-text-muted">值来源</Text>
+        <Select.Root
+          size="1"
+          value={current}
+          onValueChange={(next) => {
+            if (next === "auto") {
+              toggleField(field, false);
+              return;
+            }
+            if (next === "manual") {
+              toggleField(field, true);
+              return;
+            }
+            const choice = choices.find((entry) => entry.candidateId === next);
+            if (choice !== undefined) updateDraft((draft) => withModelSpecCandidate(draft, field, choice.value));
+          }}
+        >
+          <Select.Trigger aria-label={`${SPEC_FIELD_LABEL[field]}的值来源`} />
+          <Select.Content>
+            <Select.Item value="auto">自动（官方优先）</Select.Item>
+            {choices.map((choice) => (
+              <Select.Item key={choice.candidateId} value={choice.candidateId}>
+                {choice.label}：{choiceValueText(field, choice.value)}
+              </Select.Item>
+            ))}
+            <Select.Item value="manual">手动输入</Select.Item>
+          </Select.Content>
+        </Select.Root>
+      </div>
+    );
+  };
+
+  const candidateHint = model.candidates.length > 1
+    ? `目录匹配到 ${model.candidates.length} 组，自动值按官方优先合成；每个字段可以选择某一组的值。`
+    : model.candidates.length === 1
+      ? "目录只匹配到一组，自动采用它的值。"
+      : Object.values(model.automaticFields).some((value) => value !== null)
+        ? "自动值来自目录；这一版没有保留候选组，需要时逐项手动覆盖。"
+        : "目录里没有匹配到这个型号，自动值来自运行基线；需要时逐项手动覆盖。";
+
   return (
     <Dialog.Root
       open={open}
@@ -2864,11 +2915,14 @@ function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel; canWri
             </Callout.Root>
           ) : null}
 
+          <p className="text-base text-text-muted">{candidateHint}</p>
+
           <div className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
               <Text id={`${idPrefix}-input`} size="2" className="font-medium">输入类型</Text>
               {overrideBox("input")}
             </div>
+            {sourceSelect("input")}
             <div role="group" aria-labelledby={`${idPrefix}-input`} className="flex flex-wrap items-center gap-4">
               <Text as="label" size="2" className="inline-flex items-center gap-2">
                 <Checkbox
@@ -2897,6 +2951,7 @@ function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel; canWri
               <Text as="label" htmlFor={`${idPrefix}-reasoning`} size="2" className="font-medium">推理能力</Text>
               {overrideBox("reasoning")}
             </div>
+            {sourceSelect("reasoning")}
             <Text as="label" size="2" className="inline-flex items-center gap-2">
               <Checkbox
                 id={`${idPrefix}-reasoning`}
@@ -2915,6 +2970,7 @@ function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel; canWri
               <Text as="label" htmlFor={`${idPrefix}-contextWindow`} size="2" className="font-medium">上下文窗口</Text>
               {overrideBox("contextWindow")}
             </div>
+            {sourceSelect("contextWindow")}
             <TextField.Root
               id={`${idPrefix}-contextWindow`}
               size={{ initial: "3", sm: "2" }}
@@ -2932,6 +2988,7 @@ function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel; canWri
               <Text as="label" htmlFor={`${idPrefix}-maxTokens`} size="2" className="font-medium">最大输出</Text>
               {overrideBox("maxTokens")}
             </div>
+            {sourceSelect("maxTokens")}
             <TextField.Root
               id={`${idPrefix}-maxTokens`}
               size={{ initial: "3", sm: "2" }}
@@ -2950,6 +3007,7 @@ function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel; canWri
               <Text as="label" htmlFor={`${idPrefix}-thinkingLevelMap`} size="2" className="font-medium">思考映射</Text>
               {overrideBox("thinkingLevelMap")}
             </div>
+            {sourceSelect("thinkingLevelMap")}
             <TextArea
               id={`${idPrefix}-thinkingLevelMap`}
               size={{ initial: "3", sm: "2" }}
@@ -2970,6 +3028,7 @@ function ModelSpecDialog({ model, canWrite }: { model: ModelServiceModel; canWri
               <Text as="label" htmlFor={`${idPrefix}-compat`} size="2" className="font-medium">兼容参数</Text>
               {overrideBox("compat")}
             </div>
+            {sourceSelect("compat")}
             <TextArea
               id={`${idPrefix}-compat`}
               size={{ initial: "3", sm: "2" }}
@@ -3025,6 +3084,21 @@ const SPEC_FIELD_LABEL: Record<ModelSpecField, string> = {
   thinkingLevelMap: "思考映射",
   compat: "兼容参数",
 };
+
+function choiceValueText(field: ModelSpecField, value: NonNullable<ModelSpecOverrides[ModelSpecField]>): string {
+  switch (field) {
+    case "input":
+      return (value as readonly ("text" | "image")[]).join(" / ");
+    case "reasoning":
+      return value === true ? "声明推理" : "不声明推理";
+    case "contextWindow":
+    case "maxTokens":
+      return (value as number).toLocaleString("en-US");
+    case "thinkingLevelMap":
+    case "compat":
+      return JSON.stringify(value);
+  }
+}
 
 function ModelRuntimeFacts({ model, canWriteModels }: { model: ModelServiceModel; canWriteModels: boolean }) {
   const sources = [...new Set(Object.values(model.runtime.sources).map(fieldSourceLabel))];

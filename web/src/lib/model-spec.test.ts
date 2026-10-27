@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ModelSpecProjection } from "../../../src/contracts/model-specs.ts";
-import { modelSpecDraft, modelSpecEditor, modelSpecTargetChanged, parseModelSpecDraft, rebaseModelSpecEditor, sameModelSpecOverrides } from "./model-spec.ts";
+import type { ModelSpecCandidate, ModelSpecProjection } from "../../../src/contracts/model-specs.ts";
+import {
+  modelSpecCandidateChoices,
+  modelSpecDraft,
+  modelSpecEditor,
+  modelSpecSourceChoice,
+  modelSpecTargetChanged,
+  parseModelSpecDraft,
+  rebaseModelSpecEditor,
+  sameModelSpecOverrides,
+  withModelSpecCandidate,
+} from "./model-spec.ts";
 
 const fields = { input: ["text"] as const, reasoning: true, contextWindow: 128000, maxTokens: 16000, thinkingLevelMap: { off: null, high: "high" }, compat: { supportsStore: false } };
-const projection: ModelSpecProjection = { currentVersion: 3, targetFingerprint: "target-a", automaticFields: fields, effectiveFields: fields, overrides: {} };
+const projection: ModelSpecProjection = { currentVersion: 3, targetFingerprint: "target-a", automaticFields: fields, effectiveFields: fields, overrides: {}, candidates: [] };
 test("自动字段不提交，逐字段恢复自动，显式 false 与空对象保留", () => {
   const draft = modelSpecDraft(projection);
   assert.deepEqual(parseModelSpecDraft(draft).overrides, {});
@@ -95,4 +105,38 @@ test("原样保存判得出来，键序与嵌套键序不影响比较", () => {
   ), true);
   assert.equal(sameModelSpecOverrides({ input: ["text", "image"] }, { input: ["image", "text"] }), false);
   assert.equal(sameModelSpecOverrides({ thinkingLevelMap: {} }, { thinkingLevelMap: { off: null } }), false);
+});
+
+const candidates: ModelSpecCandidate[] = [
+  { id: "pi:radius", label: "radius", official: false, values: { contextWindow: 32000, maxTokens: 8000 } },
+  { id: "pi:opencode", label: "opencode（官方）", official: true, values: { contextWindow: 1000000, maxTokens: 384000 } },
+  { id: "pi:opencode-go", label: "opencode-go", official: false, values: { contextWindow: 1000000, maxTokens: 384000 } },
+];
+
+test("候选组按字段去重、官方排最前，选中即写成覆盖，恢复自动即不提交", () => {
+  const choices = modelSpecCandidateChoices(candidates, "contextWindow");
+  assert.deepEqual(choices.map((choice) => choice.candidateId), ["pi:opencode", "pi:radius"]);
+  assert.deepEqual(modelSpecCandidateChoices(candidates, "reasoning"), []);
+
+  let draft = modelSpecDraft(projection);
+  assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices), "auto");
+  draft = withModelSpecCandidate(draft, "contextWindow", 32000);
+  assert.equal(draft.contextWindow, "32000");
+  assert.equal(draft.enabled.contextWindow, true);
+  assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices), "pi:radius");
+  assert.deepEqual(parseModelSpecDraft(draft).overrides, { contextWindow: 32000 });
+  assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices.slice(0, 1)), "manual");
+  draft.enabled.contextWindow = false;
+  assert.equal(modelSpecSourceChoice(draft, "contextWindow", choices), "auto");
+});
+
+test("候选值按字段摊进草稿：输入类型、推理、容量与两份 JSON 原样成为覆盖", () => {
+  const base = modelSpecDraft(projection);
+  assert.deepEqual(withModelSpecCandidate(base, "input", ["text", "image"]).input, ["text", "image"]);
+  assert.equal(withModelSpecCandidate(base, "reasoning", false).reasoning, false);
+  assert.equal(withModelSpecCandidate(base, "maxTokens", 384000).maxTokens, "384000");
+  assert.deepEqual(parseModelSpecDraft(withModelSpecCandidate(base, "thinkingLevelMap", { high: "high" })).overrides.thinkingLevelMap, { high: "high" });
+  assert.deepEqual(parseModelSpecDraft(withModelSpecCandidate(base, "compat", { supportsStore: false })).overrides.compat, { supportsStore: false });
+  assert.equal(withModelSpecCandidate(base, "contextWindow", 32000).enabled.contextWindow, true);
+  assert.equal(base.enabled.contextWindow, false);
 });

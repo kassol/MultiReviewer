@@ -4106,6 +4106,7 @@ function projectServiceModel(
     automaticFields: specFields(discovery),
     overrides: modelSpecOverrides(service, id, target),
     effectiveFields: synthesis.ok ? specFields(synthesis.value.runtime) : specFields({}),
+    candidates: automatic?.candidates ?? [],
     ...modelAvailabilityProjection(unavailableReason),
     discovery: {
       name: discovery.name ?? null,
@@ -4129,6 +4130,7 @@ function projectMissingServiceModel(spec: ReviewerSpec): ProjectedServiceModel {
     automaticFields: specFields({}),
     overrides: {},
     effectiveFields: specFields({ ...BASELINE_RUNTIME_PROJECTION, maxTokens: BASELINE_RUNTIME_PROJECTION.maxOutput }),
+    candidates: [],
     provider: spec.provider,
     id: spec.model,
     identity: modelIdentity(spec),
@@ -5179,7 +5181,8 @@ async function modelSpecMutationResponse(deps: WebhookServerDeps, provider: stri
   const binding = serviceTargetBinding(service, await piTargetsForBinding(service));
   const projected = projectServiceModel(service, model, [], automatic, supplement, binding, service.credential.state, true);
   return { provider, model, currentVersion: projected.currentVersion, targetFingerprint: projected.targetFingerprint,
-    automaticFields: projected.automaticFields, overrides: projected.overrides, effectiveFields: projected.effectiveFields };
+    automaticFields: projected.automaticFields, overrides: projected.overrides, effectiveFields: projected.effectiveFields,
+    candidates: projected.candidates };
 }
 
 async function handleModelSpecOverrides(

@@ -368,6 +368,7 @@ const EVIDENCE_PINNED_PARAMS = { intercomBridge: { mode: "off" }, async: false }
 const EVIDENCE_CALL_KEYS = new Set([
   "agent",
   "task",
+  "model",
   "timeoutMs",
   "maxRuntimeMs",
   "toolTimeoutMs",
@@ -385,6 +386,9 @@ const EVIDENCE_CALL_KEYS = new Set([
  * 默认 `both` 时仓库 `.pi/agents` 里同名的 `evidence.md` 优先,带上 `extensions` 就是在
  * Reviewer 进程里跑仓库的代码;`cwd` 钉工作副本——cwd 决定项目发现从哪读,也是子会话的
  * 工作目录。清单外的键剥掉:调用照常派出,那几项到不了 pi-subagents。
+ *
+ * `model` 放行,但只收字符串(2026-10-27):不传即 pi-subagents 用父会话那一项模型,
+ * 显式给字符串才按它解析;给别的形状剥掉,免得把 `inherit` 之外的怪值递进去。
  */
 export function pinSubagentCall(
   params: Readonly<Record<string, unknown>>,
@@ -393,7 +397,7 @@ export function pinSubagentCall(
   const stripped: string[] = [];
   const kept: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {
-    if (EVIDENCE_CALL_KEYS.has(key)) kept[key] = value;
+    if (EVIDENCE_CALL_KEYS.has(key) && (key !== "model" || typeof value === "string")) kept[key] = value;
     else stripped.push(key);
   }
   return {

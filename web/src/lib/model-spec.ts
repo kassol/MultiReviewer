@@ -1,4 +1,4 @@
-import type { ModelSpecOverrides, ModelSpecProjection } from "../../../src/contracts/model-specs.ts";
+import type { ModelSpecCandidate, ModelSpecOverrides, ModelSpecProjection } from "../../../src/contracts/model-specs.ts";
 
 export const MODEL_SPEC_FIELDS = ["input", "reasoning", "contextWindow", "maxTokens", "thinkingLevelMap", "compat"] as const;
 export type ModelSpecField = typeof MODEL_SPEC_FIELDS[number];
@@ -90,6 +90,98 @@ export function modelSpecTargetChanged(editor: ModelSpecEditor, latest: ModelSpe
 /** 键序无关的比较:一次原样保存不必再写一版,它会推进模型服务版本、让别的标签页的版本失效。 */
 export function sameModelSpecOverrides(left: ModelSpecOverrides, right: ModelSpecOverrides): boolean {
   return stableModelSpecValue(left) === stableModelSpecValue(right);
+}
+
+/** 目录里同一型号的候选组按字段摊开(2026-10-27):只在多组给同一个字段不同值时才有得选。 */
+export type ModelSpecCandidateChoice = {
+  candidateId: string;
+  label: string;
+  value: NonNullable<ModelSpecOverrides[ModelSpecField]>;
+};
+
+export function modelSpecCandidateChoices(
+  candidates: readonly ModelSpecCandidate[],
+  field: ModelSpecField,
+): ModelSpecCandidateChoice[] {
+  const seen = new Set<string>();
+  const choices: ModelSpecCandidateChoice[] = [];
+  for (const candidate of candidates) {
+    const value = candidate.values[field];
+    if (value === undefined) continue;
+    const key = stableModelSpecValue(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    choices.push({ candidateId: candidate.id, label: candidate.label, value: value as NonNullable<ModelSpecOverrides[ModelSpecField]> });
+  }
+  return choices.sort((left, right) => Number(right.candidateId === officialCandidateId(candidates)) - Number(left.candidateId === officialCandidateId(candidates)));
+}
+
+function officialCandidateId(candidates: readonly ModelSpecCandidate[]): string | undefined {
+  return candidates.find((candidate) => candidate.official)?.id;
+}
+
+/** 一个字段此刻的值:自动、某一组候选,或人自己填的第三个数。 */
+export function modelSpecSourceChoice(
+  draft: ModelSpecDraft,
+  field: ModelSpecField,
+  choices: readonly ModelSpecCandidateChoice[],
+): string {
+  if (!draft.enabled[field]) return "auto";
+  const value = draftFieldValue(draft, field);
+  return choices.find((choice) => stableModelSpecValue(choice.value) === stableModelSpecValue(value))?.candidateId ?? "manual";
+}
+
+/** 选中某一组:把那一组在这个字段上的值填进草稿,并勾上手动覆盖。 */
+export function withModelSpecCandidate(
+  draft: ModelSpecDraft,
+  field: ModelSpecField,
+  value: NonNullable<ModelSpecOverrides[ModelSpecField]>,
+): ModelSpecDraft {
+  const enabled = { ...draft.enabled, [field]: true };
+  switch (field) {
+    case "input":
+      return { ...draft, enabled, input: [...(value as readonly ("text" | "image")[])] };
+    case "reasoning":
+      return { ...draft, enabled, reasoning: value === true };
+    case "contextWindow":
+      return { ...draft, enabled, contextWindow: String(value) };
+    case "maxTokens":
+      return { ...draft, enabled, maxTokens: String(value) };
+    case "thinkingLevelMap":
+      return { ...draft, enabled, thinkingLevelMap: JSON.stringify(value, null, 2) };
+    case "compat":
+      return { ...draft, enabled, compat: JSON.stringify(value, null, 2) };
+  }
+}
+
+function draftFieldValue(draft: ModelSpecDraft, field: ModelSpecField): unknown {
+  switch (field) {
+    case "input":
+      return draft.input;
+    case "reasoning":
+      return draft.reasoning;
+    case "contextWindow":
+      return numberOrText(draft.contextWindow);
+    case "maxTokens":
+      return numberOrText(draft.maxTokens);
+    case "thinkingLevelMap":
+      return jsonOrText(draft.thinkingLevelMap);
+    case "compat":
+      return jsonOrText(draft.compat);
+  }
+}
+
+function numberOrText(text: string): unknown {
+  const trimmed = text.trim();
+  return /^\d+$/.test(trimmed) ? Number(trimmed) : trimmed;
+}
+
+function jsonOrText(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
 }
 
 function stableModelSpecValue(value: unknown): string {

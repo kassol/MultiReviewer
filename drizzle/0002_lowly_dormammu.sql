@@ -1,0 +1,1 @@
+ALTER TABLE "model_directory_model" ADD COLUMN "candidates_json" jsonb;

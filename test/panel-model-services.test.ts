@@ -1642,6 +1642,7 @@ test("模型服务读取按模型与凭据权限独立裁剪，合并来源并�
         thinkingLevelMap: null,
         compat: null,
       },
+      candidates: [],
       provider: "test",
       id: "global-model",
       identity: "test:global-model",

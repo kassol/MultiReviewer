@@ -13,6 +13,7 @@ import {
 } from "../src/reviewer/catalog.ts";
 import {
   MODEL_RUNTIME_BASELINE,
+  customCatalogCandidates,
   customCatalogFields,
   discoverModels,
   distinctBuiltinTargets,
@@ -124,7 +125,7 @@ test("OpenAI-compatible 发现保留服务接口名称并按厂商用 Pi 目录�
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.deepEqual(result.models, [{
+    assert.deepEqual(result.models.map(({ candidates: _candidates, ...model }) => model), [{
       identity: "sub2-openai:gpt-5.6-sol",
       provider: "sub2-openai",
       id: "gpt-5.6-sol",
@@ -197,7 +198,8 @@ test("Pi 0.85.1 目录收录 gpt-6-astra:自定义服务取到 272k 上下文与
     const result = await discoverModels(candidate, { allowNetwork: false, ...privateCatalog() });
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.deepEqual(result.models, [{
+    // 候选组另有专测;这里只钉发现出来的字段与来源。
+    assert.deepEqual(result.models.map(({ candidates: _candidates, ...model }) => model), [{
       identity: "sub2-openai:gpt-6-astra",
       provider: "sub2-openai",
       id: "gpt-6-astra",
@@ -491,6 +493,47 @@ test("Pi 统一完整 ID 集合内按官方、路径、其余候选逐字段补�
   assert.equal(customCatalogFields(catalogs, "gateway/deepseek-test").contextWindow, 1_000);
   assert.deepEqual(customCatalogFields(catalogs, "deepseek-test-preview"), {});
   assert.deepEqual(customCatalogFields([catalog("deepseek", model("deepseek-flash"))], "deepseek-v4.1-flash"), {});
+});
+
+test("自定义服务的候选组逐行保留,官方标记只给官方厂商", () => {
+  const model = (overrides: Partial<PiCatalogModel> & { id: string }): PiCatalogModel => ({
+    name: "Demo Model", api: "openai-completions", baseUrl: "https://upstream.test/v1",
+    input: ["text"], reasoning: true, contextWindow: 1_000, maxTokens: 100, ...overrides,
+  });
+  const catalog = (id: string, ...models: PiCatalogModel[]): PiProviderCatalog => ({ id, name: id, models });
+  const catalogs = [
+    catalog("openai", model({ id: "gpt-x", contextWindow: 1_000_000, maxTokens: 384_000 })),
+    catalog("azure", model({ id: "gpt-x", contextWindow: 128_000, compat: { supportsStrictMode: true } })),
+  ];
+  const candidates = customCatalogCandidates(catalogs, "gpt-x");
+  assert.deepEqual(candidates.map((entry) => entry.id), ["pi:openai", "pi:azure"]);
+  assert.equal(candidates[0]!.official, true);
+  assert.equal(candidates[1]!.official, false);
+  assert.equal(candidates[0]!.label, "openai（官方）");
+  assert.deepEqual(candidates[1]!.values, {
+    input: ["text"], reasoning: true, contextWindow: 128_000, maxTokens: 100,
+    compat: { supportsStrictMode: true } as unknown as Record<string, unknown>,
+  });
+  // 一行字段全缺的候选不成组;没匹配到任何行时是空数组,面板据此回落到运行基线。
+  assert.deepEqual(customCatalogCandidates([catalog("x", model({ id: "other" }))], "gpt-x"), []);
+});
+
+test("自定义服务发现把候选组带进目录结果", async () => {
+  const candidate = { kind: "custom", provider: "corp", baseUrl: "https://gateway.test/v1", api: "openai-completions", credential: "key" } as const;
+  const stub = stubFetch({
+    "GET /v1/models": { body: { data: [{ id: "gpt-6-astra" }] } },
+  });
+  try {
+    const result = await discoverModels(candidate, { allowNetwork: false, ...privateCatalog() });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    const candidates = result.models[0]!.candidates ?? [];
+    assert.ok(candidates.length >= 1, "这个型号在 Pi 内置目录里有候选");
+    assert.ok(candidates.every((entry) => entry.id.startsWith("pi:")));
+    assert.ok(candidates.filter((entry) => entry.official).length <= 1);
+  } finally {
+    stub.restore();
+  }
 });
 
 test("models.dev 官方补缺限定统一候选集合,官方缺项才从同集合补齐", async () => {

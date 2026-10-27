@@ -114,6 +114,10 @@ test("自动目录快照往返稀疏可信字段", async () => {
             contextWindow: "models-dev",
             maxTokens: "models-dev",
           },
+          candidates: [
+            { id: "pi:corp", label: "corp（官方）", official: true, values: { input: ["text", "image"], contextWindow: 32_000 } },
+            { id: "pi:reseller", label: "reseller", official: false, values: { contextWindow: 16_000 } },
+          ],
         },
         {
           identity: "corp-gateway:free-model",
@@ -163,6 +167,10 @@ test("自动目录快照往返稀疏可信字段", async () => {
         contextWindow: "models-dev",
         maxTokens: "models-dev",
       },
+      candidates: [
+        { id: "pi:corp", label: "corp（官方）", official: true, values: { input: ["text", "image"], contextWindow: 32_000 } },
+        { id: "pi:reseller", label: "reseller", official: false, values: { contextWindow: 16_000 } },
+      ],
     },
   ]);
   await withTestDb(db.url, async (sql) => {

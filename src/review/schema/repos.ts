@@ -196,6 +196,7 @@ export const modelDirectoryModel = pgTable(
     fieldSourcesJson: jsonText("field_sources_json"),
     thinkingLevelMapJson: jsonText("thinking_level_map_json"),
     compatJson: jsonText("compat_json"),
+    candidatesJson: jsonText("candidates_json"),
   },
   (t) => [
     primaryKey({ columns: [t.provider, t.model] }),

@@ -901,6 +901,10 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
                 : JSON.stringify(model.fields.thinkingLevelMap),
             compatJson:
               model.fields.compat === undefined ? null : JSON.stringify(model.fields.compat),
+            candidatesJson:
+              model.candidates === undefined || model.candidates.length === 0
+                ? null
+                : JSON.stringify(model.candidates),
           });
         }
 
@@ -1172,6 +1176,9 @@ export function reposMethods(ctx: StoreContext): ReposMethods {
             id: row.model,
             fields,
             ...(fieldSources === undefined ? {} : { fieldSources }),
+            ...(row.candidatesJson === null
+              ? {}
+              : { candidates: JSON.parse(row.candidatesJson) as NonNullable<DiscoveredModel["candidates"]> }),
           };
         });
       return {
