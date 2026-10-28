@@ -298,7 +298,7 @@ function CopyFindingBrief({
   context,
 }: {
   finding: StageFinding;
-  /** 仓库、第几轮与那一轮的 head:行号只对那一轮成立,简报里要说出来。 */
+  /** 那一轮的 head:行号只对那一轮成立,简报里要说出来。 */
   context?: FindingBriefContext;
 }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
@@ -371,7 +371,7 @@ export function FindingRow({
   canDispose: boolean;
   /** 徽章与标题由卡片自己画。阶段列表的卡头已经画了这两样,那里传 false。 */
   heading?: boolean;
-  /** 复制给 AI 时附带的场景信息(仓库、第几轮与 head),由调用页从阶段汇总的时间线里取。 */
+  /** 复制给 AI 时附带的场景信息(那一轮的 head),由调用页从阶段汇总的时间线里取。 */
   brief?: FindingBriefContext;
 }) {
   const queryClient = useQueryClient();

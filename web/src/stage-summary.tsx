@@ -118,7 +118,6 @@ function FindingCard({
   canDispose,
   roundOf,
   headOf,
-  repo,
   rowKey,
   onDrawerTrigger,
 }: {
@@ -128,8 +127,6 @@ function FindingCard({
   roundOf: Map<number, number>;
   /** 轮次 → 那一轮的 head,复制给 AI 时随行号一起给出。 */
   headOf: Map<number, string>;
-  /** 这个阶段所属仓库,复制给 AI 时写进简报。 */
-  repo?: string;
   /**
    * 这张卡当的那一列表项的标识(`rootCauseRowKey`)。只有顶层那几张带它:组卡里的成员
    * 不是列表项,切 tab 回来按卡片摆回原位时找的是顶层那一层。
@@ -202,7 +199,7 @@ function FindingCard({
         finding={finding}
         canDispose={canDispose}
         heading={false}
-        brief={briefContextOf(finding, headOf, repo)}
+        brief={briefContextOf(finding, headOf)}
       />
     </section>
   );
@@ -331,7 +328,6 @@ function RootCauseGroupCard({
   pending,
   roundOf,
   headOf,
-  repo,
   onFeedback,
   onDrawerTrigger,
 }: {
@@ -354,7 +350,6 @@ function RootCauseGroupCard({
   pending: boolean;
   roundOf: Map<number, number>;
   headOf: Map<number, string>;
-  repo?: string;
   onFeedback: (feedback: { text: string; isError: boolean } | null) => void;
   onDrawerTrigger?: MouseEventHandler<HTMLAnchorElement>;
 }) {
@@ -423,7 +418,6 @@ function RootCauseGroupCard({
               canDispose={canDispose}
               roundOf={roundOf}
               headOf={headOf}
-              {...(repo === undefined ? {} : { repo })}
               {...(onDrawerTrigger === undefined ? {} : { onDrawerTrigger })}
             />
           ))}
@@ -509,7 +503,6 @@ function measureListAnchor(): ListAnchor | null {
  */
 export function StageSummaryView({
   scope,
-  repo,
   canDispose,
   canDisposeBatch,
   focusRootCause,
@@ -522,8 +515,6 @@ export function StageSummaryView({
   onVisibleOrder,
 }: {
   scope: StageScope;
-  /** 这个阶段所属仓库,复制给 AI 时写进简报;取不到时简报里不写这一行。 */
-  repo?: string;
   /** 有 `finding:dispose` 权限时行内出现处置动作。 */
   canDispose: boolean;
   /** 有 `finding:dispose-batch` 权限时组卡上出现「处置整组」(issue #309)。 */
@@ -932,7 +923,6 @@ export function StageSummaryView({
                 canDispose={canDispose}
                 roundOf={roundOf}
                 headOf={headOf}
-                {...(repo === undefined ? {} : { repo })}
                 {...(onDrawerTrigger === undefined ? {} : { onDrawerTrigger })}
               />
             ) : (
@@ -950,7 +940,6 @@ export function StageSummaryView({
                 pending={pendingGroups.has(row.id)}
                 roundOf={roundOf}
                 headOf={headOf}
-                {...(repo === undefined ? {} : { repo })}
                 onFeedback={onFeedback}
                 {...(onDrawerTrigger === undefined ? {} : { onDrawerTrigger })}
               />

@@ -390,7 +390,6 @@ export function StageDetailPage({
               // 重挂的话筛选条件、已渲染的段数与记着的落点会被带到另一个阶段上。
               key={stageId}
               scope={scopeOf(body.stage)}
-              repo={`${body.stage.owner}/${body.stage.repo}`}
               canDispose={canDispose}
               canDisposeBatch={canDisposeBatch}
               focusRootCause={location.rootCause}
@@ -418,7 +417,6 @@ export function StageDetailPage({
               // 重放一次进场。
               key="finding"
               scope={scopeOf(body.stage)}
-              repo={`${body.stage.owner}/${body.stage.repo}`}
               findingId={location.drawer.id}
               order={findingOrder}
               onNavigate={openFinding}
@@ -1003,7 +1001,6 @@ function StageDrawer({
  */
 function FindingDrawer({
   scope,
-  repo,
   findingId,
   order,
   onNavigate,
@@ -1012,8 +1009,6 @@ function FindingDrawer({
   onCloseAutoFocus,
 }: {
   scope: StageScope;
-  /** 这个阶段所属仓库,复制给 AI 时写进简报。 */
-  repo: string;
   findingId: number;
   /** 列表此刻从上到下的 Finding id。 */
   order: number[];
@@ -1141,7 +1136,7 @@ function FindingDrawer({
           findings={sameFile}
           canDispose={canDispose}
           focusFindingId={finding.id}
-          briefFor={(entry) => briefContextOf(entry, headOf, repo)}
+          briefFor={(entry) => briefContextOf(entry, headOf)}
         />
       )}
     </StageDrawer>

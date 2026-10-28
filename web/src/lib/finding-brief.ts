@@ -1,10 +1,10 @@
 /**
  * 一条 Finding 复制给外部 AI 的简报(评审记录 → 阶段详情 → Finding 条目上的「复制给 AI」)。
  *
- * 对面拿到的是一段要拿去改代码的输入,不是面板的另一份排版:只留三样能定位的事实
- * (仓库、commit、文件与行)和三段要解决的内容(问题、影响、建议)。轮次、处置状态、
- * 同根因、处置备注与末尾的叮嘱都不写——它们是面板自己的上下文,对「去改这段代码」
- * 不增加信息,只会把真正要读的几行挤走。
+ * 对面拿到的是一段要拿去改代码的输入,不是面板的另一份排版:只留定位的事实
+ * (commit 与文件行)和三段要解决的内容(问题、影响、建议)。仓库名、轮次、处置状态、
+ * 同根因、处置备注与末尾的叮嘱都不写——前几样开发者和他的 AI 本来就知道,后几样
+ * 不增加「改哪、改什么」的信息,只会把真正要读的几行挤走。
  *
  * 行号属于 `placedRunId` 那一轮的 head,所以 commit 必须写明:用户此刻检出的代码
  * 可能已经往前走了,AI 对不上时要能按这个 hash 取。
@@ -14,10 +14,8 @@
  */
 import type { StageSummaryFinding } from "../../../src/contracts/stage-summary.ts";
 
-/** 简报里能补上的那两格场景信息。取不到时整行不写。 */
+/** 简报里能补上的那一格场景信息。取不到时整行不写。 */
 export type FindingBriefContext = {
-  /** 这条 Finding 所属仓库,`owner/repo`。 */
-  repo?: string;
   /** 这条位置所属那一轮的 head commit,完整 sha。 */
   headSha?: string;
 };
@@ -50,7 +48,6 @@ export function findingBrief(finding: StageSummaryFinding, context: FindingBrief
   const alternatives = suggestion === "" ? fallbackSuggestions(finding) : [];
 
   const lines: string[] = [
-    ...(context.repo === undefined ? [] : [`repo: ${context.repo}`]),
     ...(context.headSha === undefined ? [] : [`commit: ${context.headSha}`]),
     `file: ${finding.file}:${finding.line}`,
     "",
@@ -68,17 +65,13 @@ export function findingBrief(finding: StageSummaryFinding, context: FindingBrief
 }
 
 /**
- * 从阶段汇总的时间线取这条 Finding 的简报上下文:那一轮的 head 与仓库。列表与侧滑
- * 各算一次,判据只有这一份。
+ * 从阶段汇总的时间线取这条 Finding 的简报上下文:那一轮的 head。列表与侧滑各算一次,
+ * 判据只有这一份。
  */
 export function briefContextOf(
   finding: Pick<StageSummaryFinding, "placedRunId">,
   headOf: ReadonlyMap<number, string>,
-  repo: string | undefined,
 ): FindingBriefContext {
   const headSha = headOf.get(finding.placedRunId);
-  return {
-    ...(repo === undefined ? {} : { repo }),
-    ...(headSha === undefined ? {} : { headSha }),
-  };
+  return headSha === undefined ? {} : { headSha };
 }

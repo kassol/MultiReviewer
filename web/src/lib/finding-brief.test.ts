@@ -1,7 +1,7 @@
 /*
  * 复制给外部 AI 的那段简报的单测。它离开面板之后没有任何上下文:commit、文件与行是
- * 定位的全部依据,问题 / 影响 / 建议是研判的全部依据,其余(轮次、处置状态、同根因、
- * 叮嘱)都是面板自己的上下文,写进去只会把要读的几行挤走。
+ * 定位的全部依据,问题 / 影响 / 建议是研判的全部依据,其余(仓库、轮次、处置状态、
+ * 同根因、叮嘱)都是面板自己的上下文,写进去只会把要读的几行挤走。
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -45,15 +45,13 @@ function finding(overrides: Partial<StageSummaryFinding> = {}): StageSummaryFind
   };
 }
 
-test("只写仓库、commit、文件行与问题 / 影响 / 建议,不带轮次、状态与叮嘱", () => {
+test("只写 commit、文件行与问题 / 影响 / 建议,不带仓库、轮次、状态与叮嘱", () => {
   const brief = findingBrief(finding(), {
-    repo: "acme/shop",
     headSha: "7f1a9c2d4e5f60718293a4b5c6d7e8f901234567",
   });
   assert.equal(
     brief,
     [
-      "repo: acme/shop",
       "commit: 7f1a9c2d4e5f60718293a4b5c6d7e8f901234567",
       "file: src/api/orders.ts:42",
       "",
@@ -66,18 +64,19 @@ test("只写仓库、commit、文件行与问题 / 影响 / 建议,不带轮次�
       "建议：在下单事务里先锁库存行再扣减。",
     ].join("\n"),
   );
+  assert.equal(brief.includes("repo:"), false);
   assert.equal(brief.includes("第 7 轮"), false);
   assert.equal(brief.includes("待处置"), false);
   assert.equal(brief.includes("请先读"), false);
 });
 
 test("没有标题时正文那一句就是问题概括,不重复写两遍", () => {
-  const brief = findingBrief(finding({ title: "" }), { repo: "acme/shop", headSha: "abc1234def" });
+  const brief = findingBrief(finding({ title: "" }), { headSha: "abc1234def" });
   assert.ok(brief.includes("问题（P1 · bug）：下单前没有核对库存。"));
   assert.equal((brief.match(/下单前没有核对库存/g) ?? []).length, 1);
 });
 
-test("没有仓库与 commit 时只留文件与行:取不到的场景信息不编", () => {
+test("没有 commit 时只留文件与行:取不到的定位信息不编", () => {
   assert.equal(
     findingBrief(finding()),
     [
@@ -131,14 +130,8 @@ test("沿用自更早轮次的建议另标一句未经新代码验证,同一句�
   assert.ok(brief.includes("- gpt-6-sol（沿用更早轮次，尚未针对最新代码重新验证）：换一个事务边界。"));
 });
 
-test("简报上下文按位置所属轮次取 head,取不到时只留仓库", () => {
+test("简报上下文按位置所属轮次取 head,取不到时为空", () => {
   const headOf = new Map([[7, "7f1a9c2d4e5f60"]]);
-  assert.deepEqual(briefContextOf(finding(), headOf, "acme/shop"), {
-    repo: "acme/shop",
-    headSha: "7f1a9c2d4e5f60",
-  });
-  assert.deepEqual(briefContextOf(finding({ placedRunId: 99 }), headOf, "acme/shop"), {
-    repo: "acme/shop",
-  });
-  assert.deepEqual(briefContextOf(finding({ placedRunId: 99 }), headOf, undefined), {});
+  assert.deepEqual(briefContextOf(finding(), headOf), { headSha: "7f1a9c2d4e5f60" });
+  assert.deepEqual(briefContextOf(finding({ placedRunId: 99 }), headOf), {});
 });
