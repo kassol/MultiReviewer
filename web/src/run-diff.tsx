@@ -2,13 +2,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { HLJSApi } from "highlight.js";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
-import { CheckCircledIcon, ChevronDownIcon, ExternalLinkIcon } from "@radix-ui/react-icons";
+import {
+  CheckCircledIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  ExternalLinkIcon,
+} from "@radix-ui/react-icons";
 import { Badge, Skeleton, TextArea, Tooltip } from "@radix-ui/themes";
 import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
 import { Statement } from "@/components/statement";
 import { Button } from "@/components/theme-button";
+import { findingBrief, type FindingBriefContext } from "@/lib/finding-brief";
 import { isAnchorable } from "@/lib/finding-position";
 import { languageOf, splitHighlightedLines, splitIndent } from "@/lib/highlight-lines";
 import { localClock, localDay } from "@/lib/time";
@@ -281,6 +287,65 @@ function BodyPart({
 }
 
 /**
+ * 「复制给 AI」:把这条 Finding 复制成一段能直接粘给外部 AI 的简报(`lib/finding-brief.ts`)。
+ * 与处置分开放——复制是读出去,处置是写回来——也不跟 `commentId` 绑:只在 review 正文里
+ * 发布过的那条同样值得拿去问。2 秒后复位,连点两次只按最后一次计时;剪贴板不可用时按钮
+ * 写「复制失败」,旁边那条只在读屏里播报,不静默吞掉。
+ */
+function CopyFindingBrief({
+  finding,
+  context,
+}: {
+  finding: StageFinding;
+  /** 仓库、第几轮与那一轮的 head:行号只对那一轮成立,简报里要说出来。 */
+  context?: FindingBriefContext;
+}) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(
+    () => () => {
+      if (timer.current !== undefined) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const copy = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(findingBrief(finding, context));
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+    if (timer.current !== undefined) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setState("idle"), 2000);
+  };
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="soft"
+        color="gray"
+        size={{ initial: "3", sm: "1" }}
+        highContrast
+        onClick={() => void copy()}
+        aria-label={`复制 ${finding.file}:${finding.line} 的 Finding 给 AI`}
+      >
+        {state === "copied" ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
+        {state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制给 AI"}
+      </Button>
+      {/* 键上的字会变,但焦点没动时读屏不会重读它;结果另播报一次。 */}
+      <span role="status" aria-live="polite" className="sr-only">
+        {state === "copied"
+          ? "简报到剪贴板了，可以直接粘给 AI。"
+          : state === "failed"
+            ? "复制失败，请手动选择文本。"
+            : ""}
+      </span>
+    </>
+  );
+}
+
+/**
  * 一条 Finding 的卡片:正文、严重度、类别、文件与行、跳到 Forge 看原版的链接,加上
  * 行内处置。它挂在 diff 的对应行下面,fallback 那一批则单独成段;阶段汇总把同一张
  * 卡片摆在自己的列表里——同一条 Finding 在两处显示成同一个样子,处置也是同一个动作。
@@ -292,11 +357,14 @@ export function FindingRow({
   finding,
   canDispose,
   heading = true,
+  brief,
 }: {
   finding: StageFinding;
   canDispose: boolean;
   /** 徽章与标题由卡片自己画。阶段列表的卡头已经画了这两样,那里传 false。 */
   heading?: boolean;
+  /** 复制给 AI 时附带的场景信息(仓库、第几轮与 head),由调用页从阶段汇总的时间线里取。 */
+  brief?: FindingBriefContext;
 }) {
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
@@ -416,6 +484,12 @@ export function FindingRow({
               <span className="break-words text-text">{finding.note}</span>
             </MetaRow>
           )}
+
+          {/* 复制这条给外部 AI:简报里带着位置、状态与三段正文,拿去问另一个 agent 时
+              不必再把卡片照着抄一遍。它与下面的处置分成两行,一个是读出去、一个是写回来。 */}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <CopyFindingBrief finding={finding} {...(brief === undefined ? {} : { context: brief })} />
+          </div>
 
           {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
           {finding.commentId === null ? (
@@ -538,10 +612,12 @@ function FindingCells({
   findings,
   canDispose,
   focusFindingId,
+  briefFor,
 }: {
   findings: readonly StageFinding[];
   canDispose: boolean;
   focusFindingId?: number;
+  briefFor?: (finding: StageFinding) => FindingBriefContext;
 }) {
   return (
     <>
@@ -559,7 +635,11 @@ function FindingCells({
                     : "border-overlay-line bg-surface"
                 }`}
               >
-                <FindingRow finding={finding} canDispose={canDispose} />
+                <FindingRow
+                  finding={finding}
+                  canDispose={canDispose}
+                  {...(briefFor === undefined ? {} : { brief: briefFor(finding) })}
+                />
               </div>
             ) : (
               // 同文件的其它 Finding 收成一行(徽章 + 标题):侧滑回答的是「点进来的这一条指
@@ -583,7 +663,12 @@ function FindingCells({
                   />
                 </Collapsible.Trigger>
                 <Collapsible.Content>
-                  <FindingRow finding={finding} canDispose={canDispose} heading={false} />
+                  <FindingRow
+                    finding={finding}
+                    canDispose={canDispose}
+                    heading={false}
+                    {...(briefFor === undefined ? {} : { brief: briefFor(finding) })}
+                  />
                 </Collapsible.Content>
               </Collapsible.Root>
             )}
@@ -613,6 +698,7 @@ export function FilePatch({
   findings,
   canDispose,
   focusFindingId,
+  briefFor,
 }: {
   runId: number;
   path: string;
@@ -621,6 +707,8 @@ export function FilePatch({
   canDispose: boolean;
   /** 打开侧滑时点的那一条:滚到它锚定的行并高亮它。 */
   focusFindingId?: number;
+  /** 复制给 AI 时附带的场景信息,按这一轮的阶段汇总算;给不出就只复制 Finding 本身。 */
+  briefFor?: (finding: StageFinding) => FindingBriefContext;
 }) {
   const patch = useQuery({
     queryKey: ["run-diff", runId, path],
@@ -711,7 +799,12 @@ export function FilePatch({
           无法读取本轮代码差异：{(patch.error as Error).message}。以下 Finding 无法锚定到代码行。
         </p>
         {findings.map((finding) => (
-          <FindingRow key={finding.id} finding={finding} canDispose={canDispose} />
+          <FindingRow
+            key={finding.id}
+            finding={finding}
+            canDispose={canDispose}
+            {...(briefFor === undefined ? {} : { brief: briefFor(finding) })}
+          />
         ))}
       </div>
     );
@@ -727,7 +820,12 @@ export function FilePatch({
               : "以下 Finding 指向的代码行不在本轮变更范围内。"}
           </p>
           {unanchored.map((finding) => (
-            <FindingRow key={finding.id} finding={finding} canDispose={canDispose} />
+            <FindingRow
+              key={finding.id}
+              finding={finding}
+              canDispose={canDispose}
+              {...(briefFor === undefined ? {} : { brief: briefFor(finding) })}
+            />
           ))}
         </div>
       )}
@@ -821,6 +919,7 @@ export function FilePatch({
                             findings={byLine.get(line.newLine) ?? []}
                             canDispose={canDispose}
                             {...(focusFindingId === undefined ? {} : { focusFindingId })}
+                            {...(briefFor === undefined ? {} : { briefFor })}
                           />
                         )}
                       </Fragment>

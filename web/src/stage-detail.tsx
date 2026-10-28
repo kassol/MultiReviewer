@@ -38,8 +38,10 @@ import {
   useDialogReturnFocus,
   visibleNavCurrentItem,
 } from "@/components/use-dialog-return-focus";
+import { briefContextOf } from "@/lib/finding-brief";
 import { findingDiffSource } from "@/lib/finding-position";
 /* 这一页那份详情查询的键、请求与保鲜时间与路由预取共用一份工厂(issue #439)。 */
+import { roundNumbers } from "@/lib/stage-rounds";
 import { stageDetailQuery, stageRunsSignature, type StageScope } from "@/lib/stage-queries";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
@@ -389,6 +391,7 @@ export function StageDetailPage({
               // 重挂的话筛选条件、已渲染的段数与记着的落点会被带到另一个阶段上。
               key={stageId}
               scope={scopeOf(body.stage)}
+              repo={`${body.stage.owner}/${body.stage.repo}`}
               canDispose={canDispose}
               canDisposeBatch={canDisposeBatch}
               focusRootCause={location.rootCause}
@@ -416,6 +419,7 @@ export function StageDetailPage({
               // 重放一次进场。
               key="finding"
               scope={scopeOf(body.stage)}
+              repo={`${body.stage.owner}/${body.stage.repo}`}
               findingId={location.drawer.id}
               order={findingOrder}
               onNavigate={openFinding}
@@ -1000,6 +1004,7 @@ function StageDrawer({
  */
 function FindingDrawer({
   scope,
+  repo,
   findingId,
   order,
   onNavigate,
@@ -1008,6 +1013,8 @@ function FindingDrawer({
   onCloseAutoFocus,
 }: {
   scope: StageScope;
+  /** 这个阶段所属仓库,复制给 AI 时写进简报。 */
+  repo: string;
   findingId: number;
   /** 列表此刻从上到下的 Finding id。 */
   order: number[];
@@ -1027,6 +1034,11 @@ function FindingDrawer({
     finding === undefined
       ? null
       : findingDiffSource(finding.placedRunId, summary.data?.timeline ?? []);
+  // 复制给 AI 的简报按这个阶段的时间线取第几轮与 head:行号只对那一轮成立。
+  const roundOf = roundNumbers(summary.data?.timeline ?? []);
+  const headOf = new Map(
+    (summary.data?.timeline ?? []).map((entry) => [entry.runId, entry.headSha]),
+  );
 
   // 这一条在列表里的位置。处置之后它可能被筛选滤掉(停在「待处置」时最常见):记住它原来
   // 的位置,「下一条」就是滑进这个位置的那一条,人不用关掉侧滑重新找。
@@ -1131,6 +1143,7 @@ function FindingDrawer({
           findings={sameFile}
           canDispose={canDispose}
           focusFindingId={finding.id}
+          briefFor={(entry) => briefContextOf(entry, roundOf, headOf, repo)}
         />
       )}
     </StageDrawer>
