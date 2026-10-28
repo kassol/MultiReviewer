@@ -272,12 +272,7 @@ function DisposeRootCauseGroupAction({
       titleSize="4"
       titleMb="2"
       maxWidth="480px"
-      description={
-        <>
-          这一组有 {memberCount} 处。组内未处置的成员将逐条标记为无需处理（人工已处置），
-          Forge 上对应的评论同步 resolve；已处置的成员不动。
-        </>
-      }
+      description={`这一组有 ${memberCount} 处。组内未处置的成员将逐条标记为无需处理（人工已处置），Forge 上对应的评论同步 resolve；已处置的成员不动。`}
       direction={{ initial: "column-reverse", sm: "row" }}
       cancelLabel="取消"
       cancelVariant="soft"
