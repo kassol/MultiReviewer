@@ -41,7 +41,6 @@ import {
 import { briefContextOf } from "@/lib/finding-brief";
 import { findingDiffSource } from "@/lib/finding-position";
 /* 这一页那份详情查询的键、请求与保鲜时间与路由预取共用一份工厂(issue #439)。 */
-import { roundNumbers } from "@/lib/stage-rounds";
 import { stageDetailQuery, stageRunsSignature, type StageScope } from "@/lib/stage-queries";
 import { localClock, localDay, localMinute } from "@/lib/time";
 
@@ -1034,8 +1033,7 @@ function FindingDrawer({
     finding === undefined
       ? null
       : findingDiffSource(finding.placedRunId, summary.data?.timeline ?? []);
-  // 复制给 AI 的简报按这个阶段的时间线取第几轮与 head:行号只对那一轮成立。
-  const roundOf = roundNumbers(summary.data?.timeline ?? []);
+  // 复制给 AI 的简报按这个阶段的时间线取 head:行号只对那一轮成立。
   const headOf = new Map(
     (summary.data?.timeline ?? []).map((entry) => [entry.runId, entry.headSha]),
   );
@@ -1143,7 +1141,7 @@ function FindingDrawer({
           findings={sameFile}
           canDispose={canDispose}
           focusFindingId={finding.id}
-          briefFor={(entry) => briefContextOf(entry, roundOf, headOf, repo)}
+          briefFor={(entry) => briefContextOf(entry, headOf, repo)}
         />
       )}
     </StageDrawer>

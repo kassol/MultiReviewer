@@ -202,7 +202,7 @@ function FindingCard({
         finding={finding}
         canDispose={canDispose}
         heading={false}
-        brief={briefContextOf(finding, roundOf, headOf, repo)}
+        brief={briefContextOf(finding, headOf, repo)}
       />
     </section>
   );

@@ -13,6 +13,7 @@ import { Collapsible } from "radix-ui";
 
 import { CommitChip } from "@/components/commit-chip";
 import { Statement } from "@/components/statement";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/theme-button";
 import { findingBrief, type FindingBriefContext } from "@/lib/finding-brief";
 import { isAnchorable } from "@/lib/finding-position";
@@ -323,17 +324,24 @@ function CopyFindingBrief({
     <>
       <Button
         type="button"
-        variant="soft"
-        color="gray"
+        variant={state === "idle" ? "solid" : "soft"}
+        {...(state === "idle" ? {} : { color: state === "copied" ? "green" : "red" })}
         size={{ initial: "3", sm: "1" }}
-        highContrast
         onClick={() => void copy()}
         aria-label={`复制 ${finding.file}:${finding.line} 的 Finding 给 AI`}
       >
         {state === "copied" ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
         {state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制给 AI"}
       </Button>
-      {/* 键上的字会变,但焦点没动时读屏不会重读它;结果另播报一次。 */}
+      {/* 键上的字只有两个字,2 秒一闪容易看漏;旁边多一枚状态徽章,颜色与图标一起说结果。 */}
+      {state === "idle" ? null : (
+        <span aria-hidden>
+          <StatusBadge tone={state === "copied" ? "success" : "error"}>
+            {state === "copied" ? "已复制到剪贴板" : "复制失败，请手动选择文本"}
+          </StatusBadge>
+        </span>
+      )}
+      {/* 读屏只播报一次;上面那枚徽章是为了眼睛,不重复进无障碍树。 */}
       <span role="status" aria-live="polite" className="sr-only">
         {state === "copied"
           ? "简报到剪贴板了，可以直接粘给 AI。"
@@ -474,7 +482,7 @@ export function FindingRow({
             </MetaRow>
           ) : finding.disposedBy === null ? null : (
             <MetaRow label="处置">
-              {resolved ? "已处置" : "撤回处置"} · {finding.disposedBy} ·{" "}
+              {resolved ? "无需处理" : "恢复为待处置"} · {finding.disposedBy} ·{" "}
               <span className="tabular-nums">{localDay(finding.disposedAt!)} {localClock(finding.disposedAt!)}</span>
             </MetaRow>
           )}
@@ -485,17 +493,17 @@ export function FindingRow({
             </MetaRow>
           )}
 
-          {/* 复制这条给外部 AI:简报里带着位置、状态与三段正文,拿去问另一个 agent 时
-              不必再把卡片照着抄一遍。它与下面的处置分成两行,一个是读出去、一个是写回来。 */}
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <CopyFindingBrief finding={finding} {...(brief === undefined ? {} : { context: brief })} />
-          </div>
-
-          {/* 正文里的 fallback 没有行级评论承载,Forge 上无从 resolve,面板也就不给动作。 */}
+          {/* 复制给 AI 与「无需处理」是一对:一条拿去改,一条决定不改。两者并排,复制在前
+              ——它才是这张卡默认的下一步;Forge 只是去看原文,退到下面一行小字。 */}
           {finding.commentId === null ? (
-            <p className="text-sm text-text-secondary">
-              该 Finding 仅发布在 pull request review 正文中，未生成可处置的行级评论。
-            </p>
+            <>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <CopyFindingBrief finding={finding} {...(brief === undefined ? {} : { context: brief })} />
+              </div>
+              <p className="text-sm text-text-secondary">
+                该 Finding 仅发布在 pull request review 正文中，未生成可处置的行级评论。
+              </p>
+            </>
           ) : (
             <div className="flex flex-col gap-2 pt-1">
               {canDispose && composing ? (
@@ -507,32 +515,20 @@ export function FindingRow({
                   onChange={(event) => setNote(event.target.value)}
                   maxLength={500}
                   placeholder="只写为什么不用改（可选，只存面板）；代码已改的留给下一轮评审自动处置"
-                  aria-label="处置备注"
+                  aria-label="无需处理的原因"
                 />
               ) : null}
-              <div className="flex items-center gap-2">
-                {!canDispose ? null : resolved ? (
-                  <Button
-                    variant="soft"
-                    color="gray"
-                    size={{ initial: "3", sm: "1" }}
-                    highContrast
-                    disabled={dispose.isPending}
-                    onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
-                    aria-label={`撤回 ${finding.file}:${finding.line} 的 Finding 处置`}
-                  >
-                    撤回处置
-                  </Button>
-                ) : composing ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {canDispose && composing ? (
                   <>
                     <Button
                       variant="solid"
                       size={{ initial: "3", sm: "1" }}
                       disabled={dispose.isPending}
                       onClick={() => dispose.mutate({ id: finding.id, disposition: "resolved", note })}
-                      aria-label={`确认处置 ${finding.file}:${finding.line} 的 Finding`}
+                      aria-label={`确认将 ${finding.file}:${finding.line} 的 Finding 标记为无需处理`}
                     >
-                      {dispose.isPending ? "处置中…" : "确认处置"}
+                      {dispose.isPending ? "确认中…" : "确认无需处理"}
                     </Button>
                     <Button
                       variant="ghost"
@@ -540,38 +536,55 @@ export function FindingRow({
                       size={{ initial: "3", sm: "1" }}
                       highContrast
                       onClick={() => { setComposing(false); setNote(""); }}
-                      aria-label={`取消处置 ${finding.file}:${finding.line} 的 Finding`}
+                      aria-label={`取消标记 ${finding.file}:${finding.line} 的 Finding 为无需处理`}
                     >
                       取消
                     </Button>
                   </>
                 ) : (
-                  <Button
-                    variant="soft"
-                    color="gray"
-                    size={{ initial: "3", sm: "1" }}
-                    highContrast
-                    onClick={() => setComposing(true)}
-                    aria-label={`处置 ${finding.file}:${finding.line} 的 Finding`}
-                  >
-                    处置
-                  </Button>
-                )}
-                {/* 原始评论的外链与处置并排:两样都是「对这条 Finding 做点什么」。 */}
-                {/* 写出去向:一颗孤零零的外链图标漂在卡片右沿,看不出它通向哪里。 */}
-                {finding.commentHtmlUrl === null ? null : (
-                  <a
-                    href={finding.commentHtmlUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
-                    className="touch-link inline-flex items-center gap-1 rounded-sm px-1 text-sm text-text-secondary outline-none hover:text-text focus-visible:ring-2 focus-visible:ring-ring/40"
-                  >
-                    Forge 评论
-                    <ExternalLinkIcon aria-hidden />
-                  </a>
+                  <>
+                    <CopyFindingBrief finding={finding} {...(brief === undefined ? {} : { context: brief })} />
+                    {canDispose ? (
+                      resolved ? (
+                        <Button
+                          variant="soft"
+                          color="gray"
+                          size={{ initial: "3", sm: "1" }}
+                          highContrast
+                          disabled={dispose.isPending}
+                          onClick={() => dispose.mutate({ id: finding.id, disposition: "unresolved", note })}
+                          aria-label={`撤回 ${finding.file}:${finding.line} 的 Finding 的无需处理标记`}
+                        >
+                          撤回「无需处理」
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="soft"
+                          color="gray"
+                          size={{ initial: "3", sm: "1" }}
+                          highContrast
+                          onClick={() => setComposing(true)}
+                          aria-label={`将 ${finding.file}:${finding.line} 的 Finding 标记为无需处理`}
+                        >
+                          无需处理
+                        </Button>
+                      )
+                    ) : null}
+                  </>
                 )}
               </div>
+              {finding.commentHtmlUrl === null ? null : (
+                <a
+                  href={finding.commentHtmlUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`在 Forge 查看 ${finding.file}:${finding.line} 的原始评论`}
+                  className="touch-link inline-flex items-center gap-1 self-start text-sm text-text-secondary underline-offset-4 outline-none hover:text-text hover:underline focus-visible:ring-2 focus-visible:ring-ring/40"
+                >
+                  在 Forge 查看原评论
+                  <ExternalLinkIcon aria-hidden />
+                </a>
+              )}
             </div>
           )}
 
