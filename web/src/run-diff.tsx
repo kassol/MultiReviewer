@@ -19,6 +19,7 @@ import { findingBrief, type FindingBriefContext } from "@/lib/finding-brief";
 import { isAnchorable } from "@/lib/finding-position";
 import { languageOf, splitHighlightedLines, splitIndent } from "@/lib/highlight-lines";
 import { localClock, localDay } from "@/lib/time";
+import { useCopyFeedback } from "@/lib/use-copy-feedback";
 
 import { fetchJson, send } from "./api.ts";
 /*
@@ -290,8 +291,8 @@ function BodyPart({
 /**
  * 「复制给 AI」:把这条 Finding 复制成一段能直接粘给外部 AI 的简报(`lib/finding-brief.ts`)。
  * 与处置分开放——复制是读出去,处置是写回来——也不跟 `commentId` 绑:只在 review 正文里
- * 发布过的那条同样值得拿去问。2 秒后复位,连点两次只按最后一次计时;剪贴板不可用时按钮
- * 写「复制失败」,旁边那条只在读屏里播报,不静默吞掉。
+ * 发布过的那条同样值得拿去问。2 秒的反馈计时在 `useCopyFeedback`;剪贴板不可用时按钮写
+ * 「复制失败」,旁边那枚徽章与读屏播报一起说结果。
  */
 function CopyFindingBrief({
   finding,
@@ -301,51 +302,34 @@ function CopyFindingBrief({
   /** 那一轮的 head:行号只对那一轮成立,简报里要说出来。 */
   context?: FindingBriefContext;
 }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(
-    () => () => {
-      if (timer.current !== undefined) clearTimeout(timer.current);
-    },
-    [],
-  );
-  const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(findingBrief(finding, context));
-      setState("copied");
-    } catch {
-      setState("failed");
-    }
-    if (timer.current !== undefined) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setState("idle"), 2000);
-  };
+  const { copied, failed, copy } = useCopyFeedback({ resetFailed: true });
 
   return (
     <>
       <Button
         type="button"
-        variant={state === "idle" ? "solid" : "soft"}
-        {...(state === "idle" ? {} : { color: state === "copied" ? "green" : "red" })}
+        variant={copied || failed ? "soft" : "solid"}
+        {...(copied || failed ? { color: copied ? "green" : "red" } : {})}
         size={{ initial: "3", sm: "1" }}
-        onClick={() => void copy()}
+        onClick={() => void copy(findingBrief(finding, context))}
         aria-label={`复制 ${finding.file}:${finding.line} 的 Finding 给 AI`}
       >
-        {state === "copied" ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
-        {state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制给 AI"}
+        {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
+        {copied ? "已复制" : failed ? "复制失败" : "复制给 AI"}
       </Button>
       {/* 键上的字只有两个字,2 秒一闪容易看漏;旁边多一枚状态徽章,颜色与图标一起说结果。 */}
-      {state === "idle" ? null : (
+      {copied || failed ? (
         <span aria-hidden>
-          <StatusBadge tone={state === "copied" ? "success" : "error"}>
-            {state === "copied" ? "已复制到剪贴板" : "复制失败，请手动选择文本"}
+          <StatusBadge tone={copied ? "success" : "error"}>
+            {copied ? "已复制到剪贴板" : "复制失败，请手动选择文本"}
           </StatusBadge>
         </span>
-      )}
+      ) : null}
       {/* 读屏只播报一次;上面那枚徽章是为了眼睛,不重复进无障碍树。 */}
       <span role="status" aria-live="polite" className="sr-only">
-        {state === "copied"
+        {copied
           ? "简报到剪贴板了，可以直接粘给 AI。"
-          : state === "failed"
+          : failed
             ? "复制失败，请手动选择文本。"
             : ""}
       </span>

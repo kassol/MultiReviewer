@@ -206,9 +206,9 @@ function FindingCard({
 }
 
 /**
- * 「处置整组」(CONTEXT.md 同根因组,issue #309):对组内当前未处置的成员写同一处置与
- * 备注。走 AlertDialog 与按阈值批量处置同一套弹窗与输入——一次点下去改的是几十条
- * Finding 的处置状态,而两处要人填的东西本来就是同一件(一句处置备注)。
+ * 「整组无需处理」(CONTEXT.md 同根因组,issue #309):对组内当前未处置的成员写同一句
+ * 无需处理与备注。走 AlertDialog 与按阈值批量处置同一套弹窗与输入——一次点下去改的是
+ * 几十条 Finding 的处置状态,而两处要人填的东西本来就是同一件(一句不需要修改的原因)。
  *
  * 已处置的成员由服务端跳过,不覆盖人已经做过的决定;组内一条未处置都没有时按钮点不动。
  */
@@ -243,11 +243,11 @@ function DisposeRootCauseGroupAction({
       onFeedback({
         text:
           result.failed.length === 0
-            ? `已处置 ${result.disposed.length} 条，跳过已处置的 ${result.skipped.length} 条。`
-            : `已处置 ${result.disposed.length} 条，${result.failed.length} 条失败，可以再点一次重试。`,
+            ? `已标记无需处理 ${result.disposed.length} 条，跳过已处置的 ${result.skipped.length} 条。`
+            : `已标记无需处理 ${result.disposed.length} 条，${result.failed.length} 条失败，可以再点一次重试。`,
         isError: result.failed.length > 0,
       });
-      // 处置完的那些立刻从待处置里退出去:计数在详情上,列表在汇总里,两份都失效。
+      // 标记完的那些立刻从待处置里退出去:计数在详情上,列表在汇总里,两份都失效。
       void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
       void queryClient.invalidateQueries({ queryKey: ["stage-summary"] });
     },
@@ -265,24 +265,24 @@ function DisposeRootCauseGroupAction({
           size={{ initial: "3", sm: "2" }}
           disabled={!pending || dispose.isPending}
         >
-          处置整组
+          整组无需处理
         </Button>
       }
-      title="把这个同根因组里未处置的成员一次处置掉？"
+      title="把这个同根因组里未处置的成员一次标记为无需处理？"
       titleSize="4"
       titleMb="2"
       maxWidth="480px"
       description={
         <>
-          这一组有 {memberCount} 处。组内未处置的成员将逐条标记为人工已处置，Forge
-          上对应的评论同步 resolve；已处置的成员不动。
+          这一组有 {memberCount} 处。组内未处置的成员将逐条标记为无需处理（人工已处置），
+          Forge 上对应的评论同步 resolve；已处置的成员不动。
         </>
       }
       direction={{ initial: "column-reverse", sm: "row" }}
       cancelLabel="取消"
       cancelVariant="soft"
       confirm={{
-        label: dispose.isPending ? "处置中…" : "处置",
+        label: dispose.isPending ? "确认中…" : "确认无需处理",
         disabled: dispose.isPending,
         onClick: () => {
           onFeedback(null);
@@ -292,7 +292,7 @@ function DisposeRootCauseGroupAction({
       }}
     >
       <Text as="label" htmlFor={`root-cause-note-${groupId}`} className="sr-only">
-        处置备注
+        无需处理的原因
       </Text>
       <TextArea
         id={`root-cause-note-${groupId}`}

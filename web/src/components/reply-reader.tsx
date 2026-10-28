@@ -12,6 +12,7 @@ import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/theme-button";
 import { replyFileName, replyTitle } from "@/lib/reply-title";
 import { localSecond } from "@/lib/time";
+import { useCopyFeedback } from "@/lib/use-copy-feedback";
 import { cn } from "@/lib/utils";
 
 /**
@@ -39,7 +40,7 @@ export function ReplyReader({
   at: string;
   onCloseAutoFocus?: (event: Event) => void;
 }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyFeedback();
   /**
    * 挂到 `#panel-portal`,与 mermaid 预览、阶段详情面板同一个宿主。Radix Themes 的 Dialog 默认
    * 挂到 body 末尾,而 `#root` 是一个 z-index 为 0 的层叠上下文:正文里 mermaid 图的全屏预览
@@ -71,15 +72,6 @@ export function ReplyReader({
     link.download = replyFileName(title, at);
     link.click();
     URL.revokeObjectURL(url);
-  };
-  const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // 阅读视图没有留反馈位:复制失败人再点一次,或者自己在正文里选中复制。
-    }
   };
 
   return (
@@ -138,7 +130,7 @@ export function ReplyReader({
                 <ChevronDownIcon aria-hidden className={titleOpen ? "rotate-180" : undefined} />
               </IconButton>
             ) : null}
-            <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
+            <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy(text)}>
               {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
               <span className="max-sm:sr-only">{copied ? "已复制" : "复制 Markdown"}</span>
             </Button>

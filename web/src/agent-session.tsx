@@ -85,6 +85,7 @@ import {
   type AgentSessionBaseline,
 } from "@/lib/agent-sessions";
 import { localMinute, localSecond } from "@/lib/time";
+import { useCopyFeedback } from "@/lib/use-copy-feedback";
 import { cn } from "@/lib/utils";
 
 import { api, apiUrl, errorText, fetchJson, send } from "./api.ts";
@@ -835,18 +836,7 @@ function AssistantReply({
     wasExpanded.current = expanded;
   }, [expanded]);
 
-  const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState<string | null>(null);
-  const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(item.text);
-      setCopyError(null);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (failed) {
-      setCopyError((failed as Error).message);
-    }
-  };
+  const { copied, error: copyError, copy } = useCopyFeedback();
 
   const [reading, setReading] = useState(false);
   const returnFocus = useDialogReturnFocus();
@@ -927,7 +917,7 @@ function AssistantReply({
                 <span className="max-sm:sr-only">阅读</span>
               </Button>
             ) : null}
-            <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy()}>
+            <Button type="button" variant="ghost" color="gray" size="1" onClick={() => void copy(item.text)}>
               {copied ? <CheckCircledIcon aria-hidden /> : <CopyIcon aria-hidden />}
               <span className="max-sm:sr-only">{copied ? "已复制" : "复制 Markdown"}</span>
             </Button>
