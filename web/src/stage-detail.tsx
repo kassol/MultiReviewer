@@ -529,12 +529,12 @@ function belowThreshold(
 }
 
 /**
- * 一键处置低于最低报告等级的未处置项(issue #274)。阈值抬高之后,阶段里还留着一批当初
- * 按旧阈值报出来的低等级条目,它们不该逐条点过去。
+ * 一键无需处理低于最低报告等级的未处置项(issue #274)。阈值抬高之后,阶段里还留着一批
+ * 当初按旧阈值报出来的低等级条目,它们不该逐条点过去。
  *
  * 只在仓库的生效阈值不是 P2 时出现:P2 就是最低那一档,没有低于它的条目可谈。条数按这
  * 一页此刻的 Finding 集合算——与正文读的是同一份阶段汇总查询,弹窗里的数与列表里看到的
- * 是同一批行。走 AlertDialog:一次点下去改的是几十条 Finding 的处置状态。
+ * 是同一批行。走 AlertDialog:一次点下去把几十条 Finding 标成无需处理。
  */
 function DisposeBelowThresholdAction({
   stage,
@@ -565,18 +565,18 @@ function DisposeBelowThresholdAction({
       onFeedback({
         text:
           result.failed.length === 0
-            ? `已处置 ${result.disposed.length} 条。`
-            : `已处置 ${result.disposed.length} 条，${result.failed.length} 条失败，可以再点一次重试。`,
+            ? `已标记无需处理 ${result.disposed.length} 条。`
+            : `已标记无需处理 ${result.disposed.length} 条，${result.failed.length} 条失败，可以再点一次重试。`,
         isError: result.failed.length > 0,
       });
-      // 处置完的那些立刻从待处置里退出去:计数在详情上,列表在汇总里,两份都失效。
+      // 标记完的那些立刻从待处置里退出去:计数在详情上,列表在汇总里,两份都失效。
       void queryClient.invalidateQueries({ queryKey: ["stage-detail"] });
       void queryClient.invalidateQueries({ queryKey: ["stage-summary"] });
     },
     onError: (error: Error) => onFeedback({ text: error.message, isError: true }),
   });
 
-  // 处置进行中那几秒条数会先归零,按钮不能跟着消失,否则弹窗的触发器没了。
+  // 标记进行中那几秒条数会先归零,按钮不能跟着消失,否则弹窗的触发器没了。
   if (targets.length === 0 && !open) return null;
   return (
     <ConfirmDialog
@@ -591,24 +591,19 @@ function DisposeBelowThresholdAction({
           disabled={targets.length === 0 || dispose.isPending}
         >
           {/* 按钮只说动作与条数;「低于最低报告等级」这层规则留给弹窗标题与说明讲。 */}
-          {`处置 ${targets.length} 条低等级项`}
+          {`无需处理 ${targets.length} 条低等级项`}
         </Button>
       }
-      title={`处置这个阶段里 ${targets.length} 条低于最低报告等级的未处置项？`}
+      title={`把这个阶段里 ${targets.length} 条低于最低报告等级的未处置项一次标记为无需处理？`}
       titleSize="4"
       titleMb="2"
       maxWidth="480px"
-      description={
-        <>
-          这个仓库的最低报告等级是 {minReportSeverity}，低于它的未处置 Finding
-          将逐条标记为人工已处置，Forge 上对应的评论同步 resolve。已处置的与不低于该等级的都不动。
-        </>
-      }
+      description={`这个仓库的最低报告等级是 ${minReportSeverity}，低于它的未处置 Finding 将逐条标记为无需处理（人工已处置），Forge 上对应的评论同步 resolve。已处置的与不低于该等级的都不动。`}
       direction={{ initial: "column-reverse", sm: "row" }}
       cancelLabel="取消"
       cancelVariant="soft"
       confirm={{
-        label: dispose.isPending ? "处置中…" : "处置",
+        label: dispose.isPending ? "确认中…" : "确认无需处理",
         disabled: dispose.isPending,
         onClick: () => {
           onFeedback(null);
@@ -618,7 +613,7 @@ function DisposeBelowThresholdAction({
       }}
     >
       <Text as="label" htmlFor="stage-dispose-batch-note" className="sr-only">
-        处置备注
+        无需处理的原因
       </Text>
       <TextArea
         id="stage-dispose-batch-note"
